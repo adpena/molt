@@ -180,6 +180,13 @@ impl VfsState {
         }
     }
 
+    /// Create a `VfsState` from a pre-configured `MountTable`.
+    pub fn from_table(table: MountTable) -> Self {
+        Self {
+            mount_table: RwLock::new(table),
+        }
+    }
+
     pub fn resolve(&self, path: &str) -> Option<(String, Arc<dyn VfsBackend>, String)> {
         let table = self.mount_table.read().ok()?;
         let (prefix, _backend, rel) = table.resolve(path)?;
@@ -192,6 +199,82 @@ impl VfsState {
         }
         None
     }
+}
+
+/// Walk a directory recursively, returning `(relative_path, contents)` pairs
+/// suitable for [`BundleFs::from_entries`].
+fn read_dir_recursive(base: &str) -> Vec<(String, Vec<u8>)> {
+    use std::path::Path;
+
+    let mut result = Vec::new();
+    let mut stack = vec![base.to_string()];
+    let base_path = Path::new(base);
+
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path.to_string_lossy().into_owned());
+            } else if path.is_file() {
+                if let Ok(data) = std::fs::read(&path) {
+                    let rel = path
+                        .strip_prefix(base_path)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .into_owned();
+                    result.push((rel, data));
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Lazily build a [`VfsState`] from environment variables.
+///
+/// Reads:
+/// - `MOLT_VFS_BUNDLE` – path to a directory or `.tar` file mounted at `/bundle`.
+/// - `MOLT_VFS_TMP_QUOTA_MB` – quota in MiB for the `/tmp` mount (default 64).
+///
+/// Returns `None` when `MOLT_VFS_BUNDLE` is not set.
+pub(crate) fn load_vfs() -> Option<VfsState> {
+    let bundle_path = std::env::var("MOLT_VFS_BUNDLE").ok()?;
+
+    let mut mt = MountTable::new();
+
+    // /bundle from tar or directory
+    if std::path::Path::new(&bundle_path).is_dir() {
+        let entries = read_dir_recursive(&bundle_path);
+        mt.add_mount(
+            "/bundle",
+            Arc::new(bundle::BundleFs::from_entries(entries)),
+        );
+    } else if bundle_path.ends_with(".tar") {
+        #[cfg(feature = "vfs_bundle_tar")]
+        {
+            if let Ok(tar_bytes) = std::fs::read(&bundle_path) {
+                if let Ok(b) = bundle::BundleFs::from_tar(&tar_bytes) {
+                    mt.add_mount("/bundle", Arc::new(b));
+                }
+            }
+        }
+    }
+
+    // /tmp with configurable quota
+    let quota_mb = std::env::var("MOLT_VFS_TMP_QUOTA_MB")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(64);
+    mt.add_mount("/tmp", Arc::new(tmp::TmpFs::new(quota_mb)));
+
+    // /dev pseudo-devices
+    mt.add_mount("/dev", Arc::new(dev::DevFs::new()));
+
+    Some(VfsState::from_table(mt))
 }
 
 #[cfg(test)]
@@ -458,5 +541,76 @@ mod tests {
         let big_data = vec![0u8; 20 * 1024 * 1024]; // 20 MB exceeds 16 MB cap
         let result = fs.open_write("stdout", &big_data);
         assert!(matches!(result, Err(VfsError::QuotaExceeded)));
+    }
+
+    #[test]
+    fn vfs_state_from_table() {
+        let mut mt = MountTable::new();
+        let bundle: Arc<dyn VfsBackend> = Arc::new(BundleFs::from_entries(vec![
+            ("main.py".into(), b"print('hi')".to_vec()),
+        ]));
+        mt.add_mount("/bundle", bundle);
+        mt.add_mount("/tmp", Arc::new(TmpFs::new(8)));
+        mt.add_mount("/dev", Arc::new(DevFs::new()));
+
+        let state = VfsState::from_table(mt);
+        let (prefix, backend, rel) = state.resolve("/bundle/main.py").unwrap();
+        assert_eq!(prefix, "/bundle");
+        assert_eq!(rel, "main.py");
+        assert_eq!(backend.open_read("main.py").unwrap(), b"print('hi')");
+    }
+
+    #[test]
+    fn load_vfs_returns_none_without_env() {
+        // When MOLT_VFS_BUNDLE is not set, load_vfs must return None.
+        unsafe { std::env::remove_var("MOLT_VFS_BUNDLE") };
+        assert!(super::load_vfs().is_none());
+    }
+
+    #[test]
+    fn load_vfs_from_directory() {
+        let dir = std::env::temp_dir().join("molt_vfs_test_load_dir");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("hello.txt"), b"world").unwrap();
+        std::fs::write(dir.join("sub/nested.txt"), b"deep").unwrap();
+
+        unsafe { std::env::set_var("MOLT_VFS_BUNDLE", dir.to_str().unwrap()) };
+        let state = super::load_vfs().expect("load_vfs should return Some for a valid dir");
+
+        // bundle mount should contain the files
+        let (_pfx, backend, rel) = state.resolve("/bundle/hello.txt").unwrap();
+        assert_eq!(backend.open_read(&rel).unwrap(), b"world");
+
+        let (_pfx, backend, rel) = state.resolve("/bundle/sub/nested.txt").unwrap();
+        assert_eq!(backend.open_read(&rel).unwrap(), b"deep");
+
+        // /tmp and /dev should also be mounted
+        assert!(state.resolve("/tmp/anything").is_some());
+        assert!(state.resolve("/dev/stdout").is_some());
+
+        // cleanup
+        unsafe { std::env::remove_var("MOLT_VFS_BUNDLE") };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_dir_recursive_collects_files() {
+        let dir = std::env::temp_dir().join("molt_vfs_test_readdir");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a/b")).unwrap();
+        std::fs::write(dir.join("top.txt"), b"T").unwrap();
+        std::fs::write(dir.join("a/mid.txt"), b"M").unwrap();
+        std::fs::write(dir.join("a/b/bot.txt"), b"B").unwrap();
+
+        let entries = super::read_dir_recursive(dir.to_str().unwrap());
+        assert_eq!(entries.len(), 3);
+
+        let map: std::collections::HashMap<String, Vec<u8>> = entries.into_iter().collect();
+        assert_eq!(map.get("top.txt").unwrap(), b"T");
+        assert_eq!(map.get("a/mid.txt").unwrap(), b"M");
+        assert_eq!(map.get("a/b/bot.txt").unwrap(), b"B");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
