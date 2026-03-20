@@ -45,19 +45,32 @@ The direct WASM emitter produces correct but unoptimized code. Key observations:
 
 | Optimization | Impact | Effort | Priority |
 |---|---|---|---|
-| Local variable coalescing (liveness analysis) | 5-15% size reduction | Medium | P1 |
+| Local variable coalescing (liveness analysis) | DONE (ac215c48) — greedy linear-scan for __tmp/__v temporaries | Medium | P1 |
 | Box/unbox elimination when types are statically known | DONE (cd3f98df) — eq/ne skip unbox entirely, arithmetic uses trusted unbox saving 4 insns/op | High | P1 |
 | `br_table` for large state dispatch | 2-5x faster generator resume | DONE (c1ae684a) | P1 |
-| Constant folding at WASM emission time | 3-5% size reduction | Low | P2 |
+| Constant folding at WASM emission time | DONE (cd3f1b5f) — forward data-flow, folds add/sub/mul/bitwise on fast_int constants | Low | P2 |
 | Dead local elimination | 2-5% size reduction | DONE (0b9c39ad) | P2 |
-| Instruction combining (adjacent operations) | 3-8% speed improvement | Medium | P2 |
+| Instruction combining (adjacent operations) | DONE (d468918f) — const propagation through box/unbox, 5→2 insns for known-const unbox | Medium | P2 |
 
 ### 1.4 Audit Findings (2026-03-20)
 
 - 215/602 imports unused (35.6%) — handled by wasm-opt --remove-unused-module-elements post-link
-- local.tee not used anywhere — potential 1-2% instruction reduction
-- Constant materialization in helper functions could be cached in locals
+- DONE (fef9990c) — local.tee optimization: 37 eliminated LocalGet instructions
+- DONE (ffd95a5d) — Constant materialization: ConstantCache for INT_SHIFT/INT_MIN/INT_MAX
 - memory.copy for buffer operations not yet implemented (P2)
+
+### 1.5 Completed Optimization Summary (2026-03-20)
+
+All of the following optimizations were completed in the 2026-03-20 session:
+
+| Optimization | Commit | Impact |
+|---|---|---|
+| Local variable coalescing | ac215c48 | Greedy linear-scan for `__tmp`/`__v` temporaries; 5-15% size reduction |
+| Constant folding at WASM emission | cd3f1b5f | Forward data-flow analysis, folds add/sub/mul/bitwise on `fast_int` constants; 3-5% size reduction |
+| Instruction combining | d468918f | Const propagation through box/unbox, reduces 5 insns to 2 for known-const unbox; 3-8% speed improvement |
+| `local.tee` introduction | fef9990c | 37 eliminated `LocalGet` instructions; ~1-2% instruction reduction |
+| Constant caching (`ConstantCache`) | ffd95a5d | Cache for `INT_SHIFT`/`INT_MIN`/`INT_MAX` materialization in helper functions |
+| Precompiled `.cwasm` artifacts | e4b4d9b8 | `--precompile` flag with `wasmtime compile`; 10-50x faster startup |
 
 ### 1.3 Missing Features
 
@@ -247,6 +260,7 @@ brotli / gzip  -->  output_stripped.wasm.br
 | **Dead code elimination** via `wasm-opt --dce` | 10-20% | Integrated into build |
 | **Name section stripping** via `wasm-tools strip` | 5-10% | Integrated (--strip-debug in Oz pipeline) |
 | **Brotli compression** | 60-70% of stripped size | Available, not integrated into build |
+| **Precompiled .cwasm artifacts** | 10-50x faster startup | DONE (e4b4d9b8) — --precompile flag |
 | **Constant deduplication** in data segments | 3-5% | Partially implemented (`data_segment_cache`) |
 | **Function deduplication** (identical code merging) | 2-5% | Not implemented |
 | **Type section deduplication** | 1-2% | Not implemented (30+ types currently defined) |
@@ -310,7 +324,7 @@ The wasmtime host (`molt-wasm-host`) supports three compilation strategies:
 
 | Optimization | Impact | Effort |
 |---|---|---|
-| **Precompiled `.cwasm` artifacts** as default for production | 10-50x faster startup | Low (infrastructure) |
+| **Precompiled `.cwasm` artifacts** as default for production | DONE (e4b4d9b8) — --precompile flag with wasmtime compile | Low (infrastructure) |
 | **Streaming compilation** for browser targets | Progressive loading; first-byte-to-execution | Medium |
 | **Lazy compilation** (compile functions on first call) | Faster startup for large modules | Low (wasmtime config) |
 | **Module splitting** (separate hot/cold code) | Faster initial load; lazy-load cold paths | High |
