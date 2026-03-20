@@ -54,9 +54,13 @@ impl BundleFs {
             {
                 return Err(format!("bundle tar contains symlink: {path}"));
             }
-            // Security: reject traversal
-            if path.contains("..") {
-                return Err(format!("bundle tar contains '..' in path: {path}"));
+            // Security: reject traversal (component-level check)
+            if path.split('/').any(|c| c == "..") {
+                return Err(format!("bundle tar contains '..' component in path: {path}"));
+            }
+            // Security: reject absolute paths
+            if path.starts_with('/') {
+                return Err(format!("bundle tar contains absolute path: {path}"));
             }
             if entry.header().entry_type().is_file() {
                 let mut content = Vec::new();

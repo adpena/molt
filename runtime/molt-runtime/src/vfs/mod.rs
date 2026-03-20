@@ -96,7 +96,11 @@ impl MountTable {
     pub fn resolve(&self, path: &str) -> Option<(&str, &dyn VfsBackend, String)> {
         let normalized = normalize_path(path)?;
         for (prefix, backend) in &self.mounts {
-            if normalized == *prefix || normalized.starts_with(&format!("{prefix}/")) {
+            if normalized == *prefix
+                || (normalized.len() > prefix.len()
+                    && normalized.starts_with(prefix.as_str())
+                    && normalized.as_bytes()[prefix.len()] == b'/')
+            {
                 let rel = if normalized.len() == prefix.len() {
                     String::new()
                 } else {
@@ -424,11 +428,8 @@ mod tests {
     #[test]
     fn dev_fs_buffer_cap() {
         let fs = DevFs::new();
-        let big_data = vec![0u8; 20 * 1024 * 1024]; // 20 MB
+        let big_data = vec![0u8; 20 * 1024 * 1024]; // 20 MB exceeds 16 MB cap
         let result = fs.open_write("stdout", &big_data);
-        // TODO: Should fail with QuotaExceeded once buffer cap is enforced in DevFs.
-        // Currently DevFs has no buffer cap, so this write succeeds unchecked.
-        // Flip this assertion to `assert!(result.is_err())` after adding cap to DevFs.
-        assert!(result.is_ok());
+        assert!(matches!(result, Err(VfsError::QuotaExceeded)));
     }
 }

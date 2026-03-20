@@ -24,6 +24,15 @@ impl TmpFs {
         }
     }
 
+    pub fn clear(&self) {
+        let mut files = self.files.write().unwrap_or_else(|e| e.into_inner());
+        files.clear();
+        let mut dirs = self.dirs.write().unwrap_or_else(|e| e.into_inner());
+        dirs.clear();
+        dirs.insert(String::new()); // keep root
+        self.used_bytes.store(0, Ordering::Relaxed);
+    }
+
     fn check_quota(&self, additional: usize) -> Result<(), VfsError> {
         let current = self.used_bytes.load(Ordering::Relaxed);
         if current + additional > self.quota_bytes {

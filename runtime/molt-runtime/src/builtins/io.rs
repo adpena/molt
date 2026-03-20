@@ -3694,10 +3694,9 @@ fn open_impl(
                         return raise_exception::<_>(_py, "PermissionError", &msg);
                     }
                     if is_write {
-                        // TODO(Plan B v0.2): VFS write path — needs
-                        // MoltFileBackend integration with backend.open_write().
-                        // For now, fall through to the real filesystem which will
-                        // likely fail with a sensible error for bundle mounts.
+                        let msg = format!("Read-only file system: '{}'. Use /tmp for writable files.", path_str);
+                        drop(guard);
+                        return raise_exception::<_>(_py, "PermissionError", &msg);
                     } else {
                         // Read the entire file through the VFS backend.
                         let data = match backend.open_read(&rel_path) {
