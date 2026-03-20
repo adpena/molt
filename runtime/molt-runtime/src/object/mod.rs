@@ -913,64 +913,62 @@ unsafe fn maybe_run_object_finalizer(
     ptr: *mut u8,
     header_ptr: *mut MoltHeader,
 ) -> bool {
-    unsafe {
-        if (*header_ptr).type_id != TYPE_ID_OBJECT {
-            return false;
-        }
-        if ((*header_ptr).flags & HEADER_FLAG_FINALIZER_RAN) != 0 {
-            return false;
-        }
-        let class_bits = object_class_bits_from_state((*header_ptr).state);
-        if class_bits == 0 || obj_from_bits(class_bits).is_none() {
-            return false;
-        }
-        let Some(del_name_bits) = crate::attr_name_bits_from_bytes(py, b"__del__") else {
-            return false;
-        };
-        (*header_ptr).flags |= HEADER_FLAG_FINALIZER_RAN;
-        // Keep `self` alive while we resolve and call __del__ so resurrection is possible.
-        (*header_ptr).ref_count.store(1, AtomicOrdering::Release);
-        let self_bits = MoltObject::from_ptr(ptr).bits();
-        let prior_exc_bits = crate::builtins::exceptions::exception_last_bits_noinc(py)
-            .filter(|bits| !obj_from_bits(*bits).is_none());
-        if let Some(bits) = prior_exc_bits {
-            inc_ref_bits(py, bits);
-        }
-        let missing_bits = crate::missing_bits(py);
-        let del_bits = crate::molt_get_attr_name_default(self_bits, del_name_bits, missing_bits);
-        dec_ref_bits(py, del_name_bits);
-        if del_bits != missing_bits {
-            let result_bits = crate::call_callable0(py, del_bits);
-            if !obj_from_bits(result_bits).is_none() {
-                dec_ref_bits(py, result_bits);
-            }
-        }
-        if !obj_from_bits(del_bits).is_none() {
-            dec_ref_bits(py, del_bits);
-        }
-        // CPython ignores exceptions raised during finalization and preserves any already-active
-        // exception from surrounding bytecode.
-        if let Some(bits) = prior_exc_bits {
-            let same_as_prior =
-                crate::builtins::exceptions::exception_last_bits_noinc(py) == Some(bits);
-            let pending = crate::exception_pending(py);
-            if !same_as_prior || !pending {
-                if pending {
-                    crate::clear_exception(py);
-                }
-                crate::builtins::exceptions::exception_set_last_bits_raw(py, bits);
-            }
-            dec_ref_bits(py, bits);
-        } else if crate::exception_pending(py) {
-            crate::clear_exception(py);
-        }
-        let prev = (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
-        if prev > 1 {
-            // Object was resurrected by __del__; abort deallocation now.
-            return true;
-        }
-        false
+    if (*header_ptr).type_id != TYPE_ID_OBJECT {
+        return false;
     }
+    if ((*header_ptr).flags & HEADER_FLAG_FINALIZER_RAN) != 0 {
+        return false;
+    }
+    let class_bits = unsafe { object_class_bits_from_state((*header_ptr).state) };
+    if class_bits == 0 || obj_from_bits(class_bits).is_none() {
+        return false;
+    }
+    let Some(del_name_bits) = crate::attr_name_bits_from_bytes(py, b"__del__") else {
+        return false;
+    };
+    (*header_ptr).flags |= HEADER_FLAG_FINALIZER_RAN;
+    // Keep `self` alive while we resolve and call __del__ so resurrection is possible.
+    (*header_ptr).ref_count.store(1, AtomicOrdering::Release);
+    let self_bits = MoltObject::from_ptr(ptr).bits();
+    let prior_exc_bits = crate::builtins::exceptions::exception_last_bits_noinc(py)
+        .filter(|bits| !obj_from_bits(*bits).is_none());
+    if let Some(bits) = prior_exc_bits {
+        inc_ref_bits(py, bits);
+    }
+    let missing_bits = crate::missing_bits(py);
+    let del_bits = crate::molt_get_attr_name_default(self_bits, del_name_bits, missing_bits);
+    dec_ref_bits(py, del_name_bits);
+    if del_bits != missing_bits {
+        let result_bits = unsafe { crate::call_callable0(py, del_bits) };
+        if !obj_from_bits(result_bits).is_none() {
+            dec_ref_bits(py, result_bits);
+        }
+    }
+    if !obj_from_bits(del_bits).is_none() {
+        dec_ref_bits(py, del_bits);
+    }
+    // CPython ignores exceptions raised during finalization and preserves any already-active
+    // exception from surrounding bytecode.
+    if let Some(bits) = prior_exc_bits {
+        let same_as_prior =
+            crate::builtins::exceptions::exception_last_bits_noinc(py) == Some(bits);
+        let pending = crate::exception_pending(py);
+        if !same_as_prior || !pending {
+            if pending {
+                crate::clear_exception(py);
+            }
+            crate::builtins::exceptions::exception_set_last_bits_raw(py, bits);
+        }
+        dec_ref_bits(py, bits);
+    } else if crate::exception_pending(py) {
+        crate::clear_exception(py);
+    }
+    let prev = (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+    if prev > 1 {
+        // Object was resurrected by __del__; abort deallocation now.
+        return true;
+    }
+    false
 }
 
 /// # Safety
