@@ -1042,6 +1042,9 @@ pub struct WasmCompileOptions {
     pub reloc_enabled: bool,
     pub data_base: u32,
     pub table_base: u32,
+    /// Enable native WASM exception handling (WASM 3.0 EH proposal).
+    /// Gated by `MOLT_WASM_NATIVE_EH=1` environment variable.
+    pub native_eh_enabled: bool,
 }
 
 impl Default for WasmCompileOptions {
@@ -1060,6 +1063,10 @@ impl Default for WasmCompileOptions {
                 Ok(value) => value.parse::<u32>().unwrap_or(RELOC_TABLE_BASE_DEFAULT),
                 Err(_) => RELOC_TABLE_BASE_DEFAULT,
             },
+            native_eh_enabled: matches!(
+                std::env::var("MOLT_WASM_NATIVE_EH").as_deref(),
+                Ok("1")
+            ),
         }
     }
 }
@@ -1317,8 +1324,8 @@ impl WasmBackend {
                 "[molt-wasm-multi-return] {} candidate(s) detected:",
                 multi_return_candidates.len()
             );
-            let mut sorted: Vec<_> = multi_return_candidates.iter().collect();
-            sorted.sort_by_key(|(name, _)| name.clone());
+            let mut sorted: Vec<(&String, &usize)> = multi_return_candidates.iter().collect();
+            sorted.sort_by_key(|(name, _)| *name);
             for (name, arity) in &sorted {
                 eprintln!("  - {name} (returns {arity} values)");
             }
@@ -3964,6 +3971,34 @@ impl WasmBackend {
                     eprintln!("  - {name}");
                 }
             }
+
+            // --- Exception-related host call audit (Section 3.6) ---
+            let eh_imports = [
+                "exception_push", "exception_pop", "exception_pending",
+                "exception_clear", "exception_new", "exception_new_from_class",
+                "exception_kind", "exception_class", "exception_message",
+                "exception_active", "exception_last", "exception_stack_clear",
+                "exception_set_cause", "exception_set_value",
+                "exception_context_set", "exception_set_last", "raise",
+            ];
+            let used_set = self.import_ids.used.borrow();
+            let eh_used: Vec<&str> = eh_imports.iter().copied()
+                .filter(|name| used_set.contains(*name)).collect();
+            let eh_eliminable: Vec<&str> =
+                ["exception_push", "exception_pop", "exception_pending"]
+                    .iter().copied()
+                    .filter(|name| used_set.contains(*name)).collect();
+            drop(used_set);
+            eprintln!(
+                "[molt-wasm-import-audit] exception host calls: {}/{} used ({} eliminable by native EH: {})",
+                eh_used.len(), eh_imports.len(),
+                eh_eliminable.len(), eh_eliminable.join(", "),
+            );
+            if self.options.native_eh_enabled {
+                eprintln!("[molt-wasm-import-audit] native EH ENABLED: tag section emitted");
+            } else {
+                eprintln!("[molt-wasm-import-audit] native EH disabled (set MOLT_WASM_NATIVE_EH=1)");
+            }
         }
 
         self.module.section(&self.types);
@@ -3971,6 +4006,19 @@ impl WasmBackend {
         self.module.section(&self.funcs);
         self.module.section(&self.tables);
         self.module.section(&self.memories);
+
+        // --- WASM EH Tag Section (Section 3.6) ---
+        // Tag 0 = molt_exception with payload (i64) -> (), using type index 1.
+        // Emitted between memory and export sections per WASM spec ordering.
+        if self.options.native_eh_enabled {
+            let mut tags = TagSection::new();
+            tags.tag(TagType {
+                kind: TagKind::Exception,
+                func_type_idx: TAG_EXCEPTION_FUNC_TYPE,
+            });
+            self.module.section(&tags);
+        }
+
         self.module.section(&self.exports);
         if let Some(element_section) = element_section.as_ref() {
             self.module.section(element_section);
@@ -4679,6 +4727,87 @@ impl WasmBackend {
         } else {
             Vec::new()
         };
+
+        // --- Multi-value return optimization locals (Section 3.1) ---
+        let multi_return_candidates = ctx.multi_return_candidates;
+        let is_multi_return_callee = multi_return_candidates.get(&func_ir.name).copied();
+
+        let mut multi_ret_locals: Vec<u32> = Vec::new();
+        let mut multi_ret_tuple_vars: HashSet<String> = HashSet::new();
+        if let Some(ret_count) = is_multi_return_callee {
+            for i in 0..ret_count {
+                let name = format!("__multi_ret_{i}");
+                if !locals.contains_key(&name) {
+                    locals.insert(name, local_count);
+                    local_types.push(ValType::I64);
+                    multi_ret_locals.push(local_count);
+                    local_count += 1;
+                }
+            }
+            for op in &func_ir.ops {
+                if op.kind == "tuple_new" {
+                    if let Some(args) = &op.args {
+                        if args.len() == ret_count {
+                            if let Some(out) = &op.out {
+                                multi_ret_tuple_vars.insert(out.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut multi_ret_call_locals: HashMap<(String, i64), u32> = HashMap::new();
+        let mut multi_ret_call_vars: HashSet<String> = HashSet::new();
+        for (op_idx, op) in func_ir.ops.iter().enumerate() {
+            if op.kind != "call_internal" {
+                continue;
+            }
+            let Some(callee) = op.s_value.as_ref() else {
+                continue;
+            };
+            let Some(&ret_count) = multi_return_candidates.get(callee) else {
+                continue;
+            };
+            let Some(result_var) = op.out.as_ref() else {
+                continue;
+            };
+            let mut valid = true;
+            for k in 0..ret_count {
+                let j = op_idx + 1 + k;
+                if j >= func_ir.ops.len() {
+                    valid = false;
+                    break;
+                }
+                let next_op = &func_ir.ops[j];
+                if next_op.kind != "tuple_index" {
+                    valid = false;
+                    break;
+                }
+                let Some(args) = next_op.args.as_ref() else {
+                    valid = false;
+                    break;
+                };
+                if args.len() < 2 || args[0] != *result_var {
+                    valid = false;
+                    break;
+                }
+            }
+            if !valid {
+                continue;
+            }
+            multi_ret_call_vars.insert(result_var.clone());
+            for k in 0..ret_count {
+                let name = format!("__multi_call_{result_var}_{k}");
+                if !locals.contains_key(&name) {
+                    locals.insert(name.clone(), local_count);
+                    local_types.push(ValType::I64);
+                    local_count += 1;
+                }
+                multi_ret_call_locals.insert((result_var.clone(), k as i64), locals[&name]);
+            }
+        }
+
         let _ = local_count;
         let mut func = Function::new_with_locals_types(local_types);
         #[derive(Clone, Copy)]
@@ -4741,6 +4870,9 @@ impl WasmBackend {
 
         // Initialize constant materialization cache (once per function entry).
         const_cache.emit_init(&mut func);
+
+        // Capture native_eh_enabled before the closure to avoid borrowing self.
+        let native_eh_enabled = self.options.native_eh_enabled;
 
         let mut emit_ops = |func: &mut Function,
                             ops: &[OpIR],
@@ -9486,11 +9618,21 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "exception_push" => {
-                        emit_call(func, reloc_enabled, import_ids["exception_push"]);
+                        if native_eh_enabled {
+                            // Native EH: no-op; WASM runtime manages handler stack.
+                            func.instruction(&Instruction::I64Const(box_none()));
+                        } else {
+                            emit_call(func, reloc_enabled, import_ids["exception_push"]);
+                        }
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "exception_pop" => {
-                        emit_call(func, reloc_enabled, import_ids["exception_pop"]);
+                        if native_eh_enabled {
+                            // Native EH: no-op; handler popped when try_table ends.
+                            func.instruction(&Instruction::I64Const(box_none()));
+                        } else {
+                            emit_call(func, reloc_enabled, import_ids["exception_pop"]);
+                        }
                         func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
                     }
                     "exception_stack_clear" => {
@@ -9596,8 +9738,17 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let exc = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(exc));
-                        emit_call(func, reloc_enabled, import_ids["raise"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if native_eh_enabled {
+                            // Native EH: call host raise to register the exception
+                            // (traceback, __context__), then throw via WASM EH.
+                            emit_call(func, reloc_enabled, import_ids["raise"]);
+                            func.instruction(&Instruction::Drop);
+                            func.instruction(&Instruction::LocalGet(exc));
+                            func.instruction(&Instruction::Throw(TAG_EXCEPTION_INDEX));
+                        } else {
+                            emit_call(func, reloc_enabled, import_ids["raise"]);
+                            func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        }
                     }
                     "bridge_unavailable" => {
                         let args = op.args.as_ref().unwrap();
@@ -9887,17 +10038,57 @@ impl WasmBackend {
                         control_stack.pop();
                     }
                     "try_start" => {
-                        func.instruction(&Instruction::Block(BlockType::Empty));
-                        control_stack.push(ControlKind::Try);
-                        try_stack.push(control_stack.len() - 1);
+                        if native_eh_enabled {
+                            // Native EH: two-level block for try_table:
+                            //   block $catch_dest (result i64)
+                            //     try_table (catch $molt_exception $catch_dest)
+                            //       ... body ...
+                            //     end
+                            //     i64.const <box_none>  ;; normal path sentinel
+                            //   end
+                            //   ;; catch: exception handle on stack
+                            func.instruction(&Instruction::Block(
+                                BlockType::FunctionType(TAG_EXCEPTION_FUNC_TYPE),
+                            ));
+                            control_stack.push(ControlKind::Block);
+                            func.instruction(&Instruction::TryTable(
+                                BlockType::Empty,
+                                Cow::Borrowed(&[Catch::One {
+                                    tag: TAG_EXCEPTION_INDEX,
+                                    label: 0,
+                                }]),
+                            ));
+                            control_stack.push(ControlKind::Try);
+                            try_stack.push(control_stack.len() - 1);
+                        } else {
+                            func.instruction(&Instruction::Block(BlockType::Empty));
+                            control_stack.push(ControlKind::Try);
+                            try_stack.push(control_stack.len() - 1);
+                        }
                     }
                     "try_end" => {
-                        func.instruction(&Instruction::End);
-                        control_stack.pop();
-                        try_stack.pop();
+                        if native_eh_enabled {
+                            // Close try_table
+                            func.instruction(&Instruction::End);
+                            control_stack.pop();
+                            try_stack.pop();
+                            // Normal path: push None sentinel for outer block result
+                            func.instruction(&Instruction::I64Const(box_none()));
+                            // Close outer catch-destination block
+                            func.instruction(&Instruction::End);
+                            control_stack.pop();
+                            // Drop the i64 result (exception handle or sentinel)
+                            func.instruction(&Instruction::Drop);
+                        } else {
+                            func.instruction(&Instruction::End);
+                            control_stack.pop();
+                            try_stack.pop();
+                        }
                     }
                     "check_exception" => {
-                        if let Some(&try_index) = try_stack.last() {
+                        if native_eh_enabled {
+                            // Native EH: no-op; WASM catches automatically.
+                        } else if let Some(&try_index) = try_stack.last() {
                             emit_call(func, reloc_enabled, import_ids["exception_pending"]);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
@@ -10581,6 +10772,14 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "check_exception" => {
+                            if native_eh_enabled {
+                                // Native EH: skip polling; fall through to next state.
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                            } else {
                             let Some(target_label) = op.value else {
                                 eprintln!(
                                     "WASM lowering warning: check_exception missing label in {} at op {}; falling through",
@@ -10621,6 +10820,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::Br(depth + 1));
                             func.instruction(&Instruction::End);
                             block_terminated = true;
+                            }
                         }
                         "ret" => {
                             let ret_local =
@@ -10998,6 +11198,14 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "check_exception" => {
+                            if native_eh_enabled {
+                                // Native EH: skip polling; fall through to next state.
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                            } else {
                             let Some(target_label) = op.value else {
                                 eprintln!(
                                     "WASM lowering warning: check_exception missing label in {} at op {}; falling through",
@@ -11038,6 +11246,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::Br(depth + 1));
                             func.instruction(&Instruction::End);
                             block_terminated = true;
+                            }
                         }
                         "ret" => {
                             let ret_local =
