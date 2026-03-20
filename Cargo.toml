@@ -58,10 +58,22 @@ debug = 0
 [profile.dev.package.rustls-webpki]
 debug = 0
 
+[profile.dev.package.simdutf]
+debug = 0
+
 [profile.dev.package.tungstenite]
 debug = 0
 
+[profile.dev.package.unicode_names2]
+debug = 0
+
 [profile.dev.package.url]
+debug = 0
+
+[profile.dev.package.xz2]
+debug = 0
+
+[profile.dev.package.lzma-sys]
 debug = 0
 
 [profile.dev-fast]
@@ -113,10 +125,22 @@ debug = 0
 [profile.dev-fast.package.rustls-webpki]
 debug = 0
 
+[profile.dev-fast.package.simdutf]
+debug = 0
+
 [profile.dev-fast.package.tungstenite]
 debug = 0
 
+[profile.dev-fast.package.unicode_names2]
+debug = 0
+
 [profile.dev-fast.package.url]
+debug = 0
+
+[profile.dev-fast.package.xz2]
+debug = 0
+
+[profile.dev-fast.package.lzma-sys]
 debug = 0
 
 [profile.release-fast]
