@@ -19,6 +19,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, connect};
+use molt_runtime::vfs::snapshot::SnapshotHeader;
+use sha2::{Sha256, Digest};
 use url::Url;
 use wasmtime::{
     Cache, Caller, Config, Engine, Extern, ExternType, Func, FuncType, Linker, Memory, MemoryType,
@@ -790,9 +792,10 @@ fn ensure_locale_env(envs: &mut Vec<(String, String)>) {
     }
 }
 
-fn build_wasi_ctx() -> Result<WasiP1Ctx> {
+fn build_wasi_ctx(extra_envs: &[(String, String)]) -> Result<WasiP1Ctx> {
     let mut envs = env::vars().collect::<Vec<_>>();
     ensure_locale_env(&mut envs);
+    envs.extend(extra_envs.iter().cloned());
     let mut builder = WasiCtxBuilder::new();
     builder.inherit_stdio();
     builder.envs(&envs);
@@ -4343,16 +4346,176 @@ fn alloc_results(ty: &FuncType) -> Result<Vec<Val>> {
     Ok(results)
 }
 
+/// Compute the SHA-256 hash of a WASM module file for snapshot validation.
+fn compute_module_hash(path: &Path) -> Result<String> {
+    let bytes = std::fs::read(path)?;
+    let hash = Sha256::digest(&bytes);
+    Ok(format!("sha256:{:x}", hash))
+}
+
+/// Capture a snapshot of WASM linear memory after init completes.
+fn capture_snapshot(
+    store: &mut Store<HostState>,
+    instance: &wasmtime::Instance,
+    header: &SnapshotHeader,
+    output_path: &Path,
+) -> Result<()> {
+    // Get the memory export — try "molt_memory" first, then "memory"
+    let memory = instance
+        .get_memory(&mut *store, "molt_memory")
+        .or_else(|| instance.get_memory(&mut *store, "memory"))
+        .ok_or_else(|| anyhow::anyhow!("molt_memory export not found"))?;
+
+    // Read the entire linear memory
+    let data = memory.data(&store);
+    let memory_bytes = data.to_vec();
+
+    // Write header + blob
+    let header_json = serde_json::to_string_pretty(&header.to_json())?;
+    let mut file = std::fs::File::create(output_path)?;
+    // Write header length (4 bytes LE) + header JSON + memory blob
+    let header_bytes = header_json.as_bytes();
+    file.write_all(&(header_bytes.len() as u32).to_le_bytes())?;
+    file.write_all(header_bytes)?;
+    file.write_all(&memory_bytes)?;
+    debug_log(|| {
+        format!(
+            "snapshot captured: header={}B memory={}B -> {:?}",
+            header_bytes.len(),
+            memory_bytes.len(),
+            output_path
+        )
+    });
+    Ok(())
+}
+
+/// Restore a snapshot of WASM linear memory, skipping init if successful.
+fn restore_snapshot(
+    store: &mut Store<HostState>,
+    instance: &wasmtime::Instance,
+    snapshot_path: &Path,
+    expected_module_hash: &str,
+) -> Result<bool> {
+    if !snapshot_path.exists() {
+        return Ok(false);
+    }
+    let data = std::fs::read(snapshot_path)?;
+    if data.len() < 4 {
+        return Ok(false);
+    }
+    // Read header length
+    let header_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    if data.len() < 4 + header_len {
+        bail!("snapshot file truncated: expected at least {} bytes, got {}", 4 + header_len, data.len());
+    }
+    let header_json = std::str::from_utf8(&data[4..4 + header_len])?;
+    let header_value: serde_json::Value = serde_json::from_str(header_json)?;
+    let header = SnapshotHeader::from_json(&header_value)
+        .map_err(|e| anyhow::anyhow!("snapshot header parse error: {e}"))?;
+
+    // Validate
+    header
+        .validate_against(expected_module_hash, "0.1.0")
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    header
+        .verify_integrity()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Restore memory
+    let memory = instance
+        .get_memory(&mut *store, "molt_memory")
+        .or_else(|| instance.get_memory(&mut *store, "memory"))
+        .ok_or_else(|| anyhow::anyhow!("molt_memory export not found"))?;
+    let memory_blob = &data[4 + header_len..];
+    let mem_data = memory.data_mut(&mut *store);
+    if memory_blob.len() > mem_data.len() {
+        bail!(
+            "snapshot memory blob ({} bytes) exceeds linear memory ({} bytes)",
+            memory_blob.len(),
+            mem_data.len()
+        );
+    }
+    mem_data[..memory_blob.len()].copy_from_slice(memory_blob);
+
+    debug_log(|| {
+        format!(
+            "snapshot restored: header={}B memory={}B from {:?}",
+            header_len,
+            memory_blob.len(),
+            snapshot_path
+        )
+    });
+    Ok(true) // skip molt_main
+}
+
 fn main() -> Result<()> {
     debug_log(|| "starting".to_string());
     let mut args = env::args().skip(1);
-    let arg = match args.next() {
-        Some(flag) if flag == "-h" || flag == "--help" => {
-            eprintln!("usage: molt-wasm-host [output.wasm]");
-            return Ok(());
+    let mut bundle_path: Option<String> = None;
+    let mut vfs_tmp_quota: Option<u64> = None;
+    let mut snapshot_capture_path: Option<PathBuf> = None;
+    let mut snapshot_restore_path: Option<PathBuf> = None;
+    let mut positional: Option<String> = None;
+
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "-h" | "--help" => {
+                eprintln!(
+                    "usage: molt-wasm-host [--bundle <path>] [--vfs-tmp-quota <MB>] \
+                     [--snapshot-capture <path>] [--snapshot-restore <path>] [output.wasm]"
+                );
+                return Ok(());
+            }
+            "--bundle" => {
+                bundle_path = Some(
+                    args.next()
+                        .context("--bundle requires a path argument")?,
+                );
+            }
+            "--vfs-tmp-quota" => {
+                let val = args
+                    .next()
+                    .context("--vfs-tmp-quota requires a value in MB")?;
+                vfs_tmp_quota = Some(
+                    val.parse::<u64>()
+                        .context("--vfs-tmp-quota must be a positive integer (MB)")?,
+                );
+            }
+            "--snapshot-capture" => {
+                snapshot_capture_path = Some(PathBuf::from(
+                    args.next()
+                        .context("--snapshot-capture requires a path argument")?,
+                ));
+            }
+            "--snapshot-restore" => {
+                snapshot_restore_path = Some(PathBuf::from(
+                    args.next()
+                        .context("--snapshot-restore requires a path argument")?,
+                ));
+            }
+            _ => {
+                positional = Some(flag);
+                break;
+            }
         }
-        other => other,
-    };
+    }
+    let arg = positional;
+
+    // Build extra env vars for VFS configuration.
+    let mut vfs_envs: Vec<(String, String)> = Vec::new();
+    if let Some(ref bp) = bundle_path {
+        // Resolve to absolute so the WASM guest can find it via preopened dirs.
+        let abs = std::fs::canonicalize(bp)
+            .with_context(|| format!("--bundle path not found: {bp}"))?;
+        vfs_envs.push((
+            "MOLT_VFS_BUNDLE".to_string(),
+            abs.to_string_lossy().to_string(),
+        ));
+    }
+    vfs_envs.push((
+        "MOLT_VFS_TMP_QUOTA_MB".to_string(),
+        vfs_tmp_quota.unwrap_or(64).to_string(),
+    ));
 
     let wasm_path = resolve_wasm_path(arg)?;
     let linked_path = resolve_linked_path(&wasm_path);
@@ -4432,7 +4595,7 @@ fn main() -> Result<()> {
     let mut store = Store::new(
         &engine,
         HostState {
-            wasi: build_wasi_ctx()?,
+            wasi: build_wasi_ctx(&vfs_envs)?,
             memory: None,
             call_indirect: Arc::new(Mutex::new(HashMap::new())),
             db_worker: None,
@@ -4501,6 +4664,13 @@ fn main() -> Result<()> {
         linker.define(&mut store, "env", &name, func)?;
     }
 
+    // Compute module hash for snapshot validation.
+    let module_hash = if snapshot_capture_path.is_some() || snapshot_restore_path.is_some() {
+        Some(compute_module_hash(&main_path)?)
+    } else {
+        None
+    };
+
     if let Some(runtime_module) = runtime_module {
         debug_log(|| "instantiating runtime".to_string());
         let runtime_instance = linker
@@ -4525,13 +4695,49 @@ fn main() -> Result<()> {
         debug_log(|| "output module instantiated".to_string());
         register_call_indirect_exports(&mut store, &output_instance, &registry, &call_names)?;
         set_memory_from_exports(&mut store, &output_instance);
-        let main = output_instance
-            .get_func(&mut store, "molt_main")
-            .context("missing molt_main export")?;
-        debug_log(|| "calling molt_main".to_string());
-        let mut results = alloc_results(&main.ty(&store))?;
-        main.call(&mut store, &[], &mut results)?;
-        debug_log(|| "molt_main returned".to_string());
+
+        // Snapshot restore: if valid, skip molt_main.
+        let restored = if let Some(ref restore_path) = snapshot_restore_path {
+            restore_snapshot(
+                &mut store,
+                &output_instance,
+                restore_path,
+                module_hash.as_deref().unwrap(),
+            )?
+        } else {
+            false
+        };
+
+        if !restored {
+            let main = output_instance
+                .get_func(&mut store, "molt_main")
+                .context("missing molt_main export")?;
+            debug_log(|| "calling molt_main".to_string());
+            let mut results = alloc_results(&main.ty(&store))?;
+            main.call(&mut store, &[], &mut results)?;
+            debug_log(|| "molt_main returned".to_string());
+        } else {
+            debug_log(|| "molt_main skipped (restored from snapshot)".to_string());
+        }
+
+        // Snapshot capture: after molt_main returns (or after restore).
+        if let Some(ref capture_path) = snapshot_capture_path {
+            let memory = store.data().memory
+                .ok_or_else(|| anyhow::anyhow!("no linear memory available for snapshot"))?;
+            let mem_size = memory.data_size(&store) as u64;
+            let header = SnapshotHeader {
+                snapshot_version: 1,
+                abi_version: "0.1.0".into(),
+                target_profile: "wasm_host".into(),
+                module_hash: module_hash.as_deref().unwrap().to_string(),
+                mount_plan: Vec::new(),
+                capability_manifest: Vec::new(),
+                determinism_stamp: String::new(),
+                init_state_size: mem_size,
+                integrity_hash: None,
+            };
+            capture_snapshot(&mut store, &output_instance, &header, capture_path)?;
+        }
     } else {
         debug_log(|| "instantiating linked output".to_string());
         let output_instance = linker
@@ -4540,13 +4746,49 @@ fn main() -> Result<()> {
         debug_log(|| "linked output instantiated".to_string());
         register_call_indirect_exports(&mut store, &output_instance, &registry, &call_names)?;
         set_memory_from_exports(&mut store, &output_instance);
-        let main = output_instance
-            .get_func(&mut store, "molt_main")
-            .context("missing molt_main export")?;
-        debug_log(|| "calling molt_main".to_string());
-        let mut results = alloc_results(&main.ty(&store))?;
-        main.call(&mut store, &[], &mut results)?;
-        debug_log(|| "molt_main returned".to_string());
+
+        // Snapshot restore: if valid, skip molt_main.
+        let restored = if let Some(ref restore_path) = snapshot_restore_path {
+            restore_snapshot(
+                &mut store,
+                &output_instance,
+                restore_path,
+                module_hash.as_deref().unwrap(),
+            )?
+        } else {
+            false
+        };
+
+        if !restored {
+            let main = output_instance
+                .get_func(&mut store, "molt_main")
+                .context("missing molt_main export")?;
+            debug_log(|| "calling molt_main".to_string());
+            let mut results = alloc_results(&main.ty(&store))?;
+            main.call(&mut store, &[], &mut results)?;
+            debug_log(|| "molt_main returned".to_string());
+        } else {
+            debug_log(|| "molt_main skipped (restored from snapshot)".to_string());
+        }
+
+        // Snapshot capture: after molt_main returns (or after restore).
+        if let Some(ref capture_path) = snapshot_capture_path {
+            let memory = store.data().memory
+                .ok_or_else(|| anyhow::anyhow!("no linear memory available for snapshot"))?;
+            let mem_size = memory.data_size(&store) as u64;
+            let header = SnapshotHeader {
+                snapshot_version: 1,
+                abi_version: "0.1.0".into(),
+                target_profile: "wasm_host".into(),
+                module_hash: module_hash.as_deref().unwrap().to_string(),
+                mount_plan: Vec::new(),
+                capability_manifest: Vec::new(),
+                determinism_stamp: String::new(),
+                init_state_size: mem_size,
+                integrity_hash: None,
+            };
+            capture_snapshot(&mut store, &output_instance, &header, capture_path)?;
+        }
     }
 
     Ok(())
