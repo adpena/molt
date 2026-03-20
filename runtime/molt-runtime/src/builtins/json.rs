@@ -638,6 +638,7 @@ fn value_to_object(
     }
 }
 
+#[cfg(feature = "stdlib_serialization")]
 fn msgpack_value_to_object(
     _py: &PyToken<'_>,
     value: rmpv::Value,
@@ -744,6 +745,7 @@ fn msgpack_value_to_object(
     }
 }
 
+#[cfg(feature = "stdlib_serialization")]
 fn msgpack_key_to_object(_py: &PyToken<'_>, value: rmpv::Value) -> Result<MoltObject, i32> {
     match value {
         rmpv::Value::Nil => Ok(MoltObject::none()),
@@ -781,6 +783,7 @@ fn msgpack_key_to_object(_py: &PyToken<'_>, value: rmpv::Value) -> Result<MoltOb
     }
 }
 
+#[cfg(feature = "stdlib_serialization")]
 fn cbor_value_to_object(
     _py: &PyToken<'_>,
     value: serde_cbor::Value,
@@ -878,6 +881,7 @@ fn cbor_value_to_object(
     }
 }
 
+#[cfg(feature = "stdlib_serialization")]
 fn cbor_key_to_object(_py: &PyToken<'_>, value: serde_cbor::Value) -> Result<MoltObject, i32> {
     match value {
         serde_cbor::Value::Null => Ok(MoltObject::none()),
@@ -956,6 +960,7 @@ pub unsafe extern "C" fn molt_json_parse_scalar(
 
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
+#[cfg(feature = "stdlib_serialization")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_msgpack_parse_scalar(
     ptr: *const u8,
@@ -992,6 +997,7 @@ pub unsafe extern "C" fn molt_msgpack_parse_scalar(
 
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
+#[cfg(feature = "stdlib_serialization")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_cbor_parse_scalar(
     ptr: *const u8,
@@ -1053,6 +1059,7 @@ pub extern "C" fn molt_json_parse_scalar_obj(obj_bits: u64) -> u64 {
     })
 }
 
+#[cfg(feature = "stdlib_serialization")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_msgpack_parse_scalar_obj(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -1090,6 +1097,7 @@ pub extern "C" fn molt_msgpack_parse_scalar_obj(obj_bits: u64) -> u64 {
     })
 }
 
+#[cfg(feature = "stdlib_serialization")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cbor_parse_scalar_obj(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {

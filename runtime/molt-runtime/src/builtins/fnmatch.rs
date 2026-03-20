@@ -24,11 +24,17 @@ fn require_str(py: &PyToken<'_>, bits: u64, label: &str) -> Result<String, u64> 
 }
 
 /// Match a filename against a pattern (case-sensitive).
+#[cfg(feature = "stdlib_fs_extra")]
 fn fnmatch_impl(name: &str, pattern: &str) -> bool {
     match glob::Pattern::new(pattern) {
         Ok(pat) => pat.matches(name),
         Err(_) => false,
     }
+}
+
+#[cfg(not(feature = "stdlib_fs_extra"))]
+fn fnmatch_impl(_name: &str, _pattern: &str) -> bool {
+    false
 }
 
 /// Match case-insensitive (normalize both to lowercase).
