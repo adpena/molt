@@ -91,3 +91,11 @@ def test_runtime_manifest_uses_minimal_rustpython_parser_features() -> None:
 
     assert parser_dependency["default-features"] is False
     assert set(parser_dependency["features"]) == {"location", "num-bigint"}
+
+
+def test_runtime_manifest_declares_vfs_bundle_tar_feature() -> None:
+    runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
+    with runtime_manifest_path.open("rb") as handle:
+        runtime_manifest = tomllib.load(handle)
+
+    assert "vfs_bundle_tar" in runtime_manifest["features"]
