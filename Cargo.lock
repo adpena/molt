@@ -2207,7 +2207,6 @@ dependencies = [
  "cranelift-native",
  "cranelift-object",
  "egg",
- "serde",
  "serde_json",
  "wasm-encoder 0.245.1",
  "wasmparser 0.245.1",
