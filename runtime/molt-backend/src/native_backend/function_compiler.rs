@@ -1,6 +1,130 @@
 use super::*;
 
 #[cfg(feature = "native-backend")]
+struct FunctionPreanalysis {
+    has_ret: bool,
+    stateful: bool,
+    var_names: Vec<String>,
+    last_use: HashMap<String, usize>,
+    if_to_end_if: HashMap<usize, usize>,
+    else_to_end_if: HashMap<usize, usize>,
+    state_ids: Vec<i64>,
+    resume_states: HashSet<i64>,
+    function_exception_label_id: Option<i64>,
+}
+
+#[cfg(feature = "native-backend")]
+fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
+    let mut has_ret = false;
+    let mut stateful = false;
+    let mut var_names: HashSet<String> = HashSet::new();
+    let mut last_use = HashMap::new();
+    let mut if_to_end_if = HashMap::new();
+    let mut else_to_end_if = HashMap::new();
+    let mut if_stack: Vec<(usize, Option<usize>)> = Vec::new();
+    let mut state_ids = Vec::new();
+    let mut seen_state_ids: HashSet<i64> = HashSet::new();
+    let mut resume_states = HashSet::new();
+    let mut exception_label_ids = HashSet::new();
+    let mut label_positions = Vec::new();
+
+    for name in &func_ir.params {
+        if name != "none" {
+            var_names.insert(name.clone());
+        }
+    }
+
+    for (idx, op) in func_ir.ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "ret" | "ret_void" => has_ret = true,
+            "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
+            | "chan_recv_yield" => stateful = true,
+            _ => {}
+        }
+
+        if let Some(out) = &op.out
+            && out != "none"
+        {
+            var_names.insert(out.clone());
+            if op.kind == "const_str" || op.kind == "const_bytes" {
+                var_names.insert(format!("{}_ptr", out));
+                var_names.insert(format!("{}_len", out));
+            }
+        }
+        if let Some(var) = &op.var
+            && var != "none"
+        {
+            var_names.insert(var.clone());
+            last_use.insert(var.clone(), idx);
+        }
+        if let Some(args) = &op.args {
+            for name in args {
+                if name != "none" {
+                    var_names.insert(name.clone());
+                    last_use.insert(name.clone(), idx);
+                }
+            }
+        }
+
+        match op.kind.as_str() {
+            "if" => if_stack.push((idx, None)),
+            "else" => {
+                if let Some((_, else_idx)) = if_stack.last_mut() {
+                    *else_idx = Some(idx);
+                }
+            }
+            "end_if" => {
+                if let Some((if_idx, else_idx)) = if_stack.pop() {
+                    if_to_end_if.insert(if_idx, idx);
+                    if let Some(else_idx) = else_idx {
+                        else_to_end_if.insert(else_idx, idx);
+                    }
+                }
+            }
+            "state_transition" | "state_yield" | "chan_send_yield" | "chan_recv_yield"
+            | "label" | "state_label" => {
+                if let Some(state_id) = op.value {
+                    if seen_state_ids.insert(state_id) {
+                        state_ids.push(state_id);
+                    }
+                    if op.kind == "state_yield" || op.kind == "state_label" {
+                        resume_states.insert(state_id);
+                    }
+                    if matches!(op.kind.as_str(), "label" | "state_label") {
+                        label_positions.push((idx, state_id));
+                    }
+                }
+            }
+            "check_exception" => {
+                if let Some(label_id) = op.value {
+                    exception_label_ids.insert(label_id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut var_names: Vec<String> = var_names.into_iter().collect();
+    var_names.sort();
+    let function_exception_label_id = label_positions
+        .into_iter()
+        .rev()
+        .find_map(|(_, id)| exception_label_ids.contains(&id).then_some(id));
+
+    FunctionPreanalysis {
+        has_ret,
+        stateful,
+        var_names,
+        last_use,
+        if_to_end_if,
+        else_to_end_if,
+        state_ids,
+        resume_states,
+        function_exception_label_id,
+    }
+}
+
+#[cfg(feature = "native-backend")]
 impl SimpleBackend {
     pub(crate) fn compile_func(
         &mut self,
@@ -13,11 +137,18 @@ impl SimpleBackend {
     ) {
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
+        let FunctionPreanalysis {
+            has_ret,
+            stateful,
+            var_names,
+            last_use,
+            if_to_end_if,
+            else_to_end_if,
+            state_ids,
+            resume_states,
+            function_exception_label_id,
+        } = preanalyze_function_ir(&func_ir);
 
-        let has_ret = func_ir
-            .ops
-            .iter()
-            .any(|op| op.kind == "ret" || op.kind == "ret_void");
         if has_ret {
             self.ctx
                 .func
@@ -43,19 +174,7 @@ impl SimpleBackend {
             .collect();
         let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut builder_ctx);
 
-        let stateful = func_ir.ops.iter().any(|op| {
-            matches!(
-                op.kind.as_str(),
-                "state_switch"
-                    | "state_transition"
-                    | "state_yield"
-                    | "chan_send_yield"
-                    | "chan_recv_yield"
-            )
-        });
-
         let mut vars: HashMap<String, Variable> = HashMap::new();
-        let var_names = collect_var_names(&func_ir.params, &func_ir.ops);
         let param_name_set: HashSet<&str> = func_ir.params.iter().map(String::as_str).collect();
         for name in var_names.iter() {
             let var = builder.declare_var(types::I64);
@@ -75,7 +194,6 @@ impl SimpleBackend {
         let mut tracked_obj_vars = Vec::new();
         let mut entry_vars: HashMap<String, Value> = HashMap::new();
         let mut state_blocks = HashMap::new();
-        let mut resume_states: HashSet<i64> = HashSet::new();
         let mut reachable_blocks: HashSet<Block> = HashSet::new();
         // Cranelift SSA-variable correctness relies on sealing blocks once all predecessors
         // are known. Our IR uses structured control-flow; for `if` this means then/else
@@ -90,7 +208,6 @@ impl SimpleBackend {
         let mut loop_depth: i32 = 0;
         let mut block_tracked_obj: HashMap<Block, Vec<String>> = HashMap::new();
         let mut block_tracked_ptr: HashMap<Block, Vec<String>> = HashMap::new();
-        let last_use = compute_last_use(&func_ir.ops);
 
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
@@ -232,52 +349,14 @@ impl SimpleBackend {
         builder.seal_block(entry_block);
         sealed_blocks.insert(entry_block);
 
-        // 1. Pre-pass: discover states and create blocks
-        for op in &func_ir.ops {
-            let state_id = if op.kind == "state_transition"
-                || op.kind == "state_yield"
-                || op.kind == "chan_send_yield"
-                || op.kind == "chan_recv_yield"
-                || op.kind == "label"
-                || op.kind == "state_label"
-            {
-                op.value.unwrap()
-            } else {
-                continue;
-            };
+        for state_id in state_ids {
             state_blocks
                 .entry(state_id)
                 .or_insert_with(|| builder.create_block());
-            if op.kind == "state_yield" || op.kind == "state_label" {
-                resume_states.insert(state_id);
-            }
         }
-
-        let exception_label_ids: HashSet<i64> = func_ir
-            .ops
-            .iter()
-            .filter(|op| op.kind == "check_exception")
-            .filter_map(|op| op.value)
-            .collect();
-        let function_exception_label_id = func_ir
-            .ops
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, op)| {
-                if matches!(op.kind.as_str(), "label" | "state_label") {
-                    let id = op.value?;
-                    if exception_label_ids.contains(&id) {
-                        return Some((idx, id));
-                    }
-                }
-                None
-            })
-            .max_by_key(|(idx, _)| *idx)
-            .map(|(_, id)| id);
 
         // 2. Implementation
         let ops = &func_ir.ops;
-        let (if_to_end_if, else_to_end_if) = compute_if_end_maps(ops);
         let mut skip_ops: HashSet<usize> = HashSet::new();
         for op_idx in 0..ops.len() {
             if skip_ops.contains(&op_idx) {
@@ -12681,5 +12760,81 @@ impl SimpleBackend {
             }
         }
         self.module.clear_context(&mut self.ctx);
+    }
+}
+
+#[cfg(all(test, feature = "native-backend"))]
+mod tests {
+    use super::preanalyze_function_ir;
+    use crate::{FunctionIR, OpIR};
+
+    #[test]
+    fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
+        let func = FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec!["arg".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "const_str".to_string(),
+                    out: Some("msg".to_string()),
+                    s_value: Some("hi".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "if".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".to_string(),
+                    value: Some(42),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "else".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "end_if".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "state_yield".to_string(),
+                    value: Some(7),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "state_label".to_string(),
+                    value: Some(42),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "copy".to_string(),
+                    args: Some(vec!["msg".to_string()]),
+                    out: Some("out".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("out".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+        };
+
+        let analysis = preanalyze_function_ir(&func);
+
+        assert!(analysis.has_ret);
+        assert!(analysis.stateful);
+        assert_eq!(analysis.if_to_end_if.get(&1), Some(&4));
+        assert_eq!(analysis.else_to_end_if.get(&3), Some(&4));
+        assert_eq!(analysis.state_ids, vec![7, 42]);
+        assert!(analysis.resume_states.contains(&7));
+        assert!(analysis.resume_states.contains(&42));
+        assert_eq!(analysis.function_exception_label_id, Some(42));
+        assert!(analysis.var_names.contains(&"msg_ptr".to_string()));
+        assert!(analysis.var_names.contains(&"msg_len".to_string()));
+        assert_eq!(analysis.last_use.get("msg"), Some(&7));
+        assert_eq!(analysis.last_use.get("out"), Some(&8));
     }
 }
