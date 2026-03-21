@@ -6800,7 +6800,7 @@ static inline Py_ssize_t PySequence_Count(PyObject *s, PyObject *value) {
     molt_handle_decref(method);
     result = _molt_pyobject_from_result(out);
     if (result == NULL) return -1;
-    count = (Py_ssize_t)PyLong_AsSsize_t(result);
+    count = (Py_ssize_t)PyLong_AsLongLong(result);
     Py_DECREF(result);
     return count;
 }
@@ -6823,7 +6823,7 @@ static inline Py_ssize_t PySequence_Index(PyObject *s, PyObject *value) {
     molt_handle_decref(method);
     result = _molt_pyobject_from_result(out);
     if (result == NULL) return -1;
-    idx = (Py_ssize_t)PyLong_AsSsize_t(result);
+    idx = (Py_ssize_t)PyLong_AsLongLong(result);
     Py_DECREF(result);
     return idx;
 }
@@ -7080,7 +7080,7 @@ static inline Py_ssize_t PyUnicode_Find(PyObject *str, PyObject *substr,
     molt_handle_decref(method);
     result = _molt_pyobject_from_result(out);
     if (result == NULL) return -2;
-    idx = (Py_ssize_t)PyLong_AsSsize_t(result);
+    idx = (Py_ssize_t)PyLong_AsLongLong(result);
     Py_DECREF(result);
     return idx;
 }
@@ -7108,7 +7108,7 @@ static inline Py_ssize_t PyUnicode_Count(PyObject *str, PyObject *substr,
     molt_handle_decref(method);
     result = _molt_pyobject_from_result(out);
     if (result == NULL) return -1;
-    cnt = (Py_ssize_t)PyLong_AsSsize_t(result);
+    cnt = (Py_ssize_t)PyLong_AsLongLong(result);
     Py_DECREF(result);
     return cnt;
 }
@@ -7333,7 +7333,7 @@ static inline Py_ssize_t PyByteArray_Size(PyObject *o) {
 
 static inline int PyByteArray_Resize(PyObject *bytearray, Py_ssize_t len) {
     (void)bytearray; (void)len;
-    PyErr_SetString(PyExc_NotImplementedError, "PyByteArray_Resize not yet supported");
+    PyErr_SetString(PyExc_RuntimeError, "PyByteArray_Resize not yet supported");
     return -1;
 }
 
@@ -7572,6 +7572,16 @@ static inline int PyList_Insert(PyObject *list, Py_ssize_t index, PyObject *item
 
 #define PyMapping_Length PyMapping_Size
 
+static inline int PyMapping_Check(PyObject *o) {
+    MoltHandle method;
+    if (o == NULL) return 0;
+    method = molt_object_getattr_bytes(_molt_py_handle(o),
+        (const uint8_t *)"__getitem__", 11);
+    if (method == 0 || molt_err_pending() != 0) { molt_err_clear(); return 0; }
+    molt_handle_decref(method);
+    return 1;
+}
+
 static inline int PyMapping_HasKey(PyObject *o, PyObject *key) {
     if (o == NULL || key == NULL) return 0;
     return molt_object_contains(_molt_py_handle(o), _molt_py_handle(key));
@@ -7624,6 +7634,205 @@ static inline PyObject *PyMapping_Items(PyObject *o) {
     molt_handle_decref(args);
     molt_handle_decref(method);
     return _molt_pyobject_from_result(out);
+}
+
+/* ========================================================================
+ * Additional Number Protocol
+ * ======================================================================== */
+
+static inline int PyNumber_Check(PyObject *o) {
+    MoltHandle method;
+    if (o == NULL) return 0;
+    method = molt_object_getattr_bytes(_molt_py_handle(o),
+        (const uint8_t *)"__add__", 7);
+    if (method == 0 || molt_err_pending() != 0) { molt_err_clear(); return 0; }
+    molt_handle_decref(method);
+    return 1;
+}
+
+static inline PyObject *PyNumber_Matmul(PyObject *o1, PyObject *o2) {
+    return _molt_call_dunder_binary(o1, o2, "__matmul__");
+}
+
+#define PyNumber_MatrixMultiply PyNumber_Matmul
+
+static inline PyObject *PyNumber_InPlacePower(PyObject *o1, PyObject *o2,
+                                                PyObject *o3) {
+    (void)o3;
+    return _molt_call_dunder_binary(o1, o2, "__ipow__");
+}
+
+static inline PyObject *PyNumber_InPlaceMatmul(PyObject *o1, PyObject *o2) {
+    return _molt_call_dunder_binary(o1, o2, "__imatmul__");
+}
+
+#define PyNumber_InPlaceMatrixMultiply PyNumber_InPlaceMatmul
+
+static inline PyObject *PyNumber_Divmod(PyObject *o1, PyObject *o2) {
+    return _molt_call_dunder_binary(o1, o2, "__divmod__");
+}
+
+static inline Py_ssize_t PyNumber_AsSsize_t(PyObject *o, PyObject *exc) {
+    PyObject *idx;
+    Py_ssize_t result;
+    (void)exc;
+    if (o == NULL) return -1;
+    idx = PyNumber_Index(o);
+    if (idx == NULL) return -1;
+    result = (Py_ssize_t)PyLong_AsLongLong(idx);
+    Py_DECREF(idx);
+    return result;
+}
+
+/* ========================================================================
+ * Additional Object Protocol
+ * ======================================================================== */
+
+static inline int PyObject_Not(PyObject *o) {
+    int truth;
+    if (o == NULL) { PyErr_SetString(PyExc_TypeError, "NULL argument"); return -1; }
+    truth = molt_object_truthy(_molt_py_handle(o));
+    if (truth < 0) return -1;
+    return !truth;
+}
+
+/* ========================================================================
+ * Additional Dict
+ * ======================================================================== */
+
+static inline int PyDict_Clear(PyObject *p) {
+    MoltHandle method;
+    MoltHandle args;
+    if (p == NULL) { PyErr_SetString(PyExc_TypeError, "NULL argument"); return -1; }
+    method = molt_object_getattr_bytes(_molt_py_handle(p),
+        (const uint8_t *)"clear", 5);
+    if (method == 0 || molt_err_pending() != 0) return -1;
+    args = molt_tuple_from_array(NULL, 0);
+    molt_object_call(method, args, molt_none());
+    molt_handle_decref(args);
+    molt_handle_decref(method);
+    return molt_err_pending() != 0 ? -1 : 0;
+}
+
+static inline PyObject *PyDict_SetDefault(PyObject *p, PyObject *key,
+                                            PyObject *defaultobj) {
+    MoltHandle method;
+    MoltHandle call_args[2];
+    MoltHandle args;
+    MoltHandle out;
+    if (p == NULL || key == NULL) { PyErr_SetString(PyExc_TypeError, "NULL argument"); return NULL; }
+    method = molt_object_getattr_bytes(_molt_py_handle(p),
+        (const uint8_t *)"setdefault", 10);
+    if (method == 0 || molt_err_pending() != 0) return NULL;
+    call_args[0] = _molt_py_handle(key);
+    if (defaultobj != NULL) {
+        call_args[1] = _molt_py_handle(defaultobj);
+        args = molt_tuple_from_array(call_args, 2);
+    } else {
+        args = molt_tuple_from_array(call_args, 1);
+    }
+    out = molt_object_call(method, args, molt_none());
+    molt_handle_decref(args);
+    molt_handle_decref(method);
+    return _molt_pyobject_from_result(out);
+}
+
+/* ========================================================================
+ * Additional List
+ * ======================================================================== */
+
+static inline PyObject *PyList_AsTuple(PyObject *list) {
+    MoltHandle tuple_type = _molt_builtin_type_handle_cached("tuple");
+    MoltHandle arg = _molt_py_handle(list);
+    MoltHandle args = molt_tuple_from_array(&arg, 1);
+    MoltHandle out;
+    if (tuple_type == 0 || args == 0 || molt_err_pending() != 0) {
+        if (args != 0) molt_handle_decref(args);
+        return NULL;
+    }
+    out = molt_object_call(tuple_type, args, molt_none());
+    molt_handle_decref(args);
+    return _molt_pyobject_from_result(out);
+}
+
+/* ========================================================================
+ * Unicode interning
+ * ======================================================================== */
+
+static inline PyObject *PyUnicode_InternFromString(const char *v) {
+    if (v == NULL) { PyErr_SetString(PyExc_TypeError, "NULL argument"); return NULL; }
+    return _molt_pyobject_from_result(
+        molt_string_from((const uint8_t *)v, (uint64_t)strlen(v)));
+}
+
+static inline void PyUnicode_InternInPlace(PyObject **p) {
+    /* molt strings are already interned; no-op */
+    (void)p;
+}
+
+/* ========================================================================
+ * Additional memory helpers (aliases)
+ * ======================================================================== */
+
+/* ========================================================================
+ * Call convenience helpers
+ * ======================================================================== */
+
+static inline PyObject *PyObject_CallNoArgs(PyObject *callable) {
+    MoltHandle args = molt_tuple_from_array(NULL, 0);
+    MoltHandle out;
+    if (callable == NULL) { PyErr_SetString(PyExc_TypeError, "NULL callable"); return NULL; }
+    out = molt_object_call(_molt_py_handle(callable), args, molt_none());
+    molt_handle_decref(args);
+    return _molt_pyobject_from_result(out);
+}
+
+static inline PyObject *PyObject_CallOneArg(PyObject *callable, PyObject *arg) {
+    MoltHandle a = _molt_py_handle(arg);
+    MoltHandle args = molt_tuple_from_array(&a, 1);
+    MoltHandle out;
+    if (callable == NULL) { PyErr_SetString(PyExc_TypeError, "NULL callable"); return NULL; }
+    out = molt_object_call(_molt_py_handle(callable), args, molt_none());
+    molt_handle_decref(args);
+    return _molt_pyobject_from_result(out);
+}
+
+static inline PyObject *PyObject_CallMethodNoArgs(PyObject *obj, PyObject *name) {
+    PyObject *method = PyObject_GetAttr(obj, name);
+    PyObject *result;
+    if (method == NULL) return NULL;
+    result = PyObject_CallNoArgs(method);
+    Py_DECREF(method);
+    return result;
+}
+
+static inline PyObject *PyObject_CallMethodOneArg(PyObject *obj, PyObject *name,
+                                                    PyObject *arg) {
+    PyObject *method = PyObject_GetAttr(obj, name);
+    PyObject *result;
+    if (method == NULL) return NULL;
+    result = PyObject_CallOneArg(method, arg);
+    Py_DECREF(method);
+    return result;
+}
+
+/* ========================================================================
+ * Unicode macro aliases
+ * ======================================================================== */
+
+#define PyUnicode_GET_LENGTH(op) PyUnicode_GetLength((PyObject *)(op))
+#define PySequence_FAST_GET_SIZE(op) PySequence_Size((PyObject *)(op))
+
+/* ========================================================================
+ * Additional memory helpers (aliases)
+ * ======================================================================== */
+
+static inline void *PyObject_Calloc(size_t nelem, size_t elsize) {
+    return PyMem_Calloc(nelem, elsize);
+}
+
+static inline void *PyObject_Realloc(void *ptr, size_t new_size) {
+    return PyMem_Realloc(ptr, new_size);
 }
 
 #ifdef __cplusplus
