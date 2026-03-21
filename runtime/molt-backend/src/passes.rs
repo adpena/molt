@@ -877,7 +877,7 @@ pub(crate) fn escape_analysis(func_ir: &mut FunctionIR) {
 //
 // Scans all ops once and records the first `const` definition for each
 // variable name. This replaces any backward scan pattern (O(n) per lookup)
-// with a single O(n) build step + O(1) HashMap lookups.
+// with a single O(n) build step + O(log n) BTreeMap lookups.
 //
 // Only the first definition is stored, which is correct for SSA-like
 // variable naming where each name is defined exactly once.
