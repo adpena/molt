@@ -4,13 +4,39 @@ use crate::json_boundary::{
     optional_string_list, required_field, required_string, required_string_list,
 };
 use serde_json::Value as JsonValue;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+
+/// Per-branch PGO counter: how many times the true/false sides were taken.
+#[derive(Debug, Clone)]
+pub struct PgoBranchCount {
+    pub taken: u64,
+    pub not_taken: u64,
+}
+
+/// Per-function PGO counter: how many times it was called at runtime.
+#[derive(Debug, Clone)]
+pub struct PgoCallCount {
+    pub calls: u64,
+}
+
+/// Per-loop PGO counter: average and max iteration counts.
+#[derive(Debug, Clone)]
+pub struct PgoLoopCount {
+    pub avg_iterations: f64,
+    pub max_iterations: u64,
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct PgoProfileIR {
     pub version: Option<String>,
     pub hash: Option<String>,
     pub hot_functions: Vec<String>,
+    /// Branch counts keyed by "function_name:op_index" (e.g. "molt_main:42").
+    pub branch_counts: HashMap<String, PgoBranchCount>,
+    /// Call counts keyed by function name.
+    pub call_counts: HashMap<String, PgoCallCount>,
+    /// Loop iteration counts keyed by "function_name:op_index".
+    pub loop_counts: HashMap<String, PgoLoopCount>,
 }
 
 #[derive(Debug)]
@@ -46,14 +72,123 @@ pub struct OpIR {
     pub type_hint: Option<String>,
 }
 
+impl PgoBranchCount {
+    /// Returns the probability (0.0..=1.0) that the true branch is taken.
+    pub fn taken_ratio(&self) -> f64 {
+        let total = self.taken + self.not_taken;
+        if total == 0 {
+            0.5
+        } else {
+            self.taken as f64 / total as f64
+        }
+    }
+}
+
 impl PgoProfileIR {
     fn from_json_value(value: &JsonValue, ctx: &str) -> Result<Self, String> {
         let obj = expect_object(value, ctx)?;
+        let branch_counts = Self::parse_branch_counts(obj);
+        let call_counts = Self::parse_call_counts(obj);
+        let loop_counts = Self::parse_loop_counts(obj);
         Ok(Self {
             version: optional_string(obj, "version", ctx)?,
             hash: optional_string(obj, "hash", ctx)?,
             hot_functions: optional_string_list(obj, "hot_functions", ctx)?.unwrap_or_default(),
+            branch_counts,
+            call_counts,
+            loop_counts,
         })
+    }
+
+    fn parse_branch_counts(
+        obj: &serde_json::Map<String, JsonValue>,
+    ) -> HashMap<String, PgoBranchCount> {
+        let mut result = HashMap::new();
+        let Some(JsonValue::Object(branches)) = obj.get("branch_counts") else {
+            return result;
+        };
+        for (key, val) in branches {
+            let Some(entry) = val.as_object() else {
+                continue;
+            };
+            let taken = entry
+                .get("taken")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let not_taken = entry
+                .get("not_taken")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            result.insert(key.clone(), PgoBranchCount { taken, not_taken });
+        }
+        result
+    }
+
+    fn parse_call_counts(
+        obj: &serde_json::Map<String, JsonValue>,
+    ) -> HashMap<String, PgoCallCount> {
+        let mut result = HashMap::new();
+        let Some(JsonValue::Object(calls)) = obj.get("call_counts") else {
+            return result;
+        };
+        for (key, val) in calls {
+            let calls = if let Some(n) = val.as_u64() {
+                n
+            } else if let Some(entry) = val.as_object() {
+                entry.get("calls").and_then(|v| v.as_u64()).unwrap_or(0)
+            } else {
+                continue;
+            };
+            result.insert(key.clone(), PgoCallCount { calls });
+        }
+        result
+    }
+
+    fn parse_loop_counts(
+        obj: &serde_json::Map<String, JsonValue>,
+    ) -> HashMap<String, PgoLoopCount> {
+        let mut result = HashMap::new();
+        let Some(JsonValue::Object(loops)) = obj.get("loop_counts") else {
+            return result;
+        };
+        for (key, val) in loops {
+            let Some(entry) = val.as_object() else {
+                continue;
+            };
+            let avg_iterations = entry
+                .get("avg_iterations")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let max_iterations = entry
+                .get("max_iterations")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            result.insert(
+                key.clone(),
+                PgoLoopCount {
+                    avg_iterations,
+                    max_iterations,
+                },
+            );
+        }
+        result
+    }
+
+    /// Look up the branch count for a given function and op index.
+    pub fn get_branch_count(&self, func_name: &str, op_idx: usize) -> Option<&PgoBranchCount> {
+        let key = format!("{func_name}:{op_idx}");
+        self.branch_counts.get(&key)
+    }
+
+    /// Look up call count for a given function.
+    pub fn get_call_count(&self, func_name: &str) -> Option<u64> {
+        self.call_counts.get(func_name).map(|c| c.calls)
+    }
+
+    /// Look up loop iteration counts for a given function and op index.
+    pub fn get_loop_count(&self, func_name: &str, op_idx: usize) -> Option<&PgoLoopCount> {
+        let key = format!("{func_name}:{op_idx}");
+        self.loop_counts.get(&key)
     }
 }
 
@@ -306,5 +441,70 @@ mod json_parse_tests {
         let profile = ir.profile.expect("profile");
         assert_eq!(profile.version.as_deref(), Some("v1"));
         assert!(profile.hot_functions.is_empty());
+        assert!(profile.branch_counts.is_empty());
+        assert!(profile.call_counts.is_empty());
+        assert!(profile.loop_counts.is_empty());
+    }
+
+    #[test]
+    fn simple_ir_from_json_str_parses_pgo_branch_counts() {
+        let ir = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "molt_main",
+                        "params": [],
+                        "ops": [{"kind": "ret_void"}]
+                    }
+                ],
+                "profile": {
+                    "version": "v1",
+                    "branch_counts": {
+                        "molt_main:5": {"taken": 9900, "not_taken": 100},
+                        "molt_main:12": {"taken": 10, "not_taken": 990}
+                    },
+                    "call_counts": {
+                        "helper_func": 5000,
+                        "rare_func": {"calls": 2}
+                    },
+                    "loop_counts": {
+                        "molt_main:8": {"avg_iterations": 100.5, "max_iterations": 500}
+                    }
+                }
+            }"#,
+        )
+        .expect("ir parse");
+
+        let profile = ir.profile.expect("profile");
+
+        // Branch counts
+        assert_eq!(profile.branch_counts.len(), 2);
+        let bc = profile.get_branch_count("molt_main", 5).unwrap();
+        assert_eq!(bc.taken, 9900);
+        assert_eq!(bc.not_taken, 100);
+        assert!(bc.taken_ratio() > 0.98);
+        let bc2 = profile.get_branch_count("molt_main", 12).unwrap();
+        assert_eq!(bc2.taken, 10);
+        assert!(bc2.taken_ratio() < 0.02);
+
+        // Call counts
+        assert_eq!(profile.get_call_count("helper_func"), Some(5000));
+        assert_eq!(profile.get_call_count("rare_func"), Some(2));
+        assert_eq!(profile.get_call_count("nonexistent"), None);
+
+        // Loop counts
+        let lc = profile.get_loop_count("molt_main", 8).unwrap();
+        assert!((lc.avg_iterations - 100.5).abs() < 0.01);
+        assert_eq!(lc.max_iterations, 500);
+        assert!(profile.get_loop_count("molt_main", 99).is_none());
+    }
+
+    #[test]
+    fn pgo_branch_count_taken_ratio_handles_zero_total() {
+        let bc = super::PgoBranchCount {
+            taken: 0,
+            not_taken: 0,
+        };
+        assert!((bc.taken_ratio() - 0.5).abs() < 0.001);
     }
 }

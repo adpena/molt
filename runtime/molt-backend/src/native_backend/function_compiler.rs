@@ -205,6 +205,7 @@ impl SimpleBackend {
         defined_functions: &HashSet<String>,
         closure_functions: &HashSet<String>,
         emit_traces: bool,
+        pgo_profile: Option<&PgoProfileIR>,
     ) {
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
@@ -11489,6 +11490,24 @@ impl SimpleBackend {
                     builder
                         .ins()
                         .brif(cond_bool, then_block, &[], false_block, &[]);
+
+                    // PGO: mark the rarely-taken branch side as cold so Cranelift
+                    // can improve code layout and register allocation.
+                    if let Some(profile) = pgo_profile {
+                        if let Some(bc) = profile.get_branch_count(&func_ir.name, op_idx) {
+                            let ratio = bc.taken_ratio();
+                            // If the true branch is taken >=95% of the time,
+                            // mark the false side as cold.
+                            if ratio >= 0.95 {
+                                builder.set_cold_block(false_block);
+                            }
+                            // If the false branch is taken >=95% of the time,
+                            // mark the true side (then_block) as cold.
+                            if ratio <= 0.05 {
+                                builder.set_cold_block(then_block);
+                            }
+                        }
+                    }
 
                     // Seal blocks now that their predecessor sets are complete.
                     // Structured `if` creates exactly one predecessor for each of then/else.
