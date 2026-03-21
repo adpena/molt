@@ -1224,6 +1224,9 @@ impl WasmBackend {
             crate::escape_analysis(func_ir);
         }
         for func_ir in &mut ir.functions {
+            crate::rc_coalescing(func_ir);
+        }
+        for func_ir in &mut ir.functions {
             crate::fold_constants(&mut func_ir.ops);
         }
         crate::inline_functions(&mut ir);
