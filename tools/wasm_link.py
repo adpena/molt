@@ -1478,7 +1478,9 @@ def _build_call_graph(
                 break
             # No-immediate opcodes
             if op in (
-                0x00, 0x01, 0x05, 0x0B, 0x0F, 0x1A, 0x1B, 0xD1,
+                0x00, 0x01, 0x05, 0x0B, 0x0F, 0x1A, 0x1B,
+                0xD1,  # ref.is_null
+                0xD3,  # ref.as_non_null
             ):
                 pass
             # Block-type opcodes
@@ -1491,20 +1493,30 @@ def _build_call_graph(
                         pos += 1
                     pos += 1
             # Single-varuint opcodes
-            elif op in (0x0C, 0x0D, 0x20, 0x21, 0x22, 0x23, 0x24, 0x3F, 0x40, 0xD0):
+            elif op in (
+                0x0C, 0x0D,  # br, br_if
+                0x20, 0x21, 0x22, 0x23, 0x24,  # local/global ops
+                0x25, 0x26,  # table.get, table.set
+                0x3F, 0x40,  # memory.size, memory.grow
+                0xD0,  # ref.null (heaptype)
+                0xD4, 0xD5,  # br_on_null, br_on_non_null
+            ):
                 _, pos = _read_varuint(code_payload, pos)
             # br_table
             elif op == 0x0E:
                 n, pos = _read_varuint(code_payload, pos)
                 for _ in range(n + 1):
                     _, pos = _read_varuint(code_payload, pos)
-            # call
-            elif op == 0x10:
+            # call / return_call
+            elif op in (0x10, 0x12):
                 idx, pos = _read_varuint(code_payload, pos)
                 calls.add(idx)
-            # call_indirect
-            elif op == 0x11:
+            # call_indirect / return_call_indirect
+            elif op in (0x11, 0x13):
                 _, pos = _read_varuint(code_payload, pos)
+                _, pos = _read_varuint(code_payload, pos)
+            # call_ref / return_call_ref (type index immediate)
+            elif op in (0x14, 0x15):
                 _, pos = _read_varuint(code_payload, pos)
             # ref.func
             elif op == 0xD2:
