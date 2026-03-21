@@ -60,14 +60,14 @@ fn attr_site_name_cache() -> &'static Mutex<HashMap<u64, u64>> {
 }
 
 pub(crate) fn clear_attr_site_name_cache(_py: &PyToken<'_>) {
-    let mut cache = attr_site_name_cache().lock().unwrap();
+    let mut cache = attr_site_name_cache().lock().unwrap_or_else(|e| e.into_inner());
     for (_site, bits) in cache.drain() {
         if bits != 0 {
             dec_ref_bits(_py, bits);
         }
     }
     // Also clear the result IC cache.
-    let mut rc = attr_ic_result_cache().lock().unwrap();
+    let mut rc = attr_ic_result_cache().lock().unwrap_or_else(|e| e.into_inner());
     for (_site, entry) in rc.drain() {
         if entry.name_bits != 0 {
             dec_ref_bits(_py, entry.name_bits);
@@ -98,7 +98,7 @@ fn ic_site_from_bits(site_bits: u64) -> Option<u64> {
 
 unsafe fn attr_name_bits_for_site(_py: &PyToken<'_>, site_id: u64, slice: &[u8]) -> Option<u64> {
     unsafe {
-        let mut cache = attr_site_name_cache().lock().unwrap();
+        let mut cache = attr_site_name_cache().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(bits) = cache.get(&site_id).copied() {
             if let Some(ptr) = obj_from_bits(bits).as_ptr()
                 && object_type_id(ptr) == TYPE_ID_STRING
@@ -4684,7 +4684,7 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                     || type_id == TYPE_ID_TYPE
                 {
                     let current_version = global_type_version();
-                    let cache = attr_ic_result_cache().lock().unwrap();
+                    let cache = attr_ic_result_cache().lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(entry) = cache.get(&site_id) {
                         if entry.type_version == current_version
                             && entry.obj_type_id == type_id
@@ -4749,7 +4749,7 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                                     let current_version = global_type_version();
                                     inc_ref_bits(_py, name_bits);
                                     inc_ref_bits(_py, out);
-                                    let mut cache = attr_ic_result_cache().lock().unwrap();
+                                    let mut cache = attr_ic_result_cache().lock().unwrap_or_else(|e| e.into_inner());
                                     if let Some(old) = cache.insert(
                                         site_id,
                                         AttrICEntry {
