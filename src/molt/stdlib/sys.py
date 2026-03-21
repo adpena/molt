@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import _intrinsics as _stdlib_intrinsics
+from _intrinsics import load_intrinsic as _load_intrinsic
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
@@ -50,9 +51,23 @@ def _as_callable(value: object) -> Callable[..., object]:
     raise RuntimeError("intrinsic unavailable")
 
 
+def _noop_getframe(_depth: int = 0) -> object:
+    """Fallback for when molt_getframe intrinsic is unavailable (e.g. WASM/node)."""
+    return None
+
+
+def _noop_is_string_obj(val: object) -> bool:
+    """Fallback for when molt_is_string_obj intrinsic is unavailable (e.g. WASM/node)."""
+    return isinstance(val, str)
+
+
 # Define early to avoid circular-import NameError during stdlib bootstrap.
-_MOLT_GETFRAME = _as_callable(_require_intrinsic("molt_getframe"))
-_MOLT_IS_STRING_OBJ = _as_callable(_require_intrinsic("molt_is_string_obj"))
+# Use load_intrinsic (returns None on failure) with fallbacks so that WASM
+# builds don't crash when the lazy resolver hasn't wired these yet.
+_molt_getframe_raw = _load_intrinsic("molt_getframe")
+_MOLT_GETFRAME = _molt_getframe_raw if callable(_molt_getframe_raw) else _noop_getframe
+_molt_is_string_raw = _load_intrinsic("molt_is_string_obj")
+_MOLT_IS_STRING_OBJ = _molt_is_string_raw if callable(_molt_is_string_raw) else _noop_is_string_obj
 
 # Compiled runtimes are the host; avoid recursive sys -> importlib -> sys.
 
