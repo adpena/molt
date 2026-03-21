@@ -12920,7 +12920,23 @@ def _prepare_frontend_lowering_config(
                 warnings.append(
                     "Invalid MOLT_WASM_MODULE_CHUNK_OPS; using default of 2000."
                 )
-    module_chunking = is_wasm and module_chunk_max_ops > 0
+    # Also support module chunking for native builds via MOLT_MODULE_CHUNK_OPS.
+    # Large stdlib modules like _collections_abc have init functions that balloon
+    # to 23+ MB of native code when all class definitions are compiled into one
+    # monolithic function.  Chunking splits these into smaller callable pieces
+    # that are invoked eagerly and in order during module initialization, so all
+    # module-level names (including ABC) are fully defined before any downstream
+    # module tries to access them.
+    if not is_wasm:
+        env_native_chunk_ops = os.environ.get("MOLT_MODULE_CHUNK_OPS")
+        if env_native_chunk_ops:
+            try:
+                module_chunk_max_ops = max(0, int(env_native_chunk_ops))
+            except ValueError:
+                warnings.append(
+                    "Invalid MOLT_MODULE_CHUNK_OPS; using default."
+                )
+    module_chunking = module_chunk_max_ops > 0
     if target_triple:
         _ensure_rustup_target(target_triple, warnings)
 
