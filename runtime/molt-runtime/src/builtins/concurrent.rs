@@ -105,6 +105,14 @@ static FUTURE_REGISTRY: LazyLock<Mutex<HashMap<i64, SharedFuture>>> =
 // CPython's ThreadPoolExecutor model.
 
 fn worker_loop(receiver: Receiver<Option<WorkItem>>) {
+    struct _GilThreadGuard;
+    impl Drop for _GilThreadGuard {
+        fn drop(&mut self) {
+            crate::concurrency::unregister_gil_thread();
+        }
+    }
+    let _gtg = _GilThreadGuard;
+
     while let Ok(Some(item)) = receiver.recv() {
         // Mark running.
         {
@@ -198,6 +206,7 @@ pub extern "C" fn molt_concurrent_threadpool_new(max_workers_bits: u64) -> u64 {
         let mut handles = Vec::with_capacity(workers_capped);
         for _ in 0..workers_capped {
             let rx = receiver.clone();
+            crate::concurrency::register_gil_thread();
             let h = thread::spawn(move || worker_loop(rx));
             handles.push(h);
         }
