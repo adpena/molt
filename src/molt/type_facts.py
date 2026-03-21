@@ -233,6 +233,10 @@ def normalize_type_hint(value: str | None) -> str | None:
             if inner_lower in {"any", "object"}:
                 return "dict"
             return "dict"
+        if base == "final":
+            # typing.Final[X] -> resolve the inner type for constant propagation
+            resolved = normalize_type_hint(inner)
+            return resolved if resolved else "Any"
         text = base
     base = text.strip()
     base_lower = base.lower()
