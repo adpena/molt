@@ -14212,6 +14212,7 @@ pub extern "C" fn molt_trace_exit() -> u64 {
 /// `call` op, eliminating ~3 Cranelift blocks and ~12 function-declaration/import
 /// operations per call site.
 #[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn molt_guarded_call(
     fn_ptr: u64,
     args_ptr: *const u64,
