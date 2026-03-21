@@ -1215,6 +1215,9 @@ impl WasmBackend {
             crate::elide_dead_struct_allocs(func_ir);
         }
         for func_ir in &mut ir.functions {
+            crate::escape_analysis(func_ir);
+        }
+        for func_ir in &mut ir.functions {
             crate::fold_constants(&mut func_ir.ops);
         }
         crate::inline_functions(&mut ir);
