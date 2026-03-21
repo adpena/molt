@@ -91,6 +91,21 @@ def test_root_intrinsics_uses_runtime_lookup_helper() -> None:
     assert loader.require_intrinsic("molt_probe", None) is runtime_fn
 
 
+def test_stdlib_intrinsics_uses_builtins_runtime_lookup_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loader = _load_stdlib_intrinsics("_molt_test_intrinsics_builtins_runtime_helper")
+    runtime_fn = lambda: "runtime"  # noqa: E731
+
+    def _lookup(name: str):  # type: ignore[no-untyped-def]
+        if name == "molt_probe":
+            return runtime_fn
+        return None
+
+    monkeypatch.setattr(builtins, "_molt_intrinsic_lookup", _lookup, raising=False)
+    assert loader.require_intrinsic("molt_probe", None) is runtime_fn
+
+
 def test_stdlib_intrinsics_ignores_sys_modules_runtime_helper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
