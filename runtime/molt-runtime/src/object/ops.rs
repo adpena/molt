@@ -13850,6 +13850,53 @@ pub extern "C" fn molt_traceback_format_exception(
     })
 }
 
+/// `traceback.format_exc(limit=None)` — format the current exception as a single
+/// string.  Equivalent to `"".join(traceback.format_exception(*sys.exc_info()))`.
+/// Returns the formatted string, or `"NoneType: None\n"` if no exception is active.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_traceback_format_exc(limit_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let limit = match traceback_limit_from_bits(_py, limit_bits) {
+            Ok(limit) => limit,
+            Err(bits) => return bits,
+        };
+        let exc_bits_opt = exception_last_bits_noinc(_py);
+        let value_bits = match exc_bits_opt {
+            Some(bits) => bits,
+            None => {
+                // No current exception — return "NoneType: None\n"
+                let s = "NoneType: None\n";
+                let ptr = alloc_string(_py, s.as_bytes());
+                if ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(ptr).bits();
+            }
+        };
+        let exc_type_bits = traceback_exception_type_bits(_py, value_bits);
+        let tb_bits = traceback_exception_trace_bits(value_bits);
+        let mut seen: HashSet<u64> = HashSet::new();
+        let mut lines: Vec<String> = Vec::new();
+        traceback_append_exception_chain_lines(
+            _py,
+            exc_type_bits,
+            value_bits,
+            tb_bits,
+            limit,
+            true, // chain
+            &mut seen,
+            &mut lines,
+        );
+        // Join all lines into a single string
+        let joined = lines.join("");
+        let ptr = alloc_string(_py, joined.as_bytes());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_traceback_format_tb(tb_bits: u64, limit_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
