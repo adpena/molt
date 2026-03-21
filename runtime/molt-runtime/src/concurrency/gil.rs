@@ -6,9 +6,6 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Mutex, MutexGuard};
 
 #[cfg(not(target_arch = "wasm32"))]
-use super::GIL_THREAD_COUNT;
-
-#[cfg(not(target_arch = "wasm32"))]
 use crate::{GIL_DEPTH, runtime_state_for_gil};
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 use crate::{FunctionIR, OpIR, SimpleIR};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
@@ -483,10 +483,7 @@ struct BranchSnapshot {
     then_bools: Option<BTreeMap<String, bool>>,
 }
 
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
+#[allow(dead_code)]
 pub(crate) fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
     let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();
     let mut const_bools: BTreeMap<String, bool> = BTreeMap::new();
@@ -888,6 +885,7 @@ pub(crate) fn escape_analysis(func_ir: &mut FunctionIR) {
 
 /// Op kinds eligible for fast_int promotion when all operands are known-int.
 /// Split into two categories: ops that produce ints and ops that produce bools.
+#[allow(dead_code)]
 const FAST_INT_ARITH_OPS: &[&str] = &[
     "add",
     "sub",
@@ -918,9 +916,11 @@ const FAST_INT_ARITH_OPS: &[&str] = &[
 /// Comparison ops produce bool, not int; their outputs should not be treated
 /// as known-int for downstream propagation (though they benefit from fast_int
 /// for skipping tag checks on their *operands*).
+#[allow(dead_code)]
 const COMPARISON_OPS: &[&str] = &["lt", "le", "gt", "ge", "eq", "ne"];
 
 /// Op kinds that produce a known-int output regardless of inputs.
+#[allow(dead_code)]
 const INT_PRODUCING_OPS: &[&str] = &[
     "const",
     "const_bool",
@@ -933,6 +933,7 @@ const INT_PRODUCING_OPS: &[&str] = &[
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
+#[allow(dead_code)]
 pub(crate) fn propagate_loop_fast_int(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_LOOP_FAST_INT").is_ok() {
         return;
@@ -1266,4 +1267,72 @@ mod tests {
 
         assert_eq!(func.ops[3].fast_int, Some(true), "add with type_hint int operand should be fast_int");
     }
+}
+
+/// Identify pairs of `inc_ref`/`dec_ref` ops that cancel within a basic block.
+/// Returns: (set of op indices to skip, set of variable names whose dec_ref to skip).
+pub(crate) fn compute_rc_coalesce_skips(
+    ops: &[OpIR],
+    last_use: &BTreeMap<String, usize>,
+) -> (HashSet<usize>, HashSet<String>) {
+    const CONTROL_FLOW: &[&str] = &[
+        "if", "else", "end_if", "jump", "label", "state_transition",
+        "state_yield", "state_switch", "state_label", "exception_push",
+        "exception_pop", "chan_send_yield", "chan_recv_yield",
+    ];
+    let cf_set: HashSet<&str> = CONTROL_FLOW.iter().copied().collect();
+    let mut skip_ops: HashSet<usize> = HashSet::new();
+    let mut skip_dec_ref: HashSet<String> = HashSet::new();
+
+    for i in 0..ops.len() {
+        if skip_ops.contains(&i) { continue; }
+        let a = &ops[i];
+        let a_is_inc = matches!(a.kind.as_str(), "inc_ref" | "borrow");
+        let a_is_dec = matches!(a.kind.as_str(), "dec_ref" | "release");
+        if !a_is_inc && !a_is_dec { continue; }
+        let a_arg = match a.args.as_ref().and_then(|v| v.first()) {
+            Some(name) => name.clone(),
+            None => continue,
+        };
+        for j in (i + 1)..ops.len() {
+            let b = &ops[j];
+            if cf_set.contains(b.kind.as_str()) { break; }
+            let b_kind = b.kind.as_str();
+            let b_arg = b.args.as_ref().and_then(|v| v.first());
+            let is_match = if a_is_inc {
+                matches!(b_kind, "dec_ref" | "release")
+                    && b_arg.map(String::as_str) == Some(&a_arg)
+            } else {
+                matches!(b_kind, "inc_ref" | "borrow")
+                    && b_arg.map(String::as_str) == Some(&a_arg)
+            };
+            if is_match && !skip_ops.contains(&j) {
+                skip_ops.insert(i);
+                skip_ops.insert(j);
+                break;
+            }
+            let uses_var = b.args.as_ref()
+                .map(|args| args.iter().any(|n| n == &a_arg))
+                .unwrap_or(false)
+                || b.var.as_ref().map(|v| v == &a_arg).unwrap_or(false)
+                || b.out.as_ref().map(|o| o == &a_arg).unwrap_or(false);
+            if uses_var { break; }
+        }
+    }
+
+    for (idx, op) in ops.iter().enumerate() {
+        if skip_ops.contains(&idx) { continue; }
+        if !matches!(op.kind.as_str(), "inc_ref" | "borrow") { continue; }
+        let out_name = match op.out.as_deref() {
+            Some(name) if name != "none" => name,
+            _ => continue,
+        };
+        let last = last_use.get(out_name).copied().unwrap_or(idx);
+        if last <= idx {
+            skip_ops.insert(idx);
+            skip_dec_ref.insert(out_name.to_string());
+        }
+    }
+
+    (skip_ops, skip_dec_ref)
 }

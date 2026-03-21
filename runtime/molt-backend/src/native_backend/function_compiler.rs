@@ -222,7 +222,7 @@ impl SimpleBackend {
             function_exception_label_id,
             const_int_map: _const_int_map,
         } = preanalyze_function_ir(&func_ir);
-        let (rc_skip_inc, rc_skip_dec) = compute_rc_coalesce_skips(&func_ir.ops, &last_use);
+        let (rc_skip_inc, rc_skip_dec) = crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use);
 
         if has_ret {
             self.ctx
