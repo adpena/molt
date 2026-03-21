@@ -4124,6 +4124,10 @@ def _module_dependency_closure(
     return closure
 
 
+# ---------------------------------------------------------------------------
+# Dead module elimination
+# ---------------------------------------------------------------------------
+
 _DEAD_MODULE_ELIMINATION_SAFELIST: frozenset[str] = frozenset(
     {
         "builtins",
