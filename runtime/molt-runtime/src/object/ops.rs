@@ -39422,6 +39422,13 @@ pub extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut u64) ->
                     let target_type = object_type_id(target_ptr);
 
                     // ── LIST fast path (zero alloc) ──────────────
+                    // NOTE: If the list is mutated during iteration (e.g. list.append()
+                    // inside a for-loop), the backing Vec may reallocate, making
+                    // `seq_vec_ref`'s pointer stale.  This matches CPython's behaviour:
+                    // mutating a list while iterating is undefined / raises
+                    // RuntimeError only in some cases.  A proper fix would add a
+                    // version counter to the list layout (cf. CPython 3.12
+                    // ma_version_tag) and check it on each iter_next call.
                     if target_type == TYPE_ID_LIST {
                         let elems = seq_vec_ref(target_ptr);
                         if idx == ITER_EXHAUSTED || idx >= elems.len() {
@@ -39438,7 +39445,8 @@ pub extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut u64) ->
                     // ── TUPLE fast path (zero alloc) ─────────────
                     if target_type == TYPE_ID_TUPLE {
                         let elems = seq_vec_ref(target_ptr);
-                        if idx >= elems.len() {
+                        if idx == ITER_EXHAUSTED || idx >= elems.len() {
+                            iter_set_index(ptr, ITER_EXHAUSTED);
                             return done_true;
                         }
                         let val_bits = elems[idx];

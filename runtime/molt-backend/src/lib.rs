@@ -367,6 +367,22 @@ fn stable_ic_site_id(func_name: &str, op_idx: usize, lane: &str) -> i64 {
 
 #[cfg(feature = "native-backend")]
 fn unbox_int(builder: &mut FunctionBuilder, val: Value) -> Value {
+    // Debug-mode guard: verify the value actually carries the int tag before
+    // unboxing.  In release builds this is a no-op; in debug builds an illegal
+    // trap fires immediately if a non-int value reaches this path.
+    #[cfg(debug_assertions)]
+    {
+        let mask = builder.ins().iconst(types::I64, (QNAN | TAG_MASK) as i64);
+        let expected = builder.ins().iconst(types::I64, (QNAN | TAG_INT) as i64);
+        let masked = builder.ins().band(val, mask);
+        let is_int = builder
+            .ins()
+            .icmp(IntCC::Equal, masked, expected);
+        builder
+            .ins()
+            .trapz(is_int, cranelift_codegen::ir::TrapCode::user(0).unwrap());
+    }
+
     // The ishl by INT_SHIFT (17) shifts out the upper 17 tag bits (QNAN+TAG),
     // then sshr sign-extends the 47-bit payload. No separate band with INT_MASK
     // is needed — the shift pair implicitly strips the tag.
