@@ -2,8 +2,8 @@
 use cranelift_codegen::Context;
 #[cfg(feature = "native-backend")]
 use cranelift_codegen::ir::{
-    AbiParam, Block, BlockArg, FuncRef, Function, InstBuilder, MemFlags, StackSlotData,
-    StackSlotKind, Value, types,
+    AbiParam, AtomicRmwOp, Block, BlockArg, FuncRef, Function, InstBuilder, MemFlags,
+    StackSlotData, StackSlotKind, Value, types,
 };
 #[cfg(feature = "native-backend")]
 use cranelift_codegen::ir::condcodes::IntCC;
@@ -319,12 +319,11 @@ fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: 
 
 /// Returns `true` if inline RC codegen is enabled via `MOLT_INLINE_RC=1`.
 #[cfg(feature = "native-backend")]
-#[allow(dead_code)]
 fn inline_rc_enabled() -> bool {
-    // Disabled unconditionally: the inline RC path emits non-atomic
-    // load/store on a field the runtime treats as AtomicU32, which is UB.
-    // See Finding 2 of the Molt runtime UB analysis.
-    false
+    // Re-enabled: the inline RC path now uses atomic_rmw (AtomicRmwOp::Add)
+    // instead of non-atomic load/iadd/store, which is correct for the
+    // AtomicU32 refcount field.
+    true
 }
 
 /// Emit an inlined `inc_ref_obj` as Cranelift IR instead of a function call.
@@ -339,7 +338,6 @@ fn inline_rc_enabled() -> bool {
 ///         *(ptr - 36) = rc + 1
 /// ```
 #[cfg(feature = "native-backend")]
-#[allow(dead_code)] // Kept for reference; see Finding 2 — inline RC is unsound.
 fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value) {
     let current_block = builder.current_block().expect("no current block");
 
@@ -378,19 +376,16 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value) {
         .ins()
         .brif(is_mortal, do_inc_block, &[], merge_block, &[]);
 
-    // 3. Increment refcount: load u32, add 1, store back
+    // 3. Increment refcount atomically using atomic_rmw (Add)
     builder.switch_to_block(do_inc_block);
-    let rc = builder.ins().load(
-        types::I32,
-        MemFlags::trusted(),
-        raw_ptr,
-        HEADER_REFCOUNT_OFFSET,
-    );
+    let rc_offset = builder
+        .ins()
+        .iconst(types::I64, HEADER_REFCOUNT_OFFSET as i64);
+    let rc_addr = builder.ins().iadd(raw_ptr, rc_offset);
     let one_i32 = builder.ins().iconst(types::I32, 1);
-    let new_rc = builder.ins().iadd(rc, one_i32);
     builder
         .ins()
-        .store(MemFlags::trusted(), new_rc, raw_ptr, HEADER_REFCOUNT_OFFSET);
+        .atomic_rmw(types::I32, MemFlags::trusted(), AtomicRmwOp::Add, rc_addr, one_i32);
     builder.ins().jump(merge_block, &[]);
 
     // 4. Merge — continue in the merge block
@@ -410,18 +405,22 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value) {
 /// the `MOLT_INLINE_RC` flag.
 #[cfg(feature = "native-backend")]
 fn emit_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef) {
-    // Always use the function-call path; the inline RC path is unsound
-    // (non-atomic RMW on AtomicU32).  See Finding 2.
-    builder.ins().call(call_ref, &[val]);
+    if inline_rc_enabled() {
+        emit_inline_inc_ref_obj(builder, val);
+    } else {
+        builder.ins().call(call_ref, &[val]);
+    }
 }
 
 /// Emit a ref-adjust (inc_ref_obj) — either inlined or as a function call
 /// depending on the `MOLT_INLINE_RC` flag.
 #[cfg(feature = "native-backend")]
 fn emit_maybe_ref_adjust_v2(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef) {
-    // Always use the function-call path; the inline RC path is unsound
-    // (non-atomic RMW on AtomicU32).  See Finding 2.
-    let _ = builder.ins().call(call_ref, &[val]);
+    if inline_rc_enabled() {
+        emit_inline_inc_ref_obj(builder, val);
+    } else {
+        let _ = builder.ins().call(call_ref, &[val]);
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
@@ -1409,11 +1408,12 @@ impl SimpleBackend {
     pub fn new_with_target(target: Option<&str>) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("is_pic", "true").unwrap();
-        // Cranelift speed optimizations cause heap corruption in generated
-        // code for large modules (5000+ lines). Use "none" until the root
-        // cause is identified and fixed upstream.
+        // Root causes of heap corruption with opt_level="speed" have been
+        // fixed: mutable reference aliasing in dec_ref_ptr, black_box fix
+        // in attr.rs for stale cached values, and _normalize_tk_option_value
+        // type checking. Re-enabled "speed" as default.
         let cranelift_opt = env_setting("MOLT_BACKEND_CRANELIFT_OPT")
-            .unwrap_or_else(|| "none".to_string());
+            .unwrap_or_else(|| "speed".to_string());
         flag_builder.set("opt_level", &cranelift_opt).unwrap();
         // Force single_pass regalloc: backtracking produces incorrect code
         // for large modules (heap corruption / use-after-free in generated code).
