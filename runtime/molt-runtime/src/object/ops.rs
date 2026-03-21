@@ -39272,55 +39272,124 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
     })
 }
 
-/// Unboxed iteration primitive: advances the iterator and writes the yielded
-/// value directly to `*value_out` instead of allocating a `(value, done)` tuple.
+/// Advance an iterator without allocating a `(value, done)` tuple.
 ///
-/// Returns a MoltObject bool: `True` when exhausted, `False` when a value was
-/// produced (written to `*value_out`).  Returns `None` (null bits) when an
-/// exception is pending.
+/// Writes the next value to `*value_out` and returns `false`-bits when a
+/// value is available, or `true`-bits when the iterator is exhausted.
+/// Returns `None` bits when an exception is pending.
 ///
-/// The native backend emits this in place of the
-/// `molt_iter_next` + `molt_index(pair,1)` + `molt_index(pair,0)` sequence,
-/// eliminating two `molt_index` dispatch calls and the intermediate tuple
-/// allocation per loop iteration.
+/// Fast-paths list, tuple, and i64-range iterators with zero allocation.
+/// Everything else falls back to `molt_iter_next` + destructure.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let pair_bits = molt_iter_next(iter_bits);
-        if exception_pending(_py) {
-            // If molt_iter_next produced an owned pair before the
-            // exception was detected, drop it to avoid a leak.
-            if !obj_from_bits(pair_bits).is_none() {
-                dec_ref_bits(_py, pair_bits);
-            }
+        let done_true = MoltObject::from_bool(true).bits();
+        let done_false = MoltObject::from_bool(false).bits();
+
+        let Some(ptr) = maybe_ptr_from_bits(iter_bits) else {
             return MoltObject::none().bits();
-        }
-        let pair_obj = obj_from_bits(pair_bits);
-        let Some(pair_ptr) = pair_obj.as_ptr() else {
-            // None result with no exception – treat as exhausted.
-            return MoltObject::from_bool(true).bits();
         };
+
         unsafe {
+            // Fast paths for TYPE_ID_ITER wrapping list/tuple/range.
+            // Generators, enumerate, map, filter, zip, reversed, etc.
+            // go through the slow path below.
+            if object_type_id(ptr) == TYPE_ID_ITER {
+                let target_bits = iter_target_bits(ptr);
+                let target_obj = obj_from_bits(target_bits);
+                let idx = iter_index(ptr);
+
+                if let Some(target_ptr) = target_obj.as_ptr() {
+                    let target_type = object_type_id(target_ptr);
+
+                    // ── LIST fast path (zero alloc) ──────────────
+                    if target_type == TYPE_ID_LIST {
+                        let elems = seq_vec_ref(target_ptr);
+                        if idx == ITER_EXHAUSTED || idx >= elems.len() {
+                            iter_set_index(ptr, ITER_EXHAUSTED);
+                            return done_true;
+                        }
+                        let val_bits = elems[idx];
+                        inc_ref_bits(_py, val_bits);
+                        *value_out = val_bits;
+                        iter_set_index(ptr, idx + 1);
+                        return done_false;
+                    }
+
+                    // ── TUPLE fast path (zero alloc) ─────────────
+                    if target_type == TYPE_ID_TUPLE {
+                        let elems = seq_vec_ref(target_ptr);
+                        if idx >= elems.len() {
+                            return done_true;
+                        }
+                        let val_bits = elems[idx];
+                        inc_ref_bits(_py, val_bits);
+                        *value_out = val_bits;
+                        iter_set_index(ptr, idx + 1);
+                        return done_false;
+                    }
+
+                    // ── RANGE i64 fast path (zero alloc) ─────────
+                    if target_type == TYPE_ID_RANGE {
+                        if let Some((start_i64, stop_i64, step_i64)) =
+                            range_components_i64(target_ptr)
+                        {
+                            if idx == ITER_EXHAUSTED {
+                                return done_true;
+                            }
+                            if let Some(value) = range_value_at_index_i64(
+                                start_i64, stop_i64, step_i64, idx as i128,
+                            ) {
+                                let val_bits = MoltObject::from_int(value).bits();
+                                *value_out = val_bits;
+                                let next_idx =
+                                    idx.checked_add(1).unwrap_or(ITER_EXHAUSTED);
+                                iter_set_index(ptr, next_idx);
+                                return done_false;
+                            }
+                            let len = range_len_i128(start_i64, stop_i64, step_i64);
+                            let len_usize =
+                                usize::try_from(len).unwrap_or(ITER_EXHAUSTED);
+                            iter_set_index(ptr, len_usize);
+                            return done_true;
+                        }
+                        // BigInt range — fall through to slow path.
+                    }
+                }
+            }
+
+            // ── Slow path: delegate to molt_iter_next ─────────────
+            let pair_bits = molt_iter_next(iter_bits);
+            if exception_pending(_py) {
+                if !obj_from_bits(pair_bits).is_none() {
+                    dec_ref_bits(_py, pair_bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let pair_obj = obj_from_bits(pair_bits);
+            let Some(pair_ptr) = pair_obj.as_ptr() else {
+                return done_true;
+            };
             if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
                 dec_ref_bits(_py, pair_bits);
-                return MoltObject::from_bool(true).bits();
+                return done_true;
             }
             let elems = seq_vec_ref(pair_ptr);
             if elems.len() < 2 {
                 dec_ref_bits(_py, pair_bits);
-                return MoltObject::from_bool(true).bits();
+                return done_true;
             }
             let val_bits = elems[0];
-            let done_bits = elems[1];
-            let done = is_truthy(_py, obj_from_bits(done_bits));
-            // Drop the intermediate tuple – the caller only needs val_bits.
-            dec_ref_bits(_py, pair_bits);
-            if done {
-                return MoltObject::from_bool(true).bits();
+            let exhausted_bits = elems[1];
+            if is_truthy(_py, obj_from_bits(exhausted_bits)) {
+                dec_ref_bits(_py, pair_bits);
+                return done_true;
             }
-            // Write the value to the caller-provided output slot.
-            std::ptr::write(value_out, val_bits);
-            MoltObject::from_bool(false).bits()
+            // Transfer ownership: inc_ref value, drop wrapper tuple.
+            inc_ref_bits(_py, val_bits);
+            *value_out = val_bits;
+            dec_ref_bits(_py, pair_bits);
+            done_false
         }
     })
 }
