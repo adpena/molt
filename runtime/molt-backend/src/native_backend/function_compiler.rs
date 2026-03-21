@@ -1369,7 +1369,15 @@ impl SimpleBackend {
                         builder.seal_block(fast_block);
                         let diff = builder.ins().isub(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, diff);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
+                        let fits_inline = int_value_fits_inline(&mut builder, diff);
+                        brif_block(
+                            &mut builder,
+                            fits_inline,
+                            merge_block,
+                            &[fast_res],
+                            slow_block,
+                            &[],
+                        );
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
