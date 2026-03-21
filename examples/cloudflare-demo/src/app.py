@@ -14,8 +14,8 @@ def is_prime(n):
         i += 6
     return True
 
-def count_primes(limit):
-    return sum(1 for n in range(2, limit + 1) if is_prime(n))
+def primes_up_to(limit):
+    return [n for n in range(2, limit + 1) if is_prime(n)]
 
 def diamond(size=9):
     lines = []
@@ -67,8 +67,7 @@ def mandelbrot_render(width: int = 100, height: int = 40) -> str:
 
 def sort_data(data_str):
     nums = [int(x.strip()) for x in data_str.split(",") if x.strip()]
-    nums.sort()
-    return ", ".join(str(n) for n in nums)
+    return nums
 
 def fizzbuzz(n):
     lines = []
@@ -91,6 +90,25 @@ def safe_int(s, default, lo=0, hi=1000000):
         return hi
     return v
 
+def fmt_big(n):
+    """Format a large number with commas."""
+    s = str(n)
+    if len(s) <= 3:
+        return s
+    parts = []
+    while len(s) > 3:
+        parts.append(s[-3:])
+        s = s[:-3]
+    parts.append(s)
+    parts.reverse()
+    return ",".join(parts)
+
+def truncate_num(s, digits=50):
+    """Truncate a number string representation."""
+    if len(s) <= digits:
+        return s
+    return s[:digits] + "... (" + fmt_big(len(s)) + " digits)"
+
 import sys
 path = sys.argv[1] if len(sys.argv) > 1 else "/"
 query = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -108,11 +126,37 @@ route = parts[0] if parts else ""
 
 if route == "fib":
     n = safe_int(parts[1] if len(parts) > 1 else "", 100, 0, 10000)
-    print("fib(" + str(n) + ") = " + str(fibonacci(n)))
+    result = fibonacci(n)
+    result_str = str(result)
+    print("Fibonacci")
+    print("=" * 40)
+    print("")
+    print("  n      = " + str(n))
+    print("  fib(n) = " + truncate_num(result_str))
+    if len(result_str) > 1:
+        print("  digits = " + fmt_big(len(result_str)))
+    print("")
+    print("Compiled Python on Cloudflare Workers")
 
 elif route == "primes":
     limit = safe_int(parts[1] if len(parts) > 1 else "", 10000, 2, 100000)
-    print("Primes up to " + str(limit) + ": " + str(count_primes(limit)))
+    found = primes_up_to(limit)
+    count = len(found)
+    print("Prime Numbers")
+    print("=" * 40)
+    print("")
+    print("  range  = 2 to " + fmt_big(limit))
+    print("  count  = " + fmt_big(count))
+    print("")
+    if count <= 20:
+        print("  primes = " + ", ".join(str(p) for p in found))
+    else:
+        first5 = ", ".join(str(p) for p in found[:5])
+        last5 = ", ".join(str(p) for p in found[-5:])
+        print("  first  = " + first5)
+        print("  last   = " + last5)
+    print("")
+    print("Compiled Python on Cloudflare Workers")
 
 elif route == "diamond":
     n = safe_int(parts[1] if len(parts) > 1 else "", 21, 3, 99)
@@ -121,11 +165,28 @@ elif route == "diamond":
 elif route == "mandelbrot":
     w = safe_int(params.get("width", ""), 100, 10, 200)
     h = safe_int(params.get("height", ""), 40, 5, 80)
+    print("Mandelbrot Set")
+    print("=" * w)
+    print("x: [-2.0, 1.0]  y: [-1.1, 1.1]  max_iter: 30")
+    print("resolution: " + str(w) + "x" + str(h) + "  charset: .+*#@")
+    print("")
     print(mandelbrot_render(w, h))
+    print("")
+    print("Compiled Python -> WASM | molt on Cloudflare Workers")
 
 elif route == "sort":
-    data = params.get("data", "5,3,8,1,9,2,7,4,6")
-    print("Sorted: " + sort_data(data))
+    data = params.get("data", "42,17,93,8,55,3,71,29,64,11")
+    nums = sort_data(data)
+    original = list(nums)
+    nums.sort()
+    print("Sort")
+    print("=" * 40)
+    print("")
+    print("  before = [" + ", ".join(str(n) for n in original) + "]")
+    print("  after  = [" + ", ".join(str(n) for n in nums) + "]")
+    print("  count  = " + str(len(nums)) + " elements")
+    print("")
+    print("Compiled Python on Cloudflare Workers")
 
 elif route == "fizzbuzz":
     n = safe_int(parts[1] if len(parts) > 1 else "", 100, 1, 10000)
@@ -136,24 +197,78 @@ elif route == "pi":
     total = 0.0
     for i in range(n):
         total += ((-1.0) ** i) / (2.0 * i + 1.0)
-    print("pi ≈ " + str(total * 4.0) + " (" + str(n) + " terms)")
+    approx = total * 4.0
+    actual = 3.14159265358979323846
+    error = approx - actual
+    if error < 0.0:
+        error = -error
+    print("Pi Approximation (Leibniz Series)")
+    print("=" * 40)
+    print("")
+    print("  terms    = " + fmt_big(n))
+    print("  pi       ~= " + str(approx))
+    print("  actual   = 3.14159265358979323846")
+    print("  error    = " + str(error))
+    print("")
+    print("Compiled Python on Cloudflare Workers")
+
+elif route == "bench":
+    print("Benchmark Suite")
+    print("=" * 50)
+    print("")
+    print("Running fib(1000) + primes(10000) + mandelbrot(80x30)")
+    print("")
+
+    # fib
+    fib_result = fibonacci(1000)
+    fib_digits = len(str(fib_result))
+    print("  [1/3] fib(1000)         = " + str(fib_digits) + " digits   OK")
+
+    # primes
+    prime_list = primes_up_to(10000)
+    prime_count = len(prime_list)
+    print("  [2/3] primes(10000)     = " + str(prime_count) + " primes   OK")
+
+    # mandelbrot
+    mb = mandelbrot_render(80, 30)
+    mb_chars = len(mb)
+    print("  [3/3] mandelbrot(80x30) = " + str(mb_chars) + " chars    OK")
+
+    print("")
+    print("All benchmarks completed.")
+    print("Total time is in the x-molt-elapsed-ms response header.")
+    print("")
+    print("Note: This is compiled Python, not interpreted.")
+    print("Binary size: 2.9 MB gzip. Runs on Cloudflare free tier.")
 
 else:
-    print("Molt Python on Cloudflare Workers")
-    print("==================================")
+    print("         __  __       _ _")
+    print("        |  \\/  | ___ | | |_")
+    print("        | |\\/| |/ _ \\| | __|")
+    print("        | |  | | (_) | | |_")
+    print("        |_|  |_|\\___/|_|\\__|")
     print("")
-    print("Compiled Python -> WASM, running at the edge.")
-    print("Sub-millisecond execution. 2.8 MB binary.")
+    print("  Python compiled to WASM, running at the edge.")
     print("")
-    print("Try these endpoints with curl:")
+    print("=" * 52)
+    print("  Not interpreted. Not transpiled. Compiled.")
+    print("  Binary: 2.9 MB gzip | Platform: Cloudflare Workers")
+    print("=" * 52)
     print("")
-    print("  curl .../fib/50          Fibonacci numbers")
-    print("  curl .../primes/10000    Count primes")
-    print("  curl .../mandelbrot      ASCII Mandelbrot set")
-    print("  curl .../diamond/11      ASCII diamond pattern")
-    print("  curl .../sort?data=5,3,1 Sort numbers")
-    print("  curl .../fizzbuzz/100    FizzBuzz")
-    print("  curl .../pi/1000000      Compute pi (Leibniz)")
+    print("  Endpoints:")
     print("")
-    print("Runtime: molt (compiled Python -> WASM)")
-    print("Platform: Cloudflare Workers (free tier)")
+    print("    /fib/N            Fibonacci numbers (N up to 10000)")
+    print("    /primes/N         Find primes up to N (max 100000)")
+    print("    /mandelbrot       ASCII Mandelbrot set")
+    print("    /diamond/N        ASCII diamond pattern")
+    print("    /sort?data=5,3,1  Sort a list of numbers")
+    print("    /fizzbuzz/N       Classic FizzBuzz")
+    print("    /pi/N             Approximate pi (Leibniz, N terms)")
+    print("    /bench            Run benchmark suite")
+    print("")
+    print("  Example:")
+    print("    curl https://molt-python-demo.pena-ch.workers.dev/fib/100")
+    print("    curl https://molt-python-demo.pena-ch.workers.dev/mandelbrot")
+    print("    curl https://molt-python-demo.pena-ch.workers.dev/bench")
+    print("")
+    print("  Source: github.com/pena-ch/molt")

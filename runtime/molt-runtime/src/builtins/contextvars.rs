@@ -99,7 +99,9 @@ pub extern "C" fn molt_contextvars_new_var(name_bits: u64, default_bits: u64) ->
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextvars_get(var_bits: u64) -> u64 {
     crate::with_gil_entry!(py, {
-        let handle = to_i64(obj_from_bits(var_bits)).unwrap_or(0);
+        let Some(handle) = to_i64(obj_from_bits(var_bits)) else {
+            return raise_exception::<u64>(py, "TypeError", "ContextVar handle must be an integer");
+        };
 
         // Look up in the top context frame.
         let found = CONTEXT_FRAMES.with(|frames| {
@@ -133,7 +135,9 @@ pub extern "C" fn molt_contextvars_get(var_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextvars_set(var_bits: u64, value_bits: u64) -> u64 {
     crate::with_gil_entry!(py, {
-        let handle = to_i64(obj_from_bits(var_bits)).unwrap_or(0);
+        let Some(handle) = to_i64(obj_from_bits(var_bits)) else {
+            return raise_exception::<u64>(py, "TypeError", "ContextVar handle must be an integer");
+        };
 
         // Capture old value for the token.
         let old_bits = CONTEXT_FRAMES.with(|frames| {
@@ -179,14 +183,23 @@ pub extern "C" fn molt_contextvars_set(var_bits: u64, value_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextvars_reset(var_bits: u64, token_bits: u64) -> u64 {
     crate::with_gil_entry!(py, {
-        let _var_handle = to_i64(obj_from_bits(var_bits)).unwrap_or(0);
-        let token_handle = to_i64(obj_from_bits(token_bits)).unwrap_or(0);
+        let Some(caller_var) = to_i64(obj_from_bits(var_bits)) else {
+            return raise_exception::<u64>(py, "TypeError", "ContextVar handle must be an integer");
+        };
+        let Some(token_handle) = to_i64(obj_from_bits(token_bits)) else {
+            return raise_exception::<u64>(py, "TypeError", "ContextVar handle must be an integer");
+        };
 
         let entry = TOKEN_REGISTRY.with(|r| r.borrow().get(&token_handle).copied());
 
         let Some((var_handle, old_bits, used)) = entry else {
             return raise_exception::<u64>(py, "ValueError", "Token is invalid");
         };
+
+        if caller_var != var_handle {
+            return raise_exception::<u64>(py, "ValueError",
+                "Token was created by a different ContextVar");
+        }
 
         if used {
             return raise_exception::<u64>(py, "RuntimeError", "Token has already been used");
