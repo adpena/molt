@@ -35,6 +35,67 @@ struct AttrNameCacheEntry {
     bits: u64,
 }
 
+/// Direct-mapped cache with 16 slots for attribute name -> string bits.
+/// Keyed by a simple hash of the byte slice.  This replaces the previous
+/// single-entry cache that thrashed on every alternating attribute name
+/// (e.g. `__iter__` / `__next__` in a for-loop body caused 2M+ allocs in
+/// bench_sum_list).
+const ATTR_NAME_CACHE_SIZE: usize = 16; // must be power of 2
+
+struct AttrNameCache {
+    slots: [Option<AttrNameCacheEntry>; ATTR_NAME_CACHE_SIZE],
+}
+
+impl AttrNameCache {
+    const fn new() -> Self {
+        // Work around const-init limitations: build the array element-by-element.
+        const NONE: Option<AttrNameCacheEntry> = None;
+        Self {
+            slots: [NONE; ATTR_NAME_CACHE_SIZE],
+        }
+    }
+
+    #[inline]
+    fn slot_index(bytes: &[u8]) -> usize {
+        // FNV-1a-inspired fast hash – only needs to spread common dunder
+        // names across 16 buckets.
+        let mut h: u32 = 0x811c_9dc5;
+        for &b in bytes {
+            h ^= b as u32;
+            h = h.wrapping_mul(0x0100_0193);
+        }
+        (h as usize) & (ATTR_NAME_CACHE_SIZE - 1)
+    }
+
+    fn lookup(&self, bytes: &[u8]) -> Option<u64> {
+        let idx = Self::slot_index(bytes);
+        self.slots[idx]
+            .as_ref()
+            .filter(|e| e.bytes == bytes)
+            .map(|e| e.bits)
+    }
+
+    fn insert(&mut self, _py: &PyToken<'_>, bytes: &[u8], bits: u64) {
+        let idx = Self::slot_index(bytes);
+        if let Some(prev) = self.slots[idx].take() {
+            dec_ref_bits(_py, prev.bits);
+        }
+        inc_ref_bits(_py, bits);
+        self.slots[idx] = Some(AttrNameCacheEntry {
+            bytes: bytes.to_vec(),
+            bits,
+        });
+    }
+
+    fn clear(&mut self, _py: &PyToken<'_>) {
+        for slot in self.slots.iter_mut() {
+            if let Some(prev) = slot.take() {
+                dec_ref_bits(_py, prev.bits);
+            }
+        }
+    }
+}
+
 fn debug_class_layout_filter() -> Option<&'static str> {
     static FILTER: OnceLock<Option<String>> = OnceLock::new();
     FILTER
@@ -65,17 +126,14 @@ pub(crate) struct DescriptorCacheEntry {
 }
 
 thread_local! {
-    static ATTR_NAME_TLS: RefCell<Option<AttrNameCacheEntry>> = const { RefCell::new(None) };
+    static ATTR_NAME_TLS: RefCell<AttrNameCache> = RefCell::new(AttrNameCache::new());
     static DESCRIPTOR_CACHE_TLS: RefCell<Option<DescriptorCacheEntry>> = const { RefCell::new(None) };
 }
 
 pub(crate) fn clear_attr_tls_caches(_py: &PyToken<'_>) {
     crate::gil_assert();
     let _ = ATTR_NAME_TLS.try_with(|cell| {
-        let mut entry = cell.borrow_mut();
-        if let Some(prev) = entry.take() {
-            dec_ref_bits(_py, prev.bits);
-        }
+        cell.borrow_mut().clear(_py);
     });
     let _ = DESCRIPTOR_CACHE_TLS.try_with(|cell| {
         cell.borrow_mut().take();
@@ -83,11 +141,16 @@ pub(crate) fn clear_attr_tls_caches(_py: &PyToken<'_>) {
 }
 
 pub(crate) fn debug_last_attr_name() -> Option<String> {
+    // Return the first populated slot for debugging purposes.
     ATTR_NAME_TLS
         .try_with(|cell| {
-            cell.borrow()
-                .as_ref()
-                .map(|entry| String::from_utf8_lossy(&entry.bytes).into_owned())
+            let cache = cell.borrow();
+            for slot in cache.slots.iter() {
+                if let Some(entry) = slot {
+                    return Some(String::from_utf8_lossy(&entry.bytes).into_owned());
+                }
+            }
+            None
         })
         .ok()
         .flatten()
@@ -266,12 +329,7 @@ pub(crate) fn descriptor_no_deleter(
 
 pub(crate) fn attr_name_bits_from_bytes(_py: &PyToken<'_>, slice: &[u8]) -> Option<u64> {
     crate::gil_assert();
-    if let Some(bits) = ATTR_NAME_TLS.with(|cell| {
-        cell.borrow()
-            .as_ref()
-            .filter(|entry| entry.bytes == slice)
-            .map(|entry| entry.bits)
-    }) {
+    if let Some(bits) = ATTR_NAME_TLS.with(|cell| cell.borrow().lookup(slice)) {
         inc_ref_bits(_py, bits);
         return Some(bits);
     }
@@ -281,15 +339,7 @@ pub(crate) fn attr_name_bits_from_bytes(_py: &PyToken<'_>, slice: &[u8]) -> Opti
     }
     let bits = MoltObject::from_ptr(ptr).bits();
     ATTR_NAME_TLS.with(|cell| {
-        let mut entry = cell.borrow_mut();
-        if let Some(prev) = entry.take() {
-            dec_ref_bits(_py, prev.bits);
-        }
-        inc_ref_bits(_py, bits);
-        *entry = Some(AttrNameCacheEntry {
-            bytes: slice.to_vec(),
-            bits,
-        });
+        cell.borrow_mut().insert(_py, slice, bits);
     });
     Some(bits)
 }
