@@ -424,7 +424,9 @@ def gpt(
 ) -> list[float]:
     tok_emb: list[float] = SD["wte"][token]
     pos_emb: list[float] = SD["wpe"][pos]
-    x: list[float] = [t + p for t, p in zip(tok_emb, pos_emb)]
+    x: list[float] = []
+    for _i in range(len(tok_emb)):
+        x.append(tok_emb[_i] + pos_emb[_i])
     x = rmsnorm(x)
 
     for li in range(N_LAYER):
@@ -457,14 +459,14 @@ def gpt(
                 x_attn.append(s)
 
         x = linear(x_attn, SD["layer" + str(li) + ".attn_wo"])
-        x = [a + b for a, b in zip(x, x_res)]
+        x = [x[_i] + x_res[_i] for _i in range(len(x))]
 
         x_res = x
         x = rmsnorm(x)
         x = linear(x, SD["layer" + str(li) + ".mlp_fc1"])
         x = relu(x)
         x = linear(x, SD["layer" + str(li) + ".mlp_fc2"])
-        x = [a + b for a, b in zip(x, x_res)]
+        x = [x[_i] + x_res[_i] for _i in range(len(x))]
 
     logits: list[float] = linear(x, SD["lm_head"])
     return logits

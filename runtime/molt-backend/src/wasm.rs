@@ -5310,9 +5310,34 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["add"]);
                             func.instruction(&Instruction::End);
                         } else {
+                            // fast_float: check if both operands are plain f64
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::I32Or);
+                            func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["add"]);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::F64Add);
+                            func.instruction(&Instruction::I64ReinterpretF64);
+                            func.instruction(&Instruction::End);
                         }
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
@@ -5350,9 +5375,34 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["inplace_add"]);
                             func.instruction(&Instruction::End);
                         } else {
+                            // fast_float: check if both operands are plain f64
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::I32Or);
+                            func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["inplace_add"]);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::F64Add);
+                            func.instruction(&Instruction::I64ReinterpretF64);
+                            func.instruction(&Instruction::End);
                         }
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
@@ -5666,9 +5716,34 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["sub"]);
                             func.instruction(&Instruction::End);
                         } else {
+                            // fast_float: check if both operands are plain f64
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::I32Or);
+                            func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["sub"]);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::F64Sub);
+                            func.instruction(&Instruction::I64ReinterpretF64);
+                            func.instruction(&Instruction::End);
                         }
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
@@ -5706,9 +5781,34 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["mul"]);
                             func.instruction(&Instruction::End);
                         } else {
+                            // fast_float: check if both operands are plain f64
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::I32Or);
+                            func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["mul"]);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::F64Mul);
+                            func.instruction(&Instruction::I64ReinterpretF64);
+                            func.instruction(&Instruction::End);
                         }
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
@@ -5746,9 +5846,34 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["inplace_sub"]);
                             func.instruction(&Instruction::End);
                         } else {
+                            // fast_float: check if both operands are plain f64
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::I32Or);
+                            func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["inplace_sub"]);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::F64Sub);
+                            func.instruction(&Instruction::I64ReinterpretF64);
+                            func.instruction(&Instruction::End);
                         }
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
@@ -5786,9 +5911,34 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["inplace_mul"]);
                             func.instruction(&Instruction::End);
                         } else {
+                            // fast_float: check if both operands are plain f64
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::I32Or);
+                            func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["inplace_mul"]);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::F64Mul);
+                            func.instruction(&Instruction::I64ReinterpretF64);
+                            func.instruction(&Instruction::End);
                         }
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
@@ -6196,9 +6346,34 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["div"]);
                             func.instruction(&Instruction::End);
                         } else {
+                            // fast_float: check if both operands are plain f64
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::I32Or);
+                            func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["div"]);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::F64Div);
+                            func.instruction(&Instruction::I64ReinterpretF64);
+                            func.instruction(&Instruction::End);
                         }
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
@@ -6407,9 +6582,34 @@ impl WasmBackend {
                             func.instruction(&Instruction::I64LtS);
                             emit_box_bool_from_i32(func);
                         } else {
+                            // fast_float: check if both operands are plain f64
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::I32Or);
+                            func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["lt"]);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::F64Lt);
+                            emit_box_bool_from_i32(func);
+                            func.instruction(&Instruction::End);
                         }
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
@@ -6438,9 +6638,34 @@ impl WasmBackend {
                             func.instruction(&Instruction::I64LeS);
                             emit_box_bool_from_i32(func);
                         } else {
+                            // fast_float: check if both operands are plain f64
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::I32Or);
+                            func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["le"]);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::F64Le);
+                            emit_box_bool_from_i32(func);
+                            func.instruction(&Instruction::End);
                         }
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
@@ -6469,9 +6694,34 @@ impl WasmBackend {
                             func.instruction(&Instruction::I64GtS);
                             emit_box_bool_from_i32(func);
                         } else {
+                            // fast_float: check if both operands are plain f64
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::I32Or);
+                            func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["gt"]);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::F64Gt);
+                            emit_box_bool_from_i32(func);
+                            func.instruction(&Instruction::End);
                         }
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
@@ -6500,9 +6750,34 @@ impl WasmBackend {
                             func.instruction(&Instruction::I64GeS);
                             emit_box_bool_from_i32(func);
                         } else {
+                            // fast_float: check if both operands are plain f64
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::I64Const(48));
+                            func.instruction(&Instruction::I64ShrU);
+                            func.instruction(&Instruction::I64Const(0x7FF9));
+                            func.instruction(&Instruction::I64Sub);
+                            func.instruction(&Instruction::I64Const(5));
+                            func.instruction(&Instruction::I64LtU);
+                            func.instruction(&Instruction::I32Or);
+                            func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["ge"]);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            func.instruction(&Instruction::F64ReinterpretI64);
+                            func.instruction(&Instruction::F64Ge);
+                            emit_box_bool_from_i32(func);
+                            func.instruction(&Instruction::End);
                         }
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
@@ -10601,7 +10876,18 @@ impl WasmBackend {
                         emit_call(func, reloc_enabled, import_ids["is_truthy"]);
                         func.instruction(&Instruction::I64Const(0));
                         func.instruction(&Instruction::I64Ne);
-                        func.instruction(&Instruction::BrIf(1));
+                        // Find depth to the enclosing Block that wraps the Loop.
+                        let mut depth = 0u32;
+                        let mut found_loop = false;
+                        for entry in control_stack.iter().rev() {
+                            match entry {
+                                ControlKind::Block if found_loop => break,
+                                ControlKind::Loop => { found_loop = true; }
+                                _ => {}
+                            }
+                            depth += 1;
+                        }
+                        func.instruction(&Instruction::BrIf(depth));
                     }
                     "loop_break_if_false" => {
                         let args = op.args.as_ref().unwrap();
@@ -10610,13 +10896,46 @@ impl WasmBackend {
                         emit_call(func, reloc_enabled, import_ids["is_truthy"]);
                         func.instruction(&Instruction::I64Const(0));
                         func.instruction(&Instruction::I64Eq);
-                        func.instruction(&Instruction::BrIf(1));
+                        // Find depth to the enclosing Block that wraps the Loop.
+                        let mut depth = 0u32;
+                        let mut found_loop = false;
+                        for entry in control_stack.iter().rev() {
+                            match entry {
+                                ControlKind::Block if found_loop => break,
+                                ControlKind::Loop => { found_loop = true; }
+                                _ => {}
+                            }
+                            depth += 1;
+                        }
+                        func.instruction(&Instruction::BrIf(depth));
                     }
                     "loop_break" => {
-                        func.instruction(&Instruction::Br(1));
+                        // Find depth to the enclosing Block that wraps the Loop.
+                        // The loop structure is Block { Loop { ... } }, so we
+                        // need to find the Block that immediately precedes
+                        // the innermost Loop on the control stack.
+                        let mut depth = 0u32;
+                        let mut found_loop = false;
+                        for entry in control_stack.iter().rev() {
+                            match entry {
+                                ControlKind::Block if found_loop => break,
+                                ControlKind::Loop => { found_loop = true; }
+                                _ => {}
+                            }
+                            depth += 1;
+                        }
+                        func.instruction(&Instruction::Br(depth));
                     }
                     "loop_continue" => {
-                        func.instruction(&Instruction::Br(0));
+                        // Find depth to the innermost Loop on the control stack.
+                        let mut depth = 0u32;
+                        for entry in control_stack.iter().rev() {
+                            if matches!(entry, ControlKind::Loop) {
+                                break;
+                            }
+                            depth += 1;
+                        }
+                        func.instruction(&Instruction::Br(depth));
                     }
                     "loop_end" => {
                         func.instruction(&Instruction::End);
