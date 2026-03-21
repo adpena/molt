@@ -425,6 +425,11 @@ impl SimpleBackend {
         // 2. Implementation
         let ops = &func_ir.ops;
         let mut skip_ops: HashSet<usize> = HashSet::new();
+        // Escape-analysis: track stack-eligible tuples by variable name → element values.
+        // When a tuple_new is marked stack_eligible, we store its element Cranelift Values
+        // here instead of heap-allocating.  Downstream `index` ops on these tuples resolve
+        // to direct value lookups, avoiding both the allocation and the molt_index call.
+        let mut stack_tuples: HashMap<String, Vec<Value>> = HashMap::new();
         for op_idx in 0..ops.len() {
             if skip_ops.contains(&op_idx) {
                 continue;
@@ -3424,47 +3429,80 @@ impl SimpleBackend {
                 "tuple_new" => {
                     let args = op.args.as_ref().unwrap();
                     let out_name = op.out.unwrap();
-                    let size = builder.ins().iconst(types::I64, box_int(args.len() as i64));
 
-                    let mut new_sig = self.module.make_signature();
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.returns.push(AbiParam::new(types::I64));
-                    let new_callee = self
-                        .module
-                        .declare_function("molt_list_builder_new", Linkage::Import, &new_sig)
-                        .unwrap();
-                    let new_local = self.module.declare_func_in_func(new_callee, builder.func);
-                    let new_call = builder.ins().call(new_local, &[size]);
-                    let builder_ptr = builder.inst_results(new_call)[0];
+                    // --- Stack-eligible fast path: elide heap allocation ---
+                    // When escape analysis proved this tuple never escapes, we
+                    // keep the element Values in `stack_tuples` and resolve
+                    // downstream `index` ops to direct value lookups.
+                    if op.stack_eligible.unwrap_or(false) {
+                        let mut elems: Vec<Value> = Vec::with_capacity(args.len());
+                        for name in args {
+                            let val = var_get(&mut builder, &vars, name)
+                                .expect("Stack-tuple elem not found");
+                            elems.push(*val);
+                        }
+                        // We still need to define the variable (it may be
+                        // referenced by exception-check ops that just test
+                        // for null).  Use the first element or a zero sentinel.
+                        let sentinel = if let Some(&first) = elems.first() {
+                            first
+                        } else {
+                            builder.ins().iconst(types::I64, 0)
+                        };
+                        def_var_named(&mut builder, &vars, out_name.clone(), sentinel);
+                        stack_tuples.insert(out_name.to_string(), elems);
+                    } else {
+                        // --- Original heap-allocated path ---
+                        let size = builder.ins().iconst(types::I64, box_int(args.len() as i64));
 
-                    let mut append_sig = self.module.make_signature();
-                    append_sig.params.push(AbiParam::new(types::I64));
-                    append_sig.params.push(AbiParam::new(types::I64));
-                    let append_callee = self
-                        .module
-                        .declare_function("molt_list_builder_append", Linkage::Import, &append_sig)
-                        .unwrap();
-                    let append_local = self
-                        .module
-                        .declare_func_in_func(append_callee, builder.func);
-                    for name in args {
-                        let val = var_get(&mut builder, &vars, name).expect("Tuple elem not found");
-                        builder.ins().call(append_local, &[builder_ptr, *val]);
+                        let mut new_sig = self.module.make_signature();
+                        new_sig.params.push(AbiParam::new(types::I64));
+                        new_sig.returns.push(AbiParam::new(types::I64));
+                        let new_callee = self
+                            .module
+                            .declare_function("molt_list_builder_new", Linkage::Import, &new_sig)
+                            .unwrap();
+                        let new_local = self.module.declare_func_in_func(new_callee, builder.func);
+                        let new_call = builder.ins().call(new_local, &[size]);
+                        let builder_ptr = builder.inst_results(new_call)[0];
+
+                        let mut append_sig = self.module.make_signature();
+                        append_sig.params.push(AbiParam::new(types::I64));
+                        append_sig.params.push(AbiParam::new(types::I64));
+                        let append_callee = self
+                            .module
+                            .declare_function(
+                                "molt_list_builder_append",
+                                Linkage::Import,
+                                &append_sig,
+                            )
+                            .unwrap();
+                        let append_local = self
+                            .module
+                            .declare_func_in_func(append_callee, builder.func);
+                        for name in args {
+                            let val =
+                                var_get(&mut builder, &vars, name).expect("Tuple elem not found");
+                            builder.ins().call(append_local, &[builder_ptr, *val]);
+                        }
+
+                        let mut finish_sig = self.module.make_signature();
+                        finish_sig.params.push(AbiParam::new(types::I64));
+                        finish_sig.returns.push(AbiParam::new(types::I64));
+                        let finish_callee = self
+                            .module
+                            .declare_function(
+                                "molt_tuple_builder_finish",
+                                Linkage::Import,
+                                &finish_sig,
+                            )
+                            .unwrap();
+                        let finish_local =
+                            self.module.declare_func_in_func(finish_callee, builder.func);
+                        let finish_call = builder.ins().call(finish_local, &[builder_ptr]);
+                        let tuple_bits = builder.inst_results(finish_call)[0];
+                        def_var_named(&mut builder, &vars, out_name, tuple_bits);
                     }
-
-                    let mut finish_sig = self.module.make_signature();
-                    finish_sig.params.push(AbiParam::new(types::I64));
-                    finish_sig.returns.push(AbiParam::new(types::I64));
-                    let finish_callee = self
-                        .module
-                        .declare_function("molt_tuple_builder_finish", Linkage::Import, &finish_sig)
-                        .unwrap();
-                    let finish_local = self
-                        .module
-                        .declare_func_in_func(finish_callee, builder.func);
-                    let finish_call = builder.ins().call(finish_local, &[builder_ptr]);
-                    let tuple_bits = builder.inst_results(finish_call)[0];
-                    def_var_named(&mut builder, &vars, out_name, tuple_bits);
                 }
                 "list_append" => {
                     let args = op.args.as_ref().unwrap();
@@ -4609,20 +4647,43 @@ impl SimpleBackend {
                 }
                 "index" => {
                     let args = op.args.as_ref().unwrap();
-                    let obj = var_get(&mut builder, &vars, &args[0]).expect("Obj not found");
-                    let idx = var_get(&mut builder, &vars, &args[1]).expect("Index not found");
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_index", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*obj, *idx]);
-                    let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+
+                    // --- Stack-tuple fast path ---
+                    // If the object being indexed is a stack-eligible tuple,
+                    // resolve the index at compile time and return the element
+                    // directly, eliding the molt_index call entirely.
+                    let resolved_stack = stack_tuples.get(&args[0]).and_then(|elems| {
+                        Self::resolve_const_int(ops, op_idx, &args[1]).and_then(|ci| {
+                            let idx = if ci < 0 {
+                                (elems.len() as i64 + ci) as usize
+                            } else {
+                                ci as usize
+                            };
+                            elems.get(idx).copied()
+                        })
+                    });
+
+                    if let Some(elem_val) = resolved_stack {
+                        def_var_named(&mut builder, &vars, op.out.unwrap(), elem_val);
+                    } else {
+                        let obj =
+                            var_get(&mut builder, &vars, &args[0]).expect("Obj not found");
+                        let idx =
+                            var_get(&mut builder, &vars, &args[1]).expect("Index not found");
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_index", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*obj, *idx]);
+                        let res = builder.inst_results(call)[0];
+                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    }
                 }
                 "store_index" => {
                     let args = op.args.as_ref().unwrap();
