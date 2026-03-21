@@ -24,7 +24,7 @@ def diamond(size=9):
         lines.append(" " * (size // 2 - d) + "*" * (2 * d + 1))
     return "\n".join(lines)
 
-def mandelbrot_render(width: int = 60, height: int = 24) -> str:
+def mandelbrot_render(width: int = 100, height: int = 40) -> str:
     mx: float = -2.0
     dx: float = 3.0 / width
     my: float = -1.1
@@ -95,20 +95,20 @@ parts = path.strip("/").split("/")
 route = parts[0] if parts else ""
 
 if route == "fib":
-    n = int(parts[1]) if len(parts) > 1 else 10
+    n = int(parts[1]) if len(parts) > 1 else 100
     print("fib(" + str(n) + ") = " + str(fibonacci(n)))
 
 elif route == "primes":
-    limit = int(parts[1]) if len(parts) > 1 else 100
+    limit = int(parts[1]) if len(parts) > 1 else 10000
     print("Primes up to " + str(limit) + ": " + str(count_primes(limit)))
 
 elif route == "diamond":
-    n = int(parts[1]) if len(parts) > 1 else 9
+    n = int(parts[1]) if len(parts) > 1 else 21
     print(diamond(n))
 
 elif route == "mandelbrot":
-    w = int(params.get("width", "60"))
-    h = int(params.get("height", "24"))
+    w = int(params.get("width", "100"))
+    h = int(params.get("height", "40"))
     print(mandelbrot_render(w, h))
 
 elif route == "sort":
@@ -116,12 +116,12 @@ elif route == "sort":
     print("Sorted: " + sort_data(data))
 
 elif route == "fizzbuzz":
-    n = int(parts[1]) if len(parts) > 1 else 30
+    n = int(parts[1]) if len(parts) > 1 else 100
     print(fizzbuzz(n))
 
 elif route == "pi":
     # Leibniz series for pi
-    n = int(parts[1]) if len(parts) > 1 else 10000
+    n = int(parts[1]) if len(parts) > 1 else 100000
     total = 0.0
     for i in range(n):
         total += ((-1.0) ** i) / (2.0 * i + 1.0)
