@@ -792,7 +792,6 @@ class _SupportModuleAugmentation:
 @dataclass(frozen=True)
 class _ModuleGraphAugmentation:
     spawn_enabled: bool
-    entry_module_import_alias: str | None
     explicit_imports: set[str]
     stub_parents: set[str]
 
@@ -12277,27 +12276,10 @@ def _augment_module_graph_for_entry_and_runtime(
     json_output: bool,
     target: str,
 ) -> tuple[_ModuleGraphAugmentation, dict[str, Any] | None]:
-    entry_module_import_alias: str | None = None
-    source_parent = source_path.parent.resolve()
-    alias_roots = [root for root in module_roots if root != source_parent]
-    if alias_roots:
-        alias_name = _module_name_from_path(source_path, alias_roots, stdlib_root)
-        if alias_name and alias_name != entry_module:
-            entry_module_import_alias = alias_name
     entry_imports = set(entry_imports)
     explicit_imports = set(entry_imports)
     stub_skip_modules = STUB_MODULES - entry_imports
     stub_parents = STUB_PARENT_MODULES - entry_imports
-    if (
-        entry_module_import_alias
-        and entry_module_import_alias not in module_graph
-        and source_path is not None
-    ):
-        module_graph[entry_module_import_alias] = source_path
-        if diagnostics_enabled:
-            _record_module_reason(
-                module_reasons, entry_module_import_alias, "entry_alias"
-            )
     core_paths = [
         path
         for name in (
@@ -12347,7 +12329,6 @@ def _augment_module_graph_for_entry_and_runtime(
         if spawn_path is None:
             return _ModuleGraphAugmentation(
                 spawn_enabled=False,
-                entry_module_import_alias=entry_module_import_alias,
                 explicit_imports=explicit_imports,
                 stub_parents=stub_parents,
             ), _fail(
@@ -12382,7 +12363,6 @@ def _augment_module_graph_for_entry_and_runtime(
                 module_graph.setdefault(name, path)
     return _ModuleGraphAugmentation(
         spawn_enabled=spawn_enabled,
-        entry_module_import_alias=entry_module_import_alias,
         explicit_imports=explicit_imports,
         stub_parents=stub_parents,
     ), None
