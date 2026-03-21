@@ -577,33 +577,19 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_decimal_compare_total", symbol: "molt_decimal_compare_total", arity: 2 },
     IntrinsicSpec { name: "molt_decimal_normalize", symbol: "molt_decimal_normalize", arity: 2 },
     IntrinsicSpec { name: "molt_decimal_exp", symbol: "molt_decimal_exp", arity: 2 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_hash_new", symbol: "molt_hash_new", arity: 3 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_hash_update", symbol: "molt_hash_update", arity: 2 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_hash_copy", symbol: "molt_hash_copy", arity: 1 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_hash_digest", symbol: "molt_hash_digest", arity: 2 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_hash_drop", symbol: "molt_hash_drop", arity: 1 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_hmac_new", symbol: "molt_hmac_new", arity: 4 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_hmac_update", symbol: "molt_hmac_update", arity: 2 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_hmac_copy", symbol: "molt_hmac_copy", arity: 1 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_hmac_digest", symbol: "molt_hmac_digest", arity: 1 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_hmac_drop", symbol: "molt_hmac_drop", arity: 1 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_compare_digest", symbol: "molt_compare_digest", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_compression_streams_buffer_size", symbol: "molt_compression_streams_buffer_size", arity: 0 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_pbkdf2_hmac", symbol: "molt_pbkdf2_hmac", arity: 5 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_scrypt", symbol: "molt_scrypt", arity: 7 },
     IntrinsicSpec { name: "molt_os_open", symbol: "molt_os_open", arity: 3 },
     IntrinsicSpec { name: "molt_os_open_flags", symbol: "molt_os_open_flags", arity: 0 },
@@ -764,9 +750,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_struct_pack_into", symbol: "molt_struct_pack_into", arity: 3 },
     IntrinsicSpec { name: "molt_struct_unpack_from", symbol: "molt_struct_unpack_from", arity: 3 },
     IntrinsicSpec { name: "molt_struct_iter_unpack", symbol: "molt_struct_iter_unpack", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_deflate_raw", symbol: "molt_deflate_raw", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_inflate_raw", symbol: "molt_inflate_raw", arity: 1 },
     IntrinsicSpec { name: "molt_cancel_token_new", symbol: "molt_cancel_token_new", arity: 1 },
     IntrinsicSpec { name: "molt_cancel_token_clone", symbol: "molt_cancel_token_clone", arity: 1 },
@@ -908,7 +892,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_wsgiref_runtime_ready", symbol: "molt_wsgiref_runtime_ready", arity: 0 },
     IntrinsicSpec { name: "molt_zoneinfo_runtime_ready", symbol: "molt_zoneinfo_runtime_ready", arity: 0 },
     IntrinsicSpec { name: "molt_zipapp_runtime_ready", symbol: "molt_zipapp_runtime_ready", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_runtime_ready", symbol: "molt_zlib_runtime_ready", arity: 0 },
     IntrinsicSpec { name: "molt_xmlrpc_runtime_ready", symbol: "molt_xmlrpc_runtime_ready", arity: 0 },
     IntrinsicSpec { name: "molt_csv_runtime_ready", symbol: "molt_csv_runtime_ready", arity: 0 },
@@ -953,9 +936,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_socket_reader_drop", symbol: "molt_socket_reader_drop", arity: 1 },
     IntrinsicSpec { name: "molt_db_query_obj", symbol: "molt_db_query_obj", arity: 2 },
     IntrinsicSpec { name: "molt_db_exec_obj", symbol: "molt_db_exec_obj", arity: 2 },
-    #[cfg(feature = "stdlib_serialization")]
     IntrinsicSpec { name: "molt_msgpack_parse_scalar_obj", symbol: "molt_msgpack_parse_scalar_obj", arity: 1 },
-    #[cfg(feature = "stdlib_serialization")]
     IntrinsicSpec { name: "molt_cbor_parse_scalar_obj", symbol: "molt_cbor_parse_scalar_obj", arity: 1 },
     IntrinsicSpec { name: "molt_json_parse_scalar_obj", symbol: "molt_json_parse_scalar_obj", arity: 1 },
     IntrinsicSpec { name: "molt_json_encode_basestring_obj", symbol: "molt_json_encode_basestring_obj", arity: 1 },
@@ -1178,11 +1159,8 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_asyncgen_hooks_set", symbol: "molt_asyncgen_hooks_set", arity: 2 },
     IntrinsicSpec { name: "molt_asyncgen_locals", symbol: "molt_asyncgen_locals", arity: 1 },
     IntrinsicSpec { name: "molt_gen_locals", symbol: "molt_gen_locals", arity: 1 },
-    #[cfg(feature = "stdlib_ast")]
     IntrinsicSpec { name: "molt_ast_parse", symbol: "molt_ast_parse", arity: 6 },
-    #[cfg(feature = "stdlib_ast")]
     IntrinsicSpec { name: "molt_ast_walk", symbol: "molt_ast_walk", arity: 1 },
-    #[cfg(feature = "stdlib_ast")]
     IntrinsicSpec { name: "molt_ast_get_docstring", symbol: "molt_ast_get_docstring", arity: 2 },
     IntrinsicSpec { name: "molt_inspect_cleandoc", symbol: "molt_inspect_cleandoc", arity: 1 },
     IntrinsicSpec { name: "molt_inspect_currentframe", symbol: "molt_inspect_currentframe", arity: 0 },
@@ -1421,39 +1399,22 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_array_tobytes", symbol: "molt_array_tobytes", arity: 1 },
     IntrinsicSpec { name: "molt_array_tolist", symbol: "molt_array_tolist", arity: 1 },
     IntrinsicSpec { name: "molt_array_typecode", symbol: "molt_array_typecode", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_bz2_compress", symbol: "molt_bz2_compress", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_bz2_compressor_compress", symbol: "molt_bz2_compressor_compress", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_bz2_compressor_drop", symbol: "molt_bz2_compressor_drop", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_bz2_compressor_flush", symbol: "molt_bz2_compressor_flush", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_bz2_compressor_new", symbol: "molt_bz2_compressor_new", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_bz2_decompress", symbol: "molt_bz2_decompress", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_bz2_decompressor_decompress", symbol: "molt_bz2_decompressor_decompress", arity: 3 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_bz2_decompressor_drop", symbol: "molt_bz2_decompressor_drop", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_bz2_decompressor_eof", symbol: "molt_bz2_decompressor_eof", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_bz2_decompressor_needs_input", symbol: "molt_bz2_decompressor_needs_input", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_bz2_decompressor_new", symbol: "molt_bz2_decompressor_new", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_bz2_decompressor_unused_data", symbol: "molt_bz2_decompressor_unused_data", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_bz2_file_close", symbol: "molt_bz2_file_close", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_bz2_file_drop", symbol: "molt_bz2_file_drop", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_bz2_file_open", symbol: "molt_bz2_file_open", arity: 3 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_bz2_file_read", symbol: "molt_bz2_file_read", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_bz2_file_write", symbol: "molt_bz2_file_write", arity: 2 },
     IntrinsicSpec { name: "molt_chainmap_contains", symbol: "molt_chainmap_contains", arity: 2 },
     IntrinsicSpec { name: "molt_chainmap_delitem", symbol: "molt_chainmap_delitem", arity: 2 },
@@ -1696,19 +1657,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_fraction_to_float", symbol: "molt_fraction_to_float", arity: 1 },
     IntrinsicSpec { name: "molt_fraction_to_str", symbol: "molt_fraction_to_str", arity: 1 },
     IntrinsicSpec { name: "molt_fraction_truediv", symbol: "molt_fraction_truediv", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_gzip_close", symbol: "molt_gzip_close", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_gzip_compress", symbol: "molt_gzip_compress", arity: 3 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_gzip_decompress", symbol: "molt_gzip_decompress", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_gzip_drop", symbol: "molt_gzip_drop", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_gzip_open", symbol: "molt_gzip_open", arity: 3 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_gzip_read", symbol: "molt_gzip_read", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_gzip_write", symbol: "molt_gzip_write", arity: 2 },
     IntrinsicSpec { name: "molt_html_entities_codepoint2name", symbol: "molt_html_entities_codepoint2name", arity: 0 },
     IntrinsicSpec { name: "molt_html_entities_html5", symbol: "molt_html_entities_html5", arity: 0 },
@@ -1757,49 +1711,27 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_json_loads_ex", symbol: "molt_json_loads_ex", arity: 7 },
     IntrinsicSpec { name: "molt_json_parse_scalar", symbol: "molt_json_parse_scalar", arity: 3 },
     IntrinsicSpec { name: "molt_json_raw_decode_ex", symbol: "molt_json_raw_decode_ex", arity: 8 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_check_crc32", symbol: "molt_lzma_check_crc32", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_check_crc64", symbol: "molt_lzma_check_crc64", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_check_none", symbol: "molt_lzma_check_none", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_check_sha256", symbol: "molt_lzma_check_sha256", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_compress", symbol: "molt_lzma_compress", arity: 4 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_compressor_compress", symbol: "molt_lzma_compressor_compress", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_compressor_drop", symbol: "molt_lzma_compressor_drop", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_compressor_flush", symbol: "molt_lzma_compressor_flush", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_compressor_new", symbol: "molt_lzma_compressor_new", arity: 3 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_decompress", symbol: "molt_lzma_decompress", arity: 3 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_decompressor_decompress", symbol: "molt_lzma_decompressor_decompress", arity: 3 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_decompressor_drop", symbol: "molt_lzma_decompressor_drop", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_decompressor_eof", symbol: "molt_lzma_decompressor_eof", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_decompressor_needs_input", symbol: "molt_lzma_decompressor_needs_input", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_decompressor_new", symbol: "molt_lzma_decompressor_new", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_decompressor_unused_data", symbol: "molt_lzma_decompressor_unused_data", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_format_alone", symbol: "molt_lzma_format_alone", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_format_auto", symbol: "molt_lzma_format_auto", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_format_raw", symbol: "molt_lzma_format_raw", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_format_xz", symbol: "molt_lzma_format_xz", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_preset_default", symbol: "molt_lzma_preset_default", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_preset_extreme", symbol: "molt_lzma_preset_extreme", arity: 0 },
     IntrinsicSpec { name: "molt_ordereddict_clear", symbol: "molt_ordereddict_clear", arity: 1 },
     IntrinsicSpec { name: "molt_ordereddict_contains", symbol: "molt_ordereddict_contains", arity: 2 },
@@ -1898,19 +1830,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_re_execute", symbol: "molt_re_execute", arity: 5 },
     IntrinsicSpec { name: "molt_re_finditer_collect", symbol: "molt_re_finditer_collect", arity: 4 },
     IntrinsicSpec { name: "molt_re_pattern_info", symbol: "molt_re_pattern_info", arity: 1 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_secrets_below", symbol: "molt_secrets_below", arity: 1 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_secrets_choice", symbol: "molt_secrets_choice", arity: 1 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_secrets_compare_digest", symbol: "molt_secrets_compare_digest", arity: 2 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_secrets_randbits", symbol: "molt_secrets_randbits", arity: 1 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_secrets_token_bytes", symbol: "molt_secrets_token_bytes", arity: 1 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_secrets_token_hex", symbol: "molt_secrets_token_hex", arity: 1 },
-    #[cfg(feature = "stdlib_crypto")]
     IntrinsicSpec { name: "molt_secrets_token_urlsafe", symbol: "molt_secrets_token_urlsafe", arity: 1 },
     IntrinsicSpec { name: "molt_random_new", symbol: "molt_random_new", arity: 0 },
     IntrinsicSpec { name: "molt_random_seed", symbol: "molt_random_seed", arity: 3 },
@@ -2022,25 +1947,15 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_subprocess_pipe_const", symbol: "molt_subprocess_pipe_const", arity: 0 },
     IntrinsicSpec { name: "molt_subprocess_run", symbol: "molt_subprocess_run", arity: 7 },
     IntrinsicSpec { name: "molt_subprocess_stdout_const", symbol: "molt_subprocess_stdout_const", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_tarfile_add", symbol: "molt_tarfile_add", arity: 3 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_tarfile_close", symbol: "molt_tarfile_close", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_tarfile_drop", symbol: "molt_tarfile_drop", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_tarfile_extract", symbol: "molt_tarfile_extract", arity: 3 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_tarfile_extractall", symbol: "molt_tarfile_extractall", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_tarfile_extractfile", symbol: "molt_tarfile_extractfile", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_tarfile_getmembers", symbol: "molt_tarfile_getmembers", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_tarfile_getnames", symbol: "molt_tarfile_getnames", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_tarfile_is_tarfile", symbol: "molt_tarfile_is_tarfile", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_tarfile_open", symbol: "molt_tarfile_open", arity: 2 },
     IntrinsicSpec { name: "molt_unicodedata_bidirectional", symbol: "molt_unicodedata_bidirectional", arity: 1 },
     IntrinsicSpec { name: "molt_unicodedata_category", symbol: "molt_unicodedata_category", arity: 1 },
@@ -2056,61 +1971,33 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_unicodedata_normalize", symbol: "molt_unicodedata_normalize", arity: 2 },
     IntrinsicSpec { name: "molt_unicodedata_numeric", symbol: "molt_unicodedata_numeric", arity: 2 },
     IntrinsicSpec { name: "molt_unicodedata_unidata_version", symbol: "molt_unicodedata_unidata_version", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_adler32", symbol: "molt_zlib_adler32", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_compress", symbol: "molt_zlib_compress", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_compressobj_compress", symbol: "molt_zlib_compressobj_compress", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_compressobj_drop", symbol: "molt_zlib_compressobj_drop", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_compressobj_flush", symbol: "molt_zlib_compressobj_flush", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_compressobj_new", symbol: "molt_zlib_compressobj_new", arity: 5 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_crc32", symbol: "molt_zlib_crc32", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_decompress", symbol: "molt_zlib_decompress", arity: 3 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_decompressobj_decompress", symbol: "molt_zlib_decompressobj_decompress", arity: 3 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_decompressobj_drop", symbol: "molt_zlib_decompressobj_drop", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_decompressobj_eof", symbol: "molt_zlib_decompressobj_eof", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_decompressobj_flush", symbol: "molt_zlib_decompressobj_flush", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_decompressobj_new", symbol: "molt_zlib_decompressobj_new", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_decompressobj_unconsumed_tail", symbol: "molt_zlib_decompressobj_unconsumed_tail", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_def_buf_size", symbol: "molt_zlib_def_buf_size", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_def_mem_level", symbol: "molt_zlib_def_mem_level", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_max_wbits", symbol: "molt_zlib_max_wbits", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_z_best_compression", symbol: "molt_zlib_z_best_compression", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_z_best_speed", symbol: "molt_zlib_z_best_speed", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_z_default_compression", symbol: "molt_zlib_z_default_compression", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_z_default_strategy", symbol: "molt_zlib_z_default_strategy", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_z_filtered", symbol: "molt_zlib_z_filtered", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_z_finish", symbol: "molt_zlib_z_finish", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_z_full_flush", symbol: "molt_zlib_z_full_flush", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_z_huffman_only", symbol: "molt_zlib_z_huffman_only", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_z_no_compression", symbol: "molt_zlib_z_no_compression", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_z_no_flush", symbol: "molt_zlib_z_no_flush", arity: 0 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_zlib_z_sync_flush", symbol: "molt_zlib_z_sync_flush", arity: 0 },
     IntrinsicSpec { name: "molt_zoneinfo_available_timezones", symbol: "molt_zoneinfo_available_timezones", arity: 0 },
     IntrinsicSpec { name: "molt_zoneinfo_drop", symbol: "molt_zoneinfo_drop", arity: 1 },
@@ -2390,27 +2277,17 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_pathlib_group", symbol: "molt_pathlib_group", arity: 1 },
     IntrinsicSpec { name: "molt_pathlib_samefile", symbol: "molt_pathlib_samefile", arity: 2 },
     IntrinsicSpec { name: "molt_pathlib_sep", symbol: "molt_pathlib_sep", arity: 0 },
-    #[cfg(feature = "stdlib_fs_extra")]
     IntrinsicSpec { name: "molt_glob_glob", symbol: "molt_glob_glob", arity: 3 },
-    #[cfg(feature = "stdlib_fs_extra")]
     IntrinsicSpec { name: "molt_glob_iglob", symbol: "molt_glob_iglob", arity: 3 },
     IntrinsicSpec { name: "molt_fnmatch_fnmatch", symbol: "molt_fnmatch_fnmatch", arity: 2 },
     IntrinsicSpec { name: "molt_fnmatch_fnmatchcase", symbol: "molt_fnmatch_fnmatchcase", arity: 2 },
-    #[cfg(feature = "stdlib_fs_extra")]
     IntrinsicSpec { name: "molt_tempfile_gettempdir", symbol: "molt_tempfile_gettempdir", arity: 0 },
-    #[cfg(feature = "stdlib_fs_extra")]
     IntrinsicSpec { name: "molt_tempfile_gettempdirb", symbol: "molt_tempfile_gettempdirb", arity: 0 },
-    #[cfg(feature = "stdlib_fs_extra")]
     IntrinsicSpec { name: "molt_tempfile_mkdtemp", symbol: "molt_tempfile_mkdtemp", arity: 3 },
-    #[cfg(feature = "stdlib_fs_extra")]
     IntrinsicSpec { name: "molt_tempfile_mkstemp", symbol: "molt_tempfile_mkstemp", arity: 3 },
-    #[cfg(feature = "stdlib_fs_extra")]
     IntrinsicSpec { name: "molt_tempfile_named", symbol: "molt_tempfile_named", arity: 4 },
-    #[cfg(feature = "stdlib_fs_extra")]
     IntrinsicSpec { name: "molt_tempfile_tempdir", symbol: "molt_tempfile_tempdir", arity: 3 },
-    #[cfg(feature = "stdlib_fs_extra")]
     IntrinsicSpec { name: "molt_tempfile_cleanup", symbol: "molt_tempfile_cleanup", arity: 1 },
-    #[cfg(feature = "stdlib_fs_extra")]
     IntrinsicSpec { name: "molt_tempfile_tempdir_path", symbol: "molt_tempfile_tempdir_path", arity: 0 },
     IntrinsicSpec { name: "molt_sys_getdefaultencoding", symbol: "molt_sys_getdefaultencoding", arity: 0 },
     IntrinsicSpec { name: "molt_sys_getfilesystemencoding", symbol: "molt_sys_getfilesystemencoding", arity: 0 },
@@ -2446,9 +2323,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_codecs_charmap_decode", symbol: "molt_codecs_charmap_decode", arity: 3 },
     IntrinsicSpec { name: "molt_codecs_charmap_encode", symbol: "molt_codecs_charmap_encode", arity: 3 },
     IntrinsicSpec { name: "molt_codecs_make_identity_dict", symbol: "molt_codecs_make_identity_dict", arity: 1 },
-    #[cfg(feature = "stdlib_ast")]
     IntrinsicSpec { name: "molt_ast_iter_fields", symbol: "molt_ast_iter_fields", arity: 1 },
-    #[cfg(feature = "stdlib_ast")]
     IntrinsicSpec { name: "molt_ast_iter_child_nodes", symbol: "molt_ast_iter_child_nodes", arity: 1 },
     IntrinsicSpec { name: "molt_linecache_detect_encoding", symbol: "molt_linecache_detect_encoding", arity: 2 },
     IntrinsicSpec { name: "molt_copy_replace", symbol: "molt_copy_replace", arity: 2 },
@@ -2464,21 +2339,15 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_datetime_timetuple", symbol: "molt_datetime_timetuple", arity: 9 },
     IntrinsicSpec { name: "molt_enum_is_auto", symbol: "molt_enum_is_auto", arity: 1 },
     IntrinsicSpec { name: "molt_enum_is_descriptor", symbol: "molt_enum_is_descriptor", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_gzip_flush", symbol: "molt_gzip_flush", arity: 1 },
     IntrinsicSpec { name: "molt_json_calc_lineno_col", symbol: "molt_json_calc_lineno_col", arity: 2 },
     IntrinsicSpec { name: "molt_json_coerce_text", symbol: "molt_json_coerce_text", arity: 1 },
     IntrinsicSpec { name: "molt_logging_file_handler_emit", symbol: "molt_logging_file_handler_emit", arity: 4 },
     IntrinsicSpec { name: "molt_logging_filter_check", symbol: "molt_logging_filter_check", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_file_close", symbol: "molt_lzma_file_close", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_file_drop", symbol: "molt_lzma_file_drop", arity: 1 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_file_open", symbol: "molt_lzma_file_open", arity: 5 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_file_read", symbol: "molt_lzma_file_read", arity: 2 },
-    #[cfg(feature = "stdlib_compression")]
     IntrinsicSpec { name: "molt_lzma_file_write", symbol: "molt_lzma_file_write", arity: 2 },
     IntrinsicSpec { name: "molt_pprint_format_object", symbol: "molt_pprint_format_object", arity: 3 },
     IntrinsicSpec { name: "molt_random_randbytes", symbol: "molt_random_randbytes", arity: 2 },
@@ -2522,6 +2391,10 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_fcntl_f_setfd", symbol: "molt_fcntl_f_setfd", arity: 0 },
     IntrinsicSpec { name: "molt_fcntl_fd_cloexec", symbol: "molt_fcntl_fd_cloexec", arity: 0 },
     IntrinsicSpec { name: "molt_fcntl_o_nonblock", symbol: "molt_fcntl_o_nonblock", arity: 0 },
+    IntrinsicSpec { name: "molt_type_of_borrowed", symbol: "molt_type_of_borrowed", arity: 1 },
+    IntrinsicSpec { name: "molt_dict_getitem_borrowed", symbol: "molt_dict_getitem_borrowed", arity: 2 },
+    IntrinsicSpec { name: "molt_list_getitem_borrowed", symbol: "molt_list_getitem_borrowed", arity: 2 },
+    IntrinsicSpec { name: "molt_tuple_getitem_borrowed", symbol: "molt_tuple_getitem_borrowed", arity: 2 },
 ];
 
 pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
@@ -5049,6 +4922,10 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_fcntl_f_setfd" => Some(crate::molt_fcntl_f_setfd as *const () as usize as u64),
         "molt_fcntl_fd_cloexec" => Some(crate::molt_fcntl_fd_cloexec as *const () as usize as u64),
         "molt_fcntl_o_nonblock" => Some(crate::molt_fcntl_o_nonblock as *const () as usize as u64),
+        "molt_type_of_borrowed" => Some(crate::molt_type_of_borrowed as *const () as usize as u64),
+        "molt_dict_getitem_borrowed" => Some(crate::molt_dict_getitem_borrowed as *const () as usize as u64),
+        "molt_list_getitem_borrowed" => Some(crate::molt_list_getitem_borrowed as *const () as usize as u64),
+        "molt_tuple_getitem_borrowed" => Some(crate::molt_tuple_getitem_borrowed as *const () as usize as u64),
         _ => None,
     }
 }
