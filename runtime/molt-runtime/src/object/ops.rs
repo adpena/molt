@@ -47192,7 +47192,7 @@ pub extern "C" fn molt_guarded_class_def(
                         crate::dec_ref_bits(_py, init_attr);
                     }
                 }
-                crate::dec_ref_bits(_py, init_name);
+                // init_name is globally interned — do NOT dec_ref it.
             });
         }
     }
