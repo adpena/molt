@@ -380,7 +380,7 @@ fn unbox_int(builder: &mut FunctionBuilder, val: Value) -> Value {
             .icmp(IntCC::Equal, masked, expected);
         builder
             .ins()
-            .trapz(is_int, cranelift_codegen::ir::TrapCode::user(0).unwrap());
+            .trapz(is_int, cranelift_codegen::ir::TrapCode::user(1).unwrap());
     }
 
     // The ishl by INT_SHIFT (17) shifts out the upper 17 tag bits (QNAN+TAG),
