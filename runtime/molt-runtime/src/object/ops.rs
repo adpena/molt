@@ -14078,6 +14078,181 @@ pub extern "C" fn molt_trace_exit() -> u64 {
     })
 }
 
+/// Outlined guarded-call helper: performs recursion guard enter/exit, optional
+/// trace enter/exit, and the actual function call via function pointer dispatch.
+/// Replaces the multi-block inline sequence previously generated for every
+/// `call` op, eliminating ~3 Cranelift blocks and ~12 function-declaration/import
+/// operations per call site.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_guarded_call(
+    fn_ptr: u64,
+    args_ptr: *const u64,
+    nargs: u64,
+    code_id: i64,
+) -> u64 {
+    if !recursion_guard_enter() {
+        crate::with_gil_entry!(_py, {
+            return raise_exception::<u64>(
+                _py, "RecursionError", "maximum recursion depth exceeded",
+            );
+        });
+    }
+    if code_id >= 0 {
+        crate::with_gil_entry!(_py, {
+            if let Some(slots) = runtime_state(_py).code_slots.get() {
+                let idx = code_id as usize;
+                let code_bits = if idx < slots.len() {
+                    slots[idx].load(AtomicOrdering::Acquire)
+                } else { MoltObject::none().bits() };
+                frame_stack_push(_py, code_bits);
+            } else {
+                frame_stack_push(_py, MoltObject::none().bits());
+            }
+        });
+    }
+    let result: u64 = unsafe {
+        let n = nargs as usize;
+        molt_guarded_call_dispatch(fn_ptr, args_ptr, n)
+    };
+    if code_id >= 0 {
+        crate::with_gil_entry!(_py, { frame_stack_pop(_py); });
+    }
+    recursion_guard_exit();
+    result
+}
+
+/// Outlined guarded-call helper for dynamic dispatch paths where the callee
+/// is identified by its object bits rather than a code slot id.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_guarded_call_obj(
+    fn_ptr: u64,
+    args_ptr: *const u64,
+    nargs: u64,
+    callee_bits: u64,
+) -> u64 {
+    if !recursion_guard_enter() {
+        crate::with_gil_entry!(_py, {
+            return raise_exception::<u64>(
+                _py, "RecursionError", "maximum recursion depth exceeded",
+            );
+        });
+    }
+    if callee_bits != 0 {
+        crate::with_gil_entry!(_py, {
+            let mut code_bits = MoltObject::none().bits();
+            let func_obj = obj_from_bits(callee_bits);
+            if let Some(func_ptr) = func_obj.as_ptr() {
+                unsafe {
+                    match object_type_id(func_ptr) {
+                        TYPE_ID_FUNCTION => {
+                            code_bits = ensure_function_code_bits(_py, func_ptr);
+                        }
+                        TYPE_ID_BOUND_METHOD => {
+                            let bound_func_bits = bound_method_func_bits(func_ptr);
+                            if let Some(bound_ptr) = obj_from_bits(bound_func_bits).as_ptr()
+                                && object_type_id(bound_ptr) == TYPE_ID_FUNCTION
+                            {
+                                code_bits = ensure_function_code_bits(_py, bound_ptr);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            frame_stack_push(_py, code_bits);
+        });
+    }
+    let result: u64 = unsafe {
+        let n = nargs as usize;
+        molt_guarded_call_dispatch(fn_ptr, args_ptr, n)
+    };
+    if callee_bits != 0 {
+        crate::with_gil_entry!(_py, { frame_stack_pop(_py); });
+    }
+    recursion_guard_exit();
+    result
+}
+
+/// Shared dispatch table: call fn_ptr with n arguments read from args_ptr.
+#[inline(never)]
+unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize) -> u64 {
+    unsafe {
+        match n {
+            0 => {
+                let f: extern "C" fn() -> u64 = std::mem::transmute(fn_ptr as usize);
+                f()
+            }
+            1 => {
+                let f: extern "C" fn(u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr)
+            }
+            2 => {
+                let f: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1))
+            }
+            3 => {
+                let f: extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2))
+            }
+            4 => {
+                let f: extern "C" fn(u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3))
+            }
+            5 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4))
+            }
+            6 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5))
+            }
+            7 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6))
+            }
+            8 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7))
+            }
+            9 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8))
+            }
+            10 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9))
+            }
+            11 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10))
+            }
+            12 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10), *args_ptr.add(11))
+            }
+            13 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10), *args_ptr.add(11), *args_ptr.add(12))
+            }
+            14 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10), *args_ptr.add(11), *args_ptr.add(12), *args_ptr.add(13))
+            }
+            15 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10), *args_ptr.add(11), *args_ptr.add(12), *args_ptr.add(13), *args_ptr.add(14))
+            }
+            16 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10), *args_ptr.add(11), *args_ptr.add(12), *args_ptr.add(13), *args_ptr.add(14), *args_ptr.add(15))
+            }
+            _ => {
+                panic!("molt_guarded_call: unsupported arg count {}", n);
+            }
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_trace_set_line(line_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {

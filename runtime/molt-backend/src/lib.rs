@@ -9661,95 +9661,83 @@ impl SimpleBackend {
                             args.insert(0, env_bits);
                         }
                     }
-                    let mut sig = self.module.make_signature();
+                    // --- Outlined guarded call via molt_guarded_call ---
+                    // Instead of generating 3 blocks + 4 function imports for
+                    // guard/trace ceremony at every call site, emit a single
+                    // call to the runtime helper molt_guarded_call(fn_ptr,
+                    // args_ptr, nargs, code_id).
+
+                    // Declare the target function to take its address.
+                    let mut target_sig = self.module.make_signature();
                     for _ in 0..args.len() {
-                        sig.params.push(AbiParam::new(types::I64));
+                        target_sig.params.push(AbiParam::new(types::I64));
                     }
-                    sig.returns.push(AbiParam::new(types::I64));
+                    target_sig.returns.push(AbiParam::new(types::I64));
                     let linkage = if defined_functions.contains(target_name) {
                         Linkage::Export
                     } else {
                         Linkage::Import
                     };
-
                     let callee = self
                         .module
-                        .declare_function(target_name, linkage, &sig)
+                        .declare_function(target_name, linkage, &target_sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let mut guard_sig = self.module.make_signature();
-                    guard_sig.returns.push(AbiParam::new(types::I64));
-                    let guard_enter = self
-                        .module
-                        .declare_function("molt_recursion_guard_enter", Linkage::Import, &guard_sig)
-                        .unwrap();
-                    let guard_enter_local =
-                        self.module.declare_func_in_func(guard_enter, builder.func);
-                    let guard_exit = self
-                        .module
-                        .declare_function(
-                            "molt_recursion_guard_exit",
-                            Linkage::Import,
-                            &self.module.make_signature(),
-                        )
-                        .unwrap();
-                    let guard_exit_local =
-                        self.module.declare_func_in_func(guard_exit, builder.func);
-                    let mut trace_sig = self.module.make_signature();
-                    trace_sig.params.push(AbiParam::new(types::I64));
-                    trace_sig.returns.push(AbiParam::new(types::I64));
-                    let trace_enter = self
-                        .module
-                        .declare_function("molt_trace_enter_slot", Linkage::Import, &trace_sig)
-                        .unwrap();
-                    let trace_enter_local =
-                        self.module.declare_func_in_func(trace_enter, builder.func);
-                    let mut trace_exit_sig = self.module.make_signature();
-                    trace_exit_sig.returns.push(AbiParam::new(types::I64));
-                    let trace_exit = self
-                        .module
-                        .declare_function("molt_trace_exit", Linkage::Import, &trace_exit_sig)
-                        .unwrap();
-                    let trace_exit_local =
-                        self.module.declare_func_in_func(trace_exit, builder.func);
-                    let merge_block = builder.create_block();
-                    builder.append_block_param(merge_block, types::I64);
-                    // Carry any live tracked values across the call's internal control flow into the
-                    // continuation block.
-                    if !origin_obj_live.is_empty() {
-                        extend_unique_tracked(
-                            block_tracked_obj.entry(merge_block).or_default(),
-                            origin_obj_live.clone(),
-                        );
-                    }
-                    if !origin_ptr_live.is_empty() {
-                        extend_unique_tracked(
-                            block_tracked_ptr.entry(merge_block).or_default(),
-                            origin_ptr_live.clone(),
-                        );
-                    }
-                    let guard_call = builder.ins().call(guard_enter_local, &[]);
-                    let guard_val = builder.inst_results(guard_call)[0];
-                    let guard_ok = builder.ins().icmp_imm(IntCC::NotEqual, guard_val, 0);
-                    let call_block = builder.create_block();
-                    let fail_block = builder.create_block();
-                    builder
-                        .ins()
-                        .brif(guard_ok, call_block, &[], fail_block, &[]);
+                    let fn_ptr_val = builder.ins().func_addr(types::I64, local_callee);
 
-                    builder.switch_to_block(call_block);
-                    builder.seal_block(call_block);
-                    if emit_traces {
-                        let code_id = op.value.unwrap_or(0);
-                        let code_id_val = builder.ins().iconst(types::I64, code_id);
-                        let _ = builder.ins().call(trace_enter_local, &[code_id_val]);
+                    // Spill args to a stack slot for the outlined helper.
+                    let nargs_count = args.len();
+                    let slot_size = std::cmp::max(nargs_count, 1) * 8;
+                    let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        slot_size as u32,
+                        3, // align_shift: 2^3 = 8-byte alignment
+                    ));
+                    for (i, arg) in args.iter().enumerate() {
+                        builder.ins().stack_store(*arg, args_slot, (i * 8) as i32);
                     }
-                    let call = builder.ins().call(local_callee, &args);
-                    let res = builder.inst_results(call)[0];
-                    if emit_traces {
-                        let _ = builder.ins().call(trace_exit_local, &[]);
+                    let args_ptr_val = builder.ins().stack_addr(types::I64, args_slot, 0);
+                    let nargs_val = builder.ins().iconst(types::I64, nargs_count as i64);
+                    let code_id_val = if emit_traces {
+                        builder.ins().iconst(types::I64, op.value.unwrap_or(0))
+                    } else {
+                        builder.ins().iconst(types::I64, -1i64)
+                    };
+
+                    // Declare and call molt_guarded_call.
+                    let mut gc_sig = self.module.make_signature();
+                    gc_sig.params.push(AbiParam::new(types::I64)); // fn_ptr
+                    gc_sig.params.push(AbiParam::new(types::I64)); // args_ptr
+                    gc_sig.params.push(AbiParam::new(types::I64)); // nargs
+                    gc_sig.params.push(AbiParam::new(types::I64)); // code_id
+                    gc_sig.returns.push(AbiParam::new(types::I64));
+                    let gc_callee = self
+                        .module
+                        .declare_function("molt_guarded_call", Linkage::Import, &gc_sig)
+                        .unwrap();
+                    let gc_local = self.module.declare_func_in_func(gc_callee, builder.func);
+                    let gc_call = builder.ins().call(
+                        gc_local,
+                        &[fn_ptr_val, args_ptr_val, nargs_val, code_id_val],
+                    );
+                    let res = builder.inst_results(gc_call)[0];
+
+                    // Tracked-value cleanup (stays inline — varies per site).
+                    // Re-attach surviving tracked values to the current block.
+                    if let Some(cur_block) = builder.current_block() {
+                        if !origin_obj_live.is_empty() {
+                            extend_unique_tracked(
+                                block_tracked_obj.entry(cur_block).or_default(),
+                                origin_obj_live,
+                            );
+                        }
+                        if !origin_ptr_live.is_empty() {
+                            extend_unique_tracked(
+                                block_tracked_ptr.entry(cur_block).or_default(),
+                                origin_ptr_live,
+                            );
+                        }
                     }
-                    let _ = builder.ins().call(guard_exit_local, &[]);
                     for name in &origin_obj_cleanup {
                         if arg_cleanup_names.contains(name) {
                             continue;
@@ -9774,40 +9762,6 @@ impl SimpleBackend {
                     for val in &arg_cleanup {
                         builder.ins().call(local_dec_ref_obj, &[*val]);
                     }
-                    jump_block(&mut builder, merge_block, &[res]);
-
-                    builder.switch_to_block(fail_block);
-                    builder.seal_block(fail_block);
-                    let none_bits = builder.ins().iconst(types::I64, box_none());
-                    for name in &origin_obj_cleanup {
-                        if arg_cleanup_names.contains(name) {
-                            continue;
-                        }
-                        let val = var_get(&mut builder, &vars, name).unwrap_or_else(|| {
-                            panic!(
-                                "Tracked obj var not found in {} op {}: {}",
-                                func_ir.name, op_idx, name
-                            )
-                        });
-                        builder.ins().call(local_dec_ref_obj, &[*val]);
-                    }
-                    for name in &origin_ptr_cleanup {
-                        let val = var_get(&mut builder, &vars, name).unwrap_or_else(|| {
-                            panic!(
-                                "Tracked ptr var not found in {} op {}: {}",
-                                func_ir.name, op_idx, name
-                            )
-                        });
-                        builder.ins().call(local_dec_ref, &[*val]);
-                    }
-                    for val in &arg_cleanup {
-                        builder.ins().call(local_dec_ref_obj, &[*val]);
-                    }
-                    jump_block(&mut builder, merge_block, &[none_bits]);
-
-                    builder.switch_to_block(merge_block);
-                    builder.seal_block(merge_block);
-                    let res = builder.block_params(merge_block)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "call_internal" => {
