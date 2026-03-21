@@ -11556,6 +11556,94 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
+                // --- Outlined class definition via molt_guarded_class_def ---
+                // Replaces CLASS_NEW + CLASS_SET_BASE + N×SET_ATTR +
+                // CLASS_APPLY_SET_NAME + __init_subclass__ + CLASS_SET_LAYOUT_VERSION
+                // with a single runtime call.
+                "class_def" => {
+                    let args = op.args.as_ref().unwrap();
+                    let meta = op.s_value.as_ref().expect("class_def needs s_value metadata");
+                    let parts: Vec<&str> = meta.split(',').collect();
+                    let nbases: usize = parts[0].parse().unwrap();
+                    let nattrs: usize = parts[1].parse().unwrap();
+                    let layout_size: i64 = parts[2].parse().unwrap();
+                    let layout_version: i64 = parts[3].parse().unwrap();
+                    let flags: i64 = parts[4].parse().unwrap();
+
+                    // args layout: [name, base0..baseN-1, attr_key0, attr_val0, ...]
+                    let name_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Class name not found");
+
+                    // Spill bases to stack slot
+                    let bases_slot_size = std::cmp::max(nbases, 1) * 8;
+                    let bases_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        bases_slot_size as u32,
+                        3, // 8-byte aligned
+                    ));
+                    for i in 0..nbases {
+                        let base = var_get(&mut builder, &vars, &args[1 + i])
+                            .expect("Base class not found");
+                        builder.ins().stack_store(*base, bases_slot, (i * 8) as i32);
+                    }
+                    let bases_ptr = builder.ins().stack_addr(types::I64, bases_slot, 0);
+
+                    // Spill attrs to stack slot (key/value pairs)
+                    let attrs_slot_size = std::cmp::max(nattrs * 2, 1) * 8;
+                    let attrs_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        attrs_slot_size as u32,
+                        3,
+                    ));
+                    let attrs_base = 1 + nbases;
+                    for i in 0..nattrs {
+                        let key = var_get(&mut builder, &vars, &args[attrs_base + i * 2])
+                            .expect("Attr key not found");
+                        let val = var_get(&mut builder, &vars, &args[attrs_base + i * 2 + 1])
+                            .expect("Attr value not found");
+                        builder.ins().stack_store(*key, attrs_slot, (i * 2 * 8) as i32);
+                        builder.ins().stack_store(*val, attrs_slot, ((i * 2 + 1) * 8) as i32);
+                    }
+                    let attrs_ptr = builder.ins().stack_addr(types::I64, attrs_slot, 0);
+
+                    let nbases_val = builder.ins().iconst(types::I64, nbases as i64);
+                    let nattrs_val = builder.ins().iconst(types::I64, nattrs as i64);
+                    let layout_size_val = builder.ins().iconst(types::I64, layout_size);
+                    let layout_version_val = builder.ins().iconst(types::I64, layout_version);
+                    let flags_val = builder.ins().iconst(types::I64, flags);
+
+                    // Declare and call molt_guarded_class_def
+                    let mut cd_sig = self.module.make_signature();
+                    cd_sig.params.push(AbiParam::new(types::I64)); // name_bits
+                    cd_sig.params.push(AbiParam::new(types::I64)); // bases_ptr
+                    cd_sig.params.push(AbiParam::new(types::I64)); // nbases
+                    cd_sig.params.push(AbiParam::new(types::I64)); // attrs_ptr
+                    cd_sig.params.push(AbiParam::new(types::I64)); // nattrs
+                    cd_sig.params.push(AbiParam::new(types::I64)); // layout_size
+                    cd_sig.params.push(AbiParam::new(types::I64)); // layout_version
+                    cd_sig.params.push(AbiParam::new(types::I64)); // flags
+                    cd_sig.returns.push(AbiParam::new(types::I64));
+                    let cd_callee = self
+                        .module
+                        .declare_function("molt_guarded_class_def", Linkage::Import, &cd_sig)
+                        .unwrap();
+                    let cd_local = self.module.declare_func_in_func(cd_callee, builder.func);
+                    let cd_call = builder.ins().call(
+                        cd_local,
+                        &[
+                            *name_bits,
+                            bases_ptr,
+                            nbases_val,
+                            attrs_ptr,
+                            nattrs_val,
+                            layout_size_val,
+                            layout_version_val,
+                            flags_val,
+                        ],
+                    );
+                    let res = builder.inst_results(cd_call)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
                 "builtin_type" => {
                     let args = op.args.as_ref().unwrap();
                     let tag_bits = var_get(&mut builder, &vars, &args[0]).expect("Tag not found");
