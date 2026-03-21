@@ -1219,6 +1219,7 @@ impl WasmBackend {
         }
         for func_ir in &mut ir.functions {
             crate::fold_constants(&mut func_ir.ops);
+            crate::fold_constants_cross_block(&mut func_ir.ops);
         }
         crate::inline_functions(&mut ir);
 
