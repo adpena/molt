@@ -24,8 +24,7 @@ def diamond(size=9):
         lines.append(" " * (size // 2 - d) + "*" * (2 * d + 1))
     return "\n".join(lines)
 
-def mandelbrot_render(width: int = 50, height: int = 22) -> str:
-    chars: str = " .+*#@"
+def mandelbrot_render(width: int = 60, height: int = 24) -> str:
     mx: float = -2.0
     dx: float = 3.0 / width
     my: float = -1.1
@@ -35,12 +34,13 @@ def mandelbrot_render(width: int = 50, height: int = 22) -> str:
     while row < height:
         y0: float = my + dy * row
         col: int = 0
+        line: str = ""
         while col < width:
             x0: float = mx + dx * col
             x: float = 0.0
             y: float = 0.0
             it: int = 0
-            while it < 5:
+            while it < 30:
                 xx: float = x * x
                 yy: float = y * y
                 if xx + yy > 4.0:
@@ -48,11 +48,22 @@ def mandelbrot_render(width: int = 50, height: int = 22) -> str:
                 y = 2.0 * x * y + y0
                 x = xx - yy + x0
                 it = it + 1
-            out.append(chars[it])
+            if it < 2:
+                line = line + " "
+            elif it < 4:
+                line = line + "."
+            elif it < 8:
+                line = line + "+"
+            elif it < 16:
+                line = line + "*"
+            elif it < 30:
+                line = line + "#"
+            else:
+                line = line + "@"
             col = col + 1
-        out.append("\n")
+        out.append(line)
         row = row + 1
-    return "".join(out)
+    return "\n".join(out)
 
 def sort_data(data_str):
     nums = [int(x.strip()) for x in data_str.split(",") if x.strip()]
