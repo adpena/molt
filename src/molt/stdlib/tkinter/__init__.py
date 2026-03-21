@@ -145,7 +145,24 @@ def _normalize_option_name(name):
 
 
 def _normalize_tk_option_value(owner, value):
+    # Only register actual functions/methods as callbacks, not widget objects.
+    # Widget objects are callable (inherit __call__ from Misc) but should
+    # be converted to their Tk path name string.
     if callable(value):
+        value_type = type(value).__name__
+        # These are the types that should be registered as callbacks
+        if value_type in ("function", "method", "builtin_function_or_method"):
+            if owner is not None and hasattr(owner, "_register"):
+                return owner._register(value)
+            return value
+        # For other callable types (like widget objects), try to get _w
+        try:
+            w = value._w
+            if isinstance(w, str):
+                return w
+        except (AttributeError, TypeError):
+            pass
+        # Fallback: register as callback
         if owner is not None and hasattr(owner, "_register"):
             return owner._register(value)
         return value
@@ -154,11 +171,27 @@ def _normalize_tk_option_value(owner, value):
         changed = False
         for item in value:
             if callable(item):
-                if owner is not None and hasattr(owner, "_register"):
-                    normalized_items.append(owner._register(item))
-                    changed = True
+                item_type = type(item).__name__
+                if item_type in ("function", "method", "builtin_function_or_method"):
+                    if owner is not None and hasattr(owner, "_register"):
+                        normalized_items.append(owner._register(item))
+                        changed = True
+                    else:
+                        normalized_items.append(item)
                 else:
-                    normalized_items.append(item)
+                    try:
+                        w = item._w
+                        if isinstance(w, str):
+                            normalized_items.append(w)
+                            changed = True
+                        else:
+                            normalized_items.append(item)
+                    except (AttributeError, TypeError):
+                        if owner is not None and hasattr(owner, "_register"):
+                            normalized_items.append(owner._register(item))
+                            changed = True
+                        else:
+                            normalized_items.append(item)
             else:
                 normalized_items.append(item)
         if changed:
