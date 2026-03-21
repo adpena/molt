@@ -1422,6 +1422,50 @@ def test_lock_check_cache_path_is_cached(
     assert info.currsize >= 1
 
 
+def test_verify_cargo_lock_uses_workspace_member_manifests_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root_manifest = tmp_path / "Cargo.toml"
+    root_manifest.write_text(
+        '[workspace]\n'
+        'members = ["runtime/molt-runtime", "runtime/molt-backend"]\n'
+        'resolver = "2"\n'
+    )
+    (tmp_path / "Cargo.lock").write_text("# lock\n")
+    runtime_manifest = tmp_path / "runtime" / "molt-runtime" / "Cargo.toml"
+    runtime_manifest.parent.mkdir(parents=True)
+    runtime_manifest.write_text('[package]\nname = "molt-runtime"\nversion = "0.1.0"\n')
+    backend_manifest = tmp_path / "runtime" / "molt-backend" / "Cargo.toml"
+    backend_manifest.parent.mkdir(parents=True)
+    backend_manifest.write_text('[package]\nname = "molt-backend"\nversion = "0.1.0"\n')
+    stray_manifest = tmp_path / "scratch" / "Cargo.toml"
+    stray_manifest.parent.mkdir(parents=True)
+    stray_manifest.write_text('[package]\nname = "scratch"\nversion = "0.1.0"\n')
+
+    captured: dict[str, list[Path]] = {}
+
+    monkeypatch.setattr(
+        cli.shutil,
+        "which",
+        lambda name: "/usr/bin/cargo" if name == "cargo" else None,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_lock_check_inputs",
+        lambda project_root, paths: captured.setdefault("paths", list(paths)) or {},
+    )
+    monkeypatch.setattr(cli, "_is_lock_check_cache_valid", lambda *args, **kwargs: True)
+
+    assert cli._verify_cargo_lock(tmp_path) is None
+    assert "paths" in captured
+    assert root_manifest in captured["paths"]
+    assert runtime_manifest in captured["paths"]
+    assert backend_manifest in captured["paths"]
+    assert tmp_path / "Cargo.lock" in captured["paths"]
+    assert stray_manifest not in captured["paths"]
+    assert len(captured["paths"]) == 4
+
+
 def test_build_lock_dir_is_cached(tmp_path: Path) -> None:
     cli._build_lock_dir_cached.cache_clear()
 
