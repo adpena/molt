@@ -936,7 +936,7 @@ pub struct SimpleBackend {
     ctx: Context,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     trampoline_ids: BTreeMap<TrampolineKey, cranelift_module::FuncId>,
-    import_ids: HashMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    import_ids: BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     data_pool: BTreeMap<Vec<u8>, cranelift_module::DataId>,
     next_data_id: u64,
@@ -1123,7 +1123,7 @@ impl SimpleBackend {
             module,
             ctx,
             trampoline_ids: BTreeMap::new(),
-            import_ids: HashMap::new(),
+            import_ids: BTreeMap::new(),
             data_pool: BTreeMap::new(),
             next_data_id: 0,
         }
