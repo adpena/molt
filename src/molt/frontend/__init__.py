@@ -13604,196 +13604,86 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
                 self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         else:
+            # Outlined class definition: collect attrs, emit single CLASS_DEF op
+            class_def_attrs: list[tuple[MoltValue, MoltValue]] = []
+            for attr_str, attr_val in [("__name__", name_val), ("__qualname__", qualname_val), ("__module__", module_val)]:
+                key = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[attr_str], result=key))
+                class_def_attrs.append((key, attr_val))
             class_val = MoltValue(self.next_var(), type_hint="type")
-            self.emit(MoltOp(kind="CLASS_NEW", args=[name_val], result=class_val))
-            if base_vals:
-                if len(base_vals) == 1:
-                    bases_arg = base_vals[0]
-                else:
-                    bases_arg = MoltValue(self.next_var(), type_hint="tuple")
-                    self.emit(
-                        MoltOp(kind="TUPLE_NEW", args=base_vals, result=bases_arg)
-                    )
-                self.emit(
-                    MoltOp(
-                        kind="CLASS_SET_BASE",
-                        args=[class_val, bases_arg],
-                        result=MoltValue("none"),
-                    )
-                )
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[class_val, "__name__", name_val],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[class_val, "__qualname__", qualname_val],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[class_val, "__module__", module_val],
-                    result=MoltValue("none"),
-                )
-            )
-
-        if self.current_func_name == "molt_main":
-            self.globals[node.name] = class_val
-            self._emit_module_attr_set(node.name, class_val)
-            if node.name in self.boxed_locals:
-                self._store_local_value(node.name, class_val)
-        else:
-            self._store_local_value(node.name, class_val)
 
         class_info = self.classes[node.name]
-        if (
-            not class_info.get("dataclass")
-            and not class_info.get("dynamic")
-            and class_info.get("fields")
-        ):
-            field_items: list[MoltValue] = []
-            for field in sorted(class_info["fields"]):
-                key_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[field], result=key_val))
-                offset_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(
-                    MoltOp(
-                        kind="CONST",
-                        args=[class_info["fields"][field]],
-                        result=offset_val,
-                    )
-                )
-                field_items.extend([key_val, offset_val])
-            offsets_dict = MoltValue(self.next_var(), type_hint="dict")
-            self.emit(MoltOp(kind="DICT_NEW", args=field_items, result=offsets_dict))
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[class_val, "__molt_field_offsets__", offsets_dict],
-                    result=MoltValue("none"),
-                )
-            )
-
-        size_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[class_info["size"]], result=size_val))
-        self.emit(
-            MoltOp(
-                kind="SETATTR_GENERIC_OBJ",
-                args=[class_val, "__molt_layout_size__", size_val],
-                result=MoltValue("none"),
-            )
-        )
-
         if not dynamic_build:
+            # Collect field offsets into attrs
+            if not class_info.get("dataclass") and not class_info.get("dynamic") and class_info.get("fields"):
+                field_items: list[MoltValue] = []
+                for field in sorted(class_info["fields"]):
+                    key_val = MoltValue(self.next_var(), type_hint="str")
+                    self.emit(MoltOp(kind="CONST_STR", args=[field], result=key_val))
+                    offset_val = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="CONST", args=[class_info["fields"][field]], result=offset_val))
+                    field_items.extend([key_val, offset_val])
+                offsets_dict = MoltValue(self.next_var(), type_hint="dict")
+                self.emit(MoltOp(kind="DICT_NEW", args=field_items, result=offsets_dict))
+                fkey = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=["__molt_field_offsets__"], result=fkey))
+                class_def_attrs.append((fkey, offsets_dict))
             for attr_name, val in class_attr_values.items():
-                self.emit(
-                    MoltOp(
-                        kind="SETATTR_GENERIC_OBJ",
-                        args=[class_val, attr_name, val],
-                        result=MoltValue("none"),
-                    )
-                )
-
-        if (
-            (self.future_annotations or self.eager_annotations)
-            and class_annotation_items
-            and "__annotations__" not in class_attr_values
-            and not dynamic_build
-        ):
-            ann_items: list[MoltValue] = []
-            for name, val in class_annotation_items:
-                key_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
-                ann_items.extend([key_val, val])
-            ann_dict = MoltValue(self.next_var(), type_hint="dict")
-            self.emit(MoltOp(kind="DICT_NEW", args=ann_items, result=ann_dict))
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[class_val, "__annotations__", ann_dict],
-                    result=MoltValue("none"),
-                )
-            )
-        if (
-            not self.future_annotations
-            and not self.eager_annotations
-            and self.class_annotation_items
-            and "__annotations__" not in class_attr_values
-        ):
-            class_scope_names = set(class_attr_values) | set(methods)
-            rewritten_items: list[tuple[str, ast.expr, int]] = []
-            for name, expr, exec_id in self.class_annotation_items:
-                rewritten = self._rewrite_class_annotation_expr(
-                    expr, node.name, class_scope_names
-                )
-                rewritten_items.append((name, rewritten, exec_id))
-            annotate_val = self._emit_annotate_function_obj(
-                items=rewritten_items,
-                exec_map_name=self.class_annotation_exec_name,
-                stringize=False,
-                module_override=module_name,
-            )
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[class_val, "__annotate__", annotate_val],
-                    result=MoltValue("none"),
-                )
-            )
-
-        if type_param_vals:
-            self._emit_attach_type_params(class_val, type_param_vals)
-            class_getitem = self._emit_module_attr_get_on(
-                "typing", "_molt_class_getitem"
-            )
-            wrapped = MoltValue(self.next_var(), type_hint="classmethod")
-            self.emit(
-                MoltOp(
-                    kind="CLASSMETHOD_NEW",
-                    args=[class_getitem],
-                    result=wrapped,
-                )
-            )
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[class_val, "__class_getitem__", wrapped],
-                    result=MoltValue("none"),
-                )
-            )
-
-        if not dynamic_build:
+                akey = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[attr_name], result=akey))
+                class_def_attrs.append((akey, val))
+            if (self.future_annotations or self.eager_annotations) and class_annotation_items and "__annotations__" not in class_attr_values:
+                ann_items: list[MoltValue] = []
+                for name, val in class_annotation_items:
+                    key_val = MoltValue(self.next_var(), type_hint="str")
+                    self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
+                    ann_items.extend([key_val, val])
+                ann_dict = MoltValue(self.next_var(), type_hint="dict")
+                self.emit(MoltOp(kind="DICT_NEW", args=ann_items, result=ann_dict))
+                akey = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=["__annotations__"], result=akey))
+                class_def_attrs.append((akey, ann_dict))
+            if not self.future_annotations and not self.eager_annotations and self.class_annotation_items and "__annotations__" not in class_attr_values:
+                class_scope_names = set(class_attr_values) | set(methods)
+                rewritten_items: list[tuple[str, ast.expr, int]] = []
+                for name, expr, exec_id in self.class_annotation_items:
+                    rewritten = self._rewrite_class_annotation_expr(expr, node.name, class_scope_names)
+                    rewritten_items.append((name, rewritten, exec_id))
+                annotate_val = self._emit_annotate_function_obj(items=rewritten_items, exec_map_name=self.class_annotation_exec_name, stringize=False, module_override=module_name)
+                akey = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=["__annotate__"], result=akey))
+                class_def_attrs.append((akey, annotate_val))
             for method_name, method_info in methods.items():
-                self.emit(
-                    MoltOp(
-                        kind="SETATTR_GENERIC_OBJ",
-                        args=[class_val, method_name, method_info["attr"]],
-                        result=MoltValue("none"),
-                    )
-                )
+                mkey = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[method_name], result=mkey))
+                class_def_attrs.append((mkey, method_info["attr"]))
             if class_info.get("dataclass"):
                 marker_val = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=marker_val))
-                self.emit(
-                    MoltOp(
-                        kind="SETATTR_GENERIC_OBJ",
-                        args=[class_val, "__molt_dataclass__", marker_val],
-                        result=MoltValue("none"),
-                    )
-                )
+                dkey = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=["__molt_dataclass__"], result=dkey))
+                class_def_attrs.append((dkey, marker_val))
+            class_def_flags = 1 if base_vals else 0
+            class_def_args: list[Any] = [name_val] + list(base_vals)
+            for k, v in class_def_attrs:
+                class_def_args.append(k)
+                class_def_args.append(v)
+            layout_version = self.classes[node.name].get("layout_version", 0)
+            class_def_meta = f"{len(base_vals)},{len(class_def_attrs)},{class_info['size']},{layout_version},{class_def_flags}"
+            self.emit(MoltOp(kind="CLASS_DEF", args=class_def_args, result=class_val, metadata={"s_value": class_def_meta}))
+            if self.current_func_name == "molt_main":
+                self.globals[node.name] = class_val
+                self._emit_module_attr_set(node.name, class_val)
+                if node.name in self.boxed_locals:
+                    self._store_local_value(node.name, class_val)
+            else:
+                self._store_local_value(node.name, class_val)
+            if class_info.get("dataclass"):
                 dataclass_params = class_info.get("dataclass_params", {})
-
                 def emit_bool(value: bool) -> MoltValue:
                     res = MoltValue(self.next_var(), type_hint="bool")
                     self.emit(MoltOp(kind="CONST_BOOL", args=[value], result=res))
                     return res
-
                 init_val = emit_bool(dataclass_params.get("init", True))
                 repr_val = emit_bool(dataclass_params.get("repr", True))
                 eq_val = emit_bool(dataclass_params.get("eq", True))
@@ -13803,96 +13693,55 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 match_args_val = emit_bool(dataclass_params.get("match_args", True))
                 kw_only_val = emit_bool(dataclass_params.get("kw_only", False))
                 slots_val = emit_bool(dataclass_params.get("slots", False))
-                weakref_slot_val = emit_bool(
-                    dataclass_params.get("weakref_slot", False)
-                )
-                helper_val = self._emit_module_attr_get_on(
-                    "dataclasses", "_molt_apply_dataclass"
-                )
+                weakref_slot_val = emit_bool(dataclass_params.get("weakref_slot", False))
+                helper_val = self._emit_module_attr_get_on("dataclasses", "_molt_apply_dataclass")
                 callargs = MoltValue(self.next_var(), type_hint="callargs")
                 self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
-                for arg_val in [
-                    class_val,
-                    init_val,
-                    repr_val,
-                    eq_val,
-                    order_val,
-                    unsafe_hash_val,
-                    frozen_val,
-                    match_args_val,
-                    kw_only_val,
-                    slots_val,
-                    weakref_slot_val,
-                ]:
-                    self.emit(
-                        MoltOp(
-                            kind="CALLARGS_PUSH_POS",
-                            args=[callargs, arg_val],
-                            result=MoltValue("none"),
-                        )
-                    )
-                self.emit(
-                    MoltOp(
-                        kind="CALL_BIND",
-                        args=[helper_val, callargs],
-                        result=MoltValue("none"),
-                    )
-                )
-
-        self.emit(
-            MoltOp(
-                kind="CLASS_APPLY_SET_NAME",
-                args=[class_val],
-                result=MoltValue("none"),
-            )
-        )
-        if not dynamic_build and base_vals:
-            none_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-            init_name = MoltValue(self.next_var(), type_hint="str")
-            self.emit(
-                MoltOp(kind="CONST_STR", args=["__init_subclass__"], result=init_name)
-            )
-            for base_val in base_vals:
-                init_attr = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(
-                    MoltOp(
-                        kind="GETATTR_NAME_DEFAULT",
-                        args=[base_val, init_name, none_val],
-                        result=init_attr,
-                    )
-                )
-                missing = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="IS", args=[init_attr, none_val], result=missing))
-                self.emit(MoltOp(kind="IF", args=[missing], result=MoltValue("none")))
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                callargs = MoltValue(self.next_var(), type_hint="callargs")
-                self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
-                self.emit(
-                    MoltOp(
-                        kind="CALLARGS_PUSH_POS",
-                        args=[callargs, class_val],
-                        result=MoltValue("none"),
-                    )
-                )
-                self.emit(
-                    MoltOp(
-                        kind="CALL_BIND",
-                        args=[init_attr, callargs],
-                        result=MoltValue("none"),
-                    )
-                )
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        layout_version = self.classes[node.name].get("layout_version", 0)
-        layout_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[layout_version], result=layout_val))
-        self.emit(
-            MoltOp(
-                kind="CLASS_SET_LAYOUT_VERSION",
-                args=[class_val, layout_val],
-                result=MoltValue("none"),
-            )
-        )
+                for arg_val in [class_val, init_val, repr_val, eq_val, order_val, unsafe_hash_val, frozen_val, match_args_val, kw_only_val, slots_val, weakref_slot_val]:
+                    self.emit(MoltOp(kind="CALLARGS_PUSH_POS", args=[callargs, arg_val], result=MoltValue("none")))
+                self.emit(MoltOp(kind="CALL_BIND", args=[helper_val, callargs], result=MoltValue("none")))
+        else:
+            # Dynamic path
+            if self.current_func_name == "molt_main":
+                self.globals[node.name] = class_val
+                self._emit_module_attr_set(node.name, class_val)
+                if node.name in self.boxed_locals:
+                    self._store_local_value(node.name, class_val)
+            else:
+                self._store_local_value(node.name, class_val)
+            if not class_info.get("dataclass") and not class_info.get("dynamic") and class_info.get("fields"):
+                field_items_d: list[MoltValue] = []
+                for field in sorted(class_info["fields"]):
+                    key_val = MoltValue(self.next_var(), type_hint="str")
+                    self.emit(MoltOp(kind="CONST_STR", args=[field], result=key_val))
+                    offset_val = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="CONST", args=[class_info["fields"][field]], result=offset_val))
+                    field_items_d.extend([key_val, offset_val])
+                offsets_dict_d = MoltValue(self.next_var(), type_hint="dict")
+                self.emit(MoltOp(kind="DICT_NEW", args=field_items_d, result=offsets_dict_d))
+                self.emit(MoltOp(kind="SETATTR_GENERIC_OBJ", args=[class_val, "__molt_field_offsets__", offsets_dict_d], result=MoltValue("none")))
+            size_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[class_info["size"]], result=size_val))
+            self.emit(MoltOp(kind="SETATTR_GENERIC_OBJ", args=[class_val, "__molt_layout_size__", size_val], result=MoltValue("none")))
+            if not self.future_annotations and not self.eager_annotations and self.class_annotation_items and "__annotations__" not in class_attr_values:
+                class_scope_names = set(class_attr_values) | set(methods)
+                rewritten_items_d: list[tuple[str, ast.expr, int]] = []
+                for name, expr, exec_id in self.class_annotation_items:
+                    rewritten = self._rewrite_class_annotation_expr(expr, node.name, class_scope_names)
+                    rewritten_items_d.append((name, rewritten, exec_id))
+                annotate_val_d = self._emit_annotate_function_obj(items=rewritten_items_d, exec_map_name=self.class_annotation_exec_name, stringize=False, module_override=module_name)
+                self.emit(MoltOp(kind="SETATTR_GENERIC_OBJ", args=[class_val, "__annotate__", annotate_val_d], result=MoltValue("none")))
+            self.emit(MoltOp(kind="CLASS_APPLY_SET_NAME", args=[class_val], result=MoltValue("none")))
+            layout_version = self.classes[node.name].get("layout_version", 0)
+            layout_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[layout_version], result=layout_val))
+            self.emit(MoltOp(kind="CLASS_SET_LAYOUT_VERSION", args=[class_val, layout_val], result=MoltValue("none")))
+        if type_param_vals:
+            self._emit_attach_type_params(class_val, type_param_vals)
+            class_getitem = self._emit_module_attr_get_on("typing", "_molt_class_getitem")
+            wrapped = MoltValue(self.next_var(), type_hint="classmethod")
+            self.emit(MoltOp(kind="CLASSMETHOD_NEW", args=[class_getitem], result=wrapped))
+            self.emit(MoltOp(kind="SETATTR_GENERIC_OBJ", args=[class_val, "__class_getitem__", wrapped], result=MoltValue("none")))
 
         if decorator_vals:
             decorated = class_val
@@ -19883,36 +19732,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if star_index is None:
             if seq_val is None:
                 seq_val = self._emit_list_from_iter(value_node)
-            if length is None:
-                length = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="LEN", args=[seq_val], result=length))
-            expected_val = MoltValue(self.next_var(), type_hint="int")
+            # Emit a single outlined unpack_sequence op that validates the
+            # length and extracts all elements in one runtime call.
+            item_vals: list[MoltValue] = []
+            for _ in target.elts:
+                item_vals.append(MoltValue(self.next_var(), type_hint="Any"))
             self.emit(
-                MoltOp(kind="CONST", args=[len(target.elts)], result=expected_val)
-            )
-            too_few = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="LT", args=[length, expected_val], result=too_few))
-            self.emit(MoltOp(kind="IF", args=[too_few], result=MoltValue("none")))
-            emit_unpack_error(
-                "not enough values to unpack (expected ", expected_val, length
-            )
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-
-            too_many = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="LT", args=[expected_val, length], result=too_many))
-            self.emit(MoltOp(kind="IF", args=[too_many], result=MoltValue("none")))
-            emit_unpack_error(
-                "too many values to unpack (expected ", expected_val, None
-            )
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-
-            for idx, elt in enumerate(target.elts):
-                idx_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[idx], result=idx_val))
-                item_val = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(
-                    MoltOp(kind="INDEX", args=[seq_val, idx_val], result=item_val)
+                MoltOp(
+                    kind="UNPACK_SEQUENCE",
+                    args=[seq_val] + item_vals,
+                    result=MoltValue("none"),
+                    metadata={"expected_count": len(target.elts)},
                 )
+            )
+            for elt, item_val in zip(target.elts, item_vals):
                 self._emit_assign_target(elt, item_val, None)
             return
 
@@ -27498,6 +27331,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     {
                         "kind": "class_apply_set_name",
                         "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "CLASS_DEF":
+                json_ops.append(
+                    {
+                        "kind": "class_def",
+                        "args": [arg.name if isinstance(arg, MoltValue) else str(arg) for arg in op.args],
+                        "s_value": op.metadata["s_value"] if op.metadata else "",
                         "out": op.result.name,
                     }
                 )
@@ -36453,6 +36295,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "func_new",
             "builtin_func",
             "class_new",
+            "class_def",
             # Unpack operations (produce new values from a container)
             "unpack_sequence",
             "unpack_ex",
