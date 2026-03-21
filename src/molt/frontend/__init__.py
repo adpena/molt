@@ -9721,6 +9721,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
         self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+        # Write the final index value back to the local so that post-loop reads
+        # (e.g. ``print(i)``) see the correct value even when the variable is
+        # stored through a boxed cell / indirection that the loop phi update
+        # does not automatically propagate to.
+        self._store_local_value(index_name, idx)
 
     def visit_BinOp(self, node: ast.BinOp) -> Any:
         left = self.visit(node.left)
