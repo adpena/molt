@@ -11001,33 +11001,30 @@ def _prepare_backend_ir(
                 json_output,
                 command="build",
             )
-        entry_lower_error = _lower_entry_module_as_main(
-            lowering_context=_EntryFrontendLoweringContext(
-                entry_module=entry_module,
-                entry_path=entry_path,
-                parse_codec=parse_codec,
-                type_hint_policy=type_hint_policy,
-                fallback_policy=fallback_policy,
-                type_facts=type_facts,
-                enable_phi=enable_phi,
-                known_modules=known_modules,
-                known_classes=known_classes,
-                stdlib_allowlist=stdlib_allowlist,
-                known_func_defaults=known_func_defaults,
-                module_chunking=module_chunking,
-                module_chunk_max_ops=module_chunk_max_ops,
-                optimization_profile=optimization_profile,
-                pgo_hot_function_names=pgo_hot_function_names,
-                frontend_phase_timeout=frontend_phase_timeout,
-            ),
-            integration_state=integration_state,
-            diagnostics_state=diagnostics_state,
-            record_frontend_timing=record_frontend_timing,
-            fail=fail,
-            json_output=json_output,
+        # Dedup: instead of re-compiling the entry module as __main__ via
+        # _lower_entry_module_as_main, emit a thin trampoline function
+        # molt_init___main__ that delegates to the entry module's real init.
+        # This preserves the __main__ entry point the runtime expects while
+        # avoiding ~33% duplicate native code.
+        _entry_real_init = SimpleTIRGenerator.module_init_symbol(entry_module)
+        _main_init = SimpleTIRGenerator.module_init_symbol("__main__")
+        _main_code_id = _register_global_code_id_with_state(
+            integration_state, _entry_real_init
         )
-        if entry_lower_error is not None:
-            return None, entry_lower_error
+        integration_state.functions.append({
+            "name": _main_init,
+            "params": [],
+            "ops": [
+                {
+                    "kind": "call",
+                    "s_value": _entry_real_init,
+                    "args": [],
+                    "out": "v0",
+                    "value": _main_code_id,
+                },
+                {"kind": "ret_void"},
+            ],
+        })
 
     functions = integration_state.functions
     global_code_ids = integration_state.global_code_ids
@@ -12218,16 +12215,9 @@ def _augment_module_graph_for_entry_and_runtime(
     explicit_imports = set(entry_imports)
     stub_skip_modules = STUB_MODULES - entry_imports
     stub_parents = STUB_PARENT_MODULES - entry_imports
-    if (
-        entry_module_import_alias
-        and entry_module_import_alias not in module_graph
-        and source_path is not None
-    ):
-        module_graph[entry_module_import_alias] = source_path
-        if diagnostics_enabled:
-            _record_module_reason(
-                module_reasons, entry_module_import_alias, "entry_alias"
-            )
+    # Dedup: skip adding entry_module_import_alias to the module graph
+    # so the same source is not compiled a third time under an alias name.
+    # The __main__ trampoline in _prepare_backend_ir handles the alias.
     core_paths = [
         path
         for name in (
