@@ -4102,6 +4102,47 @@ pub extern "C" fn molt_invert(val: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_neg(val: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(val);
+        if let Some(i) = to_i64(obj) {
+            let res = -(i as i128);
+            return int_bits_from_i128(_py, res);
+        }
+        if let Some(big) = to_bigint(obj) {
+            let res = -big;
+            if let Some(i) = bigint_to_inline(&res) {
+                return MoltObject::from_int(i).bits();
+            }
+            return bigint_bits(_py, res);
+        }
+        if let Some(f) = to_f64(obj) {
+            return MoltObject::from_float(-f).bits();
+        }
+        if let Some(ptr) = complex_ptr_from_bits(val) {
+            let value = unsafe { *complex_ref(ptr) };
+            return complex_bits(_py, -value.re, -value.im);
+        }
+        if let Some(ptr) = maybe_ptr_from_bits(val)
+            && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__neg__")
+        {
+            unsafe {
+                let call_bits = attr_lookup_ptr(_py, ptr, name_bits);
+                dec_ref_bits(_py, name_bits);
+                if let Some(call_bits) = call_bits {
+                    let res_bits = call_callable0(_py, call_bits);
+                    dec_ref_bits(_py, call_bits);
+                    return res_bits;
+                }
+            }
+        }
+        let type_name = class_name_for_error(type_of_bits(_py, val));
+        let msg = format!("bad operand type for unary -: '{type_name}'");
+        raise_exception::<_>(_py, "TypeError", &msg)
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_inplace_bit_xor(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let lhs = obj_from_bits(a);
