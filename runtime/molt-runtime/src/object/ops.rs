@@ -14839,11 +14839,16 @@ pub extern "C" fn molt_zip_builtin(iterables_bits: u64, strict_bits: u64) -> u64
         let _strict_bits = MoltObject::from_bool(strict).bits();
         let iterables_obj = obj_from_bits(iterables_bits);
         let Some(iterables_ptr) = iterables_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "zip expects a tuple");
+            return raise_exception::<_>(_py, "TypeError", "zip expects an iterable of iterables");
         };
         unsafe {
-            if object_type_id(iterables_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<_>(_py, "TypeError", "zip expects a tuple");
+            let tid = object_type_id(iterables_ptr);
+            if tid != TYPE_ID_TUPLE && tid != TYPE_ID_LIST {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "zip expects an iterable of iterables",
+                );
             }
             let iterables = seq_vec_ref(iterables_ptr);
             zip_new_impl(_py, iterables.as_slice(), strict)
