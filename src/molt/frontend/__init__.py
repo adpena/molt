@@ -2423,22 +2423,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if needs_return_slot:
             self._init_return_slot()
         self._apply_type_facts(type_facts_name or name)
-        # Ensure builtin `locals()` parity for alias-call patterns that bypass the
-        # compile-time `func_id == "locals"` special-case (for example
-        # `getattr(builtins, "locals")()`).
-        #
-        # We keep a per-frame locals dict pinned on the runtime frame stack entry.
-        if name != "molt_main":
-            self._init_locals_cache()
-            cache_val = self.locals_cache_val
-            if cache_val is not None:
-                self.emit(
-                    MoltOp(
-                        kind="FRAME_LOCALS_SET",
-                        args=[cache_val],
-                        result=MoltValue("none"),
-                    )
-                )
+        # NOTE: locals-dict allocation moved to per-visitor conditional paths
+        # (visit_FunctionDef, visit_AsyncFunctionDef, lambda visitors) which
+        # gate on _function_contains_locals_call().  The previous unconditional
+        # _init_locals_cache() here caused a heap dict allocation on every
+        # function call, even for functions that never use locals().
+        # See bench/results/fib_regression_analysis.md for details.
 
     def _module_can_defer_attrs(self, node: ast.Module) -> bool:
         for current in ast.walk(node):
@@ -4795,6 +4785,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         cache_val = MoltValue(self.next_var(), type_hint="dict")
         self.emit(MoltOp(kind="DICT_NEW", args=[], result=cache_val))
         self.locals_cache_val = cache_val
+
+    def _init_locals_cache_and_pin(self) -> None:
+        """Allocate the locals cache dict and pin it on the frame stack.
+
+        This should be called from function visitors when the function body
+        contains a ``locals()`` call.  It combines ``_init_locals_cache()``
+        with the ``FRAME_LOCALS_SET`` emission that was previously done
+        unconditionally in ``start_function()``.
+        """
+        self._init_locals_cache()
+        cache_val = self.locals_cache_val
+        if cache_val is not None:
+            self.emit(
+                MoltOp(
+                    kind="FRAME_LOCALS_SET",
+                    args=[cache_val],
+                    result=MoltValue("none"),
+                )
+            )
 
     def _emit_locals_dict(self) -> MoltValue:
         if self.current_func_name == "molt_main":
@@ -24432,7 +24441,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     if hint is not None:
                         self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
             if needs_locals_cache:
-                self._init_locals_cache()
+                self._init_locals_cache_and_pin()
             self._push_qualname(func_name, True)
             try:
                 for item in node.body:
@@ -24755,7 +24764,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if hint is not None:
                     self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
         if needs_locals_cache:
-            self._init_locals_cache()
+            self._init_locals_cache_and_pin()
         self._push_qualname(func_name, True)
         try:
             for item in node.body:
@@ -25086,7 +25095,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     if hint is not None:
                         self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
             if needs_locals_cache:
-                self._init_locals_cache()
+                self._init_locals_cache_and_pin()
             self._push_qualname(func_name, True)
             try:
                 for item in node.body:
@@ -25359,7 +25368,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             for name in sorted(self.scope_assigned):
                 self._box_local(name)
             if needs_locals_cache:
-                self._init_locals_cache()
+                self._init_locals_cache_and_pin()
         self._push_qualname(func_name, True)
         try:
             for item in node.body:
@@ -25554,7 +25563,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     if hint is not None:
                         self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
             if needs_locals_cache:
-                self._init_locals_cache()
+                self._init_locals_cache_and_pin()
             self._push_qualname("<lambda>", True)
             try:
                 return_node = ast.Return(value=node.body)
@@ -25772,7 +25781,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             for name in sorted(self.scope_assigned):
                 self._box_local(name)
             if needs_locals_cache:
-                self._init_locals_cache()
+                self._init_locals_cache_and_pin()
         self._push_qualname("<lambda>", True)
         try:
             val = self.visit(node.body)
