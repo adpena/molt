@@ -77,6 +77,7 @@ impl ThreadPool {
         self.worker_count.store(count, AtomicOrdering::Release);
         for _ in 0..count {
             let rx = self.receiver.clone();
+            crate::concurrency::register_gil_thread();
             let handle = if let Some(stack_size) = configured_thread_stack_size() {
                 let rx_builder = rx.clone();
                 thread::Builder::new()
@@ -162,6 +163,16 @@ impl ThreadTaskState {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn thread_worker(rx: Receiver<ThreadWork>) {
+    // Ensure the GIL thread counter is decremented when this worker exits,
+    // re-enabling the single-threaded fast path if we're the last pool thread.
+    struct _GilThreadGuard;
+    impl Drop for _GilThreadGuard {
+        fn drop(&mut self) {
+            crate::concurrency::unregister_gil_thread();
+        }
+    }
+    let _gtg = _GilThreadGuard;
+
     while let Ok(work) = rx.recv() {
         match work {
             ThreadWork::Shutdown => break,
