@@ -1752,4 +1752,53 @@ mod tests {
                 .any(|window| window == b"molt_profile_enabled")
         );
     }
+
+    #[test]
+    fn native_backend_keeps_profile_store_imports_when_function_has_store_ops() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("obj".to_string()),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("value".to_string()),
+                        value: Some(2),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "store".to_string(),
+                        args: Some(vec!["obj".to_string(), "value".to_string()]),
+                        value: Some(8),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+            }],
+            profile: None,
+        };
+
+        let bytes = SimpleBackend::new().compile(ir);
+
+        assert!(
+            bytes
+                .windows(b"molt_profile_struct_field_store".len())
+                .any(|window| window == b"molt_profile_struct_field_store")
+        );
+        assert!(
+            bytes
+                .windows(b"molt_profile_enabled".len())
+                .any(|window| window == b"molt_profile_enabled")
+        );
+    }
 }
