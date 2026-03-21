@@ -124,6 +124,11 @@ def _build_basic_blocks(
         "RERAISE",
         "LABEL",
         "STATE_LABEL",
+        "STATE_SWITCH",
+        "STATE_YIELD",
+        "STATE_TRANSITION",
+        "CHAN_SEND_YIELD",
+        "CHAN_RECV_YIELD",
         "CHECK_EXCEPTION",
     }
     split_after_kinds = leader_kinds
