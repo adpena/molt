@@ -17440,6 +17440,31 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_find(hay_bits: u64, needle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        // ASCII fast path: skip all char-to-byte conversion overhead when both
+        // haystack and needle are pure ASCII (byte index == char index).
+        if let Some(hay_ptr) = obj_from_bits(hay_bits).as_ptr() {
+            unsafe {
+                if object_type_id(hay_ptr) == TYPE_ID_STRING {
+                    let hay_len = string_len(hay_ptr);
+                    let hay_bytes =
+                        std::slice::from_raw_parts(string_bytes(hay_ptr), hay_len);
+                    if hay_bytes.is_ascii() {
+                        if let Some(needle_ptr) = obj_from_bits(needle_bits).as_ptr() {
+                            if object_type_id(needle_ptr) == TYPE_ID_STRING {
+                                let needle_bytes = std::slice::from_raw_parts(
+                                    string_bytes(needle_ptr),
+                                    string_len(needle_ptr),
+                                );
+                                if needle_bytes.is_ascii() {
+                                    let idx = bytes_find_impl(hay_bytes, needle_bytes);
+                                    return MoltObject::from_int(idx).bits();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
         molt_string_find_slice(
@@ -17456,6 +17481,30 @@ pub extern "C" fn molt_string_find(hay_bits: u64, needle_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_rfind(hay_bits: u64, needle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        // ASCII fast path: skip all char-to-byte conversion overhead.
+        if let Some(hay_ptr) = obj_from_bits(hay_bits).as_ptr() {
+            unsafe {
+                if object_type_id(hay_ptr) == TYPE_ID_STRING {
+                    let hay_len = string_len(hay_ptr);
+                    let hay_bytes =
+                        std::slice::from_raw_parts(string_bytes(hay_ptr), hay_len);
+                    if hay_bytes.is_ascii() {
+                        if let Some(needle_ptr) = obj_from_bits(needle_bits).as_ptr() {
+                            if object_type_id(needle_ptr) == TYPE_ID_STRING {
+                                let needle_bytes = std::slice::from_raw_parts(
+                                    string_bytes(needle_ptr),
+                                    string_len(needle_ptr),
+                                );
+                                if needle_bytes.is_ascii() {
+                                    let idx = bytes_rfind_impl(hay_bytes, needle_bytes);
+                                    return MoltObject::from_int(idx).bits();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
         molt_string_rfind_slice(
@@ -17535,8 +17584,13 @@ pub extern "C" fn molt_string_find_slice(
                 let needle_len = string_len(needle_ptr);
                 let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), hay_len);
                 let needle_bytes = std::slice::from_raw_parts(string_bytes(needle_ptr), needle_len);
-                let total_chars =
-                    utf8_codepoint_count_cached(_py, hay_bytes, Some(hay_ptr as usize));
+                // Compute is_ascii() ONCE to avoid redundant full-buffer scans.
+                let hay_is_ascii = hay_bytes.is_ascii();
+                let total_chars = if hay_is_ascii {
+                    hay_bytes.len() as i64
+                } else {
+                    utf8_codepoint_count_cached(_py, hay_bytes, Some(hay_ptr as usize))
+                };
                 let (start, end, start_raw) = slice_bounds_from_args(
                     _py,
                     start_bits,
@@ -17554,6 +17608,18 @@ pub extern "C" fn molt_string_find_slice(
                     }
                     return MoltObject::from_int(start).bits();
                 }
+                if hay_is_ascii {
+                    // ASCII fast path: byte index == char index, skip all
+                    // utf8_char_to_byte_index_cached calls.
+                    let start_byte = (start as usize).min(hay_bytes.len());
+                    let end_byte = (end as usize).min(hay_bytes.len());
+                    let slice = &hay_bytes[start_byte..end_byte];
+                    let idx = bytes_find_impl(slice, needle_bytes);
+                    if idx < 0 {
+                        return MoltObject::from_int(-1).bits();
+                    }
+                    return MoltObject::from_int(start + idx).bits();
+                }
                 let start_byte =
                     utf8_char_to_byte_index_cached(_py, hay_bytes, start, Some(hay_ptr as usize));
                 let end_byte =
@@ -17563,9 +17629,6 @@ pub extern "C" fn molt_string_find_slice(
                 let idx = bytes_find_impl(slice, needle_bytes);
                 if idx < 0 {
                     return MoltObject::from_int(-1).bits();
-                }
-                if hay_bytes.is_ascii() && needle_bytes.is_ascii() {
-                    return MoltObject::from_int(start + idx).bits();
                 }
                 let byte_idx = start_byte + idx as usize;
                 let char_idx = utf8_byte_to_char_index_cached(
@@ -17616,8 +17679,13 @@ pub extern "C" fn molt_string_rfind_slice(
                 let needle_len = string_len(needle_ptr);
                 let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), hay_len);
                 let needle_bytes = std::slice::from_raw_parts(string_bytes(needle_ptr), needle_len);
-                let total_chars =
-                    utf8_codepoint_count_cached(_py, hay_bytes, Some(hay_ptr as usize));
+                // Compute is_ascii() ONCE to avoid redundant full-buffer scans.
+                let hay_is_ascii = hay_bytes.is_ascii();
+                let total_chars = if hay_is_ascii {
+                    hay_bytes.len() as i64
+                } else {
+                    utf8_codepoint_count_cached(_py, hay_bytes, Some(hay_ptr as usize))
+                };
                 let (start, end, start_raw) = slice_bounds_from_args(
                     _py,
                     start_bits,
@@ -17635,6 +17703,17 @@ pub extern "C" fn molt_string_rfind_slice(
                     }
                     return MoltObject::from_int(end).bits();
                 }
+                if hay_is_ascii {
+                    // ASCII fast path: byte index == char index.
+                    let start_byte = (start as usize).min(hay_bytes.len());
+                    let end_byte = (end as usize).min(hay_bytes.len());
+                    let slice = &hay_bytes[start_byte..end_byte];
+                    let idx = bytes_rfind_impl(slice, needle_bytes);
+                    if idx < 0 {
+                        return MoltObject::from_int(-1).bits();
+                    }
+                    return MoltObject::from_int(start + idx).bits();
+                }
                 let start_byte =
                     utf8_char_to_byte_index_cached(_py, hay_bytes, start, Some(hay_ptr as usize));
                 let end_byte =
@@ -17644,9 +17723,6 @@ pub extern "C" fn molt_string_rfind_slice(
                 let idx = bytes_rfind_impl(slice, needle_bytes);
                 if idx < 0 {
                     return MoltObject::from_int(-1).bits();
-                }
-                if hay_bytes.is_ascii() && needle_bytes.is_ascii() {
-                    return MoltObject::from_int(start + idx).bits();
                 }
                 let byte_idx = start_byte + idx as usize;
                 let char_idx = utf8_byte_to_char_index_cached(
@@ -17887,17 +17963,27 @@ pub extern "C" fn molt_string_startswith_slice(
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            let total_chars = utf8_codepoint_count_cached(_py, hay_bytes, Some(hay_ptr as usize));
+            // Compute is_ascii() ONCE to avoid redundant full-buffer scans.
+            let hay_is_ascii = hay_bytes.is_ascii();
+            let total_chars = if hay_is_ascii {
+                hay_bytes.len() as i64
+            } else {
+                utf8_codepoint_count_cached(_py, hay_bytes, Some(hay_ptr as usize))
+            };
             let (start, end, start_raw) =
                 slice_bounds_from_args(_py, start_bits, end_bits, has_start, has_end, total_chars);
             if end < start {
                 return MoltObject::from_bool(false).bits();
             }
-            let start_byte =
-                utf8_char_to_byte_index_cached(_py, hay_bytes, start, Some(hay_ptr as usize));
-            let end_byte =
-                utf8_char_to_byte_index_cached(_py, hay_bytes, end, Some(hay_ptr as usize))
-                    .min(hay_bytes.len());
+            let (start_byte, end_byte) = if hay_is_ascii {
+                ((start as usize).min(hay_bytes.len()), (end as usize).min(hay_bytes.len()))
+            } else {
+                (
+                    utf8_char_to_byte_index_cached(_py, hay_bytes, start, Some(hay_ptr as usize)),
+                    utf8_char_to_byte_index_cached(_py, hay_bytes, end, Some(hay_ptr as usize))
+                        .min(hay_bytes.len()),
+                )
+            };
             let slice = &hay_bytes[start_byte..end_byte];
             if let Some(needle_ptr) = needle.as_ptr() {
                 let needle_type = object_type_id(needle_ptr);
@@ -17975,17 +18061,27 @@ pub extern "C" fn molt_string_endswith_slice(
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            let total_chars = utf8_codepoint_count_cached(_py, hay_bytes, Some(hay_ptr as usize));
+            // Compute is_ascii() ONCE to avoid redundant full-buffer scans.
+            let hay_is_ascii = hay_bytes.is_ascii();
+            let total_chars = if hay_is_ascii {
+                hay_bytes.len() as i64
+            } else {
+                utf8_codepoint_count_cached(_py, hay_bytes, Some(hay_ptr as usize))
+            };
             let (start, end, start_raw) =
                 slice_bounds_from_args(_py, start_bits, end_bits, has_start, has_end, total_chars);
             if end < start {
                 return MoltObject::from_bool(false).bits();
             }
-            let start_byte =
-                utf8_char_to_byte_index_cached(_py, hay_bytes, start, Some(hay_ptr as usize));
-            let end_byte =
-                utf8_char_to_byte_index_cached(_py, hay_bytes, end, Some(hay_ptr as usize))
-                    .min(hay_bytes.len());
+            let (start_byte, end_byte) = if hay_is_ascii {
+                ((start as usize).min(hay_bytes.len()), (end as usize).min(hay_bytes.len()))
+            } else {
+                (
+                    utf8_char_to_byte_index_cached(_py, hay_bytes, start, Some(hay_ptr as usize)),
+                    utf8_char_to_byte_index_cached(_py, hay_bytes, end, Some(hay_ptr as usize))
+                        .min(hay_bytes.len()),
+                )
+            };
             let slice = &hay_bytes[start_byte..end_byte];
             if let Some(needle_ptr) = needle.as_ptr() {
                 let needle_type = object_type_id(needle_ptr);
@@ -18068,7 +18164,12 @@ pub extern "C" fn molt_string_count(hay_bits: u64, needle_bits: u64) -> u64 {
             let needle_bytes =
                 std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
             let count = if needle_bytes.is_empty() {
-                utf8_codepoint_count_cached(_py, hay_bytes, Some(hay_ptr as usize)) + 1
+                // For empty needle, count == len(str) + 1. Use len directly for ASCII.
+                if hay_bytes.is_ascii() {
+                    hay_bytes.len() as i64 + 1
+                } else {
+                    utf8_codepoint_count_cached(_py, hay_bytes, Some(hay_ptr as usize)) + 1
+                }
             } else if let Some(cache) = utf8_count_cache_lookup(_py, hay_ptr as usize, needle_bytes)
             {
                 cache.count
@@ -18125,7 +18226,13 @@ pub extern "C" fn molt_string_count_slice(
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             let needle_bytes =
                 std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
-            let total_chars = utf8_codepoint_count_cached(_py, hay_bytes, Some(hay_ptr as usize));
+            // Compute is_ascii() ONCE to avoid redundant full-buffer scans.
+            let hay_is_ascii = hay_bytes.is_ascii();
+            let total_chars = if hay_is_ascii {
+                hay_bytes.len() as i64
+            } else {
+                utf8_codepoint_count_cached(_py, hay_bytes, Some(hay_ptr as usize))
+            };
             let (start, end, start_raw) =
                 slice_bounds_from_args(_py, start_bits, end_bits, has_start, has_end, total_chars);
             if end < start {
@@ -18138,11 +18245,15 @@ pub extern "C" fn molt_string_count_slice(
                 let count = end - start + 1;
                 return MoltObject::from_int(count).bits();
             }
-            let start_byte =
-                utf8_char_to_byte_index_cached(_py, hay_bytes, start, Some(hay_ptr as usize));
-            let end_byte =
-                utf8_char_to_byte_index_cached(_py, hay_bytes, end, Some(hay_ptr as usize))
-                    .min(hay_bytes.len());
+            let (start_byte, end_byte) = if hay_is_ascii {
+                ((start as usize).min(hay_bytes.len()), (end as usize).min(hay_bytes.len()))
+            } else {
+                (
+                    utf8_char_to_byte_index_cached(_py, hay_bytes, start, Some(hay_ptr as usize)),
+                    utf8_char_to_byte_index_cached(_py, hay_bytes, end, Some(hay_ptr as usize))
+                        .min(hay_bytes.len()),
+                )
+            };
             if let Some(cache) = utf8_count_cache_lookup(_py, hay_ptr as usize, needle_bytes) {
                 let cache =
                     utf8_count_cache_upgrade_prefix(_py, hay_ptr as usize, &cache, hay_bytes);
