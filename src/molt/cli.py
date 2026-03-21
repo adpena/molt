@@ -4399,11 +4399,7 @@ def _build_module_lowering_metadata(
         logical_source_path_by_module[module_name] = generated_module_source_paths.get(
             module_name, str(module_path)
         )
-        entry_override_by_module[module_name] = (
-            None
-            if module_name == entry_module and entry_module != "__main__"
-            else entry_module
-        )
+        entry_override_by_module[module_name] = entry_module
         module_is_namespace_by_module[module_name] = module_name in namespace_modules
         module_is_package_by_module[module_name] = module_path.name == "__init__.py"
     return (
@@ -11001,33 +10997,30 @@ def _prepare_backend_ir(
                 json_output,
                 command="build",
             )
-        entry_lower_error = _lower_entry_module_as_main(
-            lowering_context=_EntryFrontendLoweringContext(
-                entry_module=entry_module,
-                entry_path=entry_path,
-                parse_codec=parse_codec,
-                type_hint_policy=type_hint_policy,
-                fallback_policy=fallback_policy,
-                type_facts=type_facts,
-                enable_phi=enable_phi,
-                known_modules=known_modules,
-                known_classes=known_classes,
-                stdlib_allowlist=stdlib_allowlist,
-                known_func_defaults=known_func_defaults,
-                module_chunking=module_chunking,
-                module_chunk_max_ops=module_chunk_max_ops,
-                optimization_profile=optimization_profile,
-                pgo_hot_function_names=pgo_hot_function_names,
-                frontend_phase_timeout=frontend_phase_timeout,
-            ),
-            integration_state=integration_state,
-            diagnostics_state=diagnostics_state,
-            record_frontend_timing=record_frontend_timing,
-            fail=fail,
-            json_output=json_output,
+        # Dedup: the entry module is already compiled with entry_module=
+        # entry_module (giving it __main__ semantics — dynamic __name__,
+        # MODULE_CACHE_SET for "__main__", etc.).  Emit a thin trampoline
+        # molt_init___main__ that delegates to the real init instead of
+        # re-compiling the entire module.
+        _entry_real_init = SimpleTIRGenerator.module_init_symbol(entry_module)
+        _main_init = SimpleTIRGenerator.module_init_symbol("__main__")
+        _trampoline_code_id = _register_global_code_id_with_state(
+            integration_state, _entry_real_init
         )
-        if entry_lower_error is not None:
-            return None, entry_lower_error
+        integration_state.functions.append({
+            "name": _main_init,
+            "params": [],
+            "ops": [
+                {
+                    "kind": "call",
+                    "s_value": _entry_real_init,
+                    "args": [],
+                    "out": "v0",
+                    "value": _trampoline_code_id,
+                },
+                {"kind": "ret_void"},
+            ],
+        })
 
     functions = integration_state.functions
     global_code_ids = integration_state.global_code_ids
@@ -12218,16 +12211,10 @@ def _augment_module_graph_for_entry_and_runtime(
     explicit_imports = set(entry_imports)
     stub_skip_modules = STUB_MODULES - entry_imports
     stub_parents = STUB_PARENT_MODULES - entry_imports
-    if (
-        entry_module_import_alias
-        and entry_module_import_alias not in module_graph
-        and source_path is not None
-    ):
-        module_graph[entry_module_import_alias] = source_path
-        if diagnostics_enabled:
-            _record_module_reason(
-                module_reasons, entry_module_import_alias, "entry_alias"
-            )
+    # Dedup: skip adding entry_module_import_alias to the module graph.
+    # The entry module is compiled once with entry semantics, and the
+    # __main__ trampoline in _prepare_backend_ir handles the alias.
+    # Adding the alias would compile the same source a third time.
     core_paths = [
         path
         for name in (
