@@ -399,7 +399,7 @@ pub(crate) use crate::object::{
     object_mark_has_ptrs, object_payload_size, object_set_class_bits, object_type_id,
     pending_bits_i64, ptr_from_bits, string_bytes, string_len,
 };
-pub use crate::object::{MoltHeader, molt_dec_ref, molt_inc_ref};
+pub use crate::object::{MoltHeader, bump_type_version, global_type_version, molt_dec_ref, molt_inc_ref};
 #[allow(unused_imports)]
 pub(crate) use crate::provenance::{register_ptr, release_ptr, reset_ptr_registry, resolve_ptr};
 pub(crate) use crate::state::cache::{InternedNames, MethodCache, intern_static_name};
