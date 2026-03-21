@@ -11949,6 +11949,23 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         symbol: "molt_threading_event_wait",
         arity: 1,
     },
+    // ── enum create/member intrinsics (trio/pydantic IntEnum, Flag) ──────
+    IntrinsicSpec {
+        name: "molt_enum_create",
+        symbol: "molt_enum_create",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_enum_member",
+        symbol: "molt_enum_member",
+        arity: 2,
+    },
+    // ── traceback format_exc intrinsic (trio) ────────────────────────────
+    IntrinsicSpec {
+        name: "molt_traceback_format_exc",
+        symbol: "molt_traceback_format_exc",
+        arity: 1,
+    },
 ];
 
 pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
@@ -17011,6 +17028,11 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_threading_event_wait" => {
             Some(crate::builtins::threading_helpers::molt_threading_event_wait as *const () as usize as u64)
+        }
+        "molt_enum_create" => Some(crate::molt_enum_create as *const () as usize as u64),
+        "molt_enum_member" => Some(crate::molt_enum_member as *const () as usize as u64),
+        "molt_traceback_format_exc" => {
+            Some(crate::molt_traceback_format_exc as *const () as usize as u64)
         }
         _ => None,
     }
