@@ -1059,11 +1059,10 @@ impl SimpleBackend {
                     panic!("invalid MOLT_BACKEND_LIBCALL_CALL_CONV={libcall_call_conv:?}: {err:?}")
                 });
         }
-        // Cranelift verifier can dominate compile time for very large generated
-        // functions during local/dev differential sweeps. Keep it enabled by
-        // default for release builds, but default it off for debug/dev builds.
-        // Callers can always override with MOLT_BACKEND_ENABLE_VERIFIER=0|1.
-        let default_enable_verifier = !cfg!(debug_assertions);
+        // Cranelift verifier is expensive — it validates every instruction in
+        // every function. Disable by default for both debug and release builds.
+        // Enable explicitly with MOLT_BACKEND_ENABLE_VERIFIER=1 for debugging.
+        let default_enable_verifier = false;
         let enable_verifier = env_setting("MOLT_BACKEND_ENABLE_VERIFIER")
             .as_deref()
             .map(parse_truthy_env)
