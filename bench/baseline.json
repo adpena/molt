@@ -1,565 +1,495 @@
 {
   "benchmarks": {
-    "bench_async_await.py": {
-      "cpython_time_s": 0.04914552800134212,
-      "molt_cpython_ratio": null,
-      "molt_ok": false,
-      "molt_size_kb": 0,
-      "molt_speedup": 0,
-      "molt_time_s": 0,
-      "pypy_time_s": 0.1237320136691172
-    },
     "bench_attr_access.py": {
-      "cpython_time_s": 0.028165055332162108,
-      "molt_cpython_ratio": 4.072500727626193,
       "molt_ok": true,
-      "molt_size_kb": 31436.1953125,
-      "molt_speedup": 0.24554937294827367,
-      "molt_time_s": 0.11470220833386217,
-      "pypy_time_s": 0.053068583331575304
-    },
-    "bench_builtin_delattr_slice.py": {
-      "cpython_time_s": null,
-      "molt_cpython_ratio": null,
-      "molt_ok": false,
-      "molt_size_kb": 0,
-      "molt_speedup": 0,
-      "molt_time_s": 0,
-      "pypy_time_s": null
-    },
-    "bench_builtin_dir_slice.py": {
-      "cpython_time_s": null,
-      "molt_cpython_ratio": null,
-      "molt_ok": false,
-      "molt_size_kb": 0,
-      "molt_speedup": 0,
-      "molt_time_s": 0,
-      "pypy_time_s": null
-    },
-    "bench_builtin_import_slice.py": {
-      "cpython_time_s": null,
-      "molt_cpython_ratio": null,
-      "molt_ok": false,
-      "molt_size_kb": 0,
-      "molt_speedup": 0,
-      "molt_time_s": 0,
-      "pypy_time_s": null
-    },
-    "bench_builtin_locals_slice.py": {
-      "cpython_time_s": null,
-      "molt_cpython_ratio": null,
-      "molt_ok": false,
-      "molt_size_kb": 0,
-      "molt_speedup": 0,
-      "molt_time_s": 0,
-      "pypy_time_s": null
+      "build_ok": true,
+      "molt_time_s": 0.186824,
+      "cpython_time_s": 0.03892,
+      "molt_speedup": 0.21,
+      "molt_cpython_ratio": 0.2083,
+      "output_match": true
     },
     "bench_bytearray_find.py": {
-      "cpython_time_s": 0.017621611000019282,
-      "molt_cpython_ratio": 1.127711251794658,
-      "molt_ok": true,
-      "molt_size_kb": 31234.1015625,
-      "molt_speedup": 0.886751815598704,
-      "molt_time_s": 0.012992361333696559,
-      "pypy_time_s": 0.052114833333083276
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.04615,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_bytearray_replace.py": {
-      "cpython_time_s": 0.029389055334225606,
-      "molt_cpython_ratio": 0.39384589579104,
-      "molt_ok": true,
-      "molt_size_kb": 31234.234375,
-      "molt_speedup": 2.5390641636407016,
-      "molt_time_s": 0.012955194334305512,
-      "pypy_time_s": 0.07306005533367473
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.199928,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_bytes_find.py": {
-      "cpython_time_s": 0.17456105566816404,
-      "molt_cpython_ratio": 15.383742409419304,
-      "molt_ok": true,
-      "molt_size_kb": 31233.8671875,
-      "molt_speedup": 0.0650036885295031,
-      "molt_time_s": 2.6943000973333255,
-      "pypy_time_s": 0.06671208300394937
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 2.009914,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_bytes_find_only.py": {
-      "cpython_time_s": 0.1984294583356435,
-      "molt_cpython_ratio": 13.374912473956865,
-      "molt_ok": true,
-      "molt_size_kb": 31234.1953125,
-      "molt_speedup": 0.07476684441465789,
-      "molt_time_s": 2.8078447915013385,
-      "pypy_time_s": 0.5513231530009458
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 2.735503,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_bytes_replace.py": {
-      "cpython_time_s": 0.013965069665573537,
-      "molt_cpython_ratio": 0.6310637225405474,
-      "molt_ok": true,
-      "molt_size_kb": 31234.0390625,
-      "molt_speedup": 1.5846260278980742,
-      "molt_time_s": 0.009244750333891716,
-      "pypy_time_s": 0.045030777999879014
-    },
-    "bench_channel_throughput.py": {
-      "cpython_time_s": null,
-      "molt_cpython_ratio": null,
       "molt_ok": false,
-      "molt_size_kb": 0,
-      "molt_speedup": 0,
-      "molt_time_s": 0,
-      "pypy_time_s": null
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.027457,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_class_hierarchy.py": {
-      "cpython_time_s": 0.420502958331781,
-      "molt_cpython_ratio": 62.94997350065758,
-      "molt_ok": true,
-      "molt_size_kb": 31313.8359375,
-      "molt_speedup": 0.015885630197915078,
-      "molt_time_s": 24.984805138666463,
-      "pypy_time_s": 0.042549360662330095
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.881484,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_counter_words.py": {
-      "cpython_time_s": 0.02779483299915834,
-      "molt_cpython_ratio": 2.9452456506047855,
       "molt_ok": true,
-      "molt_size_kb": 48736.2734375,
-      "molt_speedup": 0.33953025269544396,
-      "molt_time_s": 0.08186261100005747,
-      "pypy_time_s": 0.05714070900042619
+      "build_ok": true,
+      "molt_time_s": 0.133722,
+      "cpython_time_s": 0.048204,
+      "molt_speedup": 0.36,
+      "molt_cpython_ratio": 0.3605,
+      "output_match": true
     },
     "bench_csv_parse.py": {
-      "cpython_time_s": 0.01881697233572292,
-      "molt_cpython_ratio": 6.249270694396996,
-      "molt_ok": true,
-      "molt_size_kb": 31302.4140625,
-      "molt_speedup": 0.16001867240229892,
-      "molt_time_s": 0.13121472233251552,
-      "pypy_time_s": 0.04560272200130081
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.0359,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_csv_parse_wide.py": {
-      "cpython_time_s": 0.03356795799724447,
-      "molt_cpython_ratio": 9.611760354717866,
-      "molt_ok": true,
-      "molt_size_kb": 31385.0546875,
-      "molt_speedup": 0.10403921478433,
-      "molt_time_s": 0.3084584795014962,
-      "pypy_time_s": 0.06107793033394652
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.050119,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_deeply_nested_loop.py": {
-      "cpython_time_s": 0.03481166666460922,
-      "molt_cpython_ratio": 12.678609721455544,
-      "molt_ok": true,
-      "molt_size_kb": 31282.921875,
-      "molt_speedup": 0.07887300121777051,
-      "molt_time_s": 0.4611717499998728,
-      "pypy_time_s": 0.044132444668017946
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.051159,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_descriptor_property.py": {
-      "cpython_time_s": 0.02789558299991768,
-      "molt_cpython_ratio": 2.631848346628184,
       "molt_ok": true,
-      "molt_size_kb": 31457.390625,
-      "molt_speedup": 0.37996110272887074,
-      "molt_time_s": 0.07341694399656262,
-      "pypy_time_s": 0.04231402766648292
+      "build_ok": true,
+      "molt_time_s": 0.093512,
+      "cpython_time_s": 0.038556,
+      "molt_speedup": 0.41,
+      "molt_cpython_ratio": 0.4123,
+      "output_match": true
     },
     "bench_dict_comprehension.py": {
-      "cpython_time_s": 0.02506505566513321,
-      "molt_cpython_ratio": null,
       "molt_ok": false,
-      "molt_size_kb": 0,
-      "molt_speedup": 0,
-      "molt_time_s": 0,
-      "pypy_time_s": 0.05023423633247148
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.048671,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_dict_ops.py": {
-      "cpython_time_s": 0.014614541333382173,
-      "molt_cpython_ratio": 0.9832435157613263,
       "molt_ok": true,
-      "molt_size_kb": 31414.328125,
-      "molt_speedup": 1.0170420490652299,
-      "molt_time_s": 0.014369653001873909,
-      "pypy_time_s": 0.04481988866852286
+      "build_ok": true,
+      "molt_time_s": 0.020003,
+      "cpython_time_s": 0.020836,
+      "molt_speedup": 1.04,
+      "molt_cpython_ratio": 1.0416,
+      "output_match": true
     },
     "bench_dict_views.py": {
-      "cpython_time_s": 0.012724221999330135,
-      "molt_cpython_ratio": 1.3975161443243211,
       "molt_ok": true,
-      "molt_size_kb": 31430.5703125,
-      "molt_speedup": 0.715555239960026,
-      "molt_time_s": 0.017782305668030556,
-      "pypy_time_s": 0.04231066666883029
+      "build_ok": true,
+      "molt_time_s": 0.026865,
+      "cpython_time_s": 0.02105,
+      "molt_speedup": 0.78,
+      "molt_cpython_ratio": 0.7835,
+      "output_match": true
     },
     "bench_etl_orders.py": {
-      "cpython_time_s": 0.04953618066792842,
-      "molt_cpython_ratio": 93.92752554319112,
-      "molt_ok": true,
-      "molt_size_kb": 45179.2890625,
-      "molt_speedup": 0.010646506380498286,
-      "molt_time_s": 4.652810874998977,
-      "pypy_time_s": 0.06868487499984137
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.089691,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_exception_heavy.py": {
-      "cpython_time_s": 0.13106411099579418,
-      "molt_cpython_ratio": 11.05865223947337,
-      "molt_ok": true,
-      "molt_size_kb": 31233.9609375,
-      "molt_speedup": 0.09042693253618594,
-      "molt_time_s": 1.3988631386661534,
-      "pypy_time_s": 0.04500920866606369
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.220425,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_fib.py": {
-      "cpython_time_s": 0.05938951366745945,
-      "molt_cpython_ratio": 16.44019046534064,
       "molt_ok": true,
-      "molt_size_kb": 31417.453125,
-      "molt_speedup": 0.06082654590335856,
-      "molt_time_s": 0.9763749163369843,
-      "pypy_time_s": 0.047693555000781394
+      "build_ok": true,
+      "molt_time_s": 1.460276,
+      "cpython_time_s": 0.089968,
+      "molt_speedup": 0.06,
+      "molt_cpython_ratio": 0.0616,
+      "output_match": true
     },
     "bench_gc_pressure.py": {
-      "cpython_time_s": 0.39805452766692423,
-      "molt_cpython_ratio": 1.2202847016047635,
-      "molt_ok": true,
-      "molt_size_kb": 31233.6171875,
-      "molt_speedup": 0.8194808954704808,
-      "molt_time_s": 0.5402215973323715,
-      "pypy_time_s": 0.2984095416686614
-    },
-    "bench_generator.py": {
-      "cpython_time_s": null,
-      "molt_cpython_ratio": null,
       "molt_ok": false,
-      "molt_size_kb": 0,
-      "molt_speedup": 0,
-      "molt_time_s": 0,
-      "pypy_time_s": null
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 2.24621,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_generator_iter.py": {
-      "cpython_time_s": 0.01767311166865208,
-      "molt_cpython_ratio": null,
-      "molt_ok": false,
-      "molt_size_kb": 0,
-      "molt_speedup": 0,
-      "molt_time_s": 0,
-      "pypy_time_s": 0.05303562466724543
-    },
-    "bench_import_time.py": {
-      "cpython_time_s": null,
-      "molt_cpython_ratio": null,
-      "molt_ok": false,
-      "molt_size_kb": 0,
-      "molt_speedup": 0,
-      "molt_time_s": 0,
-      "pypy_time_s": null
+      "molt_ok": true,
+      "build_ok": true,
+      "molt_time_s": 0.039219,
+      "cpython_time_s": 0.033027,
+      "molt_speedup": 0.84,
+      "molt_cpython_ratio": 0.8421,
+      "output_match": true
     },
     "bench_json_roundtrip.py": {
-      "cpython_time_s": 0.014177430666071208,
-      "molt_cpython_ratio": 7.791325868331655,
-      "molt_ok": true,
-      "molt_size_kb": 43423.5859375,
-      "molt_speedup": 0.12834785977372148,
-      "molt_time_s": 0.13210495833239597,
-      "pypy_time_s": 0.055814458333770745
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.029363,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_list_ops.py": {
-      "cpython_time_s": 0.012768944334917856,
-      "molt_cpython_ratio": 0.967937652224238,
       "molt_ok": true,
-      "molt_size_kb": 31414.328125,
-      "molt_speedup": 1.0331243936033332,
-      "molt_time_s": 0.012359542000922374,
-      "pypy_time_s": 0.04360661100023814
+      "build_ok": true,
+      "molt_time_s": 0.020114,
+      "cpython_time_s": 0.022166,
+      "molt_speedup": 1.1,
+      "molt_cpython_ratio": 1.102,
+      "output_match": true
     },
     "bench_list_slice.py": {
-      "cpython_time_s": 0.01822511099696082,
-      "molt_cpython_ratio": 0.8917084785502549,
       "molt_ok": true,
-      "molt_size_kb": 31414.5859375,
-      "molt_speedup": 1.1214427405981449,
-      "molt_time_s": 0.016251485998509452,
-      "pypy_time_s": 0.04044977800125101
+      "build_ok": true,
+      "molt_time_s": 0.026288,
+      "cpython_time_s": 0.032944,
+      "molt_speedup": 1.25,
+      "molt_cpython_ratio": 1.2532,
+      "output_match": true
     },
     "bench_matrix_math.py": {
-      "cpython_time_s": 0.030107652666629292,
-      "molt_cpython_ratio": null,
       "molt_ok": false,
-      "molt_size_kb": 0,
-      "molt_speedup": 0,
-      "molt_time_s": 0,
-      "pypy_time_s": 0.040555777666061964
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.05214,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_max_list.py": {
-      "cpython_time_s": 0.03565431933141857,
-      "molt_cpython_ratio": 8.081355669354318,
       "molt_ok": true,
-      "molt_size_kb": 31414.578125,
-      "molt_speedup": 0.12374161476299653,
-      "molt_time_s": 0.28813523566592875,
-      "pypy_time_s": 0.05747602733269256
+      "build_ok": true,
+      "molt_time_s": 0.38481,
+      "cpython_time_s": 0.048047,
+      "molt_speedup": 0.12,
+      "molt_cpython_ratio": 0.1249,
+      "output_match": true
     },
     "bench_memoryview_tobytes.py": {
-      "cpython_time_s": 0.010822388666080466,
-      "molt_cpython_ratio": 0.8540204802238186,
-      "molt_ok": true,
-      "molt_size_kb": 31251.265625,
-      "molt_speedup": 1.1709321066140284,
-      "molt_time_s": 0.00914268066723404,
-      "pypy_time_s": 0.09175041699927533
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.01876,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_min_list.py": {
-      "cpython_time_s": 0.033616486330477834,
-      "molt_cpython_ratio": 8.358600863381435,
       "molt_ok": true,
-      "molt_size_kb": 31414.578125,
-      "molt_speedup": 0.11963724747055986,
-      "molt_time_s": 0.2809867916657822,
-      "pypy_time_s": 0.046258680667961016
+      "build_ok": true,
+      "molt_time_s": 0.426433,
+      "cpython_time_s": 0.068431,
+      "molt_speedup": 0.16,
+      "molt_cpython_ratio": 0.1605,
+      "output_match": true
     },
     "bench_parse_msgpack.py": {
-      "cpython_time_s": 0.016898347334063146,
-      "molt_cpython_ratio": null,
       "molt_ok": false,
-      "molt_size_kb": 0,
-      "molt_speedup": 0,
-      "molt_time_s": 0,
-      "pypy_time_s": null
-    },
-    "bench_procedural_gen.py": {
-      "cpython_time_s": null,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.040322,
+      "molt_speedup": null,
       "molt_cpython_ratio": null,
-      "molt_ok": false,
-      "molt_size_kb": 0,
-      "molt_speedup": 0,
-      "molt_time_s": 0,
-      "pypy_time_s": null
+      "output_match": false
     },
     "bench_prod_list.py": {
-      "cpython_time_s": 0.030194499997984774,
-      "molt_cpython_ratio": 11.381025077145864,
-      "molt_ok": true,
-      "molt_size_kb": 31414.6328125,
-      "molt_speedup": 0.08786554754264544,
-      "molt_time_s": 0.34364436166894546,
-      "pypy_time_s": 0.04995690299983835
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.044947,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_ptr_registry.py": {
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
       "cpython_time_s": null,
-      "molt_cpython_ratio": null,
-      "molt_ok": true,
-      "molt_size_kb": 43020.7890625,
       "molt_speedup": null,
-      "molt_time_s": 0.045724680666656546,
-      "pypy_time_s": null
+      "molt_cpython_ratio": null,
+      "output_match": null
     },
     "bench_range_iter.py": {
-      "cpython_time_s": 0.016115472331875935,
-      "molt_cpython_ratio": 0.4914997321355214,
       "molt_ok": true,
-      "molt_size_kb": 31414.6015625,
-      "molt_speedup": 2.034589104769379,
-      "molt_time_s": 0.007920750334354429,
-      "pypy_time_s": 0.04866044433583738
+      "build_ok": true,
+      "molt_time_s": 0.014722,
+      "cpython_time_s": 0.025461,
+      "molt_speedup": 1.73,
+      "molt_cpython_ratio": 1.7295,
+      "output_match": true
     },
     "bench_set_ops.py": {
-      "cpython_time_s": 0.012974041002356293,
-      "molt_cpython_ratio": 1.631379819596889,
-      "molt_ok": true,
-      "molt_size_kb": 31249.640625,
-      "molt_speedup": 0.6129780373568052,
-      "molt_time_s": 0.021714639333367813,
-      "pypy_time_s": 0.039165472335298546
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.031927,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_startup.py": {
-      "cpython_time_s": 0.009746972330807088,
-      "molt_cpython_ratio": 0.6177319308878413,
-      "molt_ok": true,
-      "molt_size_kb": 31217.265625,
-      "molt_speedup": 1.6188251731827106,
-      "molt_time_s": 0.006965708334367567,
-      "pypy_time_s": 0.03358701399944645
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.021312,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_str_count.py": {
-      "cpython_time_s": 0.019130027998471633,
-      "molt_cpython_ratio": 3.9875294498059866,
-      "molt_ok": true,
-      "molt_size_kb": 31253.4921875,
-      "molt_speedup": 0.2507818469023859,
-      "molt_time_s": 0.08926566633211526,
-      "pypy_time_s": 0.04143276400039516
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.037224,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_str_count_unicode.py": {
-      "cpython_time_s": 0.01548200000252109,
-      "molt_cpython_ratio": 2.9370037831310505,
-      "molt_ok": true,
-      "molt_size_kb": 31254.28125,
-      "molt_speedup": 0.3404830479768502,
-      "molt_time_s": 0.054177888666648265,
-      "pypy_time_s": 0.04143618066882482
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.031144,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_str_count_unicode_warm.py": {
-      "cpython_time_s": 0.02733550033250746,
-      "molt_cpython_ratio": 2.6628032650375992,
-      "molt_ok": true,
-      "molt_size_kb": 31254.953125,
-      "molt_speedup": 0.37554407910262183,
-      "molt_time_s": 0.07780677766762285,
-      "pypy_time_s": 0.05768365266461236
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.047262,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_str_endswith.py": {
-      "cpython_time_s": 0.019572180329608575,
-      "molt_cpython_ratio": 3.895484113605303,
       "molt_ok": true,
-      "molt_size_kb": 31253.7578125,
-      "molt_speedup": 0.2567075030565307,
-      "molt_time_s": 0.07909152800008694,
-      "pypy_time_s": 0.042747221998676345
+      "build_ok": true,
+      "molt_time_s": 0.128575,
+      "cpython_time_s": 0.035515,
+      "molt_speedup": 0.28,
+      "molt_cpython_ratio": 0.2762,
+      "output_match": false
     },
     "bench_str_find.py": {
-      "cpython_time_s": 0.021719138664290465,
-      "molt_cpython_ratio": 4.371625582790773,
-      "molt_ok": true,
-      "molt_size_kb": 31253.4375,
-      "molt_speedup": 0.22874786073550626,
-      "molt_time_s": 0.08906652766745538,
-      "pypy_time_s": 0.0488693053315122
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.036739,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_str_find_unicode.py": {
-      "cpython_time_s": 0.014594763997592963,
-      "molt_cpython_ratio": 2.0968410258441486,
-      "molt_ok": true,
-      "molt_size_kb": 31254.2265625,
-      "molt_speedup": 0.4769078760262328,
-      "molt_time_s": 0.040041625001322245,
-      "pypy_time_s": 0.044645999999678075
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.024961,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_str_find_unicode_warm.py": {
-      "cpython_time_s": 0.01512230566731887,
-      "molt_cpython_ratio": 2.778545965238866,
-      "molt_ok": true,
-      "molt_size_kb": 31254.859375,
-      "molt_speedup": 0.3599004704296954,
-      "molt_time_s": 0.04404720833311634,
-      "pypy_time_s": 0.0435791943333849
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.027876,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_str_join.py": {
-      "cpython_time_s": 0.022217583333258517,
-      "molt_cpython_ratio": null,
       "molt_ok": false,
-      "molt_size_kb": 0,
-      "molt_speedup": 0,
-      "molt_time_s": 0,
-      "pypy_time_s": 0.04231809733513122
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.038171,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_str_replace.py": {
-      "cpython_time_s": 0.015477680666663218,
-      "molt_cpython_ratio": 3.2699604988012285,
-      "molt_ok": true,
-      "molt_size_kb": 31253.7578125,
-      "molt_speedup": 0.30581409175022184,
-      "molt_time_s": 0.05665447233332088,
-      "pypy_time_s": 0.03979755533267356
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.031838,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_str_split.py": {
-      "cpython_time_s": 0.013243583666432338,
-      "molt_cpython_ratio": 0.9949622155775052,
-      "molt_ok": true,
-      "molt_size_kb": 31253.5390625,
-      "molt_speedup": 1.0050632921970517,
-      "molt_time_s": 0.016104541668028105,
-      "pypy_time_s": 0.03985272233694559
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.025315,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_str_startswith.py": {
-      "cpython_time_s": 0.01906662533292547,
-      "molt_cpython_ratio": 4.555422631342739,
-      "molt_ok": true,
-      "molt_size_kb": 31253.9296875,
-      "molt_speedup": 0.21951860034230103,
-      "molt_time_s": 0.0882869999986724,
-      "pypy_time_s": 0.04245600033270117
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": null,
+      "cpython_time_s": 0.041899,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false
     },
     "bench_struct.py": {
-      "cpython_time_s": 0.09801398566681503,
-      "molt_cpython_ratio": 15.55264767195664,
       "molt_ok": true,
-      "molt_size_kb": 31435.78125,
-      "molt_speedup": 0.06429773380664466,
-      "molt_time_s": 1.5243769860001823,
-      "pypy_time_s": 0.045003250001173
-    },
-    "bench_sum.py": {
-      "cpython_time_s": 0.19192352766306917,
-      "molt_cpython_ratio": 0.04353593034601448,
-      "molt_ok": true,
-      "molt_size_kb": 31414.1875,
-      "molt_speedup": 22.96953325798275,
-      "molt_time_s": 0.008355569332100762,
-      "pypy_time_s": 0.05742445833554181
-    },
-    "bench_sum_list.py": {
-      "cpython_time_s": 0.038051361336935464,
-      "molt_cpython_ratio": 5.658165580314349,
-      "molt_ok": true,
-      "molt_size_kb": 31415.0625,
-      "molt_speedup": 0.17673572570572305,
-      "molt_time_s": 0.21530090300075244,
-      "pypy_time_s": 0.04439794433468099
+      "build_ok": true,
+      "molt_time_s": 1.868299,
+      "cpython_time_s": 0.139415,
+      "molt_speedup": 0.07,
+      "molt_cpython_ratio": 0.0746,
+      "output_match": true
     },
     "bench_sum_list_hints.py": {
-      "cpython_time_s": 0.035983028001889274,
-      "molt_cpython_ratio": 6.131781618068177,
       "molt_ok": true,
-      "molt_size_kb": 31415.3984375,
-      "molt_speedup": 0.16308473821920794,
-      "molt_time_s": 0.22064006966441715,
-      "pypy_time_s": 0.04924366666818969
+      "build_ok": true,
+      "molt_time_s": 0.33611,
+      "cpython_time_s": 0.054587,
+      "molt_speedup": 0.16,
+      "molt_cpython_ratio": 0.1624,
+      "output_match": true
+    },
+    "bench_sum_list.py": {
+      "molt_ok": true,
+      "build_ok": true,
+      "molt_time_s": 0.310911,
+      "cpython_time_s": 0.058605,
+      "molt_speedup": 0.19,
+      "molt_cpython_ratio": 0.1885,
+      "output_match": true
+    },
+    "bench_sum.py": {
+      "molt_ok": true,
+      "build_ok": true,
+      "molt_time_s": 0.01545,
+      "cpython_time_s": 0.272782,
+      "molt_speedup": 17.66,
+      "molt_cpython_ratio": 17.6558,
+      "output_match": true
     },
     "bench_try_except.py": {
-      "cpython_time_s": 0.01699183366630071,
-      "molt_cpython_ratio": 3.5115332363669087,
       "molt_ok": true,
-      "molt_size_kb": 31414.4453125,
-      "molt_speedup": 0.2847758892450686,
-      "molt_time_s": 0.059667388666033126,
-      "pypy_time_s": 0.04246468066897554
+      "build_ok": true,
+      "molt_time_s": 0.084293,
+      "cpython_time_s": 0.025838,
+      "molt_speedup": 0.31,
+      "molt_cpython_ratio": 0.3065,
+      "output_match": true
     },
     "bench_tuple_index.py": {
-      "cpython_time_s": 0.022355819332005922,
-      "molt_cpython_ratio": 6.451823729852891,
       "molt_ok": true,
-      "molt_size_kb": 31414.5859375,
-      "molt_speedup": 0.15499493505579717,
-      "molt_time_s": 0.14423580566653982,
-      "pypy_time_s": 0.0407054860018737
+      "build_ok": true,
+      "molt_time_s": 0.218746,
+      "cpython_time_s": 0.039095,
+      "molt_speedup": 0.18,
+      "molt_cpython_ratio": 0.1787,
+      "output_match": true
     },
     "bench_tuple_pack.py": {
-      "cpython_time_s": 0.027932902664664045,
-      "molt_cpython_ratio": 5.959815944187695,
       "molt_ok": true,
-      "molt_size_kb": 31414.5390625,
-      "molt_speedup": 0.1677904165774195,
-      "molt_time_s": 0.16647495866830772,
-      "pypy_time_s": 0.04520668066591801
+      "build_ok": true,
+      "molt_time_s": 0.252675,
+      "cpython_time_s": 0.045523,
+      "molt_speedup": 0.18,
+      "molt_cpython_ratio": 0.1802,
+      "output_match": true
     },
     "bench_tuple_slice.py": {
-      "cpython_time_s": 0.01901220866663304,
-      "molt_cpython_ratio": 1.0286029366108782,
       "molt_ok": true,
-      "molt_size_kb": 31414.5859375,
-      "molt_speedup": 0.9721924412299255,
-      "molt_time_s": 0.019556013665957533,
-      "pypy_time_s": 0.046445680331089534
+      "build_ok": true,
+      "molt_time_s": 0.027882,
+      "cpython_time_s": 0.031234,
+      "molt_speedup": 1.12,
+      "molt_cpython_ratio": 1.1202,
+      "output_match": true
     },
-    "bench_ws_wait.py": {
-      "cpython_time_s": null,
-      "molt_cpython_ratio": null,
+    "bench_async_await.py": {
       "molt_ok": false,
-      "molt_size_kb": 0,
-      "molt_speedup": 0,
-      "molt_time_s": 0,
-      "pypy_time_s": null
+      "build_ok": false,
+      "molt_time_s": null,
+      "cpython_time_s": 0.148057,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": null
+    },
+    "bench_channel_throughput.py": {
+      "molt_ok": false,
+      "build_ok": false,
+      "molt_time_s": null,
+      "cpython_time_s": null,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": null
     }
   },
   "meta": {
-    "note": "Updated 2026-03-21 \u2014 56 benchmarks tracked (added builtin slices, procedural_gen, generator, import_time, ws_wait)"
+    "note": "Updated 2026-03-21 -- definitive post-optimization baseline (63 commits). 21/54 benchmarks passing.",
+    "old_median": 0.27,
+    "new_median": 0.31
   }
 }
