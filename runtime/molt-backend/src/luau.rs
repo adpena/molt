@@ -9,7 +9,7 @@
 //! or stub markers for unsupported semantics.
 
 use crate::{FunctionIR, OpIR, SimpleIR};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 /// Transpiles Molt `SimpleIR` into Luau source text.
@@ -19,11 +19,11 @@ pub struct LuauBackend {
     uses_forward_decls: bool,
     /// Variables that have been pre-declared at function scope and should use
     /// assignment (`var = val`) instead of `local var = val` in emit_op.
-    hoisted_vars: HashSet<String>,
+    hoisted_vars: BTreeSet<String>,
     /// Variables produced by `tuple_new` / `tuple_from_list` ops.  When one of
     /// these is returned we emit `return table.unpack(v)` so the caller
     /// receives multiple values instead of a single table.
-    tuple_vars: HashSet<String>,
+    tuple_vars: BTreeSet<String>,
 }
 
 impl LuauBackend {
@@ -32,8 +32,8 @@ impl LuauBackend {
             output: String::with_capacity(8192),
             indent: 0,
             uses_forward_decls: false,
-            hoisted_vars: HashSet::new(),
-            tuple_vars: HashSet::new(),
+            hoisted_vars: BTreeSet::new(),
+            tuple_vars: BTreeSet::new(),
         }
     }
 
@@ -451,7 +451,7 @@ impl LuauBackend {
         // Phi hoisting: find `end_if` followed by `phi` ops and collect
         // the phi output variables.  Also find variables first declared
         // inside if/else blocks but referenced outside (scope escape).
-        let mut phi_assignments: HashMap<usize, Vec<(String, Vec<String>)>> = HashMap::new();
+        let mut phi_assignments: BTreeMap<usize, Vec<(String, Vec<String>)>> = BTreeMap::new();
         {
             // Pass 1: find phi ops that follow end_if and record their
             // output vars plus branch values.
@@ -487,8 +487,8 @@ impl LuauBackend {
             // blocks but used outside.  Track nesting depth and declaration
             // sites.
             let mut depth: i32 = 0;
-            let mut decl_depth: HashMap<String, i32> = HashMap::new();
-            let param_set: HashSet<String> =
+            let mut decl_depth: BTreeMap<String, i32> = BTreeMap::new();
+            let param_set: BTreeSet<String> =
                 func.params.iter().map(|p| sanitize_ident(p)).collect();
 
             for op in &ops {
@@ -549,8 +549,8 @@ impl LuauBackend {
         //
         // We track: for each end_if index with phis, find the matching
         // if and else indices.
-        let mut phi_inject_before_else: HashMap<usize, Vec<(String, String)>> = HashMap::new();
-        let mut phi_inject_before_end_if: HashMap<usize, Vec<(String, String)>> = HashMap::new();
+        let mut phi_inject_before_else: BTreeMap<usize, Vec<(String, String)>> = BTreeMap::new();
+        let mut phi_inject_before_end_if: BTreeMap<usize, Vec<(String, String)>> = BTreeMap::new();
         if !phi_assignments.is_empty() {
             // Walk ops to find if/else/end_if triples.
             let mut if_stack: Vec<(usize, Option<usize>)> = Vec::new(); // (if_idx, else_idx)
@@ -3433,7 +3433,7 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
     // Look for: label(N) → ... → index(out, slot, idx) → ret(out)
     // This tells us which label is the "return exit" and which slot holds
     // the return value.
-    let mut return_labels: HashMap<i64, (String, String)> = HashMap::new(); // label_id → (slot_var, index_var)
+    let mut return_labels: BTreeMap<i64, (String, String)> = BTreeMap::new(); // label_id → (slot_var, index_var)
 
     for i in 0..ops.len() {
         if ops[i].kind == "label" {
@@ -3699,8 +3699,8 @@ fn inline_single_use_constants(source: &mut String) {
     let lines: Vec<&str> = source.lines().collect();
 
     // Phase 1: Identify constant declarations and count variable uses.
-    let mut const_decls: HashMap<String, (usize, String)> = HashMap::new(); // var -> (line_idx, rhs)
-    let mut var_use_count: HashMap<String, usize> = HashMap::new();
+    let mut const_decls: BTreeMap<String, (usize, String)> = BTreeMap::new(); // var -> (line_idx, rhs)
+    let mut var_use_count: BTreeMap<String, usize> = BTreeMap::new();
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
@@ -3743,8 +3743,8 @@ fn inline_single_use_constants(source: &mut String) {
     }
 
     // Phase 2: Find single-use constants (declared once + used once = count 2).
-    let mut inline_map: HashMap<String, String> = HashMap::new();
-    let mut remove_lines: HashSet<usize> = HashSet::new();
+    let mut inline_map: BTreeMap<String, String> = BTreeMap::new();
+    let mut remove_lines: BTreeSet<usize> = BTreeSet::new();
 
     for (var, (line_idx, rhs)) in &const_decls {
         if var_use_count.get(var).copied().unwrap_or(0) == 2 {
@@ -3844,7 +3844,7 @@ fn replace_whole_word(haystack: &str, needle: &str, replacement: &str) -> String
 /// wrapper with `{nil}` and remove the nil declaration entirely.
 fn eliminate_nil_missing_wrappers(source: &mut String) {
     let lines: Vec<&str> = source.lines().collect();
-    let mut var_use_count: HashMap<String, usize> = HashMap::new();
+    let mut var_use_count: BTreeMap<String, usize> = BTreeMap::new();
 
     // Count uses of all vNNN variables.
     for line in &lines {
@@ -3870,8 +3870,8 @@ fn eliminate_nil_missing_wrappers(source: &mut String) {
     // Find lines matching `local vN = nil -- [missing]` where vN has exactly
     // 2 uses (declaration + one wrapper).  Mark the line for removal and record
     // the variable for replacement in the wrapper line.
-    let mut remove_lines: HashSet<usize> = HashSet::new();
-    let mut nil_vars: HashSet<String> = HashSet::new();
+    let mut remove_lines: BTreeSet<usize> = BTreeSet::new();
+    let mut nil_vars: BTreeSet<String> = BTreeSet::new();
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
@@ -3927,7 +3927,7 @@ fn eliminate_nil_missing_wrappers(source: &mut String) {
 /// transpiled Luau (all variables are initialized). Remove the entire block.
 fn strip_unbound_local_checks(source: &mut String) {
     let lines: Vec<&str> = source.lines().collect();
-    let mut remove: HashSet<usize> = HashSet::new();
+    let mut remove: BTreeSet<usize> = BTreeSet::new();
     let len = lines.len();
 
     let mut i = 0;
@@ -3995,7 +3995,7 @@ fn strip_dead_locals_dict_stores(source: &mut String) {
     let lines: Vec<&str> = source.lines().collect();
 
     // Phase 1: Find candidates — `local vN = {}`
-    let mut candidates: HashMap<String, usize> = HashMap::new();
+    let mut candidates: BTreeMap<String, usize> = BTreeMap::new();
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("local v") {
@@ -4019,7 +4019,7 @@ fn strip_dead_locals_dict_stores(source: &mut String) {
     //   vN["name"] = expr  (store)
     //   if type(vN) == "table" then vN["name"] = expr end  (guarded store)
     // If it's read in any other context, it's live — skip.
-    let mut dead_dicts: HashSet<String> = HashSet::new();
+    let mut dead_dicts: BTreeSet<String> = BTreeSet::new();
 
     for (var, _decl_line) in &candidates {
         let var_bytes = var.as_bytes();
@@ -4070,7 +4070,7 @@ fn strip_dead_locals_dict_stores(source: &mut String) {
     }
 
     // Phase 3: Remove declaration lines and all store lines referencing dead dicts.
-    let mut remove: HashSet<usize> = HashSet::new();
+    let mut remove: BTreeSet<usize> = BTreeSet::new();
     for var in &dead_dicts {
         if let Some(&decl_line) = candidates.get(var) {
             remove.insert(decl_line);
@@ -4120,7 +4120,7 @@ fn strip_dead_locals_dict_stores(source: &mut String) {
 /// continues to the next iteration at `end`.
 fn strip_trailing_continue(source: &mut String) {
     let lines: Vec<&str> = source.lines().collect();
-    let mut remove: HashSet<usize> = HashSet::new();
+    let mut remove: BTreeSet<usize> = BTreeSet::new();
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
@@ -4157,10 +4157,10 @@ fn strip_trailing_continue(source: &mut String) {
 /// Simplify comparison-break patterns in while-true loops.
 /// `local vN = vA < vB; if not vN then break end` → `if vA >= vB then break end`
 fn simplify_comparison_break(source: &mut String) {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeMap, BTreeSet};
     let lines: Vec<&str> = source.lines().collect();
-    let mut remove: HashSet<usize> = HashSet::new();
-    let mut replacements: HashMap<usize, String> = HashMap::new();
+    let mut remove: BTreeSet<usize> = BTreeSet::new();
+    let mut replacements: BTreeMap<usize, String> = BTreeMap::new();
 
     for i in 0..lines.len().saturating_sub(1) {
         let trimmed = lines[i].trim();
@@ -4259,12 +4259,12 @@ fn simplify_comparison_break(source: &mut String) {
 /// cell that got stripped by tree_shake_luau. In Luau, reading an undeclared
 /// local yields nil, making these assignments dead writes.
 fn strip_undefined_rhs_assignments(source: &mut String) {
-    use std::collections::HashSet;
+    use std::collections::BTreeSet;
 
     let lines: Vec<&str> = source.lines().collect();
 
     // Phase 1: Collect all defined variables (declared or assigned to).
-    let mut defined_vars: HashSet<String> = HashSet::new();
+    let mut defined_vars: BTreeSet<String> = BTreeSet::new();
     for line in &lines {
         let trimmed = line.trim();
         // `local vN` or `local vN = ...`
@@ -4324,7 +4324,7 @@ fn strip_undefined_rhs_assignments(source: &mut String) {
     }
 
     // Phase 2: Find `vN = vM` lines where vM is NOT in defined_vars.
-    let mut remove: HashSet<usize> = HashSet::new();
+    let mut remove: BTreeSet<usize> = BTreeSet::new();
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         // Match: `vN = vM` (bare assignment, not `local`)
@@ -4386,8 +4386,8 @@ fn propagate_single_use_copies_once(source: &mut String) -> usize {
     let lines: Vec<&str> = source.lines().collect();
 
     // Phase 1: Find `local vN = vM` copy declarations and count all var uses.
-    let mut copy_decls: HashMap<String, (usize, String)> = HashMap::new();
-    let mut var_use_count: HashMap<String, usize> = HashMap::new();
+    let mut copy_decls: BTreeMap<String, (usize, String)> = BTreeMap::new();
+    let mut var_use_count: BTreeMap<String, usize> = BTreeMap::new();
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
@@ -4427,8 +4427,8 @@ fn propagate_single_use_copies_once(source: &mut String) -> usize {
 
     // Phase 2: For single-use copies, verify source is not reassigned between
     // declaration and use.
-    let mut inline_map: HashMap<String, String> = HashMap::new();
-    let mut remove_lines: HashSet<usize> = HashSet::new();
+    let mut inline_map: BTreeMap<String, String> = BTreeMap::new();
+    let mut remove_lines: BTreeSet<usize> = BTreeSet::new();
 
     for (var, (decl_line, source_var)) in &copy_decls {
         let count = var_use_count.get(var).copied().unwrap_or(0);
@@ -4565,7 +4565,7 @@ fn simplify_return_chain(source: &mut String) {
     let lines: Vec<&str> = source.lines().collect();
 
     // Count all variable uses.
-    let mut var_use_count: HashMap<String, usize> = HashMap::new();
+    let mut var_use_count: BTreeMap<String, usize> = BTreeMap::new();
     for line in &lines {
         let bytes = line.as_bytes();
         let mut pos = 0;
@@ -4586,8 +4586,8 @@ fn simplify_return_chain(source: &mut String) {
         }
     }
 
-    let mut remove_lines: HashSet<usize> = HashSet::new();
-    let mut replacements: HashMap<usize, String> = HashMap::new();
+    let mut remove_lines: BTreeSet<usize> = BTreeSet::new();
+    let mut replacements: BTreeMap<usize, String> = BTreeMap::new();
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
@@ -4688,8 +4688,8 @@ fn sink_single_use_locals_once(source: &mut String) -> usize {
     let lines: Vec<&str> = source.lines().collect();
 
     // Phase 1: Find all `local vN = <expr>` and count uses.
-    let mut local_decls: HashMap<String, (usize, String)> = HashMap::new();
-    let mut var_use_count: HashMap<String, usize> = HashMap::new();
+    let mut local_decls: BTreeMap<String, (usize, String)> = BTreeMap::new();
+    let mut var_use_count: BTreeMap<String, usize> = BTreeMap::new();
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
@@ -4732,7 +4732,7 @@ fn sink_single_use_locals_once(source: &mut String) -> usize {
 
     // Phase 2: Collect candidates. Skip if the RHS references another variable
     // that is ALSO a candidate (chain hazard — handle in the next iteration).
-    let mut candidates: HashMap<String, (usize, String)> = HashMap::new();
+    let mut candidates: BTreeMap<String, (usize, String)> = BTreeMap::new();
     for (var, (decl_line, expr)) in &local_decls {
         let count = var_use_count.get(var).copied().unwrap_or(0);
         if count != 2 {
@@ -4758,9 +4758,9 @@ fn sink_single_use_locals_once(source: &mut String) -> usize {
     }
 
     // Filter out candidates whose RHS references another candidate variable.
-    let candidate_vars: HashSet<String> = candidates.keys().cloned().collect();
-    let mut inline_map: HashMap<String, String> = HashMap::new();
-    let mut remove_lines: HashSet<usize> = HashSet::new();
+    let candidate_vars: BTreeSet<String> = candidates.keys().cloned().collect();
+    let mut inline_map: BTreeMap<String, String> = BTreeMap::new();
+    let mut remove_lines: BTreeSet<usize> = BTreeSet::new();
 
     for (var, (decl_line, expr)) in &candidates {
         let rhs_references_candidate = candidate_vars
@@ -4816,14 +4816,14 @@ fn sink_single_use_locals_once(source: &mut String) -> usize {
 /// into a direct integer index. Eliminates the runtime type check when the
 /// index is a known integer literal.
 fn simplify_numeric_type_guards(source: &mut String) {
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     let lines: Vec<&str> = source.lines().collect();
     let mut result = String::with_capacity(source.len());
 
     // Phase 1: Find `local vN = <integer_literal>` declarations and check
     // if vN is ONLY used in type-guard patterns on the NEXT line.
-    let mut int_consts: HashMap<String, (usize, i64)> = HashMap::new(); // var -> (line, value)
+    let mut int_consts: BTreeMap<String, (usize, i64)> = BTreeMap::new(); // var -> (line, value)
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("local v") {
@@ -4843,8 +4843,8 @@ fn simplify_numeric_type_guards(source: &mut String) {
 
     // Phase 2: For each int const, check if the next line contains the
     // type-guard pattern and the const is only used there.
-    let mut remove_lines: HashSet<usize> = HashSet::new();
-    let mut line_replacements: HashMap<usize, String> = HashMap::new();
+    let mut remove_lines: BTreeSet<usize> = BTreeSet::new();
+    let mut line_replacements: BTreeMap<usize, String> = BTreeMap::new();
 
     for (var, (decl_line, val)) in &int_consts {
         let next_line = decl_line + 1;
@@ -4917,7 +4917,7 @@ fn optimize_luau_perf(source: &mut String) {
     let mut perf_count: usize = 0;
 
     // Track which variables are known-numeric (assigned from numeric ops).
-    let mut numeric_vars: HashSet<String> = HashSet::new();
+    let mut numeric_vars: BTreeSet<String> = BTreeSet::new();
 
     for line in source.lines() {
         let trimmed = line.trim();
