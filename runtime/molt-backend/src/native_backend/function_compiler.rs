@@ -4180,17 +4180,96 @@ impl SimpleBackend {
                 "iter_next" => {
                     let args = op.args.as_ref().unwrap();
                     let iter = var_get(&mut builder, &vars, &args[0]).expect("Iter not found");
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_iter_next", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*iter]);
-                    let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    let pair_name = op.out.clone().unwrap();
+
+                    // Peephole: detect the iter_next → index(pair,1) → ... → index(pair,0)
+                    // pattern emitted by for-loops and replace with a single
+                    // molt_iter_next_unboxed call that avoids the tuple allocation and
+                    // two molt_index dispatches.
+                    let mut done_idx = None;
+                    let mut val_idx = None;
+                    // Scan a small window ahead for INDEX ops that reference our pair.
+                    let scan_limit = (op_idx + 8).min(ops.len());
+                    for peek in (op_idx + 1)..scan_limit {
+                        if skip_ops.contains(&peek) {
+                            continue;
+                        }
+                        let peek_op = &ops[peek];
+                        if peek_op.kind == "index" {
+                            if let Some(ref pargs) = peek_op.args {
+                                if pargs.len() >= 2 && pargs[0] == pair_name {
+                                    // Check if the index argument is a const "1" or "0".
+                                    // The const var names are looked up by scanning
+                                    // backwards for a const op that defined the arg.
+                                    let idx_var = &pargs[1];
+                                    // Find the const op that produced idx_var.
+                                    if let Some(const_val) = Self::resolve_const_int(ops, peek, idx_var) {
+                                        if const_val == 1 && done_idx.is_none() {
+                                            done_idx = Some(peek);
+                                        } else if const_val == 0 && val_idx.is_none() {
+                                            val_idx = Some(peek);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if let (Some(di), Some(vi)) = (done_idx, val_idx) {
+                        // === Unboxed fast path ===
+                        // Allocate a stack slot for the yielded value.
+                        let val_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            8,
+                            3,
+                        ));
+                        let val_ptr = builder.ins().stack_addr(types::I64, val_slot, 0);
+
+                        // Call molt_iter_next_unboxed(iter, &value_out) → done_flag (MoltObject bool)
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64)); // iter_bits
+                        sig.params.push(AbiParam::new(types::I64)); // value_out ptr
+                        sig.returns.push(AbiParam::new(types::I64)); // done flag (MoltObject bool)
+                        let callee = self
+                            .module
+                            .declare_function("molt_iter_next_unboxed", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*iter, val_ptr]);
+                        let done_bits = builder.inst_results(call)[0];
+
+                        // Load the value from the stack slot.
+                        let loaded_val = builder.ins().load(types::I64, MemFlags::trusted(), val_ptr, 0);
+
+                        // The done_bits is the MoltObject bool that index(pair,1) would return.
+                        let done_out = ops[di].out.clone().unwrap();
+                        def_var_named(&mut builder, &vars, done_out, done_bits);
+
+                        // The loaded_val is the value that index(pair,0) would return.
+                        let val_out = ops[vi].out.clone().unwrap();
+                        def_var_named(&mut builder, &vars, val_out, loaded_val);
+
+                        // Also define the pair variable (as the done flag) so that any
+                        // exception-check referencing pair still works.
+                        def_var_named(&mut builder, &vars, pair_name, done_bits);
+
+                        // Mark the two INDEX ops as skipped.
+                        skip_ops.insert(di);
+                        skip_ops.insert(vi);
+                    } else {
+                        // === Fallback: original boxed path ===
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_iter_next", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*iter]);
+                        let res = builder.inst_results(call)[0];
+                        def_var_named(&mut builder, &vars, pair_name, res);
+                    }
                 }
                 "anext" => {
                     let args = op.args.as_ref().unwrap();
