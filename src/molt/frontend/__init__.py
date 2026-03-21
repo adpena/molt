@@ -25963,6 +25963,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.current_method_first_param = prev_first_param
         return func_val
 
+    # Modules whose API calls are lowered directly to IR ops by the frontend.
+    # ``import molt_buffer`` etc. are no-ops: the module object is never used
+    # at runtime because every ``molt_buffer.new()`` / ``molt_msgpack.parse()``
+    # call is already emitted as specialised IR (BUFFER2D_NEW, MSGPACK_PARSE, …).
+    _STUB_IMPORT_MODULES: frozenset[str] = frozenset(
+        {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
+    )
+
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             module_name = alias.name
@@ -25970,6 +25978,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 # Track the alias so @<alias>.overload is recognised.
                 if alias.asname:
                     self._typing_import_aliases.add(alias.asname)
+                continue
+            if module_name in self._STUB_IMPORT_MODULES:
                 continue
             bind_name = alias.asname or module_name.split(".")[0]
             module_val = self._emit_module_load_with_parents(module_name)
@@ -26010,6 +26020,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.future_annotations = True
             return None
         if module_name == "typing_extensions":
+            return None
+        if module_name in self._STUB_IMPORT_MODULES:
             return None
         module_val = self._emit_module_load_with_parents(module_name)
         for alias in node.names:
