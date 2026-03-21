@@ -35100,6 +35100,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         for loop_start, loop_end in loop_ranges:
             if loop_end is None or loop_end <= loop_start:
                 continue
+            # In generators, loops containing state_yield create resume points
+            # inside the loop body.  Hoisting definitions before the loop would
+            # leave them undefined when the generator is resumed at that point.
+            has_yield = any(
+                ops[i].kind == "STATE_YIELD"
+                for i in range(loop_start + 1, loop_end)
+            )
+            if has_yield:
+                continue
             pre_defs = self._collect_defined_value_names(ops[:loop_start])
             hoisted_defs: set[str] = set()
             for idx in range(loop_start + 1, loop_end):
