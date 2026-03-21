@@ -1554,9 +1554,11 @@ pub(crate) unsafe fn object_attr_lookup_raw(
                 let bits = object_field_get_ptr_raw(_py, obj_ptr, offset);
                 if is_missing_bits(_py, bits) {
                     dec_ref_bits(_py, bits);
-                    return None;
+                    // Don't return None here — fall through so the MRO class
+                    // attribute stored in `cached_attr_bits` is still considered.
+                } else {
+                    return Some(bits);
                 }
-                return Some(bits);
             }
         }
         let class_name_bits =
