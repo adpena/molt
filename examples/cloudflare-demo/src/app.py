@@ -193,28 +193,32 @@ elif route == "mandelbrot":
     if preset == 1:
         cx = -0.7435
         cy = 0.1314
-        zm = 200.0
-        mi = 150
+        zm = 50.0
+        mi = 80
     elif preset == 2:
         cx = 0.360284
         cy = -0.641216
-        zm = 500.0
-        mi = 150
+        zm = 80.0
+        mi = 80
     elif preset == 3:
         cx = -0.16
         cy = 1.0405
-        zm = 100.0
-        mi = 120
+        zm = 40.0
+        mi = 80
     elif preset == 4:
         cx = -1.25066
         cy = 0.02012
-        zm = 1000.0
-        mi = 180
+        zm = 40.0
+        mi = 60
+        w = 80
+        h = 35
     elif preset == 5:
         cx = -0.745428
         cy = 0.113009
-        zm = 5000.0
-        mi = 200
+        zm = 50.0
+        mi = 60
+        w = 80
+        h = 35
 
     print("Mandelbrot Set")
     print("=" * w)
