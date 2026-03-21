@@ -9,10 +9,12 @@ __pycache__/
 .ruff_cache/
 .hypothesis/
 .playwright-mcp/
+.wrangler/
 .tmp/
 tmp/
 .molt_cache/
 .uv-cache/
+diff/
 dist/
 build/
 var/
