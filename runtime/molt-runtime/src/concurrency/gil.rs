@@ -1,5 +1,5 @@
 #[cfg(not(target_arch = "wasm32"))]
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 #[cfg(not(target_arch = "wasm32"))]
@@ -10,6 +10,44 @@ use super::GIL_THREAD_COUNT;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{GIL_DEPTH, runtime_state_for_gil};
+
+// ---------------------------------------------------------------------------
+// Single-threaded fast-path: when only one thread has ever acquired the GIL,
+// reentrant acquisitions (depth > 0) can skip the mutex and GIL_GUARD TLS
+// entirely.  The first acquisition (depth == 0) always takes the full path
+// so that TLS is properly initialised and teardown works correctly.
+// ---------------------------------------------------------------------------
+
+// Number of distinct threads that have ever acquired the GIL.
+#[cfg(not(target_arch = "wasm32"))]
+static GIL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+// Per-thread flag: has this thread been counted in GIL_THREAD_COUNT?
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    static GIL_THREAD_REGISTERED: Cell<bool> = const { Cell::new(false) };
+}
+
+// Register the current thread in GIL_THREAD_COUNT if it hasn't been yet.
+// Called on every GIL acquisition so the count stays accurate.
+#[cfg(not(target_arch = "wasm32"))]
+#[inline(always)]
+fn ensure_thread_registered() {
+    let already = GIL_THREAD_REGISTERED
+        .try_with(|r| {
+            if r.get() {
+                return true;
+            }
+            r.set(true);
+            false
+        })
+        // If TLS is destroyed, we are in teardown — don't bump the counter
+        // again; the fallback path handles this case.
+        .unwrap_or(true);
+    if !already {
+        GIL_THREAD_COUNT.fetch_add(1, AtomicOrdering::Release);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // wasm32: single-threaded target — the GIL is always held, all operations
@@ -128,6 +166,40 @@ pub(crate) struct PyToken<'gil> {
 #[cfg(not(target_arch = "wasm32"))]
 impl GilGuard {
     pub(crate) fn new() -> Self {
+        // Fast path: when only one thread has ever touched the GIL and we are
+        // already inside a GIL-protected region (depth > 0), we can skip the
+        // mutex lock and GIL_GUARD TLS entirely.  This is safe because:
+        //   - depth > 0 means the mutex is already held by this thread
+        //   - thread_count == 1 means no other thread can race us
+        //   - we still increment/decrement GIL_DEPTH via TLS for correct
+        //     nesting, so all code that checks gil_held() sees the right value
+        //   - first entry (depth == 0) always takes the full path, ensuring
+        //     the mutex guard is stored in GIL_GUARD TLS for proper teardown
+        if GIL_THREAD_COUNT.load(AtomicOrdering::Relaxed) <= 1 {
+            match GIL_DEPTH.try_with(|depth| {
+                let current = depth.get();
+                if current > 0 {
+                    // Reentrant acquisition on the single thread — fast path.
+                    depth.set(current + 1);
+                    true
+                } else {
+                    false
+                }
+            }) {
+                Ok(true) => {
+                    return Self {
+                        _marker: (),
+                        fallback_guard: None,
+                        fallback_depth: false,
+                    };
+                }
+                Ok(false) => { /* depth == 0, fall through to full path */ }
+                Err(_) => return Self::fallback_new(),
+            }
+        }
+
+        // Full path: first entry or multi-threaded — acquire the mutex.
+        ensure_thread_registered();
         let needs_lock = match GIL_DEPTH.try_with(|depth| {
             let current = depth.get();
             depth.set(current + 1);
