@@ -4,6 +4,7 @@ use super::*;
 struct FunctionPreanalysis {
     has_ret: bool,
     stateful: bool,
+    has_store: bool,
     var_names: Vec<String>,
     last_use: HashMap<String, usize>,
     if_to_end_if: HashMap<usize, usize>,
@@ -74,6 +75,7 @@ fn import_func_ref(
 fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
     let mut has_ret = false;
     let mut stateful = false;
+    let mut has_store = false;
     let mut var_names: HashSet<String> = HashSet::new();
     let mut last_use = HashMap::new();
     let mut if_to_end_if = HashMap::new();
@@ -96,6 +98,7 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
             "ret" | "ret_void" => has_ret = true,
             "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
             | "chan_recv_yield" => stateful = true,
+            "store" => has_store = true,
             _ => {}
         }
 
@@ -171,6 +174,7 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
     FunctionPreanalysis {
         has_ret,
         stateful,
+        has_store,
         var_names,
         last_use,
         if_to_end_if,
@@ -197,6 +201,7 @@ impl SimpleBackend {
         let FunctionPreanalysis {
             has_ret,
             stateful,
+            has_store,
             var_names,
             last_use,
             if_to_end_if,
@@ -303,24 +308,28 @@ impl SimpleBackend {
             &[types::I64],
             &[],
         );
-        let local_profile_struct = import_func_ref(
-            &mut self.module,
-            &mut self.import_ids,
-            &mut builder,
-            &mut import_refs,
-            "molt_profile_struct_field_store",
-            &[],
-            &[],
-        );
-        let local_profile_enabled = import_func_ref(
-            &mut self.module,
-            &mut self.import_ids,
-            &mut builder,
-            &mut import_refs,
-            "molt_profile_enabled",
-            &[],
-            &[types::I64],
-        );
+        let local_profile_struct = has_store.then(|| {
+            import_func_ref(
+                &mut self.module,
+                &mut self.import_ids,
+                &mut builder,
+                &mut import_refs,
+                "molt_profile_struct_field_store",
+                &[],
+                &[],
+            )
+        });
+        let local_profile_enabled = has_store.then(|| {
+            import_func_ref(
+                &mut self.module,
+                &mut self.import_ids,
+                &mut builder,
+                &mut import_refs,
+                "molt_profile_enabled",
+                &[],
+                &[types::I64],
+            )
+        });
 
         if trace_stride.is_some() {
             let trace_suffix: String = func_ir
@@ -387,10 +396,10 @@ impl SimpleBackend {
             def_var_named(&mut builder, &vars, "self", self_bits);
         }
 
-        let profile_enabled_val = {
+        let profile_enabled_val = local_profile_enabled.map(|local_profile_enabled| {
             let call = builder.ins().call(local_profile_enabled, &[]);
             builder.inst_results(call)[0]
-        };
+        });
 
         builder.seal_block(entry_block);
         sealed_blocks.insert(entry_block);
@@ -11547,6 +11556,10 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, out_name, obj);
                 }
                 "store" => {
+                    let local_profile_struct =
+                        local_profile_struct.expect("store lowering requires profile import");
+                    let profile_enabled_val =
+                        profile_enabled_val.expect("store lowering requires profile flag");
                     let args = op.args.as_ref().unwrap();
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let val = var_get(&mut builder, &vars, &args[1]).expect("Value not found");

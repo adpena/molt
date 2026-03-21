@@ -173,7 +173,8 @@ def generate(
             logits: list[float] = gpt(token, pos, keys, values, sd)
             scaled: list[float] = [l / temperature for l in logits]
             probs: list[float] = softmax(scaled)
-            token = random.choices(range(vocab_size), weights=probs)[0]
+            population: list[int] = list(range(vocab_size))
+            token = random.choices(population, weights=probs)[0]
             if token == bos:
                 break
             chars.append(uchars[token])
