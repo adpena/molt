@@ -2547,6 +2547,10 @@ impl WasmBackend {
 
         // Allocate a scratch buffer in linear memory for spilling call_func args.
         // Size: max(max_call_arity, 1) * 8 bytes (one i64 per arg).
+        // SAFETY: This single-segment spill buffer is safe under reentrant calls
+        // because `molt_call_func_dispatch` copies args into a Rust Vec<u64>
+        // before dispatching, so nested WASM→runtime→WASM calls never observe
+        // stale data in this buffer.
         let spill_slots = max_call_arity.max(1);
         let spill_bytes = vec![0u8; spill_slots * 8];
         let spill_segment = self.add_data_segment(reloc_enabled, &spill_bytes);
