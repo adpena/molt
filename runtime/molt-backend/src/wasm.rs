@@ -4779,6 +4779,22 @@ impl WasmBackend {
         let mut fast_int_count: usize = 0;
         let mut const_seed_seen: HashSet<String> = HashSet::new();
         let mut const_seed_locals_all: Vec<(u32, i64)> = Vec::new();
+        let mut defined_vars: HashSet<String> = HashSet::new();
+        let mut used_vars: HashSet<String> = HashSet::new();
+        for op in &func_ir.ops {
+            if let Some(args) = &op.args {
+                for arg in args {
+                    if arg != "self" && arg != "none" && arg.starts_with('v') {
+                        used_vars.insert(arg.clone());
+                    }
+                }
+            }
+            if let Some(out) = &op.out {
+                if out != "none" {
+                    defined_vars.insert(out.clone());
+                }
+            }
+        }
         for op in &func_ir.ops {
             if op.fast_int.unwrap_or(false) {
                 fast_int_count += 1;
@@ -4830,6 +4846,20 @@ impl WasmBackend {
                     }
                 }
                 _ => {}
+            }
+        }
+
+        // Safety: seed undefined variables (used but never defined) with
+        // box_none().  This can happen when front-end IR omits a const_none
+        // definition due to module-context differences (e.g. genexpr compiled
+        // for import vs __main__).  Without this, the WASM local defaults to
+        // 0 which is not a valid boxed value and causes runtime crashes.
+        for undef in used_vars.difference(&defined_vars) {
+            if let Some(&local_idx) = locals.get(undef.as_str()) {
+                if local_idx != dead_sink_idx && !const_seed_seen.contains(undef) {
+                    const_seed_seen.insert(undef.clone());
+                    const_seed_locals_all.push((local_idx, box_none()));
+                }
             }
         }
 
