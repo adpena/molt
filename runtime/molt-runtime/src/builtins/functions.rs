@@ -17,10 +17,12 @@ use super::types::cell_class;
 use crate::builtins::numbers::index_i64_with_overflow;
 use crate::builtins::platform::env_state_get;
 use crate::{
-    TYPE_ID_BYTES, TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_STRING,
+    TYPE_ID_BOUND_METHOD, TYPE_ID_BYTES, TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_LIST,
+    TYPE_ID_MODULE, TYPE_ID_STRING,
     TYPE_ID_TUPLE, alloc_bound_method_obj, alloc_bytes, alloc_code_obj, alloc_dict_with_pairs,
     alloc_function_obj, alloc_list_with_capacity, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes, builtin_classes, bytes_like_slice, call_callable0, call_callable1,
+    attr_name_bits_from_bytes, bound_method_func_bits, builtin_classes, bytes_like_slice,
+    call_callable0, call_callable1,
     call_callable2, call_callable3, call_class_init_with_args, clear_exception, dec_ref_bits,
     dict_get_in_place, ensure_function_code_bits, exception_kind_bits, exception_pending,
     format_obj, function_dict_bits, function_set_closure_bits, function_set_trampoline_ptr,
@@ -20064,6 +20066,14 @@ pub extern "C" fn molt_bound_method_new(func_bits: u64, self_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "TypeError", "bound method expects function object");
         };
         unsafe {
+            // If func_bits is already a BOUND_METHOD, unwrap to its inner function
+            // so we don't fail the TYPE_ID_FUNCTION check below. This happens when
+            // inline int/float/bool attribute fallback passes a bound method through
+            // the builtin_class_method_bits path.
+            if object_type_id(func_ptr) == TYPE_ID_BOUND_METHOD {
+                let inner_func_bits = bound_method_func_bits(func_ptr);
+                return molt_bound_method_new(inner_func_bits, self_bits);
+            }
             if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
                 if debug_bound {
                     let type_label = type_name(_py, func_obj).into_owned();
