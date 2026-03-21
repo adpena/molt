@@ -1,5 +1,5 @@
 use crate::{FunctionIR, OpIR, SimpleIR};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
