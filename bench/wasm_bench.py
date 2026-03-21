@@ -140,9 +140,18 @@ class BenchEntry:
         return d
 
 
+def _base_env() -> dict[str, str]:
+    """Return a base environment dict with PYTHONPATH and MOLT_EXT_ROOT set."""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(ROOT / "src")
+    env.setdefault("MOLT_EXT_ROOT", str(ROOT))
+    env.setdefault("CARGO_TARGET_DIR", str(ROOT / "target"))
+    return env
+
+
 def _compile_wasm(src: Path, out_dir: Path) -> CompileResult:
     out_dir.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
+    env = _base_env()
     env["MOLT_WASM_LINKED"] = "0"
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     env.setdefault("MOLT_MIDEND_DISABLE", "1")
@@ -181,7 +190,7 @@ def _compile_wasm(src: Path, out_dir: Path) -> CompileResult:
 
 def _compile_native(src: Path, out_dir: Path) -> CompileResult:
     out_dir.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
+    env = _base_env()
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     env.setdefault("MOLT_MIDEND_DISABLE", "1")
     t0 = time.monotonic()
