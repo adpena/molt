@@ -27,7 +27,8 @@ use crate::{
     molt_function_get_code, molt_function_get_globals, molt_iter, molt_iter_next, obj_eq,
     obj_from_bits, object_class_bits, object_field_get_ptr_raw, object_set_class_bits,
     object_type_id, property_get_bits, raise_exception, runtime_state, seq_vec_ref,
-    staticmethod_func_bits, string_obj_to_owned, type_name, type_of_bits,
+    staticmethod_func_bits, string_bytes, string_len, string_obj_to_owned, type_name, type_of_bits,
+    profile_hit_unchecked, FIELD_OFFSET_IC_HIT_COUNT, FIELD_OFFSET_IC_MISS_COUNT,
 };
 
 struct AttrNameCacheEntry {
@@ -125,9 +126,121 @@ pub(crate) struct DescriptorCacheEntry {
     pub(crate) class_attr_bits: Option<u64>,
 }
 
+// ---------------------------------------------------------------------------
+// Field-offset inline cache (IC) — CPython 3.12 LOAD_ATTR_INSTANCE_VALUE
+// ---------------------------------------------------------------------------
+// Direct-mapped, 32-slot TLS cache keyed by (class_bits, attr_name hash).
+// On hit we skip the full MRO walk performed by `class_field_offset` and go
+// straight to a single `object_field_get_ptr_raw` call.  Invalidated via the
+// global type version counter (bumped when any class __dict__ is modified).
+
+const FIELD_OFFSET_IC_SIZE: usize = 32; // must be power of 2
+
+#[derive(Clone, Copy)]
+struct FieldOffsetICEntry {
+    /// NaN-boxed class bits (identity of the type object)
+    class_bits: u64,
+    /// Hash of the attribute name bytes (for fast comparison)
+    name_hash: u64,
+    /// Global type version when this entry was populated
+    type_version: u64,
+    /// Cached field offset within the object's field storage
+    field_offset: u32,
+    /// Length of the attribute name (for collision disambiguation)
+    name_len: u32,
+}
+
+impl FieldOffsetICEntry {
+    const EMPTY: Self = Self {
+        class_bits: 0,
+        name_hash: 0,
+        type_version: 0,
+        field_offset: 0,
+        name_len: 0,
+    };
+}
+
+struct FieldOffsetIC {
+    slots: [FieldOffsetICEntry; FIELD_OFFSET_IC_SIZE],
+}
+
+impl FieldOffsetIC {
+    const fn new() -> Self {
+        Self {
+            slots: [FieldOffsetICEntry::EMPTY; FIELD_OFFSET_IC_SIZE],
+        }
+    }
+
+    /// FNV-1a hash of attr name bytes — same family as `AttrNameCache::slot_index`.
+    #[inline]
+    fn hash_name(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        h
+    }
+
+    #[inline]
+    fn slot_index(class_bits: u64, name_hash: u64) -> usize {
+        // Mix class identity with name hash to spread across slots.
+        let mixed = class_bits.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ name_hash;
+        (mixed as usize) & (FIELD_OFFSET_IC_SIZE - 1)
+    }
+
+    /// Try to look up a cached field offset.  Returns `Some(offset)` on hit.
+    #[inline]
+    fn lookup(
+        &self,
+        class_bits: u64,
+        name_bytes: &[u8],
+        current_version: u64,
+    ) -> Option<usize> {
+        let name_hash = Self::hash_name(name_bytes);
+        let idx = Self::slot_index(class_bits, name_hash);
+        let entry = &self.slots[idx];
+        if entry.class_bits == class_bits
+            && entry.name_hash == name_hash
+            && entry.type_version == current_version
+            && entry.name_len == name_bytes.len() as u32
+        {
+            Some(entry.field_offset as usize)
+        } else {
+            None
+        }
+    }
+
+    /// Populate (or overwrite) a cache slot after a successful field-offset
+    /// resolution via the slow `class_field_offset` path.
+    #[inline]
+    fn insert(
+        &mut self,
+        class_bits: u64,
+        name_bytes: &[u8],
+        current_version: u64,
+        field_offset: usize,
+    ) {
+        let name_hash = Self::hash_name(name_bytes);
+        let idx = Self::slot_index(class_bits, name_hash);
+        self.slots[idx] = FieldOffsetICEntry {
+            class_bits,
+            name_hash,
+            type_version: current_version,
+            field_offset: field_offset as u32,
+            name_len: name_bytes.len() as u32,
+        };
+    }
+
+    fn clear(&mut self) {
+        self.slots = [FieldOffsetICEntry::EMPTY; FIELD_OFFSET_IC_SIZE];
+    }
+}
+
 thread_local! {
     static ATTR_NAME_TLS: RefCell<AttrNameCache> = RefCell::new(AttrNameCache::new());
     static DESCRIPTOR_CACHE_TLS: RefCell<Option<DescriptorCacheEntry>> = const { RefCell::new(None) };
+    static FIELD_OFFSET_IC_TLS: RefCell<FieldOffsetIC> = RefCell::new(FieldOffsetIC::new());
 }
 
 pub(crate) fn clear_attr_tls_caches(_py: &PyToken<'_>) {
@@ -137,6 +250,36 @@ pub(crate) fn clear_attr_tls_caches(_py: &PyToken<'_>) {
     });
     let _ = DESCRIPTOR_CACHE_TLS.try_with(|cell| {
         cell.borrow_mut().take();
+    });
+    let _ = FIELD_OFFSET_IC_TLS.try_with(|cell| {
+        cell.borrow_mut().clear();
+    });
+}
+
+/// Probe the field-offset IC for a cached (class, attr) -> offset mapping.
+/// Returns `Some(offset)` on hit, `None` on miss.
+#[inline]
+pub(crate) fn field_offset_ic_lookup(
+    class_bits: u64,
+    attr_name_bytes: &[u8],
+    current_version: u64,
+) -> Option<usize> {
+    FIELD_OFFSET_IC_TLS.with(|cell| {
+        cell.borrow().lookup(class_bits, attr_name_bytes, current_version)
+    })
+}
+
+/// Populate the field-offset IC after a slow-path resolution.
+#[inline]
+pub(crate) fn field_offset_ic_insert(
+    class_bits: u64,
+    attr_name_bytes: &[u8],
+    current_version: u64,
+    field_offset: usize,
+) {
+    let _ = FIELD_OFFSET_IC_TLS.try_with(|cell| {
+        cell.borrow_mut()
+            .insert(class_bits, attr_name_bytes, current_version, field_offset);
     });
 }
 
@@ -1550,7 +1693,44 @@ pub(crate) unsafe fn object_attr_lookup_raw(
                     descriptor_cache_store(class_bits, attr_bits, class_version, None, None);
                 }
             }
-            if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits) {
+            // --- Field-offset IC fast path (CPython 3.12 LOAD_ATTR_INSTANCE_VALUE) ---
+            // Try the TLS IC first to skip the expensive MRO walk in
+            // `class_field_offset`.  The IC is keyed by (class_bits, attr_name
+            // hash) and validated against the global type version.
+            let attr_name_slice: Option<&[u8]> = obj_from_bits(attr_bits)
+                .as_ptr()
+                .filter(|&p| object_type_id(p) == TYPE_ID_STRING)
+                .map(|p| std::slice::from_raw_parts(string_bytes(p), string_len(p)));
+
+            let mut field_offset_resolved: Option<usize> = None;
+            let current_type_version = crate::object::global_type_version();
+
+            if let Some(name_bytes) = attr_name_slice {
+                if let Some(offset) =
+                    field_offset_ic_lookup(class_bits, name_bytes, current_type_version)
+                {
+                    profile_hit_unchecked(&FIELD_OFFSET_IC_HIT_COUNT);
+                    field_offset_resolved = Some(offset);
+                }
+            }
+
+            if field_offset_resolved.is_none() {
+                if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits) {
+                    profile_hit_unchecked(&FIELD_OFFSET_IC_MISS_COUNT);
+                    field_offset_resolved = Some(offset);
+                    // Populate IC for next time.
+                    if let Some(name_bytes) = attr_name_slice {
+                        field_offset_ic_insert(
+                            class_bits,
+                            name_bytes,
+                            current_type_version,
+                            offset,
+                        );
+                    }
+                }
+            }
+
+            if let Some(offset) = field_offset_resolved {
                 let bits = object_field_get_ptr_raw(_py, obj_ptr, offset);
                 if is_missing_bits(_py, bits) {
                     dec_ref_bits(_py, bits);
