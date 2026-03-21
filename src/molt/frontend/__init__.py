@@ -26778,6 +26778,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self._active_midend_function_name = function_name
         else:
             self._active_midend_function_name = "<direct>"
+        # DEBUG: check for v141 in genexpr poll functions
+        if function_name and "__main__" in (function_name or "") and "genexpr" in (function_name or ""):
+            import sys
+            for _i, _op in enumerate(ops):
+                if _op.result and _op.result.name == "v141":
+                    print(f"DEBUG_PRE [{function_name}] v141 DEF at {_i}: kind={_op.kind}", file=sys.stderr)
+                if _op.kind in {"STATE_YIELD", "CONST_NONE", "LOAD_CLOSURE"} or (_op.args and any(
+                    isinstance(_a, MoltValue) and _a.name == "v141" for _a in _op.args
+                )):
+                    _args_str = [(a.name if isinstance(a, MoltValue) else repr(a)) for a in (_op.args or [])]
+                    _out_str = _op.result.name if _op.result else "none"
+                    print(f"DEBUG_PRE [{function_name}] op {_i}: {_op.kind} args={_args_str} -> {_out_str}", file=sys.stderr)
         ops = self._run_ir_midend_passes(ops)
         json_ops: list[dict[str, Any]] = []
 
@@ -26858,6 +26870,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             elif op.kind == "CONST_NONE":
                 json_ops.append({"kind": "const_none", "out": op.result.name})
+                if self._active_midend_function_name and "__main__" in self._active_midend_function_name and "genexpr" in self._active_midend_function_name:
+                    import sys
+                    print(f"DEBUG_JSON CONST_NONE serialized: {op.result.name} at json_pos={len(json_ops)-1}", file=sys.stderr)
             elif op.kind == "CONST_NOT_IMPLEMENTED":
                 json_ops.append(
                     {"kind": "const_not_implemented", "out": op.result.name}
