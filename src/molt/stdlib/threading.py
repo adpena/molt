@@ -80,76 +80,42 @@ _MOLT_LOCAL_DROP = _require_intrinsic("molt_local_drop")
 _MOLT_MODULE_CACHE_SET = _require_intrinsic("molt_module_cache_set")
 
 
-def _require_callable(value: object, name: str) -> Callable[..., object]:
-    if not callable(value):
-        raise RuntimeError(f"{name} intrinsic unavailable")
-    return value
-
-
 def _expect_int(value: object) -> int:
     return int(value)
 
 
-_HAVE_INTRINSICS = all(
-    callable(fn)
-    for fn in (
-        _MOLT_THREAD_JOIN,
-        _MOLT_THREAD_IS_ALIVE,
-        _MOLT_THREAD_IDENT,
-        _MOLT_THREAD_NATIVE_ID,
-        _MOLT_THREAD_CURRENT_IDENT,
-        _MOLT_THREAD_CURRENT_NATIVE_ID,
-        _MOLT_THREAD_SPAWN_SHARED,
-        _MOLT_THREAD_DROP,
-        _MOLT_THREAD_STACK_SIZE_GET,
-        _MOLT_THREAD_STACK_SIZE_SET,
-        _MOLT_THREAD_REGISTRY_SET_MAIN,
-        _MOLT_THREAD_REGISTRY_REGISTER,
-        _MOLT_THREAD_REGISTRY_FORGET,
-        _MOLT_THREAD_REGISTRY_SNAPSHOT,
-        _MOLT_THREAD_REGISTRY_CURRENT,
-        _MOLT_THREAD_REGISTRY_ACTIVE_COUNT,
-        _MOLT_LOCK_NEW,
-        _MOLT_LOCK_ACQUIRE,
-        _MOLT_LOCK_RELEASE,
-        _MOLT_LOCK_LOCKED,
-        _MOLT_LOCK_DROP,
-        _MOLT_RLOCK_NEW,
-        _MOLT_RLOCK_ACQUIRE,
-        _MOLT_RLOCK_RELEASE,
-        _MOLT_RLOCK_LOCKED,
-        _MOLT_RLOCK_IS_OWNED,
-        _MOLT_RLOCK_RELEASE_SAVE,
-        _MOLT_RLOCK_ACQUIRE_RESTORE,
-        _MOLT_RLOCK_DROP,
-        _MOLT_CONDITION_NEW,
-        _MOLT_CONDITION_WAIT,
-        _MOLT_CONDITION_WAIT_FOR,
-        _MOLT_CONDITION_NOTIFY,
-        _MOLT_CONDITION_DROP,
-        _MOLT_EVENT_NEW,
-        _MOLT_EVENT_SET,
-        _MOLT_EVENT_CLEAR,
-        _MOLT_EVENT_IS_SET,
-        _MOLT_EVENT_WAIT,
-        _MOLT_EVENT_DROP,
-        _MOLT_SEMAPHORE_NEW,
-        _MOLT_SEMAPHORE_ACQUIRE,
-        _MOLT_SEMAPHORE_RELEASE,
-        _MOLT_SEMAPHORE_DROP,
-        _MOLT_BARRIER_NEW,
-        _MOLT_BARRIER_WAIT,
-        _MOLT_BARRIER_ABORT,
-        _MOLT_BARRIER_RESET,
-        _MOLT_BARRIER_PARTIES,
-        _MOLT_BARRIER_N_WAITING,
-        _MOLT_BARRIER_BROKEN,
-        _MOLT_BARRIER_DROP,
-        _MOLT_LOCAL_NEW,
-        _MOLT_LOCAL_GET_DICT,
-        _MOLT_LOCAL_DROP,
-    )
-)
+# Use a list + loop instead of a 55-element tuple literal to reduce IR size.
+_ALL_INTRINSICS = [
+    _MOLT_THREAD_JOIN, _MOLT_THREAD_IS_ALIVE, _MOLT_THREAD_IDENT,
+    _MOLT_THREAD_NATIVE_ID, _MOLT_THREAD_CURRENT_IDENT,
+    _MOLT_THREAD_CURRENT_NATIVE_ID, _MOLT_THREAD_SPAWN_SHARED,
+    _MOLT_THREAD_DROP, _MOLT_THREAD_STACK_SIZE_GET,
+    _MOLT_THREAD_STACK_SIZE_SET, _MOLT_THREAD_REGISTRY_SET_MAIN,
+    _MOLT_THREAD_REGISTRY_REGISTER, _MOLT_THREAD_REGISTRY_FORGET,
+    _MOLT_THREAD_REGISTRY_SNAPSHOT, _MOLT_THREAD_REGISTRY_CURRENT,
+    _MOLT_THREAD_REGISTRY_ACTIVE_COUNT,
+    _MOLT_LOCK_NEW, _MOLT_LOCK_ACQUIRE, _MOLT_LOCK_RELEASE,
+    _MOLT_LOCK_LOCKED, _MOLT_LOCK_DROP,
+    _MOLT_RLOCK_NEW, _MOLT_RLOCK_ACQUIRE, _MOLT_RLOCK_RELEASE,
+    _MOLT_RLOCK_LOCKED, _MOLT_RLOCK_IS_OWNED,
+    _MOLT_RLOCK_RELEASE_SAVE, _MOLT_RLOCK_ACQUIRE_RESTORE, _MOLT_RLOCK_DROP,
+    _MOLT_CONDITION_NEW, _MOLT_CONDITION_WAIT, _MOLT_CONDITION_WAIT_FOR,
+    _MOLT_CONDITION_NOTIFY, _MOLT_CONDITION_DROP,
+    _MOLT_EVENT_NEW, _MOLT_EVENT_SET, _MOLT_EVENT_CLEAR,
+    _MOLT_EVENT_IS_SET, _MOLT_EVENT_WAIT, _MOLT_EVENT_DROP,
+    _MOLT_SEMAPHORE_NEW, _MOLT_SEMAPHORE_ACQUIRE, _MOLT_SEMAPHORE_RELEASE,
+    _MOLT_SEMAPHORE_DROP,
+    _MOLT_BARRIER_NEW, _MOLT_BARRIER_WAIT, _MOLT_BARRIER_ABORT,
+    _MOLT_BARRIER_RESET, _MOLT_BARRIER_PARTIES, _MOLT_BARRIER_N_WAITING,
+    _MOLT_BARRIER_BROKEN, _MOLT_BARRIER_DROP,
+    _MOLT_LOCAL_NEW, _MOLT_LOCAL_GET_DICT, _MOLT_LOCAL_DROP,
+]
+
+_HAVE_INTRINSICS = True
+for _fn in _ALL_INTRINSICS:
+    if not callable(_fn):
+        _HAVE_INTRINSICS = False
+        break
 
 
 def _register_module_cache() -> None:
@@ -196,96 +162,62 @@ else:
         "activeCount",
     ]
 
-    _thread_join = _require_callable(_MOLT_THREAD_JOIN, "molt_thread_join")
-    _thread_is_alive = _require_callable(_MOLT_THREAD_IS_ALIVE, "molt_thread_is_alive")
-    _thread_ident = _require_callable(_MOLT_THREAD_IDENT, "molt_thread_ident")
-    _thread_native_id = _require_callable(
-        _MOLT_THREAD_NATIVE_ID, "molt_thread_native_id"
-    )
-    _thread_current_ident = _require_callable(
-        _MOLT_THREAD_CURRENT_IDENT, "molt_thread_current_ident"
-    )
-    _thread_current_native_id = _require_callable(
-        _MOLT_THREAD_CURRENT_NATIVE_ID, "molt_thread_current_native_id"
-    )
-    _thread_spawn_shared = _require_callable(
-        _MOLT_THREAD_SPAWN_SHARED, "molt_thread_spawn_shared"
-    )
-    _thread_drop = _require_callable(_MOLT_THREAD_DROP, "molt_thread_drop")
-    _thread_stack_size_get = _require_callable(
-        _MOLT_THREAD_STACK_SIZE_GET, "molt_thread_stack_size_get"
-    )
-    _thread_stack_size_set = _require_callable(
-        _MOLT_THREAD_STACK_SIZE_SET, "molt_thread_stack_size_set"
-    )
-    _thread_registry_set_main = _require_callable(
-        _MOLT_THREAD_REGISTRY_SET_MAIN, "molt_thread_registry_set_main"
-    )
-    _thread_registry_register = _require_callable(
-        _MOLT_THREAD_REGISTRY_REGISTER, "molt_thread_registry_register"
-    )
-    _thread_registry_forget = _require_callable(
-        _MOLT_THREAD_REGISTRY_FORGET, "molt_thread_registry_forget"
-    )
-    _thread_registry_snapshot = _require_callable(
-        _MOLT_THREAD_REGISTRY_SNAPSHOT, "molt_thread_registry_snapshot"
-    )
-    _thread_registry_current = _require_callable(
-        _MOLT_THREAD_REGISTRY_CURRENT, "molt_thread_registry_current"
-    )
-    _lock_new = _require_callable(_MOLT_LOCK_NEW, "molt_lock_new")
-    _lock_acquire = _require_callable(_MOLT_LOCK_ACQUIRE, "molt_lock_acquire")
-    _lock_release = _require_callable(_MOLT_LOCK_RELEASE, "molt_lock_release")
-    _lock_locked = _require_callable(_MOLT_LOCK_LOCKED, "molt_lock_locked")
-    _lock_drop = _require_callable(_MOLT_LOCK_DROP, "molt_lock_drop")
-    _rlock_new = _require_callable(_MOLT_RLOCK_NEW, "molt_rlock_new")
-    _rlock_acquire = _require_callable(_MOLT_RLOCK_ACQUIRE, "molt_rlock_acquire")
-    _rlock_release = _require_callable(_MOLT_RLOCK_RELEASE, "molt_rlock_release")
-    _rlock_locked = _require_callable(_MOLT_RLOCK_LOCKED, "molt_rlock_locked")
-    _rlock_is_owned = _require_callable(_MOLT_RLOCK_IS_OWNED, "molt_rlock_is_owned")
-    _rlock_release_save = _require_callable(
-        _MOLT_RLOCK_RELEASE_SAVE, "molt_rlock_release_save"
-    )
-    _rlock_acquire_restore = _require_callable(
-        _MOLT_RLOCK_ACQUIRE_RESTORE, "molt_rlock_acquire_restore"
-    )
-    _rlock_drop = _require_callable(_MOLT_RLOCK_DROP, "molt_rlock_drop")
-    _condition_new = _require_callable(_MOLT_CONDITION_NEW, "molt_condition_new")
-    _condition_wait = _require_callable(_MOLT_CONDITION_WAIT, "molt_condition_wait")
-    _condition_wait_for = _require_callable(
-        _MOLT_CONDITION_WAIT_FOR, "molt_condition_wait_for"
-    )
-    _condition_notify = _require_callable(
-        _MOLT_CONDITION_NOTIFY, "molt_condition_notify"
-    )
-    _condition_drop = _require_callable(_MOLT_CONDITION_DROP, "molt_condition_drop")
-    _event_new = _require_callable(_MOLT_EVENT_NEW, "molt_event_new")
-    _event_set = _require_callable(_MOLT_EVENT_SET, "molt_event_set")
-    _event_clear = _require_callable(_MOLT_EVENT_CLEAR, "molt_event_clear")
-    _event_is_set = _require_callable(_MOLT_EVENT_IS_SET, "molt_event_is_set")
-    _event_wait = _require_callable(_MOLT_EVENT_WAIT, "molt_event_wait")
-    _event_drop = _require_callable(_MOLT_EVENT_DROP, "molt_event_drop")
-    _semaphore_new = _require_callable(_MOLT_SEMAPHORE_NEW, "molt_semaphore_new")
-    _semaphore_acquire = _require_callable(
-        _MOLT_SEMAPHORE_ACQUIRE, "molt_semaphore_acquire"
-    )
-    _semaphore_release = _require_callable(
-        _MOLT_SEMAPHORE_RELEASE, "molt_semaphore_release"
-    )
-    _semaphore_drop = _require_callable(_MOLT_SEMAPHORE_DROP, "molt_semaphore_drop")
-    _barrier_new = _require_callable(_MOLT_BARRIER_NEW, "molt_barrier_new")
-    _barrier_wait = _require_callable(_MOLT_BARRIER_WAIT, "molt_barrier_wait")
-    _barrier_abort = _require_callable(_MOLT_BARRIER_ABORT, "molt_barrier_abort")
-    _barrier_reset = _require_callable(_MOLT_BARRIER_RESET, "molt_barrier_reset")
-    _barrier_parties = _require_callable(_MOLT_BARRIER_PARTIES, "molt_barrier_parties")
-    _barrier_n_waiting = _require_callable(
-        _MOLT_BARRIER_N_WAITING, "molt_barrier_n_waiting"
-    )
-    _barrier_broken = _require_callable(_MOLT_BARRIER_BROKEN, "molt_barrier_broken")
-    _barrier_drop = _require_callable(_MOLT_BARRIER_DROP, "molt_barrier_drop")
-    _local_new = _require_callable(_MOLT_LOCAL_NEW, "molt_local_new")
-    _local_get_dict = _require_callable(_MOLT_LOCAL_GET_DICT, "molt_local_get_dict")
-    _local_drop = _require_callable(_MOLT_LOCAL_DROP, "molt_local_drop")
+    # Intrinsics validated above; assign directly to eliminate 54 _require_callable
+    # function-call + f-string IR sequences.
+    _thread_join = _MOLT_THREAD_JOIN
+    _thread_is_alive = _MOLT_THREAD_IS_ALIVE
+    _thread_ident = _MOLT_THREAD_IDENT
+    _thread_native_id = _MOLT_THREAD_NATIVE_ID
+    _thread_current_ident = _MOLT_THREAD_CURRENT_IDENT
+    _thread_current_native_id = _MOLT_THREAD_CURRENT_NATIVE_ID
+    _thread_spawn_shared = _MOLT_THREAD_SPAWN_SHARED
+    _thread_drop = _MOLT_THREAD_DROP
+    _thread_stack_size_get = _MOLT_THREAD_STACK_SIZE_GET
+    _thread_stack_size_set = _MOLT_THREAD_STACK_SIZE_SET
+    _thread_registry_set_main = _MOLT_THREAD_REGISTRY_SET_MAIN
+    _thread_registry_register = _MOLT_THREAD_REGISTRY_REGISTER
+    _thread_registry_forget = _MOLT_THREAD_REGISTRY_FORGET
+    _thread_registry_snapshot = _MOLT_THREAD_REGISTRY_SNAPSHOT
+    _thread_registry_current = _MOLT_THREAD_REGISTRY_CURRENT
+    _lock_new = _MOLT_LOCK_NEW
+    _lock_acquire = _MOLT_LOCK_ACQUIRE
+    _lock_release = _MOLT_LOCK_RELEASE
+    _lock_locked = _MOLT_LOCK_LOCKED
+    _lock_drop = _MOLT_LOCK_DROP
+    _rlock_new = _MOLT_RLOCK_NEW
+    _rlock_acquire = _MOLT_RLOCK_ACQUIRE
+    _rlock_release = _MOLT_RLOCK_RELEASE
+    _rlock_locked = _MOLT_RLOCK_LOCKED
+    _rlock_is_owned = _MOLT_RLOCK_IS_OWNED
+    _rlock_release_save = _MOLT_RLOCK_RELEASE_SAVE
+    _rlock_acquire_restore = _MOLT_RLOCK_ACQUIRE_RESTORE
+    _rlock_drop = _MOLT_RLOCK_DROP
+    _condition_new = _MOLT_CONDITION_NEW
+    _condition_wait = _MOLT_CONDITION_WAIT
+    _condition_wait_for = _MOLT_CONDITION_WAIT_FOR
+    _condition_notify = _MOLT_CONDITION_NOTIFY
+    _condition_drop = _MOLT_CONDITION_DROP
+    _event_new = _MOLT_EVENT_NEW
+    _event_set = _MOLT_EVENT_SET
+    _event_clear = _MOLT_EVENT_CLEAR
+    _event_is_set = _MOLT_EVENT_IS_SET
+    _event_wait = _MOLT_EVENT_WAIT
+    _event_drop = _MOLT_EVENT_DROP
+    _semaphore_new = _MOLT_SEMAPHORE_NEW
+    _semaphore_acquire = _MOLT_SEMAPHORE_ACQUIRE
+    _semaphore_release = _MOLT_SEMAPHORE_RELEASE
+    _semaphore_drop = _MOLT_SEMAPHORE_DROP
+    _barrier_new = _MOLT_BARRIER_NEW
+    _barrier_wait = _MOLT_BARRIER_WAIT
+    _barrier_abort = _MOLT_BARRIER_ABORT
+    _barrier_reset = _MOLT_BARRIER_RESET
+    _barrier_parties = _MOLT_BARRIER_PARTIES
+    _barrier_n_waiting = _MOLT_BARRIER_N_WAITING
+    _barrier_broken = _MOLT_BARRIER_BROKEN
+    _barrier_drop = _MOLT_BARRIER_DROP
+    _local_new = _MOLT_LOCAL_NEW
+    _local_get_dict = _MOLT_LOCAL_GET_DICT
+    _local_drop = _MOLT_LOCAL_DROP
 
     _THREAD_COUNTER = 0
     _THREAD_TOKEN_COUNTER = 0
@@ -294,6 +226,8 @@ else:
     _TRACE_HOOK: Callable[[Any, str, Any], Any] | None = None
     _PROFILE_HOOK: Callable[[Any, str, Any], Any] | None = None
     _NO_CONTEXT = object()
+
+    TIMEOUT_MAX = 9223372036.0
 
     class ExceptHookArgs:
         def __init__(
@@ -314,7 +248,7 @@ else:
             print_exception = getattr(sys, "excepthook", None)
         if not callable(print_exception):
             raise RuntimeError("sys.excepthook unavailable")
-        print(f"Exception in thread {args.thread.name}:", file=sys.stderr)
+        print("Exception in thread " + str(args.thread.name) + ":", file=sys.stderr)
         print_exception(args.exc_type, args.exc_value, args.exc_traceback)
 
     excepthook: Callable[[ExceptHookArgs], Any] | None = _default_excepthook
@@ -338,7 +272,7 @@ else:
             return int(_thread_stack_size_get())
         if not isinstance(size, int):
             raise TypeError(
-                f"'{type(size).__name__}' object cannot be interpreted as an integer"
+                "'" + type(size).__name__ + "' object cannot be interpreted as an integer"
             )
         new_size = int(size)
         return int(_thread_stack_size_set(new_size))
@@ -346,7 +280,7 @@ else:
     def _next_thread_name() -> str:
         global _THREAD_COUNTER
         _THREAD_COUNTER += 1
-        return f"Thread-{_THREAD_COUNTER}"
+        return "Thread-" + str(_THREAD_COUNTER)
 
     def _next_thread_token() -> int:
         global _THREAD_TOKEN_COUNTER
@@ -362,6 +296,42 @@ else:
     def _check_timeout_max(timeout_val: float) -> None:
         if timeout_val > TIMEOUT_MAX:
             raise OverflowError("timestamp out of range for platform time_t")
+
+    _BAD_TIMEOUT_MSG = "' object cannot be interpreted as an integer or float"
+
+    def _validate_lock_timeout(timeout: float, blocking: bool) -> float:
+        """Validate timeout for Lock/RLock acquire."""
+        if timeout is None:
+            raise TypeError("'NoneType" + _BAD_TIMEOUT_MSG)
+        try:
+            timeout_val = float(timeout)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                "'" + type(timeout).__name__ + _BAD_TIMEOUT_MSG
+            ) from exc
+        if not blocking:
+            if timeout_val != -1.0:
+                raise ValueError("can't specify a timeout for a non-blocking call")
+        elif timeout_val < 0.0 and timeout_val != -1.0:
+            raise ValueError("timeout value must be a non-negative number")
+        if blocking and timeout_val != -1.0:
+            _check_timeout_max(timeout_val)
+        return timeout_val
+
+    def _validate_wait_timeout(timeout: float | None) -> float | None:
+        """Validate optional timeout for wait-style methods."""
+        if timeout is None:
+            return None
+        try:
+            timeout_val = float(timeout)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                "'" + type(timeout).__name__ + _BAD_TIMEOUT_MSG
+            ) from exc
+        if timeout_val < 0.0:
+            timeout_val = 0.0
+        _check_timeout_max(timeout_val)
+        return timeout_val
 
     def _invoke_thread_hooks() -> None:
         if _TRACE_HOOK is not None:
@@ -388,34 +358,40 @@ else:
             except Exception:
                 pass
 
-    def _parse_registry_record(
-        record: Any,
-    ) -> tuple[str, bool, int | None, int | None, bool, bool]:
+    _R_NAME = 0
+    _R_DAEMON = 1
+    _R_IDENT = 2
+    _R_NATIVE_ID = 3
+    _R_ALIVE = 4
+    _R_IS_MAIN = 5
+
+    def _parse_registry_record(record: Any) -> list[Any]:
+        """Parse a 6-element registry record into a list (avoids tuple unpack)."""
         if not isinstance(record, tuple) or len(record) != 6:
             raise RuntimeError("invalid thread registry record")
-        name, daemon, ident, native_id, alive, is_main = record
-        parsed_name = str(name)
-        parsed_daemon = bool(daemon)
-        parsed_ident = None if ident is None else int(ident)
-        parsed_native_id = None if native_id is None else int(native_id)
-        parsed_alive = bool(alive)
-        parsed_is_main = bool(is_main)
-        return (
-            parsed_name,
-            parsed_daemon,
-            parsed_ident,
-            parsed_native_id,
-            parsed_alive,
-            parsed_is_main,
-        )
+        return [
+            str(record[0]), bool(record[1]),
+            None if record[2] is None else int(record[2]),
+            None if record[3] is None else int(record[3]),
+            bool(record[4]), bool(record[5]),
+        ]
+
+    def _apply_record_to_thread(rec: list[Any], thread: "Thread") -> None:
+        """Apply parsed registry record fields to a Thread object."""
+        thread._name = rec[_R_NAME]
+        thread._daemon = rec[_R_DAEMON]
+        thread._started = bool(rec[_R_ALIVE])
+        thread._synthetic_alive = bool(rec[_R_ALIVE])
+        thread._ident_cache = rec[_R_IDENT]
+        thread._native_id_cache = rec[_R_NATIVE_ID]
 
     def _thread_from_registry_record(record: Any) -> "Thread":
-        name, daemon, ident, native_id, alive, _is_main = _parse_registry_record(record)
-        thread = Thread(target=None, name=name, daemon=daemon)
-        thread._started = bool(alive)
-        thread._synthetic_alive = bool(alive)
-        thread._ident_cache = ident
-        thread._native_id_cache = native_id
+        rec = _parse_registry_record(record)
+        thread = Thread(target=None, name=rec[_R_NAME], daemon=rec[_R_DAEMON])
+        thread._started = rec[_R_ALIVE]
+        thread._synthetic_alive = rec[_R_ALIVE]
+        thread._ident_cache = rec[_R_IDENT]
+        thread._native_id_cache = rec[_R_NATIVE_ID]
         thread._handle = None
         return thread
 
@@ -424,27 +400,10 @@ else:
             self._handle: Any | None = _lock_new()
 
         def acquire(self, blocking: bool = True, timeout: float = -1.0) -> bool:
-            if timeout is None:
-                raise TypeError(
-                    "'NoneType' object cannot be interpreted as an integer or float"
-                )
-            try:
-                timeout_val = float(timeout)
-            except (TypeError, ValueError) as exc:
-                raise TypeError(
-                    f"'{type(timeout).__name__}' object cannot be interpreted as an integer or float"
-                ) from exc
-            if not blocking:
-                if timeout_val != -1.0:
-                    raise ValueError("can't specify a timeout for a non-blocking call")
-            elif timeout_val < 0.0 and timeout_val != -1.0:
-                raise ValueError("timeout value must be a non-negative number")
-            if blocking and timeout_val != -1.0:
-                _check_timeout_max(timeout_val)
+            timeout_val = _validate_lock_timeout(timeout, blocking)
             if self._handle is None:
                 raise RuntimeError("lock is not initialized")
-            acquired = bool(_lock_acquire(self._handle, bool(blocking), timeout_val))
-            return acquired
+            return bool(_lock_acquire(self._handle, bool(blocking), timeout_val))
 
         def release(self) -> None:
             if self._handle is None:
@@ -489,23 +448,7 @@ else:
             self._handle: Any | None = _rlock_new()
 
         def acquire(self, blocking: bool = True, timeout: float = -1.0) -> bool:
-            if timeout is None:
-                raise TypeError(
-                    "'NoneType' object cannot be interpreted as an integer or float"
-                )
-            try:
-                timeout_val = float(timeout)
-            except (TypeError, ValueError) as exc:
-                raise TypeError(
-                    f"'{type(timeout).__name__}' object cannot be interpreted as an integer or float"
-                ) from exc
-            if not blocking:
-                if timeout_val != -1.0:
-                    raise ValueError("can't specify a timeout for a non-blocking call")
-            elif timeout_val < 0.0 and timeout_val != -1.0:
-                raise ValueError("timeout value must be a non-negative number")
-            if blocking and timeout_val != -1.0:
-                _check_timeout_max(timeout_val)
+            timeout_val = _validate_lock_timeout(timeout, blocking)
             if self._handle is None:
                 raise RuntimeError("rlock is not initialized")
             return bool(_rlock_acquire(self._handle, bool(blocking), timeout_val))
@@ -597,19 +540,7 @@ else:
         def wait(self, timeout: float | None = None) -> bool:
             if not self._is_owned():
                 raise RuntimeError("cannot wait on un-acquired lock")
-            timeout_val: float | None
-            if timeout is None:
-                timeout_val = None
-            else:
-                try:
-                    timeout_val = float(timeout)
-                except (TypeError, ValueError) as exc:
-                    raise TypeError(
-                        f"'{type(timeout).__name__}' object cannot be interpreted as an integer or float"
-                    ) from exc
-                if timeout_val < 0.0:
-                    timeout_val = 0.0
-                _check_timeout_max(timeout_val)
+            timeout_val = _validate_wait_timeout(timeout)
             if self._handle is None:
                 raise RuntimeError("condition is not initialized")
             saved = self._release_save()
@@ -671,19 +602,7 @@ else:
         def wait(self, timeout: float | None = None) -> bool:
             if self._handle is None:
                 raise RuntimeError("event is not initialized")
-            timeout_val: float | None
-            if timeout is None:
-                timeout_val = None
-            else:
-                try:
-                    timeout_val = float(timeout)
-                except (TypeError, ValueError) as exc:
-                    raise TypeError(
-                        f"'{type(timeout).__name__}' object cannot be interpreted as an integer or float"
-                    ) from exc
-                if timeout_val < 0.0:
-                    timeout_val = 0.0
-                _check_timeout_max(timeout_val)
+            timeout_val = _validate_wait_timeout(timeout)
             return bool(_event_wait(self._handle, timeout_val))
 
         isSet = is_set
@@ -708,23 +627,11 @@ else:
         def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
             if self._handle is None:
                 raise RuntimeError("semaphore is not initialized")
-            if timeout is None:
-                timeout_val = None
-            else:
-                try:
-                    timeout_val = float(timeout)
-                except (TypeError, ValueError) as exc:
-                    raise TypeError(
-                        f"'{type(timeout).__name__}' object cannot be interpreted as an integer or float"
-                    ) from exc
+            timeout_val = _validate_wait_timeout(timeout)
             if not blocking:
                 if timeout_val is not None:
                     raise ValueError("can't specify timeout for non-blocking acquire")
                 timeout_val = 0.0
-            elif timeout_val is not None:
-                if timeout_val < 0.0:
-                    timeout_val = 0.0
-                _check_timeout_max(timeout_val)
             return bool(_semaphore_acquire(self._handle, bool(blocking), timeout_val))
 
         def release(self, n: int = 1) -> None:
@@ -773,14 +680,7 @@ else:
             if parties <= 0:
                 raise ValueError("barrier parties must be greater than zero")
             self._action = action
-            timeout_val: float | None
-            if timeout is None:
-                timeout_val = None
-            else:
-                timeout_val = float(timeout)
-                if timeout_val < 0.0:
-                    timeout_val = 0.0
-                _check_timeout_max(timeout_val)
+            timeout_val = _validate_wait_timeout(timeout)
             self._handle: Any | None = _barrier_new(parties, timeout_val)
 
         @property
@@ -814,14 +714,7 @@ else:
         def wait(self, timeout: float | None = None) -> int:
             if self._handle is None:
                 raise RuntimeError("barrier is not initialized")
-            timeout_val: float | None
-            if timeout is None:
-                timeout_val = None
-            else:
-                timeout_val = float(timeout)
-                if timeout_val < 0.0:
-                    timeout_val = 0.0
-                _check_timeout_max(timeout_val)
+            timeout_val = _validate_wait_timeout(timeout)
             try:
                 index = int(_barrier_wait(self._handle, timeout_val))
             except RuntimeError as exc:
@@ -931,7 +824,7 @@ else:
 
         def __repr__(self) -> str:
             status = "started" if self._started else "initial"
-            return f"<Thread {self._name} ({status})>"
+            return "<Thread " + self._name + " (" + status + ")>"
 
         @property
         def name(self) -> str:
@@ -957,28 +850,20 @@ else:
         def ident(self) -> int | None:
             if self._ident_cache is not None:
                 return self._ident_cache
-            if not self._started:
+            if not self._started or self._handle is None:
                 return None
-            if self._handle is None:
-                return None
-            if self._ident_cache is None:
-                ident = _thread_ident(self._handle)
-                self._ident_cache = _expect_int(ident) if ident is not None else None
+            ident = _thread_ident(self._handle)
+            self._ident_cache = _expect_int(ident) if ident is not None else None
             return self._ident_cache
 
         @property
         def native_id(self) -> int | None:
             if self._native_id_cache is not None:
                 return self._native_id_cache
-            if not self._started:
+            if not self._started or self._handle is None:
                 return None
-            if self._handle is None:
-                return None
-            if self._native_id_cache is None:
-                ident = _thread_native_id(self._handle)
-                self._native_id_cache = (
-                    _expect_int(ident) if ident is not None else None
-                )
+            nid = _thread_native_id(self._handle)
+            self._native_id_cache = _expect_int(nid) if nid is not None else None
             return self._native_id_cache
 
         def is_alive(self) -> bool:
@@ -1016,15 +901,7 @@ else:
             if timeout is None:
                 _thread_join(self._handle, None)
                 return None
-            try:
-                timeout_val = float(timeout)
-            except (TypeError, ValueError) as exc:
-                raise TypeError(
-                    f"'{type(timeout).__name__}' object cannot be interpreted as an integer or float"
-                ) from exc
-            if timeout_val < 0.0:
-                timeout_val = 0.0
-            _check_timeout_max(timeout_val)
+            timeout_val = _validate_wait_timeout(timeout)
             _thread_join(self._handle, timeout_val)
 
         def run(self) -> None:
@@ -1091,37 +968,31 @@ else:
                 self.function(*self.args, **self.kwargs)
             self.finished.set()
 
-    def _registry_current_record() -> tuple[
-        str, bool, int | None, int | None, bool, bool
-    ]:
+    def _registry_current_record() -> list[Any]:
         record = _thread_registry_current()
         if record is None:
-            return ("MainThread", False, get_ident(), get_native_id(), True, True)
+            return ["MainThread", False, get_ident(), get_native_id(), True, True]
         return _parse_registry_record(record)
 
-    def _registry_snapshot_records() -> list[
-        tuple[str, bool, int | None, int | None, bool, bool]
-    ]:
+    def _registry_snapshot_records() -> list[list[Any]]:
         records = _thread_registry_snapshot()
         if not isinstance(records, list):
             raise RuntimeError("invalid thread registry snapshot")
-        return [_parse_registry_record(record) for record in records]
+        result: list[list[Any]] = []
+        for record in records:
+            result.append(_parse_registry_record(record))
+        return result
 
     def current_thread() -> Thread:
-        name, daemon, ident, native_id, alive, is_main = _registry_current_record()
-        if is_main:
+        rec = _registry_current_record()
+        if rec[_R_IS_MAIN]:
             thread = (
                 _MAIN_THREAD if _MAIN_THREAD is not None else _bootstrap_main_thread()
             )
-            thread._name = name
-            thread._daemon = daemon
-            thread._started = bool(alive)
-            thread._synthetic_alive = bool(alive)
-            thread._ident_cache = ident
-            thread._native_id_cache = native_id
+            _apply_record_to_thread(rec, thread)
             return thread
         return _thread_from_registry_record(
-            (name, daemon, ident, native_id, alive, is_main)
+            (rec[_R_NAME], rec[_R_DAEMON], rec[_R_IDENT], rec[_R_NATIVE_ID], rec[_R_ALIVE], rec[_R_IS_MAIN])
         )
 
     def main_thread() -> Thread:
@@ -1131,21 +1002,17 @@ else:
 
     def enumerate() -> list[Thread]:
         out: list[Thread] = []
-        for record in _registry_snapshot_records():
-            name, daemon, ident, native_id, alive, is_main = record
-            if not alive:
+        for rec in _registry_snapshot_records():
+            if not rec[_R_ALIVE]:
                 continue
-            if is_main:
+            if rec[_R_IS_MAIN]:
                 thread = main_thread()
-                thread._name = name
-                thread._daemon = daemon
-                thread._started = True
-                thread._synthetic_alive = True
-                thread._ident_cache = ident
-                thread._native_id_cache = native_id
+                _apply_record_to_thread(rec, thread)
                 out.append(thread)
                 continue
-            out.append(_thread_from_registry_record(record))
+            out.append(_thread_from_registry_record(
+                (rec[_R_NAME], rec[_R_DAEMON], rec[_R_IDENT], rec[_R_NATIVE_ID], rec[_R_ALIVE], rec[_R_IS_MAIN])
+            ))
         if not out:
             out.append(main_thread())
         return out
@@ -1155,8 +1022,6 @@ else:
 
     currentThread = current_thread
     activeCount = active_count
-
-    TIMEOUT_MAX = 9223372036.0
 
     def _bootstrap_main_thread() -> Thread:
         global _MAIN_THREAD

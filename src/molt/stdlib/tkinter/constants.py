@@ -2,8 +2,7 @@
 
 import _tkinter as _tkimpl
 from _intrinsics import require_intrinsic as _require_intrinsic
-from ._support import has_gui_capability as _has_gui_capability
-from ._support import tk_available as _tk_available
+from . import _support as _tkcompat
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 _MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available")
@@ -106,8 +105,8 @@ TIMER_EVENTS = _tkimpl.TIMER_EVENTS
 IDLE_EVENTS = _tkimpl.IDLE_EVENTS
 WINDOW_EVENTS = _tkimpl.WINDOW_EVENTS
 
-TK_AVAILABLE = _tk_available()
-HAS_GUI_CAPABILITY = _has_gui_capability()
+TK_AVAILABLE = _tkcompat._tk_available()
+HAS_GUI_CAPABILITY = _tkcompat._has_gui_capability()
 
 __all__ = [name for name in globals() if name.isupper() and not name.startswith("_")]
 
