@@ -4,8 +4,8 @@ use cranelift_codegen::Context;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 #[cfg(feature = "native-backend")]
 use cranelift_codegen::ir::{
-    AbiParam, Block, BlockArg, FuncRef, Function, InstBuilder, MemFlags, StackSlotData,
-    StackSlotKind, Value, types,
+    AbiParam, AtomicRmwOp, Block, BlockArg, FuncRef, Function, InstBuilder, MemFlags,
+    StackSlotData, StackSlotKind, Value, types,
 };
 #[cfg(feature = "native-backend")]
 use cranelift_codegen::isa;
@@ -537,11 +537,14 @@ fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: 
 // dec_ref is left as a function call (needs the free/destructor path).
 // ---------------------------------------------------------------------------
 
-/// Returns `true` if inline RC codegen is enabled via `MOLT_INLINE_RC=1`.
+/// Returns `true` if inline RC codegen is enabled.
+///
+/// Re-enabled: the inline RC path now uses atomic_rmw (AtomicRmwOp::Add)
+/// instead of non-atomic load/iadd/store, which is correct for the
+/// AtomicU32 refcount field.
 #[cfg(feature = "native-backend")]
 fn inline_rc_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_INLINE_RC").as_deref() == Ok("1"))
+    true
 }
 
 /// Emit an inlined `inc_ref_obj` as Cranelift IR instead of a function call.
@@ -594,19 +597,16 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value) {
         .ins()
         .brif(is_mortal, do_inc_block, &[], merge_block, &[]);
 
-    // 3. Increment refcount: load u32, add 1, store back
+    // 3. Increment refcount atomically using atomic_rmw (Add)
     builder.switch_to_block(do_inc_block);
-    let rc = builder.ins().load(
-        types::I32,
-        MemFlags::trusted(),
-        raw_ptr,
-        HEADER_REFCOUNT_OFFSET,
-    );
+    let rc_offset = builder
+        .ins()
+        .iconst(types::I64, HEADER_REFCOUNT_OFFSET as i64);
+    let rc_addr = builder.ins().iadd(raw_ptr, rc_offset);
     let one_i32 = builder.ins().iconst(types::I32, 1);
-    let new_rc = builder.ins().iadd(rc, one_i32);
     builder
         .ins()
-        .store(MemFlags::trusted(), new_rc, raw_ptr, HEADER_REFCOUNT_OFFSET);
+        .atomic_rmw(types::I32, MemFlags::trusted(), AtomicRmwOp::Add, rc_addr, one_i32);
     builder.ins().jump(merge_block, &[]);
 
     // 4. Merge — continue in the merge block
