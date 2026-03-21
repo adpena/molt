@@ -906,6 +906,39 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
     }
 }
 
+/// Batched increment: add `count` to the refcount in a single atomic
+/// operation instead of `count` separate fetch_add(1) calls.
+///
+/// # Safety
+/// Dereferences raw pointer to increment ref count.
+pub(crate) unsafe fn inc_ref_n_ptr(_py: &PyToken<'_>, ptr: *mut u8, count: u32) {
+    unsafe {
+        crate::gil_assert();
+        if ptr.is_null() || count == 0 {
+            return;
+        }
+        let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
+        if ((*header_ptr).flags & HEADER_FLAG_IMMORTAL) != 0 {
+            return;
+        }
+        let new_count = (*header_ptr)
+            .ref_count
+            .fetch_add(count, AtomicOrdering::Relaxed)
+            + count;
+        if debug_rc_object() {
+            let header = &*header_ptr;
+            if header.type_id == TYPE_ID_OBJECT
+                && (header.flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0
+            {
+                eprintln!(
+                    "molt rc inc_n ptr=0x{:x} count={} by={}",
+                    ptr as usize, new_count, count
+                );
+            }
+        }
+    }
+}
+
 /// # Safety
 /// Caller must pass a valid object pointer and matching header.
 unsafe fn maybe_run_object_finalizer(

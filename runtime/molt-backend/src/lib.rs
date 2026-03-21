@@ -1318,6 +1318,154 @@ fn drain_cleanup_entry_tracked(
     cleanup
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// RC coalescing: eliminate redundant inc_ref / dec_ref pairs.
+//
+// The pass operates on the flat OpIR list BEFORE Cranelift emission and is
+// intentionally conservative — only two patterns are coalesced:
+//
+// 1. Adjacent explicit `inc_ref(X)` / `dec_ref(X)` pairs (in either order)
+//    within the same basic block (no intervening control-flow or use of the
+//    variable) are eliminated entirely.
+//
+// 2. Explicit `inc_ref` / `borrow` ops whose output variable is never
+//    actually consumed (last_use <= definition index) are skipped, along
+//    with the corresponding tracking dec_ref.
+//
+// Implicit inc_ref emitted by ops like `load`, `get_attr_*`, `and`/`or`,
+// etc. is NOT touched because those ops may return borrowed references or
+// alias their inputs — skipping the inc_ref there could cause
+// use-after-free.
+// ---------------------------------------------------------------------------
+
+/// Op kinds that introduce control-flow (branch, merge, loop).
+#[cfg(feature = "native-backend")]
+const CONTROL_FLOW_OPS: &[&str] = &[
+    "if",
+    "else",
+    "end_if",
+    "loop_start",
+    "loop_end",
+    "loop_for_start",
+    "loop_for_end",
+    "label",
+    "state_label",
+    "jump",
+    "return",
+    "state_yield",
+    "check_exception",
+    "raise",
+];
+
+/// Analyse the op list and return two sets:
+///
+/// 1. `skip_ops`: op indices whose RC emission (inc_ref or dec_ref) should
+///    be skipped entirely because a matching counterpart cancels it out.
+/// 2. `skip_dec_ref`: variable names whose tracking dec_ref should be
+///    elided because the corresponding inc_ref was already elided.
+#[cfg(feature = "native-backend")]
+fn compute_rc_coalesce_skips(ops: &[OpIR]) -> (HashSet<usize>, HashSet<String>) {
+    let last_use = compute_last_use(ops);
+    let cf_set: HashSet<&str> = CONTROL_FLOW_OPS.iter().copied().collect();
+
+    let mut skip_ops: HashSet<usize> = HashSet::new();
+    let mut skip_dec_ref: HashSet<String> = HashSet::new();
+
+    // --- Pattern 1: explicit inc_ref/dec_ref pairs in the same basic block
+    //
+    // For each explicit inc_ref or dec_ref, look ahead for the matching
+    // counterpart. Only coalesce when there is no control-flow op and no
+    // intervening use of the target variable between the pair.
+    for i in 0..ops.len() {
+        if skip_ops.contains(&i) {
+            continue;
+        }
+        let a = &ops[i];
+        let a_is_inc = matches!(a.kind.as_str(), "inc_ref" | "borrow");
+        let a_is_dec = matches!(a.kind.as_str(), "dec_ref" | "release");
+        if !a_is_inc && !a_is_dec {
+            continue;
+        }
+        let a_arg = match a.args.as_ref().and_then(|v| v.first()) {
+            Some(name) => name.clone(),
+            None => continue,
+        };
+
+        // Look ahead for the matching counterpart.
+        for j in (i + 1)..ops.len() {
+            let b = &ops[j];
+            // Bail on control-flow — we've crossed a basic block boundary.
+            if cf_set.contains(b.kind.as_str()) {
+                break;
+            }
+            let b_kind = b.kind.as_str();
+            let b_arg = b.args.as_ref().and_then(|v| v.first());
+            let is_match = if a_is_inc {
+                matches!(b_kind, "dec_ref" | "release")
+                    && b_arg.map(String::as_str) == Some(&a_arg)
+            } else {
+                matches!(b_kind, "inc_ref" | "borrow")
+                    && b_arg.map(String::as_str) == Some(&a_arg)
+            };
+            if is_match && !skip_ops.contains(&j) {
+                skip_ops.insert(i);
+                skip_ops.insert(j);
+                break;
+            }
+            // If any intervening op uses the variable, the refcount is
+            // observed — bail.
+            let uses_var = b
+                .args
+                .as_ref()
+                .map(|args| args.iter().any(|n| n == &a_arg))
+                .unwrap_or(false)
+                || b.var.as_ref().map(|v| v == &a_arg).unwrap_or(false)
+                || b.out.as_ref().map(|o| o == &a_arg).unwrap_or(false);
+            if uses_var {
+                break;
+            }
+        }
+    }
+
+    // --- Pattern 2: explicit inc_ref/borrow with unused output ------------
+    for (idx, op) in ops.iter().enumerate() {
+        if skip_ops.contains(&idx) {
+            continue;
+        }
+        if !matches!(op.kind.as_str(), "inc_ref" | "borrow") {
+            continue;
+        }
+        let out_name = match op.out.as_deref() {
+            Some(name) if name != "none" => name,
+            _ => continue,
+        };
+        let last = last_use.get(out_name).copied().unwrap_or(idx);
+        if last <= idx {
+            // Output is never consumed — skip inc_ref and its cleanup dec_ref.
+            skip_ops.insert(idx);
+            skip_dec_ref.insert(out_name.to_string());
+        }
+    }
+
+    // --- Diagnostics (opt-in via MOLT_RC_COALESCE_TRACE=1) ----------------
+    if !skip_ops.is_empty() || !skip_dec_ref.is_empty() {
+        static RC_COALESCE_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let trace = *RC_COALESCE_TRACE.get_or_init(|| {
+            std::env::var("MOLT_RC_COALESCE_TRACE").as_deref() == Ok("1")
+        });
+        if trace {
+            eprintln!(
+                "[rc-coalesce] eliminated {} RC ops, {} dec_ref skips",
+                skip_ops.len(),
+                skip_dec_ref.len()
+            );
+        }
+    }
+
+    (skip_ops, skip_dec_ref)
+}
+
 #[derive(Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
 #[cfg_attr(not(any(feature = "native-backend", feature = "wasm-backend")), allow(dead_code))]
 pub(crate) enum TrampolineKind {
@@ -2131,6 +2279,7 @@ impl SimpleBackend {
         let mut block_tracked_obj: HashMap<Block, Vec<String>> = HashMap::new();
         let mut block_tracked_ptr: HashMap<Block, Vec<String>> = HashMap::new();
         let last_use = compute_last_use(&func_ir.ops);
+        let (rc_skip_inc, rc_skip_dec) = compute_rc_coalesce_skips(&func_ir.ops);
 
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
@@ -4959,6 +5108,55 @@ impl SimpleBackend {
                     let finish_call = builder.ins().call(finish_local, &[builder_ptr]);
                     let tuple_bits = builder.inst_results(finish_call)[0];
                     def_var_named(&mut builder, &vars, out_name, tuple_bits);
+                }
+                "unpack_sequence" => {
+                    // Outlined sequence unpacking: args[0] is the sequence,
+                    // args[1..] are the output variable names.
+                    // op.value holds the expected element count.
+                    let args = op.args.as_ref().unwrap();
+                    let seq_val = var_get(&mut builder, &vars, &args[0])
+                        .expect("Unpack sequence source not found");
+                    let expected_count = op.value.unwrap() as usize;
+
+                    // Allocate a stack slot for the output array.
+                    let slot_size = std::cmp::max(expected_count, 1) * 8;
+                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        slot_size as u32,
+                        3, // align_shift: 2^3 = 8-byte alignment
+                    ));
+                    let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
+
+                    let expected_val =
+                        builder.ins().iconst(types::I64, expected_count as i64);
+
+                    // Call molt_unpack_sequence(seq_bits, expected_count, output_ptr) -> u64
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64)); // seq_bits
+                    sig.params.push(AbiParam::new(types::I64)); // expected_count
+                    sig.params.push(AbiParam::new(types::I64)); // output_ptr
+                    sig.returns.push(AbiParam::new(types::I64)); // 0 on success
+                    let callee = self
+                        .module
+                        .declare_function(
+                            "molt_unpack_sequence",
+                            Linkage::Import,
+                            &sig,
+                        )
+                        .unwrap();
+                    let local_callee =
+                        self.module.declare_func_in_func(callee, builder.func);
+                    builder
+                        .ins()
+                        .call(local_callee, &[*seq_val, expected_val, out_ptr]);
+
+                    // Load each element from the output array into its named variable.
+                    for i in 0..expected_count {
+                        let elem = builder
+                            .ins()
+                            .stack_load(types::I64, out_slot, (i * 8) as i32);
+                        def_var_named(&mut builder, &vars, &args[1 + i], elem);
+                    }
                 }
                 "list_append" => {
                     let args = op.args.as_ref().unwrap();
@@ -9816,30 +10014,52 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "inc_ref" | "borrow" => {
-                    let args_names = op.args.as_ref().expect("inc_ref/borrow args missing");
-                    let src_name = args_names
-                        .first()
-                        .expect("inc_ref/borrow requires one source arg");
-                    let src = *var_get(&mut builder, &vars, src_name)
-                        .expect("inc_ref/borrow source not found");
-                    emit_inc_ref_obj(&mut builder, src, local_inc_ref_obj);
-                    if let Some(out_name) = op.out.as_ref()
+                    if !rc_skip_inc.contains(&op_idx) {
+                        let args_names = op.args.as_ref().expect("inc_ref/borrow args missing");
+                        let src_name = args_names
+                            .first()
+                            .expect("inc_ref/borrow requires one source arg");
+                        let src = *var_get(&mut builder, &vars, src_name)
+                            .expect("inc_ref/borrow source not found");
+                        emit_inc_ref_obj(&mut builder, src, local_inc_ref_obj);
+                        if let Some(out_name) = op.out.as_ref()
+                            && out_name != "none"
+                        {
+                            def_var_named(&mut builder, &vars, out_name.clone(), src);
+                        }
+                    } else if let Some(out_name) = op.out.as_ref()
                         && out_name != "none"
                     {
+                        // RC coalesced: still define the output variable as an
+                        // alias of the input so downstream ops can read it.
+                        let args_names = op.args.as_ref().unwrap();
+                        let src_name = args_names.first().unwrap();
+                        let src = *var_get(&mut builder, &vars, src_name)
+                            .expect("inc_ref/borrow source not found (coalesced)");
                         def_var_named(&mut builder, &vars, out_name.clone(), src);
                     }
                 }
                 "dec_ref" | "release" => {
-                    let args_names = op.args.as_ref().expect("dec_ref/release args missing");
-                    let src_name = args_names
-                        .first()
-                        .expect("dec_ref/release requires one source arg");
-                    let src = *var_get(&mut builder, &vars, src_name)
-                        .expect("dec_ref/release source not found");
-                    builder.ins().call(local_dec_ref_obj, &[src]);
-                    if let Some(out_name) = op.out.as_ref()
+                    if !rc_skip_inc.contains(&op_idx) {
+                        let args_names =
+                            op.args.as_ref().expect("dec_ref/release args missing");
+                        let src_name = args_names
+                            .first()
+                            .expect("dec_ref/release requires one source arg");
+                        let src = *var_get(&mut builder, &vars, src_name)
+                            .expect("dec_ref/release source not found");
+                        builder.ins().call(local_dec_ref_obj, &[src]);
+                        if let Some(out_name) = op.out.as_ref()
+                            && out_name != "none"
+                        {
+                            let none_bits = builder.ins().iconst(types::I64, box_none());
+                            def_var_named(&mut builder, &vars, out_name.clone(), none_bits);
+                        }
+                    } else if let Some(out_name) = op.out.as_ref()
                         && out_name != "none"
                     {
+                        // RC coalesced: still define the output as none so the
+                        // SSA variable is available for later reads.
                         let none_bits = builder.ins().iconst(types::I64, box_none());
                         def_var_named(&mut builder, &vars, out_name.clone(), none_bits);
                     }
@@ -14521,6 +14741,9 @@ impl SimpleBackend {
             if let Some(name) = out_name.as_ref()
                 && name != "none"
                 && let Some(block) = builder.current_block()
+                // RC coalescing: skip tracking for variables whose dec_ref
+                // was elided because the matching inc_ref was also elided.
+                && !rc_skip_dec.contains(name.as_str())
             {
                 if block == entry_block && loop_depth == 0 {
                     if output_is_ptr {

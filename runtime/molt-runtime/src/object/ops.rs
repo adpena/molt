@@ -14078,6 +14078,135 @@ pub extern "C" fn molt_trace_exit() -> u64 {
     })
 }
 
+/// Outlined class definition helper.  Replaces the multi-op inline sequence
+/// (`class_new` + `class_set_base` + N×`set_attr_generic_obj` +
+/// `class_apply_set_name` + `__init_subclass__` dispatch +
+/// `class_set_layout_version`) with a single runtime call, cutting per-class
+/// codegen from hundreds of Cranelift instructions to one call-site.
+///
+/// Arguments:
+///   name_bits      – class name (str object bits)
+///   bases_ptr      – pointer to array of base-class object bits
+///   nbases         – number of bases
+///   attrs_ptr      – pointer to array of (name_bits, value_bits) pairs;
+///                    must include __name__, __qualname__, __module__ and all
+///                    method / class-attr entries
+///   nattrs         – number of attribute pairs
+///   layout_size    – __molt_layout_size__ value (i64)
+///   layout_version – layout version (i64)
+///   flags          – bit-flags:
+///                      bit 0: call __init_subclass__ on bases
+///
+/// Returns: the new class object bits
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_guarded_class_def(
+    name_bits: u64,
+    bases_ptr: *const u64,
+    nbases: u64,
+    attrs_ptr: *const u64,
+    nattrs: u64,
+    layout_size: i64,
+    layout_version: i64,
+    flags: u64,
+) -> u64 {
+    use crate::builtins::types::{
+        molt_class_new, molt_class_set_base, molt_class_apply_set_name,
+        molt_class_set_layout_version,
+    };
+    use crate::builtins::attributes::molt_set_attr_name;
+    use molt_obj_model::MoltObject;
+
+    let none = MoltObject::none().bits();
+
+    // 1. Create the class
+    let class_bits = molt_class_new(name_bits);
+    if class_bits == none {
+        return class_bits;
+    }
+
+    // 2. Set bases (single base or tuple of bases)
+    let nb = nbases as usize;
+    if nb > 0 {
+        unsafe {
+            let bases_slice = std::slice::from_raw_parts(bases_ptr, nb);
+            if nb == 1 {
+                molt_class_set_base(class_bits, bases_slice[0]);
+            } else {
+                crate::with_gil_entry!(_py, {
+                    let tuple_ptr = crate::object::builders::alloc_tuple(_py, bases_slice);
+                    if !tuple_ptr.is_null() {
+                        let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
+                        molt_class_set_base(class_bits, tuple_bits);
+                        crate::dec_ref_bits(_py, tuple_bits);
+                    }
+                });
+            }
+        }
+    }
+
+    // 3. Set all attributes (includes __name__, __qualname__, __module__,
+    //    methods, class attrs, __molt_field_offsets__, etc.)
+    let na = nattrs as usize;
+    if na > 0 {
+        unsafe {
+            let attrs_slice = std::slice::from_raw_parts(attrs_ptr, na * 2);
+            for pair in attrs_slice.chunks_exact(2) {
+                molt_set_attr_name(class_bits, pair[0], pair[1]);
+            }
+        }
+    }
+
+    // 4. Set __molt_layout_size__
+    crate::with_gil_entry!(_py, {
+        let size_obj = MoltObject::from_int(layout_size).bits();
+        let layout_attr = crate::intern_static_name(
+            _py,
+            &crate::runtime_state(_py).interned.molt_layout_size,
+            b"__molt_layout_size__",
+        );
+        molt_set_attr_name(class_bits, layout_attr, size_obj);
+        crate::dec_ref_bits(_py, size_obj);
+    });
+
+    // 5. Apply __set_name__ descriptors
+    molt_class_apply_set_name(class_bits);
+
+    // 6. Dispatch __init_subclass__ on bases (flag bit 0)
+    if (flags & 1) != 0 && nb > 0 {
+        unsafe {
+            let bases_slice = std::slice::from_raw_parts(bases_ptr, nb);
+            crate::with_gil_entry!(_py, {
+                let init_name = crate::intern_static_name(
+                    _py,
+                    &crate::runtime_state(_py).interned.init_subclass_name,
+                    b"__init_subclass__",
+                );
+                for &base in bases_slice {
+                    let init_attr = crate::builtins::attributes::molt_get_attr_name_default(
+                        base, init_name, none,
+                    );
+                    if init_attr != none {
+                        let _ = crate::call::dispatch::call_callable1(
+                            _py, init_attr, class_bits,
+                        );
+                        crate::dec_ref_bits(_py, init_attr);
+                    }
+                }
+                crate::dec_ref_bits(_py, init_name);
+            });
+        }
+    }
+
+    // 7. Set layout version
+    let version_obj = MoltObject::from_int(layout_version).bits();
+    molt_class_set_layout_version(class_bits, version_obj);
+    crate::with_gil_entry!(_py, {
+        crate::dec_ref_bits(_py, version_obj);
+    });
+
+    class_bits
+}
+
 /// Outlined guarded-call helper: performs recursion guard enter/exit, optional
 /// trace enter/exit, and the actual function call via function pointer dispatch.
 /// Replaces the multi-block inline sequence previously generated for every
@@ -43212,6 +43341,32 @@ pub extern "C" fn molt_dec_ref_obj(bits: u64) {
     })
 }
 
+/// Batched `inc_ref`: increment the refcount by `count` in a single atomic
+/// operation. Returns the input bits unchanged (convenience for chaining).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_inc_ref_n(bits: u64, count: u32) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+            unsafe { crate::object::inc_ref_n_ptr(_py, ptr, count) };
+        }
+    });
+    bits
+}
+
+/// Batched `dec_ref`: decrement the refcount by calling `dec_ref` `count`
+/// times. (Cannot use a single atomic subtract because each decrement may
+/// trigger deallocation at zero.)
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_dec_ref_n(bits: u64, count: u32) {
+    crate::with_gil_entry!(_py, {
+        if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+            for _ in 0..count {
+                unsafe { molt_dec_ref(ptr) };
+            }
+        }
+    })
+}
+
 unsafe fn dict_subclass_storage_bits(_py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
     unsafe {
         let debug = std::env::var("MOLT_DEBUG_DICT_SUBCLASS").as_deref() == Ok("1");
@@ -46052,6 +46207,79 @@ pub(crate) unsafe fn dict_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits
         }
         true
     }
+}
+
+/// Outlined sequence unpacking helper. Validates that the sequence length
+/// matches `expected_count`, extracts each element (with incref), and writes
+/// element bits to `output_ptr[0..expected_count]`.
+///
+/// Returns 0 on success.  On length mismatch a `ValueError` is raised through
+/// the normal exception-pending mechanism and `MoltObject::none().bits()` is
+/// returned so the caller can short-circuit.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_unpack_sequence(
+    seq_bits: u64,
+    expected_count: u64,
+    output_ptr: *mut u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let obj = obj_from_bits(seq_bits);
+        let expected = expected_count as usize;
+        let Some(ptr) = obj.as_ptr() else {
+            // Not a heap object – cannot unpack None / small‑int / bool.
+            raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "cannot unpack non-sequence",
+            );
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems: &[u64] = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                // Fallback: try to treat as a generic sequence via molt_index.
+                // For now, raise a clear error; the frontend already converts
+                // iterables to lists before emitting unpack_sequence.
+                raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "cannot unpack non-sequence",
+                );
+                return MoltObject::none().bits();
+            };
+
+            let actual = elems.len();
+            if actual < expected {
+                let msg = format!(
+                    "not enough values to unpack (expected {}, got {})",
+                    expected, actual
+                );
+                raise_exception::<u64>(_py, "ValueError", &msg);
+                return MoltObject::none().bits();
+            }
+            if actual > expected {
+                let msg = format!(
+                    "too many values to unpack (expected {})",
+                    expected
+                );
+                raise_exception::<u64>(_py, "ValueError", &msg);
+                return MoltObject::none().bits();
+            }
+
+            // Write each element to the caller-provided output array and incref.
+            let out_slice = std::slice::from_raw_parts_mut(output_ptr, expected);
+            for (i, &bits) in elems.iter().enumerate().take(expected) {
+                inc_ref_bits(_py, bits);
+                out_slice[i] = bits;
+            }
+        }
+        0u64
+    })
 }
 
 pub(crate) unsafe fn dict_clear_in_place(_py: &PyToken<'_>, ptr: *mut u8) {
