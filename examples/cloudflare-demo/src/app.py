@@ -155,7 +155,7 @@ if route == "fib":
     if len(result_str) > 3:
         print("  digits = " + fmt_big(len(result_str)))
     print("")
-    print("Compiled Python -> WASM | molt")
+    print("github.com/adpena/molt")
 
 elif route == "primes":
     limit = safe_int(parts[1] if len(parts) > 1 else "", 10000, 2, 50000)
@@ -175,7 +175,7 @@ elif route == "primes":
         print("  first  = " + first5)
         print("  last   = " + last5)
     print("")
-    print("Compiled Python -> WASM | molt")
+    print("github.com/adpena/molt")
 
 elif route == "diamond":
     n = safe_int(parts[1] if len(parts) > 1 else "", 21, 3, 99)
@@ -229,7 +229,7 @@ elif route == "mandelbrot":
     print("Try: /mandelbrot/1 through /mandelbrot/5 for deep zooms")
     print("Or:  /mandelbrot?cx=-0.74&cy=0.13&zoom=200&iter=150")
     print("")
-    print("Compiled Python -> WASM | molt on Cloudflare Workers")
+    print("github.com/adpena/molt")
 
 elif route == "sort":
     data = params.get("data", "")
@@ -254,7 +254,7 @@ elif route == "sort":
     if bad:
         print("  skipped = " + ", ".join(bad) + " (non-numeric)")
     print("")
-    print("Compiled Python -> WASM | molt")
+    print("github.com/adpena/molt")
 
 elif route == "fizzbuzz":
     n = safe_int(parts[1] if len(parts) > 1 else "", 100, 1, 10000)
@@ -281,7 +281,7 @@ elif route == "pi":
     print("  actual   = 3.14159265358979323846")
     print("  error    = " + str(error))
     print("")
-    print("Compiled Python -> WASM | molt")
+    print("github.com/adpena/molt")
 
 elif route == "bench":
     print("Benchmark Suite")
@@ -312,37 +312,33 @@ else:
     if route:
         print("404 Not Found: /" + route)
         print("")
-    print("         __  __       _ _")
-    print("        |  \\/  | ___ | | |_")
-    print("        | |\\/| |/ _ \\| | __|")
-    print("        | |  | | (_) | | |_")
-    print("        |_|  |_|\\___/|_|\\__|")
+    print("   __  __       _ _   _")
+    print("  |  \\/  | ___ | | |_| | __ _ _ __   __ _")
+    print("  | |\\/| |/ _ \\| | __| |/ _` | '_ \\ / _` |")
+    print("  | |  | | (_) | | |_| | (_| | | | | (_| |")
+    print("  |_|  |_|\\___/|_|\\__|_|\\__,_|_| |_|\\__, |")
+    print("                                     |___/")
     print("")
-    print("  Python compiled to WASM, running at the edge.")
-    print("")
-    print("=" * 52)
-    print("  Not interpreted. Not transpiled. Compiled.")
-    print("  Binary: 2.9 MB gzip | Platform: Cloudflare Workers")
-    print("=" * 52)
+    print("  Python compiled to WebAssembly.")
+    print("  2.8 MB gzip. Cloudflare Workers, Free Tier.")
     print("")
     print("  Endpoints:")
     print("")
     print("    /fib/N              Fibonacci (N up to 10,000)")
     print("    /primes/N           Primes up to N (max 50,000)")
-    print("    /mandelbrot         ASCII Mandelbrot set (120x50)")
-    print("    /mandelbrot/1       Deep zoom preset 1")
-    print("    /mandelbrot/2       Deep zoom preset 2")
-    print("    /mandelbrot/3       Deep zoom preset 3")
+    print("    /mandelbrot         ASCII Mandelbrot set")
+    print("    /mandelbrot/1-5     Zoom presets")
     print("    /diamond/N          ASCII diamond pattern")
     print("    /sort?data=5,3,1    Sort numbers")
-    print("    /fizzbuzz/N         Classic FizzBuzz")
-    print("    /pi/N               Approximate pi (N terms)")
+    print("    /fizzbuzz/N         FizzBuzz")
+    print("    /pi/N               Approximate pi (Leibniz series)")
     print("    /bench              Run benchmark suite")
     print("")
-    print("  Examples:")
-    print("    curl .../fib/500")
-    print("    curl .../mandelbrot")
-    print("    curl .../mandelbrot/1")
-    print("    curl .../bench")
+    print("  Try:")
+    print("    curl https://molt-python-demo.adpena.workers.dev/mandelbrot")
+    print("    curl https://molt-python-demo.adpena.workers.dev/fib/500")
+    print("    curl https://molt-python-demo.adpena.workers.dev/bench")
+    print("")
+    print("  github.com/adpena  |  adpena@gmail.com")
     if route:
         sys.exit(1)
