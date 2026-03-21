@@ -18702,6 +18702,7 @@ def build(
     wasm_profile: str = "full",
     snapshot: bool = False,
     stdlib_profile: str | None = None,
+    tree_shake: bool = True,
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
