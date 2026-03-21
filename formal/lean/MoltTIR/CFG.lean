@@ -14,6 +14,7 @@ def termSuccessors : Terminator → List Label
   | .ret _ => []
   | .jmp target _ => [target]
   | .br _ thenLbl _ elseLbl _ => [thenLbl, elseLbl]
+  | .yield _ resume _ => [resume]   -- STATE_YIELD resumes at one target
 
 /-- All successor labels reachable from a block (via its terminator). -/
 def blockSuccessors (b : Block) : List Label :=
@@ -83,5 +84,11 @@ theorem jmp_successors (target : Label) (args : List Expr) :
 /-- Branch has exactly two successors. -/
 theorem br_successors (c : Expr) (tl : Label) (ta : List Expr) (el : Label) (ea : List Expr) :
     termSuccessors (.br c tl ta el ea) = [tl, el] := rfl
+
+/-- Yield (STATE_YIELD) has exactly one successor: the resume label.
+    Models generator suspension in the CFG — control transfers to the resume
+    block when the generator's __next__ is called. -/
+theorem yield_successors (val : Expr) (resume : Label) (args : List Expr) :
+    termSuccessors (.yield val resume args) = [resume] := rfl
 
 end MoltTIR
