@@ -8,6 +8,7 @@ use crate::{
 };
 
 const REGISTRY_NAME: &str = "_molt_intrinsics";
+const LOOKUP_HELPER_NAME: &str = "_molt_intrinsic_lookup";
 const STRICT_FLAG: &str = "_molt_intrinsics_strict";
 const RUNTIME_FLAG: &str = "_molt_runtime";
 
@@ -61,6 +62,10 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
     // Install *only* the resolver itself into the registry so Python code can
     // call it as a fallback when a dict lookup misses.
     let resolver_fn_ptr = molt_intrinsic_resolve as *const () as usize as u64;
+    if let Some(helper_bits) = build_intrinsic_func(_py, resolver_fn_ptr, 1) {
+        set_dict_entry(_py, dict_ptr, LOOKUP_HELPER_NAME, helper_bits);
+        dec_ref_bits(_py, helper_bits);
+    }
     if let Some(resolver_bits) = build_intrinsic_func(_py, resolver_fn_ptr, 1) {
         set_intrinsic_entry(_py, registry_ptr, "_molt_lazy_resolve", resolver_bits);
         dec_ref_bits(_py, resolver_bits);
