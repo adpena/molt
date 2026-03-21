@@ -423,18 +423,28 @@ impl SimpleBackend {
 
         // 2. Implementation
         let ops = &func_ir.ops;
-        let mut skip_until_idx = 0usize;
+        let mut skip_ops: HashSet<usize> = HashSet::new();
         for op_idx in 0..ops.len() {
-            if op_idx < skip_until_idx {
+            if skip_ops.contains(&op_idx) {
                 continue;
             }
-            let op = &ops[op_idx];
+            let op = ops[op_idx].clone();
             sync_block_filled(&builder, &mut is_block_filled);
             if is_block_filled {
                 if op.kind == "if"
-                    && let Some(&skip_end_idx) = if_skip_end.get(&op_idx)
+                    && let Some(&end_if_idx) = if_to_end_if.get(&op_idx)
                 {
-                    skip_until_idx = skip_end_idx.saturating_add(1);
+                    for idx in op_idx..=end_if_idx {
+                        skip_ops.insert(idx);
+                    }
+                    let mut phi_idx = end_if_idx + 1;
+                    while phi_idx < ops.len() {
+                        if ops[phi_idx].kind != "phi" {
+                            break;
+                        }
+                        skip_ops.insert(phi_idx);
+                        phi_idx += 1;
+                    }
                     continue;
                 }
                 match op.kind.as_str() {
@@ -10963,9 +10973,9 @@ impl SimpleBackend {
                             }
                             let out = next.out.clone().expect("phi output missing");
                             phi_ops.push((out, args[0].clone(), args[1].clone()));
+                            skip_ops.insert(scan_idx);
                             scan_idx += 1;
                         }
-                        skip_until_idx = skip_until_idx.max(scan_idx);
                         frame.phi_ops = phi_ops;
                     }
 
@@ -11063,9 +11073,9 @@ impl SimpleBackend {
                             }
                             let out = next.out.clone().expect("phi output missing");
                             phi_ops.push((out, args[0].clone(), args[1].clone()));
+                            skip_ops.insert(scan_idx);
                             scan_idx += 1;
                         }
-                        skip_until_idx = skip_until_idx.max(scan_idx);
                         frame.phi_ops = phi_ops;
                     }
 
@@ -13114,6 +13124,12 @@ mod tests {
                 },
                 OpIR {
                     kind: "end_if".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "phi".to_string(),
+                    out: Some("joined".to_string()),
+                    args: Some(vec!["msg".to_string(), "msg".to_string()]),
                     ..OpIR::default()
                 },
                 OpIR {
