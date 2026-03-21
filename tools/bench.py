@@ -68,6 +68,12 @@ BENCHMARKS = [
     "tests/benchmarks/bench_memoryview_tobytes.py",
     "tests/benchmarks/bench_parse_msgpack.py",
     "tests/benchmarks/bench_json_roundtrip.py",
+    "tests/benchmarks/bench_startup.py",
+    "tests/benchmarks/bench_gc_pressure.py",
+    "tests/benchmarks/bench_class_hierarchy.py",
+    "tests/benchmarks/bench_set_ops.py",
+    "tests/benchmarks/bench_exception_heavy.py",
+    "tests/benchmarks/bench_dict_comprehension.py",
 ]
 
 SMOKE_BENCHMARKS = [
