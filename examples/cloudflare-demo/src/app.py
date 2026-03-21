@@ -79,6 +79,18 @@ def fizzbuzz(n):
         else: lines.append(str(i))
     return "\n".join(lines)
 
+def safe_int(s, default, lo=0, hi=1000000):
+    """Parse int from string with bounds. Returns default on bad input."""
+    try:
+        v = int(s)
+    except (ValueError, TypeError):
+        return default
+    if v < lo:
+        return lo
+    if v > hi:
+        return hi
+    return v
+
 import sys
 path = sys.argv[1] if len(sys.argv) > 1 else "/"
 query = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -95,20 +107,20 @@ parts = path.strip("/").split("/")
 route = parts[0] if parts else ""
 
 if route == "fib":
-    n = int(parts[1]) if len(parts) > 1 else 100
+    n = safe_int(parts[1] if len(parts) > 1 else "", 100, 0, 10000)
     print("fib(" + str(n) + ") = " + str(fibonacci(n)))
 
 elif route == "primes":
-    limit = int(parts[1]) if len(parts) > 1 else 10000
+    limit = safe_int(parts[1] if len(parts) > 1 else "", 10000, 2, 100000)
     print("Primes up to " + str(limit) + ": " + str(count_primes(limit)))
 
 elif route == "diamond":
-    n = int(parts[1]) if len(parts) > 1 else 21
+    n = safe_int(parts[1] if len(parts) > 1 else "", 21, 3, 99)
     print(diamond(n))
 
 elif route == "mandelbrot":
-    w = int(params.get("width", "100"))
-    h = int(params.get("height", "40"))
+    w = safe_int(params.get("width", ""), 100, 10, 200)
+    h = safe_int(params.get("height", ""), 40, 5, 80)
     print(mandelbrot_render(w, h))
 
 elif route == "sort":
@@ -116,12 +128,11 @@ elif route == "sort":
     print("Sorted: " + sort_data(data))
 
 elif route == "fizzbuzz":
-    n = int(parts[1]) if len(parts) > 1 else 100
+    n = safe_int(parts[1] if len(parts) > 1 else "", 100, 1, 10000)
     print(fizzbuzz(n))
 
 elif route == "pi":
-    # Leibniz series for pi
-    n = int(parts[1]) if len(parts) > 1 else 100000
+    n = safe_int(parts[1] if len(parts) > 1 else "", 100000, 1, 1000000)
     total = 0.0
     for i in range(n):
         total += ((-1.0) ** i) / (2.0 * i + 1.0)
