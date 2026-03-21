@@ -7104,6 +7104,7 @@ unsafe fn sum_f64_simd_x86_64_avx2(vals: &[f64], acc: f64) -> f64 {
 }
 
 #[cfg(target_arch = "aarch64")]
+#[allow(dead_code)]
 unsafe fn sum_f64_simd_aarch64(vals: &[f64], acc: f64) -> f64 {
     unsafe {
         use std::arch::aarch64::*;
@@ -15460,7 +15461,8 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                         // at the top of the next iteration reads it.
                         all_numeric = false;
                         total_bits = MoltObject::from_float(fsum + comp).bits();
-                        total_owned = true;
+                        #[allow(unused_assignments)]
+                        { total_owned = true; }
                     }
                     let next_bits = molt_add(total_bits, val_bits);
                     if obj_from_bits(next_bits).is_none() {
@@ -20493,6 +20495,7 @@ fn wtf8_codepoint_at(bytes: &[u8], idx: usize) -> Option<CodePoint> {
     wtf8_from_bytes(bytes).code_points().nth(idx)
 }
 
+#[allow(dead_code)]
 fn wtf8_codepoint_count_scan(bytes: &[u8]) -> i64 {
     let mut idx = 0usize;
     let mut count = 0i64;
