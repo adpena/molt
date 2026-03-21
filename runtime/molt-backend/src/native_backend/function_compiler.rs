@@ -222,6 +222,7 @@ impl SimpleBackend {
             function_exception_label_id,
             const_int_map: _const_int_map,
         } = preanalyze_function_ir(&func_ir);
+        let (rc_skip_inc, rc_skip_dec) = compute_rc_coalesce_skips(&func_ir.ops, &last_use);
 
         if has_ret {
             self.ctx
@@ -8705,30 +8706,52 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "inc_ref" | "borrow" => {
-                    let args_names = op.args.as_ref().expect("inc_ref/borrow args missing");
-                    let src_name = args_names
-                        .first()
-                        .expect("inc_ref/borrow requires one source arg");
-                    let src = *var_get(&mut builder, &vars, src_name)
-                        .expect("inc_ref/borrow source not found");
-                    emit_inc_ref_obj(&mut builder, src, local_inc_ref_obj);
-                    if let Some(out_name) = op.out.as_ref()
+                    if !rc_skip_inc.contains(&op_idx) {
+                        let args_names = op.args.as_ref().expect("inc_ref/borrow args missing");
+                        let src_name = args_names
+                            .first()
+                            .expect("inc_ref/borrow requires one source arg");
+                        let src = *var_get(&mut builder, &vars, src_name)
+                            .expect("inc_ref/borrow source not found");
+                        emit_inc_ref_obj(&mut builder, src, local_inc_ref_obj);
+                        if let Some(out_name) = op.out.as_ref()
+                            && out_name != "none"
+                        {
+                            def_var_named(&mut builder, &vars, out_name.clone(), src);
+                        }
+                    } else if let Some(out_name) = op.out.as_ref()
                         && out_name != "none"
                     {
+                        // RC coalesced: still define the output variable as an
+                        // alias of the input so downstream ops can read it.
+                        let args_names = op.args.as_ref().unwrap();
+                        let src_name = args_names.first().unwrap();
+                        let src = *var_get(&mut builder, &vars, src_name)
+                            .expect("inc_ref/borrow source not found (coalesced)");
                         def_var_named(&mut builder, &vars, out_name.clone(), src);
                     }
                 }
                 "dec_ref" | "release" => {
-                    let args_names = op.args.as_ref().expect("dec_ref/release args missing");
-                    let src_name = args_names
-                        .first()
-                        .expect("dec_ref/release requires one source arg");
-                    let src = *var_get(&mut builder, &vars, src_name)
-                        .expect("dec_ref/release source not found");
-                    builder.ins().call(local_dec_ref_obj, &[src]);
-                    if let Some(out_name) = op.out.as_ref()
+                    if !rc_skip_inc.contains(&op_idx) {
+                        let args_names =
+                            op.args.as_ref().expect("dec_ref/release args missing");
+                        let src_name = args_names
+                            .first()
+                            .expect("dec_ref/release requires one source arg");
+                        let src = *var_get(&mut builder, &vars, src_name)
+                            .expect("dec_ref/release source not found");
+                        builder.ins().call(local_dec_ref_obj, &[src]);
+                        if let Some(out_name) = op.out.as_ref()
+                            && out_name != "none"
+                        {
+                            let none_bits = builder.ins().iconst(types::I64, box_none());
+                            def_var_named(&mut builder, &vars, out_name.clone(), none_bits);
+                        }
+                    } else if let Some(out_name) = op.out.as_ref()
                         && out_name != "none"
                     {
+                        // RC coalesced: still define the output as none so the
+                        // SSA variable is available for later reads.
                         let none_bits = builder.ins().iconst(types::I64, box_none());
                         def_var_named(&mut builder, &vars, out_name.clone(), none_bits);
                     }
@@ -10233,6 +10256,77 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*name_bits]);
                     let res = builder.inst_results(call)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
+                // Outlined class definition via molt_guarded_class_def
+                "class_def" => {
+                    let args = op.args.as_ref().unwrap();
+                    let meta = op.s_value.as_ref().expect("class_def needs s_value");
+                    let parts: Vec<&str> = meta.split(',').collect();
+                    let nbases: usize = parts[0].parse().unwrap();
+                    let nattrs: usize = parts[1].parse().unwrap();
+                    let layout_size: i64 = parts[2].parse().unwrap();
+                    let layout_version: i64 = parts[3].parse().unwrap();
+                    let flags: i64 = parts[4].parse().unwrap();
+                    let name_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Class name not found");
+                    let bases_slot_size = std::cmp::max(nbases, 1) * 8;
+                    let bases_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        bases_slot_size as u32,
+                        3,
+                    ));
+                    for i in 0..nbases {
+                        let base = var_get(&mut builder, &vars, &args[1 + i])
+                            .expect("Base class not found");
+                        builder.ins().stack_store(*base, bases_slot, (i * 8) as i32);
+                    }
+                    let bases_ptr = builder.ins().stack_addr(types::I64, bases_slot, 0);
+                    let attrs_slot_size = std::cmp::max(nattrs * 2, 1) * 8;
+                    let attrs_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        attrs_slot_size as u32,
+                        3,
+                    ));
+                    let attrs_base = 1 + nbases;
+                    for i in 0..nattrs {
+                        let key = var_get(&mut builder, &vars, &args[attrs_base + i * 2])
+                            .expect("Attr key not found");
+                        let val = var_get(&mut builder, &vars, &args[attrs_base + i * 2 + 1])
+                            .expect("Attr value not found");
+                        builder
+                            .ins()
+                            .stack_store(*key, attrs_slot, (i * 2 * 8) as i32);
+                        builder
+                            .ins()
+                            .stack_store(*val, attrs_slot, ((i * 2 + 1) * 8) as i32);
+                    }
+                    let attrs_ptr = builder.ins().stack_addr(types::I64, attrs_slot, 0);
+                    let nbases_val = builder.ins().iconst(types::I64, nbases as i64);
+                    let nattrs_val = builder.ins().iconst(types::I64, nattrs as i64);
+                    let layout_size_val = builder.ins().iconst(types::I64, layout_size);
+                    let layout_version_val = builder.ins().iconst(types::I64, layout_version);
+                    let flags_val = builder.ins().iconst(types::I64, flags);
+                    let mut cd_sig = self.module.make_signature();
+                    for _ in 0..8 {
+                        cd_sig.params.push(AbiParam::new(types::I64));
+                    }
+                    cd_sig.returns.push(AbiParam::new(types::I64));
+                    let cd_callee = self
+                        .module
+                        .declare_function("molt_guarded_class_def", Linkage::Import, &cd_sig)
+                        .unwrap();
+                    let cd_local =
+                        self.module.declare_func_in_func(cd_callee, builder.func);
+                    let cd_call = builder.ins().call(
+                        cd_local,
+                        &[
+                            *name_bits, bases_ptr, nbases_val,
+                            attrs_ptr, nattrs_val,
+                            layout_size_val, layout_version_val, flags_val,
+                        ],
+                    );
+                    let res = builder.inst_results(cd_call)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "builtin_type" => {
@@ -13469,6 +13563,9 @@ impl SimpleBackend {
             if let Some(name) = out_name.as_ref()
                 && name != "none"
                 && let Some(block) = builder.current_block()
+                // RC coalescing: skip tracking for variables whose dec_ref
+                // was elided because the matching inc_ref was also elided.
+                && !rc_skip_dec.contains(name.as_str())
             {
                 if block == entry_block && loop_depth == 0 {
                     if output_is_ptr {
