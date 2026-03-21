@@ -1319,7 +1319,6 @@ fn drain_cleanup_entry_tracked(
 }
 
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 // RC coalescing: eliminate redundant inc_ref / dec_ref pairs.
 //
 // The pass operates on the flat OpIR list BEFORE Cranelift emission and is
