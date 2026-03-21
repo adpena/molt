@@ -162,6 +162,9 @@ impl ThreadTaskState {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn thread_worker(rx: Receiver<ThreadWork>) {
+    // Register this worker thread so the GIL single-thread fast-path
+    // is disabled and actual TLS depth checks are used.
+    crate::concurrency::register_gil_thread();
     while let Ok(work) = rx.recv() {
         match work {
             ThreadWork::Shutdown => break,

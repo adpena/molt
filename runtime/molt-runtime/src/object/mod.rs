@@ -10,6 +10,10 @@ use num_bigint::BigInt;
 /// Global type version counter. Incremented whenever ANY class is modified
 /// (attribute set/deleted, base class changed, __dict__ mutated).
 /// Inline caches compare against this to detect staleness.
+///
+/// Uses `Relaxed` ordering because all callers hold the GIL, which provides
+/// the happens-before relationship. If the GIL is ever relaxed or removed,
+/// these must be upgraded to `Acquire`/`Release`.
 static GLOBAL_TYPE_VERSION: AtomicU64 = AtomicU64::new(1);
 
 #[inline(always)]
