@@ -356,7 +356,18 @@ def stage_optimize(
 
     t0 = time.monotonic()
     proc = subprocess.run(
-        [wasm_opt, f"-{level}", "--all-features", str(input_wasm), "-o", str(output_wasm)],
+        [
+            wasm_opt, f"-{level}",
+            # Explicit features — avoid --all-features which enables
+            # --enable-custom-descriptors, causing `exact` heap types
+            # that Cloudflare Workers' V8 rejects.
+            "--enable-bulk-memory", "--enable-mutable-globals",
+            "--enable-sign-ext", "--enable-nontrapping-float-to-int",
+            "--enable-simd", "--enable-multivalue",
+            "--enable-reference-types", "--enable-gc", "--enable-tail-call",
+            "--disable-custom-descriptors",
+            str(input_wasm), "-o", str(output_wasm),
+        ],
         capture_output=True,
         text=True,
         timeout=300,
