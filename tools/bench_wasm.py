@@ -32,6 +32,8 @@ BENCHMARKS = [
     "tests/benchmarks/bench_descriptor_property.py",
     "tests/benchmarks/bench_dict_ops.py",
     "tests/benchmarks/bench_dict_views.py",
+    "tests/benchmarks/bench_counter_words.py",
+    "tests/benchmarks/bench_etl_orders.py",
     "tests/benchmarks/bench_list_ops.py",
     "tests/benchmarks/bench_list_slice.py",
     "tests/benchmarks/bench_tuple_index.py",
@@ -65,12 +67,15 @@ BENCHMARKS = [
     "tests/benchmarks/bench_str_endswith.py",
     "tests/benchmarks/bench_memoryview_tobytes.py",
     "tests/benchmarks/bench_parse_msgpack.py",
+    "tests/benchmarks/bench_json_roundtrip.py",
     "tests/benchmarks/bench_startup.py",
     "tests/benchmarks/bench_gc_pressure.py",
     "tests/benchmarks/bench_class_hierarchy.py",
     "tests/benchmarks/bench_set_ops.py",
     "tests/benchmarks/bench_exception_heavy.py",
     "tests/benchmarks/bench_dict_comprehension.py",
+    "tests/benchmarks/bench_procedural_gen.py",
+    "tests/benchmarks/bench_import_time.py",
 ]
 
 SMOKE_BENCHMARKS = [

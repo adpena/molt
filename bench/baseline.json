@@ -18,6 +18,42 @@
       "molt_time_s": 0.11470220833386217,
       "pypy_time_s": 0.053068583331575304
     },
+    "bench_builtin_delattr_slice.py": {
+      "cpython_time_s": null,
+      "molt_cpython_ratio": null,
+      "molt_ok": false,
+      "molt_size_kb": 0,
+      "molt_speedup": 0,
+      "molt_time_s": 0,
+      "pypy_time_s": null
+    },
+    "bench_builtin_dir_slice.py": {
+      "cpython_time_s": null,
+      "molt_cpython_ratio": null,
+      "molt_ok": false,
+      "molt_size_kb": 0,
+      "molt_speedup": 0,
+      "molt_time_s": 0,
+      "pypy_time_s": null
+    },
+    "bench_builtin_import_slice.py": {
+      "cpython_time_s": null,
+      "molt_cpython_ratio": null,
+      "molt_ok": false,
+      "molt_size_kb": 0,
+      "molt_speedup": 0,
+      "molt_time_s": 0,
+      "pypy_time_s": null
+    },
+    "bench_builtin_locals_slice.py": {
+      "cpython_time_s": null,
+      "molt_cpython_ratio": null,
+      "molt_ok": false,
+      "molt_size_kb": 0,
+      "molt_speedup": 0,
+      "molt_time_s": 0,
+      "pypy_time_s": null
+    },
     "bench_bytearray_find.py": {
       "cpython_time_s": 0.017621611000019282,
       "molt_cpython_ratio": 1.127711251794658,
@@ -189,6 +225,15 @@
       "molt_time_s": 0.5402215973323715,
       "pypy_time_s": 0.2984095416686614
     },
+    "bench_generator.py": {
+      "cpython_time_s": null,
+      "molt_cpython_ratio": null,
+      "molt_ok": false,
+      "molt_size_kb": 0,
+      "molt_speedup": 0,
+      "molt_time_s": 0,
+      "pypy_time_s": null
+    },
     "bench_generator_iter.py": {
       "cpython_time_s": 0.01767311166865208,
       "molt_cpython_ratio": null,
@@ -197,6 +242,15 @@
       "molt_speedup": 0,
       "molt_time_s": 0,
       "pypy_time_s": 0.05303562466724543
+    },
+    "bench_import_time.py": {
+      "cpython_time_s": null,
+      "molt_cpython_ratio": null,
+      "molt_ok": false,
+      "molt_size_kb": 0,
+      "molt_speedup": 0,
+      "molt_time_s": 0,
+      "pypy_time_s": null
     },
     "bench_json_roundtrip.py": {
       "cpython_time_s": 0.014177430666071208,
@@ -263,6 +317,15 @@
     },
     "bench_parse_msgpack.py": {
       "cpython_time_s": 0.016898347334063146,
+      "molt_cpython_ratio": null,
+      "molt_ok": false,
+      "molt_size_kb": 0,
+      "molt_speedup": 0,
+      "molt_time_s": 0,
+      "pypy_time_s": null
+    },
+    "bench_procedural_gen.py": {
+      "cpython_time_s": null,
       "molt_cpython_ratio": null,
       "molt_ok": false,
       "molt_size_kb": 0,
@@ -485,9 +548,18 @@
       "molt_speedup": 0.9721924412299255,
       "molt_time_s": 0.019556013665957533,
       "pypy_time_s": 0.046445680331089534
+    },
+    "bench_ws_wait.py": {
+      "cpython_time_s": null,
+      "molt_cpython_ratio": null,
+      "molt_ok": false,
+      "molt_size_kb": 0,
+      "molt_speedup": 0,
+      "molt_time_s": 0,
+      "pypy_time_s": null
     }
   },
   "meta": {
-    "note": "Updated 2026-03-21 post-fixes (21/54 Molt runs succeeded; 33 failed due to concurrent Cargo build contention)"
+    "note": "Updated 2026-03-21 \u2014 56 benchmarks tracked (added builtin slices, procedural_gen, generator, import_time, ws_wait)"
   }
 }
