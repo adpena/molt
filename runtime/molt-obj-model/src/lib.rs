@@ -146,14 +146,17 @@ pub fn reset_ptr_registry() {
 }
 
 impl MoltObject {
+    #[inline(always)]
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
     }
 
+    #[inline(always)]
     pub fn bits(self) -> u64 {
         self.0
     }
 
+    #[inline]
     pub fn from_float(f: f64) -> Self {
         if f.is_nan() {
             Self(CANONICAL_NAN_BITS)
@@ -162,25 +165,30 @@ impl MoltObject {
         }
     }
 
+    #[inline]
     pub fn from_int(i: i64) -> Self {
         // Simple 47-bit integer for MVP
         let val = (i as u64) & INT_MASK;
         Self(QNAN | TAG_INT | val)
     }
 
+    #[inline(always)]
     pub fn from_bool(b: bool) -> Self {
         let val = if b { 1 } else { 0 };
         Self(QNAN | TAG_BOOL | val)
     }
 
+    #[inline(always)]
     pub fn none() -> Self {
         Self(QNAN | TAG_NONE)
     }
 
+    #[inline(always)]
     pub fn pending() -> Self {
         Self(QNAN | TAG_PENDING)
     }
 
+    #[inline]
     pub fn from_ptr(ptr: *mut u8) -> Self {
         // In release builds, skip the registry — the NaN-box encoding already
         // stores the canonical 48-bit address directly. The registry exists
@@ -204,10 +212,12 @@ impl MoltObject {
         }
     }
 
+    #[inline(always)]
     pub fn is_float(&self) -> bool {
         (self.0 & QNAN) != QNAN
     }
 
+    #[inline]
     pub fn as_float(&self) -> Option<f64> {
         if self.is_float() {
             Some(f64::from_bits(self.0))
@@ -216,14 +226,17 @@ impl MoltObject {
         }
     }
 
+    #[inline(always)]
     pub fn is_int(&self) -> bool {
         (self.0 & (QNAN | TAG_MASK)) == (QNAN | TAG_INT)
     }
 
+    #[inline(always)]
     pub fn is_bool(&self) -> bool {
         (self.0 & (QNAN | TAG_MASK)) == (QNAN | TAG_BOOL)
     }
 
+    #[inline]
     pub fn as_bool(&self) -> Option<bool> {
         if self.is_bool() {
             Some((self.0 & 0x1) == 1)
@@ -232,18 +245,22 @@ impl MoltObject {
         }
     }
 
+    #[inline(always)]
     pub fn is_none(&self) -> bool {
         (self.0 & (QNAN | TAG_MASK)) == (QNAN | TAG_NONE)
     }
 
+    #[inline(always)]
     pub fn is_pending(&self) -> bool {
         (self.0 & (QNAN | TAG_MASK)) == (QNAN | TAG_PENDING)
     }
 
+    #[inline(always)]
     pub fn is_ptr(&self) -> bool {
         (self.0 & (QNAN | TAG_MASK)) == (QNAN | TAG_PTR)
     }
 
+    #[inline]
     pub fn as_ptr(&self) -> Option<*mut u8> {
         if self.is_ptr() {
             let masked = self.0 & POINTER_MASK;
@@ -264,6 +281,7 @@ impl MoltObject {
         }
     }
 
+    #[inline]
     pub fn as_int(&self) -> Option<i64> {
         if self.is_int() {
             let val = self.0 & INT_MASK;
@@ -278,6 +296,7 @@ impl MoltObject {
         }
     }
 
+    #[inline]
     pub fn as_int_unchecked(&self) -> i64 {
         let val = self.0 & INT_MASK;
         if (val & INT_SIGN_BIT) != 0 {

@@ -1066,11 +1066,14 @@ fn is_number_for_concat(obj: MoltObject) -> bool {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if exception_pending(_py) {
-            if std::env::var("MOLT_DEBUG_ADD").as_deref() == Ok("1") {
-                eprintln!("molt_add: exception pending at entry");
+        #[cfg(debug_assertions)]
+        {
+            if exception_pending(_py) {
+                if std::env::var("MOLT_DEBUG_ADD").as_deref() == Ok("1") {
+                    eprintln!("molt_add: exception pending at entry");
+                }
+                return MoltObject::none().bits();
             }
-            return MoltObject::none().bits();
         }
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
