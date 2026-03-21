@@ -4766,32 +4766,38 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                                 if let Some(mro_bits) =
                                     class_attr_lookup_raw_mro(_py, class_ptr, name_bits)
                                 {
-                                    // The MRO lookup returned a result — this is cacheable.
-                                    // Cache the MRO-level value (before descriptor binding),
-                                    // but store the *bound* result (`out`) that the caller
-                                    // will actually use.
-                                    let _ = mro_bits; // just used to confirm MRO source
-                                    profile_hit_unchecked(&ATTR_IC_RESULT_MISS_COUNT);
-                                    let current_version = global_type_version();
-                                    inc_ref_bits(_py, name_bits);
-                                    inc_ref_bits(_py, out);
-                                    let mut cache = attr_ic_result_cache().lock().unwrap_or_else(|e| e.into_inner());
-                                    if let Some(old) = cache.insert(
-                                        site_id,
-                                        AttrICEntry {
-                                            name_bits,
-                                            result_bits: out,
-                                            type_version: current_version,
-                                            obj_type_id: type_id,
-                                        },
-                                    ) {
-                                        // Drop refs held by the evicted entry.
-                                        drop(cache);
-                                        if old.name_bits != 0 {
-                                            dec_ref_bits(_py, old.name_bits);
-                                        }
-                                        if old.result_bits != 0 {
-                                            dec_ref_bits(_py, old.result_bits);
+                                    // SAFETY: Only cache results where descriptor binding
+                                    // did NOT produce an instance-specific value. If the
+                                    // raw MRO result equals the final result, no descriptor
+                                    // binding occurred (the value is a plain class variable,
+                                    // not a function/property/classmethod). Caching
+                                    // descriptor-bound results (bound methods, property
+                                    // getter results) would serve the wrong instance.
+                                    let cacheable = out == mro_bits
+                                        || (!obj_from_bits(mro_bits).is_ptr());
+
+                                    if cacheable {
+                                        profile_hit_unchecked(&ATTR_IC_RESULT_MISS_COUNT);
+                                        let current_version = global_type_version();
+                                        inc_ref_bits(_py, name_bits);
+                                        inc_ref_bits(_py, out);
+                                        let mut cache = attr_ic_result_cache().lock().unwrap_or_else(|e| e.into_inner());
+                                        if let Some(old) = cache.insert(
+                                            site_id,
+                                            AttrICEntry {
+                                                name_bits,
+                                                result_bits: out,
+                                                type_version: current_version,
+                                                obj_type_id: type_id,
+                                            },
+                                        ) {
+                                            drop(cache);
+                                            if old.name_bits != 0 {
+                                                dec_ref_bits(_py, old.name_bits);
+                                            }
+                                            if old.result_bits != 0 {
+                                                dec_ref_bits(_py, old.result_bits);
+                                            }
                                         }
                                     }
                                 }
