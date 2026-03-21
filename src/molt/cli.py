@@ -3848,8 +3848,10 @@ def _read_module_source(path: Path) -> str:
         first_line = handle.readline()
         second_line = handle.readline()
         has_utf8_bom = first_line.startswith(codecs.BOM_UTF8)
+        _cookie_re = tokenize.cookie_re
+        _is_bytes_re = isinstance(_cookie_re.pattern, bytes)
         has_encoding_cookie = any(
-            tokenize.cookie_re.match(line.decode("latin-1", errors="ignore"))
+            _cookie_re.match(line if _is_bytes_re else line.decode("latin-1", errors="ignore"))
             for line in (first_line, second_line)
             if line
         )
