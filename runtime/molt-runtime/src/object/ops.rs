@@ -43965,6 +43965,74 @@ pub extern "C" fn molt_dec_ref_n(bits: u64, count: u32) {
     })
 }
 
+/// Outlined sequence unpacking helper. Validates that the sequence length
+/// matches `expected_count`, extracts each element (with incref), and writes
+/// element bits to `output_ptr[0..expected_count]`.
+///
+/// Returns 0 on success.  On length mismatch a `ValueError` is raised through
+/// the normal exception-pending mechanism and `MoltObject::none().bits()` is
+/// returned so the caller can short-circuit.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_unpack_sequence(
+    seq_bits: u64,
+    expected_count: u64,
+    output_ptr: *mut u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let obj = obj_from_bits(seq_bits);
+        let expected = expected_count as usize;
+        let Some(ptr) = obj.as_ptr() else {
+            raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "cannot unpack non-sequence",
+            );
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems: &[u64] = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "cannot unpack non-sequence",
+                );
+                return MoltObject::none().bits();
+            };
+
+            let actual = elems.len();
+            if actual < expected {
+                let msg = format!(
+                    "not enough values to unpack (expected {}, got {})",
+                    expected, actual
+                );
+                raise_exception::<u64>(_py, "ValueError", &msg);
+                return MoltObject::none().bits();
+            }
+            if actual > expected {
+                let msg = format!(
+                    "too many values to unpack (expected {})",
+                    expected
+                );
+                raise_exception::<u64>(_py, "ValueError", &msg);
+                return MoltObject::none().bits();
+            }
+
+            let out_slice = std::slice::from_raw_parts_mut(output_ptr, expected);
+            for (i, &bits) in elems.iter().enumerate().take(expected) {
+                inc_ref_bits(_py, bits);
+                out_slice[i] = bits;
+            }
+        }
+        0u64
+    })
+}
+
 unsafe fn dict_subclass_storage_bits(_py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
     unsafe {
         let debug = std::env::var("MOLT_DEBUG_DICT_SUBCLASS").as_deref() == Ok("1");
