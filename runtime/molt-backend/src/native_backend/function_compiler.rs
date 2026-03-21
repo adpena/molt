@@ -2913,21 +2913,200 @@ impl SimpleBackend {
                     };
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
+                "floor_div" | "binop_floor_div" => {
+                    let args = op.args.as_ref().unwrap();
+                    let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
+                    let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
+                    let res = if op.fast_int.unwrap_or(false) {
+                        // Python floor_div: divide and floor towards negative infinity.
+                        // sdiv truncates towards zero; we adjust when signs differ and
+                        // there is a remainder.
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_floordiv", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        builder.set_cold_block(slow_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+
+                        let lhs_val = unbox_int(&mut builder, *lhs);
+                        let rhs_val = unbox_int(&mut builder, *rhs);
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let rhs_nonzero =
+                            builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
+                        builder
+                            .ins()
+                            .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        let quot = builder.ins().sdiv(lhs_val, rhs_val);
+                        let rem = builder.ins().srem(lhs_val, rhs_val);
+                        // Adjust: if rem != 0 and signs of lhs/rhs differ, subtract 1.
+                        let rem_nonzero =
+                            builder.ins().icmp(IntCC::NotEqual, rem, zero);
+                        let lhs_neg =
+                            builder
+                                .ins()
+                                .icmp(IntCC::SignedLessThan, lhs_val, zero);
+                        let rhs_neg =
+                            builder
+                                .ins()
+                                .icmp(IntCC::SignedLessThan, rhs_val, zero);
+                        let sign_diff = builder.ins().bxor(lhs_neg, rhs_neg);
+                        let adjust = builder.ins().band(rem_nonzero, sign_diff);
+                        let one = builder.ins().iconst(types::I64, 1);
+                        let quot_adjusted = builder.ins().isub(quot, one);
+                        let floor_val = builder.ins().select(adjust, quot_adjusted, quot);
+                        let fast_res = box_int_value(&mut builder, floor_val);
+                        let fits_inline = int_value_fits_inline(&mut builder, floor_val);
+                        brif_block(
+                            &mut builder,
+                            fits_inline,
+                            merge_block,
+                            &[fast_res],
+                            slow_block,
+                            &[],
+                        );
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
+                    } else {
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_floordiv", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        builder.inst_results(call)[0]
+                    };
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
                 "pow" => {
                     let args = op.args.as_ref().unwrap();
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_pow", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                    let res = builder.inst_results(call)[0];
+                    let res = if op.fast_int.unwrap_or(false) {
+                        // Inline pow for small non-negative exponents (0, 1, 2).
+                        // Exponent >= 3 or negative falls back to runtime.
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_pow", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+
+                        let exp0_block = builder.create_block();
+                        let exp1_block = builder.create_block();
+                        let exp2_block = builder.create_block();
+                        let exp2_fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        builder.set_cold_block(slow_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+
+                        let base_val = unbox_int(&mut builder, *lhs);
+                        let exp_val = unbox_int(&mut builder, *rhs);
+
+                        // Check exp == 0
+                        let is_zero =
+                            builder.ins().icmp_imm(IntCC::Equal, exp_val, 0);
+                        builder
+                            .ins()
+                            .brif(is_zero, exp0_block, &[], exp1_block, &[]);
+
+                        // exp == 0 → result is 1
+                        builder.switch_to_block(exp0_block);
+                        builder.seal_block(exp0_block);
+                        let one = builder.ins().iconst(types::I64, 1);
+                        let res_one = box_int_value(&mut builder, one);
+                        jump_block(&mut builder, merge_block, &[res_one]);
+
+                        // Check exp == 1 → result is base (return lhs as-is)
+                        builder.switch_to_block(exp1_block);
+                        builder.seal_block(exp1_block);
+                        let is_one =
+                            builder.ins().icmp_imm(IntCC::Equal, exp_val, 1);
+                        let exp1_ret_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(is_one, exp1_ret_block, &[], exp2_block, &[]);
+
+                        builder.switch_to_block(exp1_ret_block);
+                        builder.seal_block(exp1_ret_block);
+                        jump_block(&mut builder, merge_block, &[*lhs]);
+
+                        // Check exp == 2
+                        builder.switch_to_block(exp2_block);
+                        builder.seal_block(exp2_block);
+                        let is_two =
+                            builder.ins().icmp_imm(IntCC::Equal, exp_val, 2);
+                        builder
+                            .ins()
+                            .brif(is_two, exp2_fast_block, &[], slow_block, &[]);
+
+                        // exp == 2 → base * base with overflow check
+                        builder.switch_to_block(exp2_fast_block);
+                        builder.seal_block(exp2_fast_block);
+                        let sq = builder.ins().imul(base_val, base_val);
+                        let sq_res = box_int_value(&mut builder, sq);
+                        let fits = int_value_fits_inline(&mut builder, sq);
+                        brif_block(
+                            &mut builder,
+                            fits,
+                            merge_block,
+                            &[sq_res],
+                            slow_block,
+                            &[],
+                        );
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
+                    } else {
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_pow", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        builder.inst_results(call)[0]
+                    };
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "pow_mod" => {
@@ -6507,34 +6686,176 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
+                "neg" | "unary_neg" => {
+                    let args = op.args.as_ref().unwrap();
+                    let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
+                    let res = if op.fast_int.unwrap_or(false) {
+                        // -x == 0 - x; overflow only when x == INT_MIN of the
+                        // inline payload range.
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_neg", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        builder.set_cold_block(slow_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+
+                        let int_val = unbox_int(&mut builder, *val);
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let negated = builder.ins().isub(zero, int_val);
+                        let fits_inline = int_value_fits_inline(&mut builder, negated);
+                        builder
+                            .ins()
+                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        let fast_res = box_int_value(&mut builder, negated);
+                        jump_block(&mut builder, merge_block, &[fast_res]);
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
+                        let call = builder.ins().call(local_callee, &[*val]);
+                        let slow_res = builder.inst_results(call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
+                    } else {
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_neg", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*val]);
+                        builder.inst_results(call)[0]
+                    };
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
                 "abs" => {
                     let args = op.args.as_ref().unwrap();
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_abs_builtin", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*val]);
-                    let res = builder.inst_results(call)[0];
+                    let res = if op.fast_int.unwrap_or(false) {
+                        // abs(x): select(x < 0, -x, x) with overflow check for INT_MIN.
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_abs_builtin", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        builder.set_cold_block(slow_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+
+                        let int_val = unbox_int(&mut builder, *val);
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let is_neg =
+                            builder
+                                .ins()
+                                .icmp(IntCC::SignedLessThan, int_val, zero);
+                        let negated = builder.ins().isub(zero, int_val);
+                        let abs_val = builder.ins().select(is_neg, negated, int_val);
+                        let fits_inline = int_value_fits_inline(&mut builder, abs_val);
+                        builder
+                            .ins()
+                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        builder.seal_block(fast_block);
+                        let fast_res = box_int_value(&mut builder, abs_val);
+                        jump_block(&mut builder, merge_block, &[fast_res]);
+
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
+                        let call = builder.ins().call(local_callee, &[*val]);
+                        let slow_res = builder.inst_results(call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
+                    } else {
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_abs_builtin", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*val]);
+                        builder.inst_results(call)[0]
+                    };
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "invert" => {
                     let args = op.args.as_ref().unwrap();
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_invert", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*val]);
-                    let res = builder.inst_results(call)[0];
+                    let res = if op.fast_int.unwrap_or(false) {
+                        // ~x == x ^ -1 for integers; result always fits if input fits
+                        // (magnitude changes by at most 1).
+                        let int_val = unbox_int(&mut builder, *val);
+                        let minus_one = builder.ins().iconst(types::I64, -1i64);
+                        let inverted = builder.ins().bxor(int_val, minus_one);
+                        box_int_value(&mut builder, inverted)
+                    } else {
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_invert", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*val]);
+                        builder.inst_results(call)[0]
+                    };
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                }
+                "bool" | "cast_bool" | "builtin_bool" => {
+                    let args = op.args.as_ref().unwrap();
+                    let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
+                    let res = if op.fast_int.unwrap_or(false) {
+                        // For known ints, bool(x) is simply x != 0.
+                        let int_val = unbox_int(&mut builder, *val);
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let is_nonzero =
+                            builder.ins().icmp(IntCC::NotEqual, int_val, zero);
+                        box_bool_value(&mut builder, is_nonzero)
+                    } else {
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_is_truthy", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*val]);
+                        let truthy = builder.inst_results(call)[0];
+                        let cond = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
+                        box_bool_value(&mut builder, cond)
+                    };
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "and" => {
