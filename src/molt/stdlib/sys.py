@@ -13,7 +13,16 @@ def cast(_tp, value):  # type: ignore[override]
 # Ensure sys.modules exists early to avoid circular import failures.
 _existing_modules = globals().get("modules")
 if _existing_modules is None:
-    modules: dict[str, object] = {}
+    # Try the new intrinsic first; fall back to a plain dict.
+    _modules_intrinsic = _require_intrinsic("molt_sys_modules")
+    if callable(_modules_intrinsic):
+        _new_modules = _modules_intrinsic()
+        if isinstance(_new_modules, dict):
+            modules: dict[str, object] = _new_modules
+        else:
+            modules = {}
+    else:
+        modules = {}
 else:
     modules = _existing_modules
 modules.setdefault("_intrinsics", _stdlib_intrinsics)
@@ -268,13 +277,29 @@ _MOLT_SYS_DISPLAYHOOK_WRITE = _as_callable(
 _MOLT_SYS_EXCEPTHOOK_WRITE = _as_callable(
     _require_intrinsic("molt_sys_excepthook_write")
 )
+_MOLT_SYS_ARGV_NEW = _require_intrinsic("molt_sys_argv")
+_MOLT_SYS_MODULES_NEW = _require_intrinsic("molt_sys_modules")
+_MOLT_SYS_PATH_NEW = _require_intrinsic("molt_sys_path")
 
-raw_argv = _MOLT_GETARGV()
-if raw_argv is None:
-    raise RuntimeError("molt_getargv returned None")
-if not isinstance(raw_argv, (list, tuple)):
-    raise RuntimeError(f"molt_getargv returned {type(raw_argv)!r}")
-argv = list(cast("Iterable[object]", raw_argv))
+# Prefer the new consolidated argv intrinsic when available.
+if callable(_MOLT_SYS_ARGV_NEW):
+    _raw_argv_new = _MOLT_SYS_ARGV_NEW()
+    if isinstance(_raw_argv_new, (list, tuple)):
+        argv = list(cast("Iterable[object]", _raw_argv_new))
+    else:
+        raw_argv = _MOLT_GETARGV()
+        if raw_argv is None:
+            raise RuntimeError("molt_getargv returned None")
+        if not isinstance(raw_argv, (list, tuple)):
+            raise RuntimeError(f"molt_getargv returned {type(raw_argv)!r}")
+        argv = list(cast("Iterable[object]", raw_argv))
+else:
+    raw_argv = _MOLT_GETARGV()
+    if raw_argv is None:
+        raise RuntimeError("molt_getargv returned None")
+    if not isinstance(raw_argv, (list, tuple)):
+        raise RuntimeError(f"molt_getargv returned {type(raw_argv)!r}")
+    argv = list(cast("Iterable[object]", raw_argv))
 
 _exe_val = _MOLT_SYS_EXECUTABLE()
 if not isinstance(_exe_val, str):
@@ -776,9 +801,19 @@ _bootstrap_payload_value = _MOLT_SYS_BOOTSTRAP_PAYLOAD(_BOOTSTRAP_MODULE_FILE)
 if not isinstance(_bootstrap_payload_value, dict):
     raise RuntimeError("molt_sys_bootstrap_payload returned invalid value")
 
-path = _bootstrap_str_list(
-    _bootstrap_payload_value, "path", "molt_sys_bootstrap_payload"
-)
+# Prefer the new consolidated path intrinsic when available.
+if callable(_MOLT_SYS_PATH_NEW):
+    _sys_path_raw = _MOLT_SYS_PATH_NEW()
+    if isinstance(_sys_path_raw, (list, tuple)):
+        path = list(cast("Iterable[object]", _sys_path_raw))
+    else:
+        path = _bootstrap_str_list(
+            _bootstrap_payload_value, "path", "molt_sys_bootstrap_payload"
+        )
+else:
+    path = _bootstrap_str_list(
+        _bootstrap_payload_value, "path", "molt_sys_bootstrap_payload"
+    )
 _molt_bootstrap_pythonpath = tuple(
     _bootstrap_str_list(
         _bootstrap_payload_value, "pythonpath_entries", "molt_sys_bootstrap_payload"

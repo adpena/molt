@@ -518,6 +518,21 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
     },
     IntrinsicSpec {
+        name: "molt_typing_cast",
+        symbol: "molt_typing_cast",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_typing_get_origin",
+        symbol: "molt_typing_get_origin",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_typing_get_args",
+        symbol: "molt_typing_get_args",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_argparse_parse",
         symbol: "molt_argparse_parse",
         arity: 2,
@@ -11872,6 +11887,68 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         symbol: "molt_random_binomialvariate",
         arity: 3,
     },
+    // ── contextvars intrinsics (trio task-local storage) ──────────────────
+    IntrinsicSpec {
+        name: "molt_contextvars_new_var",
+        symbol: "molt_contextvars_new_var",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_contextvars_get",
+        symbol: "molt_contextvars_get",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_contextvars_set",
+        symbol: "molt_contextvars_set",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_contextvars_reset",
+        symbol: "molt_contextvars_reset",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_contextvars_copy_context",
+        symbol: "molt_contextvars_copy_context",
+        arity: 0,
+    },
+    // ── threading Lock/Event wrappers (trio synchronization) ─────────────
+    IntrinsicSpec {
+        name: "molt_threading_lock_new",
+        symbol: "molt_threading_lock_new",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_threading_lock_acquire",
+        symbol: "molt_threading_lock_acquire",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_threading_lock_release",
+        symbol: "molt_threading_lock_release",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_threading_event_new",
+        symbol: "molt_threading_event_new",
+        arity: 0,
+    },
+    IntrinsicSpec {
+        name: "molt_threading_event_set",
+        symbol: "molt_threading_event_set",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_threading_event_is_set",
+        symbol: "molt_threading_event_is_set",
+        arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_threading_event_wait",
+        symbol: "molt_threading_event_wait",
+        arity: 1,
+    },
 ];
 
 pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
@@ -12081,6 +12158,15 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_protocol_register" => {
             Some(crate::molt_protocol_register as *const () as usize as u64)
+        }
+        "molt_typing_cast" => {
+            Some(crate::builtins::abc::molt_typing_cast as *const () as usize as u64)
+        }
+        "molt_typing_get_origin" => {
+            Some(crate::builtins::abc::molt_typing_get_origin as *const () as usize as u64)
+        }
+        "molt_typing_get_args" => {
+            Some(crate::builtins::abc::molt_typing_get_args as *const () as usize as u64)
         }
         "molt_argparse_parse" => Some(crate::molt_argparse_parse as *const () as usize as u64),
         "molt_enum_init_member" => Some(crate::molt_enum_init_member as *const () as usize as u64),
@@ -16887,6 +16973,44 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         }
         "molt_random_binomialvariate" => {
             Some(crate::molt_random_binomialvariate as *const () as usize as u64)
+        }
+        // ── contextvars ──────────────────────────────────────────────────
+        "molt_contextvars_new_var" => {
+            Some(crate::builtins::contextvars::molt_contextvars_new_var as *const () as usize as u64)
+        }
+        "molt_contextvars_get" => {
+            Some(crate::builtins::contextvars::molt_contextvars_get as *const () as usize as u64)
+        }
+        "molt_contextvars_set" => {
+            Some(crate::builtins::contextvars::molt_contextvars_set as *const () as usize as u64)
+        }
+        "molt_contextvars_reset" => {
+            Some(crate::builtins::contextvars::molt_contextvars_reset as *const () as usize as u64)
+        }
+        "molt_contextvars_copy_context" => {
+            Some(crate::builtins::contextvars::molt_contextvars_copy_context as *const () as usize as u64)
+        }
+        // ── threading Lock/Event wrappers ────────────────────────────────
+        "molt_threading_lock_new" => {
+            Some(crate::builtins::threading_helpers::molt_threading_lock_new as *const () as usize as u64)
+        }
+        "molt_threading_lock_acquire" => {
+            Some(crate::builtins::threading_helpers::molt_threading_lock_acquire as *const () as usize as u64)
+        }
+        "molt_threading_lock_release" => {
+            Some(crate::builtins::threading_helpers::molt_threading_lock_release as *const () as usize as u64)
+        }
+        "molt_threading_event_new" => {
+            Some(crate::builtins::threading_helpers::molt_threading_event_new as *const () as usize as u64)
+        }
+        "molt_threading_event_set" => {
+            Some(crate::builtins::threading_helpers::molt_threading_event_set as *const () as usize as u64)
+        }
+        "molt_threading_event_is_set" => {
+            Some(crate::builtins::threading_helpers::molt_threading_event_is_set as *const () as usize as u64)
+        }
+        "molt_threading_event_wait" => {
+            Some(crate::builtins::threading_helpers::molt_threading_event_wait as *const () as usize as u64)
         }
         _ => None,
     }

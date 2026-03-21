@@ -28,6 +28,7 @@ pub(crate) mod containers;
 pub(crate) mod containers_alloc;
 pub(crate) mod context;
 pub(crate) mod contextlib;
+pub(crate) mod contextvars;
 pub(crate) mod copy_mod;
 pub(crate) mod csv;
 pub(crate) mod datetime;
@@ -93,6 +94,7 @@ pub(crate) mod sys_ext;
 pub(crate) mod tarfile;
 #[cfg(feature = "stdlib_fs_extra")]
 pub(crate) mod tempfile_mod;
+pub(crate) mod threading_helpers;
 pub(crate) mod tkinter_core;
 pub(crate) mod type_ops;
 pub(crate) mod types;

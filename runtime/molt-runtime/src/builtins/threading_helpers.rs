@@ -221,3 +221,52 @@ pub unsafe extern "C" fn molt_threading_registry_record_tuple(
         bits_from_ptr(ptr)
     })
 }
+
+// ── Threading Lock wrappers ──────────────────────────────────────────────
+//
+// Trio expects `molt_threading_lock_*` names. These delegate to the existing
+// `molt_lock_*` intrinsics in `concurrency/locks.rs`.
+
+/// Create a new Lock. Returns a NaN-boxed handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_threading_lock_new() -> u64 {
+    unsafe { crate::molt_lock_new() }
+}
+
+/// Acquire the lock. Always succeeds (single-threaded). Returns True.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_threading_lock_acquire(lock_bits: u64) -> u64 {
+    unsafe { crate::molt_lock_acquire(lock_bits, MoltObject::from_bool(true).bits(), MoltObject::none().bits()) }
+}
+
+/// Release the lock. Returns None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_threading_lock_release(lock_bits: u64) -> u64 {
+    unsafe { crate::molt_lock_release(lock_bits) }
+}
+
+// ── Threading Event wrappers ─────────────────────────────────────────────
+
+/// Create a new Event. Returns a NaN-boxed handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_threading_event_new() -> u64 {
+    unsafe { crate::molt_event_new() }
+}
+
+/// Set the event flag.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_threading_event_set(event_bits: u64) -> u64 {
+    unsafe { crate::molt_event_set(event_bits) }
+}
+
+/// Check if the event is set. Returns NaN-boxed bool.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_threading_event_is_set(event_bits: u64) -> u64 {
+    unsafe { crate::molt_event_is_set(event_bits) }
+}
+
+/// Wait for the event (no-op in single-threaded mode: returns immediately).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_threading_event_wait(event_bits: u64) -> u64 {
+    unsafe { crate::molt_event_wait(event_bits, MoltObject::none().bits()) }
+}
