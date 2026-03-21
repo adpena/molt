@@ -7835,6 +7835,1760 @@ static inline void *PyObject_Realloc(void *ptr, size_t new_size) {
     return PyMem_Realloc(ptr, new_size);
 }
 
+/* ========================================================================
+ * Frame Object API (stubs — molt is AOT compiled, no real frames)
+ * ======================================================================== */
+
+typedef struct _molt_pyframeobject {
+    PyObject ob_base;
+    int f_lineno;
+} PyFrameObject;
+
+typedef struct _molt_pycodeobject {
+    PyObject ob_base;
+    PyObject *co_filename;
+    int co_nlocals;
+    int co_nfreevars;
+} PyCodeObject;
+
+typedef struct _molt_pytracebackobject {
+    PyObject ob_base;
+} PyTracebackObject;
+
+typedef int (*Py_tracefunc)(PyObject *, PyFrameObject *, int, PyObject *);
+
+static inline PyObject *PyFrame_GetBack(PyFrameObject *frame) {
+    (void)frame;
+    Py_RETURN_NONE;
+}
+
+static inline PyObject *PyFrame_GetBuiltins(PyFrameObject *frame) {
+    (void)frame;
+    Py_RETURN_NONE;
+}
+
+static inline PyObject *PyFrame_GetGlobals(PyFrameObject *frame) {
+    (void)frame;
+    Py_RETURN_NONE;
+}
+
+static inline PyObject *PyFrame_GetLocals(PyFrameObject *frame) {
+    (void)frame;
+    Py_RETURN_NONE;
+}
+
+static inline int PyFrame_GetLineNumber(PyFrameObject *frame) {
+    if (frame == NULL) return -1;
+    return frame->f_lineno;
+}
+
+static inline PyCodeObject *PyFrame_GetCode(PyFrameObject *frame) {
+    (void)frame;
+    return NULL;
+}
+
+static inline PyObject *PyFrame_GetGenerator(PyFrameObject *frame) {
+    (void)frame;
+    Py_RETURN_NONE;
+}
+
+static inline int PyFrame_GetLasti(PyFrameObject *frame) {
+    (void)frame;
+    return -1;
+}
+
+static inline PyObject *PyFrame_GetVar(PyFrameObject *frame, PyObject *name) {
+    (void)frame; (void)name;
+    PyErr_SetString(PyExc_RuntimeError, "PyFrame_GetVar: molt has no frame introspection");
+    return NULL;
+}
+
+static inline PyObject *PyFrame_GetVarString(PyFrameObject *frame, const char *name) {
+    (void)frame; (void)name;
+    PyErr_SetString(PyExc_RuntimeError, "PyFrame_GetVarString: molt has no frame introspection");
+    return NULL;
+}
+
+/* ========================================================================
+ * Code Object API (stubs)
+ * ======================================================================== */
+
+static inline int PyCode_Check(PyObject *co) {
+    (void)co;
+    return 0;
+}
+
+static inline PyObject *PyCode_GetFileName(PyCodeObject *co) {
+    (void)co;
+    return PyUnicode_FromString("<molt-compiled>");
+}
+
+static inline int PyCode_GetNumFree(PyCodeObject *co) {
+    if (co == NULL) return 0;
+    return co->co_nfreevars;
+}
+
+static inline int PyCode_GetFirstFreeVar(PyCodeObject *co) {
+    (void)co;
+    return 0;
+}
+
+static inline PyObject *PyCode_GetCode(PyCodeObject *co) {
+    (void)co;
+    return PyBytes_FromStringAndSize("", 0);
+}
+
+static inline PyObject *PyCode_GetVarnames(PyCodeObject *co) {
+    (void)co;
+    return PyTuple_New(0);
+}
+
+static inline PyObject *PyCode_GetFreevars(PyCodeObject *co) {
+    (void)co;
+    return PyTuple_New(0);
+}
+
+static inline PyObject *PyCode_GetCellvars(PyCodeObject *co) {
+    (void)co;
+    return PyTuple_New(0);
+}
+
+/* ========================================================================
+ * Traceback API (stubs)
+ * ======================================================================== */
+
+static inline int PyTraceBack_Here(PyFrameObject *frame) {
+    (void)frame;
+    return 0;
+}
+
+static inline int PyTraceBack_Print(PyObject *tb, PyObject *f) {
+    (void)tb; (void)f;
+    return 0;
+}
+
+static inline int PyTraceBack_Check(PyObject *ob) {
+    (void)ob;
+    return 0;
+}
+
+static inline PyObject *PyTraceBack_GetObject(PyObject *tb) {
+    (void)tb;
+    Py_RETURN_NONE;
+}
+
+/* ========================================================================
+ * PyStructSequence API
+ * ======================================================================== */
+
+typedef struct {
+    const char *name;
+    const char *doc;
+} PyStructSequence_Field;
+
+typedef struct {
+    const char *name;
+    const char *doc;
+    int n_in_sequence;
+    PyStructSequence_Field *fields;
+} PyStructSequence_Desc;
+
+static inline int PyStructSequence_InitType2(PyTypeObject *type, PyStructSequence_Desc *desc) {
+    (void)type; (void)desc;
+    return 0;
+}
+
+static inline void PyStructSequence_InitType(PyTypeObject *type, PyStructSequence_Desc *desc) {
+    (void)PyStructSequence_InitType2(type, desc);
+}
+
+static inline PyObject *PyStructSequence_New(PyTypeObject *type) {
+    (void)type;
+    return PyTuple_New(0);
+}
+
+static inline PyObject *PyStructSequence_GetItem(PyObject *p, Py_ssize_t pos) {
+    return PyTuple_GetItem(p, pos);
+}
+
+static inline void PyStructSequence_SetItem(PyObject *p, Py_ssize_t pos, PyObject *o) {
+    PyTuple_SetItem(p, pos, o);
+}
+
+#define PyStructSequence_SET_ITEM(p, pos, o) PyStructSequence_SetItem((p), (pos), (o))
+#define PyStructSequence_GET_ITEM(p, pos) PyStructSequence_GetItem((p), (pos))
+
+static inline PyTypeObject *PyStructSequence_NewType(PyStructSequence_Desc *desc) {
+    (void)desc;
+    return (PyTypeObject *)_molt_builtin_type_object_borrowed("tuple");
+}
+
+/* ========================================================================
+ * PyCFunction / Method completions
+ * ======================================================================== */
+
+static inline PyObject *PyCFunction_New(PyMethodDef *ml, PyObject *self) {
+    (void)ml; (void)self;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "PyCFunction_New: use molt's native function binding");
+    return NULL;
+}
+
+static inline PyObject *PyCFunction_NewEx(PyMethodDef *ml, PyObject *self, PyObject *module) {
+    (void)ml; (void)self; (void)module;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "PyCFunction_NewEx: use molt's native function binding");
+    return NULL;
+}
+
+static inline int PyCFunction_Check(PyObject *op) {
+    (void)op;
+    return 0;
+}
+
+static inline PyCFunction PyCFunction_GetFunction(PyObject *op) {
+    (void)op;
+    return NULL;
+}
+
+static inline PyObject *PyCFunction_GetSelf(PyObject *op) {
+    (void)op;
+    Py_RETURN_NONE;
+}
+
+static inline int PyCFunction_GetFlags(PyObject *op) {
+    (void)op;
+    return 0;
+}
+
+static inline PyObject *PyInstanceMethod_New(PyObject *func) {
+    Py_INCREF(func);
+    return func;
+}
+
+static inline int PyInstanceMethod_Check(PyObject *op) {
+    (void)op;
+    return 0;
+}
+
+static inline PyObject *PyInstanceMethod_Function(PyObject *im) {
+    Py_INCREF(im);
+    return im;
+}
+
+#define PyInstanceMethod_GET_FUNCTION(im) (im)
+
+static inline PyObject *PyClassMethod_New(PyObject *callable) {
+    Py_INCREF(callable);
+    return callable;
+}
+
+static inline PyObject *PyStaticMethod_New(PyObject *callable) {
+    Py_INCREF(callable);
+    return callable;
+}
+
+/* ========================================================================
+ * Property
+ * ======================================================================== */
+
+static inline PyObject *PyProperty_New(PyObject *fget, PyObject *fset,
+                                        PyObject *fdel, PyObject *doc) {
+    (void)fget; (void)fset; (void)fdel; (void)doc;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "PyProperty_New: not yet implemented in molt");
+    return NULL;
+}
+
+/* ========================================================================
+ * Cell / Generator / Coroutine
+ * ======================================================================== */
+
+static inline PyObject *PyCell_New(PyObject *ob) {
+    PyObject *cell = PyTuple_New(1);
+    if (cell == NULL) return NULL;
+    if (ob != NULL) {
+        Py_INCREF(ob);
+        PyTuple_SetItem(cell, 0, ob);
+    }
+    return cell;
+}
+
+static inline PyObject *PyCell_Get(PyObject *cell) {
+    if (cell == NULL) {
+        PyErr_SetString(PyExc_SystemError, "PyCell_Get: NULL cell");
+        return NULL;
+    }
+    PyObject *contents = PyTuple_GetItem(cell, 0);
+    Py_XINCREF(contents);
+    return contents;
+}
+
+static inline int PyCell_Set(PyObject *cell, PyObject *value) {
+    if (cell == NULL) {
+        PyErr_SetString(PyExc_SystemError, "PyCell_Set: NULL cell");
+        return -1;
+    }
+    Py_XINCREF(value);
+    PyTuple_SetItem(cell, 0, value);
+    return 0;
+}
+
+static inline int PyCell_Check(PyObject *ob) {
+    (void)ob;
+    return 0;
+}
+
+static inline int PyGen_Check(PyObject *ob) {
+    (void)ob;
+    return 0;
+}
+
+static inline int PyGen_CheckExact(PyObject *ob) {
+    (void)ob;
+    return 0;
+}
+
+static inline int PyCoro_Check(PyObject *ob) {
+    (void)ob;
+    return 0;
+}
+
+static inline int PyCoro_CheckExact(PyObject *ob) {
+    (void)ob;
+    return 0;
+}
+
+static inline int PyAsyncGen_Check(PyObject *ob) {
+    (void)ob;
+    return 0;
+}
+
+static inline int PyAsyncGen_CheckExact(PyObject *ob) {
+    (void)ob;
+    return 0;
+}
+
+static inline PyObject *PyGen_New(PyFrameObject *frame) {
+    (void)frame;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "PyGen_New: generators are compiled natively in molt");
+    return NULL;
+}
+
+static inline PyObject *PyGen_NewWithQualName(PyFrameObject *frame,
+                                               PyObject *name, PyObject *qualname) {
+    (void)frame; (void)name; (void)qualname;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "PyGen_NewWithQualName: generators are compiled natively in molt");
+    return NULL;
+}
+
+static inline PyObject *PyCoro_New(PyFrameObject *frame, PyObject *name, PyObject *qualname) {
+    (void)frame; (void)name; (void)qualname;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "PyCoro_New: coroutines are compiled natively in molt");
+    return NULL;
+}
+
+/* ========================================================================
+ * MemoryView API
+ * ======================================================================== */
+
+static inline PyObject *PyMemoryView_FromObject(PyObject *obj) {
+    (void)obj;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "PyMemoryView_FromObject: memoryview not yet supported in molt");
+    return NULL;
+}
+
+static inline PyObject *PyMemoryView_FromMemory(char *mem, Py_ssize_t size, int flags) {
+    (void)mem; (void)size; (void)flags;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "PyMemoryView_FromMemory: memoryview not yet supported in molt");
+    return NULL;
+}
+
+static inline PyObject *PyMemoryView_FromBuffer(Py_buffer *info) {
+    (void)info;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "PyMemoryView_FromBuffer: memoryview not yet supported in molt");
+    return NULL;
+}
+
+static inline int PyMemoryView_Check(PyObject *op) {
+    (void)op;
+    return 0;
+}
+
+#define PyMemoryView_GET_BUFFER(mview) ((Py_buffer *)NULL)
+#define PyMemoryView_GET_BASE(mview) ((PyObject *)NULL)
+
+/* ========================================================================
+ * Exception creation helpers
+ * ======================================================================== */
+
+static inline PyObject *PyException_GetTraceback(PyObject *ex) {
+    (void)ex;
+    Py_RETURN_NONE;
+}
+
+static inline int PyException_SetTraceback(PyObject *ex, PyObject *tb) {
+    (void)ex; (void)tb;
+    return 0;
+}
+
+static inline PyObject *PyException_GetCause(PyObject *ex) {
+    (void)ex;
+    Py_RETURN_NONE;
+}
+
+static inline void PyException_SetCause(PyObject *ex, PyObject *cause) {
+    (void)ex;
+    Py_XDECREF(cause);
+}
+
+static inline PyObject *PyException_GetContext(PyObject *ex) {
+    (void)ex;
+    Py_RETURN_NONE;
+}
+
+static inline void PyException_SetContext(PyObject *ex, PyObject *context) {
+    (void)ex;
+    Py_XDECREF(context);
+}
+
+static inline PyObject *PyException_GetArgs(PyObject *ex) {
+    (void)ex;
+    return PyTuple_New(0);
+}
+
+static inline void PyException_SetArgs(PyObject *ex, PyObject *args) {
+    (void)ex; (void)args;
+}
+
+static inline PyObject *PyErr_NewException(const char *name, PyObject *base, PyObject *dict) {
+    (void)dict;
+    PyObject *exc_name = PyUnicode_FromString(name);
+    if (exc_name == NULL) return NULL;
+    Py_DECREF(exc_name);
+    if (base != NULL) {
+        Py_INCREF(base);
+        return base;
+    }
+    Py_INCREF(PyExc_RuntimeError);
+    return PyExc_RuntimeError;
+}
+
+static inline PyObject *PyErr_NewExceptionWithDoc(const char *name, const char *doc,
+                                                    PyObject *base, PyObject *dict) {
+    (void)doc;
+    return PyErr_NewException(name, base, dict);
+}
+
+static inline int PyErr_GivenExceptionMatches(PyObject *given, PyObject *exc) {
+    if (given == NULL || exc == NULL) return 0;
+    if (given == exc) return 1;
+    return PyObject_IsInstance(given, exc);
+}
+
+static inline void PyErr_SetFromErrno(PyObject *type) {
+    if (type == NULL) type = PyExc_OSError;
+    PyErr_SetString(type, strerror(errno));
+}
+
+static inline PyObject *PyErr_SetFromErrnoWithFilenameObject(PyObject *type, PyObject *filenameObject) {
+    (void)filenameObject;
+    PyErr_SetFromErrno(type);
+    return NULL;
+}
+
+static inline PyObject *PyErr_SetFromErrnoWithFilenameObjects(PyObject *type,
+                                                               PyObject *filenameObject,
+                                                               PyObject *filenameObject2) {
+    (void)filenameObject; (void)filenameObject2;
+    PyErr_SetFromErrno(type);
+    return NULL;
+}
+
+static inline PyObject *PyErr_SetImportError(PyObject *msg, PyObject *name, PyObject *path) {
+    (void)name; (void)path;
+    if (msg != NULL) {
+        PyErr_SetObject(PyExc_ImportError, msg);
+    } else {
+        PyErr_SetString(PyExc_ImportError, "import error");
+    }
+    return NULL;
+}
+
+static inline PyObject *PyErr_SetImportErrorSubclass(PyObject *exception, PyObject *msg,
+                                                      PyObject *name, PyObject *path) {
+    (void)exception; (void)name; (void)path;
+    if (msg != NULL) {
+        PyErr_SetObject(PyExc_ImportError, msg);
+    } else {
+        PyErr_SetString(PyExc_ImportError, "import error");
+    }
+    return NULL;
+}
+
+static inline int PyErr_CheckSignals(void) {
+    return 0;
+}
+
+static inline void PyErr_SetInterrupt(void) {
+    /* no-op */
+}
+
+static inline void PyErr_SetInterruptEx(int signum) {
+    (void)signum;
+}
+
+static inline void PyErr_Print(void) {
+    PyObject *type, *value, *tb;
+    PyErr_Fetch(&type, &value, &tb);
+    if (value != NULL) {
+        PyObject *str = PyObject_Str(value);
+        if (str != NULL) {
+            const char *s = PyUnicode_AsUTF8(str);
+            if (s != NULL) fprintf(stderr, "%s\n", s);
+            Py_DECREF(str);
+        }
+    }
+    Py_XDECREF(type);
+    Py_XDECREF(value);
+    Py_XDECREF(tb);
+}
+
+static inline void PyErr_PrintEx(int set_sys_last_vars) {
+    (void)set_sys_last_vars;
+    PyErr_Print();
+}
+
+static inline void PyErr_Display(PyObject *exception, PyObject *value, PyObject *tb) {
+    (void)exception; (void)tb;
+    if (value != NULL) {
+        PyObject *str = PyObject_Str(value);
+        if (str != NULL) {
+            const char *s = PyUnicode_AsUTF8(str);
+            if (s != NULL) fprintf(stderr, "%s\n", s);
+            Py_DECREF(str);
+        }
+    }
+}
+
+static inline int PyErr_WarnExplicitObject(PyObject *category, PyObject *message,
+                                            PyObject *filename, int lineno,
+                                            PyObject *module, PyObject *registry) {
+    (void)category; (void)filename; (void)lineno; (void)module; (void)registry;
+    const char *msg = PyUnicode_AsUTF8(message);
+    if (msg == NULL) return -1;
+    fprintf(stderr, "Warning: %s\n", msg);
+    return 0;
+}
+
+static inline int PyErr_WarnExplicit(PyObject *category, const char *message,
+                                      const char *filename, int lineno,
+                                      const char *module, PyObject *registry) {
+    (void)category; (void)filename; (void)lineno; (void)module; (void)registry;
+    fprintf(stderr, "Warning: %s\n", message);
+    return 0;
+}
+
+/* ========================================================================
+ * Hashing
+ * ======================================================================== */
+
+static inline Py_hash_t PyObject_HashNotImplemented(PyObject *o) {
+    (void)o;
+    PyErr_SetString(PyExc_TypeError, "unhashable type");
+    return -1;
+}
+
+/* ========================================================================
+ * Py_AtExit / Py_FinalizeEx
+ * ======================================================================== */
+
+static inline int Py_AtExit(void (*func)(void)) {
+    (void)func;
+    return 0;
+}
+
+static inline int Py_FinalizeEx(void) {
+    return 0;
+}
+
+static inline void Py_InitializeEx(int initsigs) {
+    (void)initsigs;
+}
+
+/* ========================================================================
+ * PyRun stubs (no eval in molt)
+ * ======================================================================== */
+
+typedef struct {
+    int cf_flags;
+    int cf_feature_version;
+} PyCompilerFlags;
+
+static inline PyObject *PyRun_StringFlags(const char *str, int start,
+                                           PyObject *globals, PyObject *locals,
+                                           PyCompilerFlags *flags) {
+    (void)str; (void)start; (void)globals; (void)locals; (void)flags;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "PyRun_StringFlags: dynamic eval not supported in molt");
+    return NULL;
+}
+
+static inline PyObject *PyRun_String(const char *str, int start,
+                                      PyObject *globals, PyObject *locals) {
+    return PyRun_StringFlags(str, start, globals, locals, NULL);
+}
+
+static inline int PyRun_SimpleStringFlags(const char *command, PyCompilerFlags *flags) {
+    (void)command; (void)flags;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "PyRun_SimpleStringFlags: dynamic eval not supported in molt");
+    return -1;
+}
+
+static inline int PyRun_SimpleString(const char *command) {
+    return PyRun_SimpleStringFlags(command, NULL);
+}
+
+static inline int PyRun_AnyFileFlags(FILE *fp, const char *filename, PyCompilerFlags *flags) {
+    (void)fp; (void)filename; (void)flags;
+    return -1;
+}
+
+static inline int PyRun_AnyFile(FILE *fp, const char *filename) {
+    return PyRun_AnyFileFlags(fp, filename, NULL);
+}
+
+static inline int PyRun_AnyFileExFlags(FILE *fp, const char *filename, int closeit,
+                                        PyCompilerFlags *flags) {
+    (void)fp; (void)filename; (void)closeit; (void)flags;
+    return -1;
+}
+
+static inline PyObject *PyRun_FileFlags(FILE *fp, const char *filename, int start,
+                                         PyObject *globals, PyObject *locals,
+                                         PyCompilerFlags *flags) {
+    (void)fp; (void)filename; (void)start; (void)globals; (void)locals; (void)flags;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "PyRun_FileFlags: dynamic eval not supported in molt");
+    return NULL;
+}
+
+static inline PyObject *PyRun_File(FILE *fp, const char *filename, int start,
+                                    PyObject *globals, PyObject *locals) {
+    return PyRun_FileFlags(fp, filename, start, globals, locals, NULL);
+}
+
+static inline PyObject *Py_CompileString(const char *str, const char *filename, int start) {
+    (void)str; (void)filename; (void)start;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "Py_CompileString: dynamic compilation not supported in molt");
+    return NULL;
+}
+
+static inline PyObject *Py_CompileStringFlags(const char *str, const char *filename,
+                                               int start, PyCompilerFlags *flags) {
+    (void)flags;
+    return Py_CompileString(str, filename, start);
+}
+
+static inline PyObject *Py_CompileStringExFlags(const char *str, const char *filename,
+                                                  int start, PyCompilerFlags *flags,
+                                                  int optimize) {
+    (void)optimize;
+    return Py_CompileStringFlags(str, filename, start, flags);
+}
+
+/* ========================================================================
+ * PyEval stubs
+ * ======================================================================== */
+
+static inline void PyEval_AcquireLock(void) {
+    /* no-op */
+}
+
+static inline void PyEval_ReleaseLock(void) {
+    /* no-op */
+}
+
+static inline void PyEval_AcquireThread(PyThreadState *tstate) {
+    (void)tstate;
+}
+
+static inline void PyEval_ReleaseThread(PyThreadState *tstate) {
+    (void)tstate;
+}
+
+static inline PyThreadState *PyEval_SaveThread(void) {
+    return NULL;
+}
+
+static inline void PyEval_RestoreThread(PyThreadState *tstate) {
+    (void)tstate;
+}
+
+static inline PyFrameObject *PyEval_GetFrame(void) {
+    return NULL;
+}
+
+static inline int PyEval_MergeCompilerFlags(PyCompilerFlags *cf) {
+    (void)cf;
+    return 0;
+}
+
+static inline PyObject *PyEval_EvalCode(PyObject *co, PyObject *globals, PyObject *locals) {
+    (void)co; (void)globals; (void)locals;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "PyEval_EvalCode: dynamic eval not supported in molt");
+    return NULL;
+}
+
+static inline PyObject *PyEval_EvalCodeEx(PyObject *co, PyObject *globals, PyObject *locals,
+                                           PyObject *const *args, int argcount,
+                                           PyObject *const *kws, int kwcount,
+                                           PyObject *const *defs, int defcount,
+                                           PyObject *kwdefs, PyObject *closure) {
+    (void)co; (void)globals; (void)locals;
+    (void)args; (void)argcount; (void)kws; (void)kwcount;
+    (void)defs; (void)defcount; (void)kwdefs; (void)closure;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "PyEval_EvalCodeEx: dynamic eval not supported in molt");
+    return NULL;
+}
+
+/* ========================================================================
+ * PyGILState additional
+ * ======================================================================== */
+
+static inline PyThreadState *PyGILState_GetThisThreadState(void) {
+    return NULL;
+}
+
+/* ========================================================================
+ * PyThreadState / PyInterpreterState additional
+ * ======================================================================== */
+
+static inline PyThreadState *PyThreadState_New(PyInterpreterState *interp) {
+    (void)interp;
+    return PyThreadState_Get();
+}
+
+static inline void PyThreadState_Delete(PyThreadState *tstate) {
+    (void)tstate;
+}
+
+static inline PyInterpreterState *PyThreadState_GetInterpreter(PyThreadState *tstate) {
+    (void)tstate;
+    static PyInterpreterState _molt_main_interp = {0};
+    return &_molt_main_interp;
+}
+
+static inline PyFrameObject *PyThreadState_GetFrame(PyThreadState *tstate) {
+    (void)tstate;
+    return NULL;
+}
+
+static inline uint64_t PyThreadState_GetID(PyThreadState *tstate) {
+    (void)tstate;
+    return 1;
+}
+
+static inline int64_t PyInterpreterState_GetID(PyInterpreterState *interp) {
+    (void)interp;
+    return 0;
+}
+
+static inline PyObject *PyInterpreterState_GetDict(PyInterpreterState *interp) {
+    (void)interp;
+    return PyDict_New();
+}
+
+/* ========================================================================
+ * Version / Platform info
+ * ======================================================================== */
+
+static inline const char *Py_GetVersion(void) {
+    return "3.12.0 (molt AOT)";
+}
+
+static inline const char *Py_GetPlatform(void) {
+#if defined(__APPLE__)
+    return "darwin";
+#elif defined(__linux__)
+    return "linux";
+#elif defined(_WIN32)
+    return "win32";
+#elif defined(__wasm__)
+    return "wasi";
+#else
+    return "unknown";
+#endif
+}
+
+static inline const char *Py_GetCopyright(void) {
+    return "Copyright (c) molt contributors";
+}
+
+static inline const char *Py_GetCompiler(void) {
+#if defined(__clang__)
+    return "[Clang " __clang_version__ "]";
+#elif defined(__GNUC__)
+    return "[GCC]";
+#elif defined(_MSC_VER)
+    return "[MSVC]";
+#else
+    return "[Unknown]";
+#endif
+}
+
+static inline const char *Py_GetBuildInfo(void) {
+    return "molt AOT compiled";
+}
+
+static inline const char *Py_GetProgramName(void) {
+    return "molt";
+}
+
+static inline const char *Py_GetProgramFullPath(void) {
+    return "molt";
+}
+
+static inline const char *Py_GetPrefix(void) {
+    return "";
+}
+
+static inline const char *Py_GetExecPrefix(void) {
+    return "";
+}
+
+static inline const char *Py_GetPath(void) {
+    return "";
+}
+
+static inline const char *Py_GetPythonHome(void) {
+    return "";
+}
+
+/* ========================================================================
+ * Py_Is / identity checks
+ * ======================================================================== */
+
+static inline int Py_Is(PyObject *x, PyObject *y) {
+    return x == y;
+}
+
+static inline int Py_IsNone(PyObject *x) {
+    return Py_Is(x, Py_None);
+}
+
+static inline int Py_IsTrue(PyObject *x) {
+    return Py_Is(x, Py_True);
+}
+
+static inline int Py_IsFalse(PyObject *x) {
+    return Py_Is(x, Py_False);
+}
+
+/* ========================================================================
+ * PyObject_IsSubclass
+ * ======================================================================== */
+
+static inline int PyObject_IsSubclass(PyObject *derived, PyObject *cls) {
+    if (derived == NULL || cls == NULL) {
+        PyErr_SetString(PyExc_TypeError, "PyObject_IsSubclass: NULL argument");
+        return -1;
+    }
+    if (derived == cls) return 1;
+    return 0;
+}
+
+/* ========================================================================
+ * Recursive call guards
+ * ======================================================================== */
+
+static inline int Py_EnterRecursiveCall(const char *where) {
+    (void)where;
+    return 0;
+}
+
+static inline void Py_LeaveRecursiveCall(void) {
+    /* no-op */
+}
+
+/* ========================================================================
+ * PyFloat_FromString
+ * ======================================================================== */
+
+static inline PyObject *PyFloat_FromString(PyObject *str) {
+    const char *s = PyUnicode_AsUTF8(str);
+    if (s == NULL) return NULL;
+    char *end;
+    double val = strtod(s, &end);
+    if (end == s || *end != '\0') {
+        PyErr_SetString(PyExc_ValueError, "could not convert string to float");
+        return NULL;
+    }
+    return PyFloat_FromDouble(val);
+}
+
+static inline double PyFloat_GetMax(void) {
+    return 1.7976931348623157e+308;
+}
+
+static inline double PyFloat_GetMin(void) {
+    return 2.2250738585072014e-308;
+}
+
+/* ========================================================================
+ * Buffer protocol helpers
+ * ======================================================================== */
+
+static inline int PyBuffer_FillInfo(Py_buffer *view, PyObject *exporter,
+                                     void *buf, Py_ssize_t len, int readonly,
+                                     int flags) {
+    (void)flags;
+    if (view == NULL) return -1;
+    memset(view, 0, sizeof(*view));
+    view->buf = buf;
+    view->len = len;
+    view->readonly = readonly;
+    view->itemsize = 1;
+    view->ndim = 1;
+    view->obj = exporter;
+    if (exporter != NULL) Py_INCREF(exporter);
+    return 0;
+}
+
+static inline int PyObject_CheckBuffer(PyObject *obj) {
+    (void)obj;
+    return 0;
+}
+
+static inline int PyBuffer_IsContiguous(const Py_buffer *view, char order) {
+    (void)view; (void)order;
+    return 1;
+}
+
+static inline void PyBuffer_FillContiguousStrides(int ndim, Py_ssize_t *shape,
+                                                    Py_ssize_t *strides,
+                                                    int itemsize, char order) {
+    int i;
+    (void)order;
+    if (ndim <= 0) return;
+    strides[ndim - 1] = itemsize;
+    for (i = ndim - 2; i >= 0; i--) {
+        strides[i] = strides[i + 1] * shape[i + 1];
+    }
+}
+
+/* ========================================================================
+ * Py_SIZE
+ * ======================================================================== */
+
+#define Py_SIZE(ob) ((Py_ssize_t)0)
+#define Py_SET_SIZE(ob, size) ((void)(ob), (void)(size))
+
+/* ========================================================================
+ * Utility macros
+ * ======================================================================== */
+
+#ifndef Py_STRINGIFY
+#define Py_STRINGIFY(x) #x
+#define Py_XSTRINGIFY(x) Py_STRINGIFY(x)
+#endif
+
+#ifndef Py_UNREACHABLE
+#ifdef __GNUC__
+#define Py_UNREACHABLE() __builtin_unreachable()
+#elif defined(_MSC_VER)
+#define Py_UNREACHABLE() __assume(0)
+#else
+#define Py_UNREACHABLE() abort()
+#endif
+#endif
+
+#ifndef Py_ABS
+#define Py_ABS(x) ((x) >= 0 ? (x) : -(x))
+#endif
+
+#ifndef Py_MIN
+#define Py_MIN(x, y) (((x) < (y)) ? (x) : (y))
+#endif
+
+#ifndef Py_MAX
+#define Py_MAX(x, y) (((x) > (y)) ? (x) : (y))
+#endif
+
+#ifndef Py_ARRAY_LENGTH
+#define Py_ARRAY_LENGTH(a) (sizeof(a) / sizeof((a)[0]))
+#endif
+
+#ifndef Py_MEMBER_SIZE
+#define Py_MEMBER_SIZE(type, member) sizeof(((type *)0)->member)
+#endif
+
+#ifndef Py_SAFE_DOWNCAST
+#define Py_SAFE_DOWNCAST(VALUE, WIDE, NARROW) ((NARROW)(VALUE))
+#endif
+
+#ifndef Py_CHARMASK
+#define Py_CHARMASK(c) ((unsigned char)((c) & 0xff))
+#endif
+
+#ifndef Py_DEPRECATED
+#if defined(__GNUC__) || defined(__clang__)
+#define Py_DEPRECATED(VERSION_UNUSED) __attribute__((deprecated))
+#else
+#define Py_DEPRECATED(VERSION_UNUSED)
+#endif
+#endif
+
+#ifndef PyDoc_STR
+#define PyDoc_STR(str) str
+#endif
+
+#ifndef PyDoc_STRVAR
+#define PyDoc_STRVAR(name, str) static const char name[] = str
+#endif
+
+#ifndef PyDoc_VAR
+#define PyDoc_VAR(name) static const char name[]
+#endif
+
+/* ========================================================================
+ * Eval / start token constants
+ * ======================================================================== */
+
+#ifndef Py_eval_input
+#define Py_eval_input 258
+#endif
+
+#ifndef Py_file_input
+#define Py_file_input 257
+#endif
+
+#ifndef Py_single_input
+#define Py_single_input 256
+#endif
+
+/* ========================================================================
+ * PySys additional
+ * ======================================================================== */
+
+static inline void PySys_AddWarnOption(const char *s) {
+    (void)s;
+}
+
+static inline void PySys_AddWarnOptionUnicode(PyObject *option) {
+    (void)option;
+}
+
+static inline void PySys_SetPath(const char *path) {
+    (void)path;
+}
+
+static inline void PySys_SetArgv(int argc, char **argv) {
+    (void)argc; (void)argv;
+}
+
+static inline void PySys_SetArgvEx(int argc, char **argv, int updatepath) {
+    (void)argc; (void)argv; (void)updatepath;
+}
+
+static inline void PySys_AddXOption(const char *s) {
+    (void)s;
+}
+
+static inline PyObject *PySys_GetXOptions(void) {
+    return PyDict_New();
+}
+
+/* ========================================================================
+ * PyImport additional
+ * ======================================================================== */
+
+static inline PyObject *PyImport_AddModuleObject(PyObject *name) {
+    (void)name;
+    Py_RETURN_NONE;
+}
+
+static inline PyObject *PyImport_ExecCodeModule(const char *name, PyObject *co) {
+    (void)name; (void)co;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "PyImport_ExecCodeModule: not supported in molt");
+    return NULL;
+}
+
+static inline PyObject *PyImport_ExecCodeModuleEx(const char *name, PyObject *co,
+                                                    const char *pathname) {
+    (void)pathname;
+    return PyImport_ExecCodeModule(name, co);
+}
+
+static inline PyObject *PyImport_ExecCodeModuleWithPathnames(const char *name, PyObject *co,
+                                                              const char *pathname,
+                                                              const char *cpathname) {
+    (void)pathname; (void)cpathname;
+    return PyImport_ExecCodeModule(name, co);
+}
+
+static inline long PyImport_GetMagicNumber(void) {
+    return 3531;
+}
+
+static inline const char *PyImport_GetMagicTag(void) {
+    return "cpython-312";
+}
+
+static inline int PyImport_ImportFrozenModuleObject(PyObject *name) {
+    (void)name;
+    return 0;
+}
+
+/* ========================================================================
+ * Py_BEGIN/END_ALLOW_THREADS
+ * ======================================================================== */
+
+#ifndef Py_PRINT_RAW
+#define Py_PRINT_RAW 1
+#endif
+
+#ifndef Py_BEGIN_ALLOW_THREADS
+#define Py_BEGIN_ALLOW_THREADS {
+#endif
+
+#ifndef Py_END_ALLOW_THREADS
+#define Py_END_ALLOW_THREADS }
+#endif
+
+#ifndef Py_BLOCK_THREADS
+#define Py_BLOCK_THREADS
+#endif
+
+#ifndef Py_UNBLOCK_THREADS
+#define Py_UNBLOCK_THREADS
+#endif
+
+/* ========================================================================
+ * METH_FASTCALL / METH_METHOD (supplement existing defs)
+ * ======================================================================== */
+
+#ifndef METH_FASTCALL
+#define METH_FASTCALL 0x0080
+#endif
+
+#ifndef METH_METHOD
+#define METH_METHOD 0x0200
+#endif
+
+/* ========================================================================
+ * Type slot IDs (supplement existing defs)
+ * ======================================================================== */
+
+#ifndef Py_tp_dealloc
+#define Py_tp_dealloc 52
+#endif
+
+#ifndef Py_tp_getattr
+#define Py_tp_getattr 53
+#endif
+
+#ifndef Py_tp_setattr
+#define Py_tp_setattr 54
+#endif
+
+#ifndef Py_tp_hash
+#define Py_tp_hash 62
+#endif
+
+#ifndef Py_tp_getattro
+#define Py_tp_getattro 56
+#endif
+
+#ifndef Py_tp_setattro
+#define Py_tp_setattro 67
+#endif
+
+#ifndef Py_tp_traverse
+#define Py_tp_traverse 71
+#endif
+
+#ifndef Py_tp_clear
+#define Py_tp_clear 48
+#endif
+
+#ifndef Py_tp_richcompare
+#define Py_tp_richcompare 67
+#endif
+
+#ifndef Py_tp_init
+#define Py_tp_init 60
+#endif
+
+#ifndef Py_tp_alloc
+#define Py_tp_alloc 43
+#endif
+
+#ifndef Py_tp_free
+#define Py_tp_free 55
+#endif
+
+#ifndef Py_tp_finalize
+#define Py_tp_finalize 80
+#endif
+
+#ifndef Py_nb_add
+#define Py_nb_add 7
+#endif
+
+#ifndef Py_nb_subtract
+#define Py_nb_subtract 36
+#endif
+
+#ifndef Py_nb_multiply
+#define Py_nb_multiply 29
+#endif
+
+#ifndef Py_nb_remainder
+#define Py_nb_remainder 18
+#endif
+
+#ifndef Py_nb_divmod
+#define Py_nb_divmod 8
+#endif
+
+#ifndef Py_nb_power
+#define Py_nb_power 17
+#endif
+
+#ifndef Py_nb_negative
+#define Py_nb_negative 14
+#endif
+
+#ifndef Py_nb_positive
+#define Py_nb_positive 15
+#endif
+
+#ifndef Py_nb_absolute
+#define Py_nb_absolute 6
+#endif
+
+#ifndef Py_nb_bool
+#define Py_nb_bool 7
+#endif
+
+#ifndef Py_nb_invert
+#define Py_nb_invert 12
+#endif
+
+#ifndef Py_nb_lshift
+#define Py_nb_lshift 13
+#endif
+
+#ifndef Py_nb_rshift
+#define Py_nb_rshift 19
+#endif
+
+#ifndef Py_nb_and
+#define Py_nb_and 7
+#endif
+
+#ifndef Py_nb_xor
+#define Py_nb_xor 27
+#endif
+
+#ifndef Py_nb_or
+#define Py_nb_or 15
+#endif
+
+#ifndef Py_nb_int
+#define Py_nb_int 11
+#endif
+
+#ifndef Py_nb_float
+#define Py_nb_float 10
+#endif
+
+#ifndef Py_nb_floor_divide
+#define Py_nb_floor_divide 9
+#endif
+
+#ifndef Py_nb_true_divide
+#define Py_nb_true_divide 25
+#endif
+
+#ifndef Py_nb_index
+#define Py_nb_index 12
+#endif
+
+#ifndef Py_nb_inplace_add
+#define Py_nb_inplace_add 7
+#endif
+
+#ifndef Py_nb_inplace_subtract
+#define Py_nb_inplace_subtract 20
+#endif
+
+#ifndef Py_nb_inplace_multiply
+#define Py_nb_inplace_multiply 15
+#endif
+
+#ifndef Py_nb_inplace_remainder
+#define Py_nb_inplace_remainder 14
+#endif
+
+#ifndef Py_nb_inplace_power
+#define Py_nb_inplace_power 13
+#endif
+
+#ifndef Py_nb_inplace_lshift
+#define Py_nb_inplace_lshift 12
+#endif
+
+#ifndef Py_nb_inplace_rshift
+#define Py_nb_inplace_rshift 16
+#endif
+
+#ifndef Py_nb_inplace_and
+#define Py_nb_inplace_and 7
+#endif
+
+#ifndef Py_nb_inplace_xor
+#define Py_nb_inplace_xor 24
+#endif
+
+#ifndef Py_nb_inplace_or
+#define Py_nb_inplace_or 14
+#endif
+
+#ifndef Py_nb_inplace_floor_divide
+#define Py_nb_inplace_floor_divide 9
+#endif
+
+#ifndef Py_nb_inplace_true_divide
+#define Py_nb_inplace_true_divide 21
+#endif
+
+#ifndef Py_nb_matrix_multiply
+#define Py_nb_matrix_multiply 75
+#endif
+
+#ifndef Py_nb_inplace_matrix_multiply
+#define Py_nb_inplace_matrix_multiply 76
+#endif
+
+#ifndef Py_sq_length
+#define Py_sq_length 29
+#endif
+
+#ifndef Py_sq_concat
+#define Py_sq_concat 30
+#endif
+
+#ifndef Py_sq_repeat
+#define Py_sq_repeat 31
+#endif
+
+#ifndef Py_sq_item
+#define Py_sq_item 32
+#endif
+
+#ifndef Py_sq_ass_item
+#define Py_sq_ass_item 33
+#endif
+
+#ifndef Py_sq_contains
+#define Py_sq_contains 34
+#endif
+
+#ifndef Py_sq_inplace_concat
+#define Py_sq_inplace_concat 35
+#endif
+
+#ifndef Py_sq_inplace_repeat
+#define Py_sq_inplace_repeat 36
+#endif
+
+#ifndef Py_mp_length
+#define Py_mp_length 37
+#endif
+
+#ifndef Py_mp_subscript
+#define Py_mp_subscript 38
+#endif
+
+#ifndef Py_mp_ass_subscript
+#define Py_mp_ass_subscript 39
+#endif
+
+/* ========================================================================
+ * PyLong additional conversions
+ * ======================================================================== */
+
+static inline unsigned long long PyLong_AsUnsignedLongLong(PyObject *pylong) {
+    long long val = PyLong_AsLongLong(pylong);
+    if (val < 0 && !PyErr_Occurred()) {
+        PyErr_SetString(PyExc_OverflowError,
+            "can't convert negative value to unsigned long long");
+        return (unsigned long long)-1;
+    }
+    return (unsigned long long)val;
+}
+
+/* ========================================================================
+ * PyNumber_ToBase
+ * ======================================================================== */
+
+static inline PyObject *PyNumber_ToBase(PyObject *n, int base) {
+    (void)n; (void)base;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "PyNumber_ToBase: not yet supported in molt");
+    return NULL;
+}
+
+/* ========================================================================
+ * _Py_Identifier
+ * ======================================================================== */
+
+typedef struct _Py_Identifier {
+    const char *string;
+    PyObject *object;
+} _Py_Identifier;
+
+#define _Py_IDENTIFIER(varname) \
+    static _Py_Identifier PyId_##varname = { .string = #varname, .object = NULL }
+
+#define _Py_static_string(varname, value) \
+    static _Py_Identifier varname = { .string = value, .object = NULL }
+
+/* ========================================================================
+ * Py_SetProgramName / Py_SetPythonHome
+ * ======================================================================== */
+
+static inline void Py_SetProgramName(const wchar_t *name) {
+    (void)name;
+}
+
+static inline void Py_SetPythonHome(const wchar_t *home) {
+    (void)home;
+}
+
+/* ========================================================================
+ * PyObject_GetAIter / PyIter_Send / PyAIter_Check
+ * ======================================================================== */
+
+static inline PyObject *PyObject_GetAIter(PyObject *o) {
+    PyObject *meth = PyObject_GetAttrString(o, "__aiter__");
+    if (meth == NULL) return NULL;
+    PyObject *result = PyObject_CallNoArgs(meth);
+    Py_DECREF(meth);
+    return result;
+}
+
+static inline int PyAIter_Check(PyObject *ob) {
+    (void)ob;
+    return 0;
+}
+
+static inline int PyIter_Send(PyObject *iter, PyObject *arg, PyObject **presult) {
+    PyObject *meth = PyObject_GetAttrString(iter, "send");
+    if (meth == NULL) {
+        if (arg == Py_None) {
+            PyErr_Clear();
+            *presult = PyIter_Next(iter);
+            return *presult != NULL ? 0 : -1;
+        }
+        return -1;
+    }
+    *presult = PyObject_CallOneArg(meth, arg);
+    Py_DECREF(meth);
+    return *presult != NULL ? 0 : -1;
+}
+
+/* ========================================================================
+ * PyObject_GenericGetDict / PyObject_GenericSetDict
+ * ======================================================================== */
+
+static inline PyObject *PyObject_GenericGetDict(PyObject *obj, void *context) {
+    (void)context;
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_SystemError, "NULL object");
+        return NULL;
+    }
+    return PyDict_New();
+}
+
+static inline int PyObject_GenericSetDict(PyObject *obj, PyObject *value, void *context) {
+    (void)obj; (void)value; (void)context;
+    PyErr_SetString(PyExc_AttributeError, "cannot set __dict__");
+    return -1;
+}
+
+/* ========================================================================
+ * PyUnicode additional
+ * ======================================================================== */
+
+static inline int PyUnicode_FSConverter(PyObject *arg, void *addr) {
+    PyObject **result = (PyObject **)addr;
+    if (PyUnicode_Check(arg)) {
+        *result = PyUnicode_AsEncodedString(arg, "utf-8", "surrogateescape");
+        return *result != NULL ? 1 : 0;
+    }
+    return 0;
+}
+
+static inline int PyUnicode_FSDecoder(PyObject *arg, void *addr) {
+    PyObject **result = (PyObject **)addr;
+    if (PyUnicode_Check(arg)) {
+        Py_INCREF(arg);
+        *result = arg;
+        return 1;
+    }
+    return 0;
+}
+
+static inline PyObject *PyUnicode_DecodeFSDefault(const char *s) {
+    return PyUnicode_FromString(s);
+}
+
+static inline PyObject *PyUnicode_DecodeFSDefaultAndSize(const char *s, Py_ssize_t size) {
+    return PyUnicode_FromStringAndSize(s, size);
+}
+
+static inline PyObject *PyUnicode_EncodeFSDefault(PyObject *unicode) {
+    return PyUnicode_AsEncodedString(unicode, "utf-8", "surrogateescape");
+}
+
+static inline PyObject *PyUnicode_RichCompare(PyObject *left, PyObject *right, int op) {
+    return PyObject_RichCompare(left, right, op);
+}
+
+static inline PyObject *PyUnicode_Splitlines(PyObject *s, int keepends) {
+    return PyObject_CallMethod(s, "splitlines", "(i)", keepends);
+}
+
+static inline PyObject *PyUnicode_Partition(PyObject *s, PyObject *sep) {
+    return PyObject_CallMethod(s, "partition", "(O)", sep);
+}
+
+static inline PyObject *PyUnicode_RPartition(PyObject *s, PyObject *sep) {
+    return PyObject_CallMethod(s, "rpartition", "(O)", sep);
+}
+
+static inline PyObject *PyUnicode_FromOrdinal(int ordinal) {
+    char buf[5];
+    if (ordinal >= 0 && ordinal < 0x80) {
+        buf[0] = (char)ordinal;
+        return PyUnicode_FromStringAndSize(buf, 1);
+    }
+    PyObject *builtins = PyImport_ImportModule("builtins");
+    if (builtins == NULL) return NULL;
+    PyObject *chr_fn = PyObject_GetAttrString(builtins, "chr");
+    Py_DECREF(builtins);
+    if (chr_fn == NULL) return NULL;
+    PyObject *arg = PyLong_FromLong(ordinal);
+    if (arg == NULL) { Py_DECREF(chr_fn); return NULL; }
+    PyObject *result = PyObject_CallOneArg(chr_fn, arg);
+    Py_DECREF(chr_fn);
+    Py_DECREF(arg);
+    return result;
+}
+
+/* ========================================================================
+ * PyObject_DelAttr* macros
+ * ======================================================================== */
+
+#ifndef PyObject_DelAttr
+#define PyObject_DelAttr(o, name) PyObject_SetAttr((o), (name), NULL)
+#endif
+
+#ifndef PyObject_DelAttrString
+#define PyObject_DelAttrString(o, name) PyObject_SetAttrString((o), (name), NULL)
+#endif
+
+#ifndef PyObject_DelItem
+#define PyObject_DelItem(o, key) PyObject_SetItem((o), (key), NULL)
+#endif
+
+#ifndef PyMapping_DelItem
+#define PyMapping_DelItem(o, key) PyObject_DelItem((o), (key))
+#endif
+
+#ifndef PyMapping_DelItemString
+static inline int PyMapping_DelItemString(PyObject *o, const char *key) {
+    PyObject *k = PyUnicode_FromString(key);
+    if (k == NULL) return -1;
+    int rc = PyObject_SetItem(o, k, NULL);
+    Py_DECREF(k);
+    return rc;
+}
+#endif
+
+/* ========================================================================
+ * Py_VISIT / Py_TRASHCAN macros (GC support)
+ * ======================================================================== */
+
+#ifndef Py_VISIT
+#define Py_VISIT(op) \
+    do { \
+        if (op) { \
+            int vret = visit((PyObject *)(op), arg); \
+            if (vret) return vret; \
+        } \
+    } while (0)
+#endif
+
+#ifndef Py_TRASHCAN_BEGIN
+#define Py_TRASHCAN_BEGIN(op, dealloc) {
+#endif
+
+#ifndef Py_TRASHCAN_END
+#define Py_TRASHCAN_END }
+#endif
+
+/* ========================================================================
+ * PyObject_GC_* (molt: no-op, no cycle collector)
+ * ======================================================================== */
+
+static inline PyObject *_PyObject_GC_New(PyTypeObject *type) {
+    return _PyObject_New(type);
+}
+
+static inline PyVarObject *_PyObject_GC_NewVar(PyTypeObject *type, Py_ssize_t size) {
+    return _PyObject_NewVar(type, size);
+}
+
+static inline void PyObject_GC_Track(void *op) {
+    (void)op;
+}
+
+static inline void PyObject_GC_UnTrack(void *op) {
+    (void)op;
+}
+
+static inline void PyObject_GC_Del(void *op) {
+    PyObject_Free(op);
+}
+
+#define PyObject_GC_New(type, typeobj) ((type *)_PyObject_GC_New((PyTypeObject *)(typeobj)))
+#define PyObject_GC_NewVar(type, typeobj, n) ((type *)_PyObject_GC_NewVar((PyTypeObject *)(typeobj), (n)))
+
+static inline int PyObject_GC_IsTracked(PyObject *obj) {
+    (void)obj;
+    return 0;
+}
+
+static inline int PyObject_GC_IsFinalized(PyObject *obj) {
+    (void)obj;
+    return 0;
+}
+
+static inline int PyGC_Collect(void) {
+    return 0;
+}
+
+static inline int PyGC_Enable(void) {
+    return 0;
+}
+
+static inline int PyGC_Disable(void) {
+    return 0;
+}
+
+static inline int PyGC_IsEnabled(void) {
+    return 0;
+}
+
+/* ========================================================================
+ * PyObject arena / memory allocator structs
+ * ======================================================================== */
+
+typedef struct {
+    void *ctx;
+    void *(*alloc)(void *ctx, size_t size);
+    void (*free)(void *ctx, void *ptr, size_t size);
+} PyObjectArenaAllocator;
+
+static inline void PyObject_GetArenaAllocator(PyObjectArenaAllocator *allocator) {
+    if (allocator) memset(allocator, 0, sizeof(*allocator));
+}
+
+static inline void PyObject_SetArenaAllocator(PyObjectArenaAllocator *allocator) {
+    (void)allocator;
+}
+
+typedef enum {
+    PYMEM_DOMAIN_RAW = 0,
+    PYMEM_DOMAIN_MEM = 1,
+    PYMEM_DOMAIN_OBJ = 2
+} PyMemAllocatorDomain;
+
+typedef struct {
+    void *ctx;
+    void *(*malloc)(void *ctx, size_t size);
+    void *(*calloc)(void *ctx, size_t nelem, size_t elsize);
+    void *(*realloc)(void *ctx, void *ptr, size_t new_size);
+    void (*free)(void *ctx, void *ptr);
+} PyMemAllocatorEx;
+
+static inline void PyMem_GetAllocator(PyMemAllocatorDomain domain, PyMemAllocatorEx *allocator) {
+    (void)domain;
+    if (allocator) memset(allocator, 0, sizeof(*allocator));
+}
+
+static inline void PyMem_SetAllocator(PyMemAllocatorDomain domain, PyMemAllocatorEx *allocator) {
+    (void)domain; (void)allocator;
+}
+
+static inline void PyMem_SetupDebugHooks(void) {
+    /* no-op */
+}
+
+/* ========================================================================
+ * Member types for PyMemberDef
+ * ======================================================================== */
+
+#ifndef T_SHORT
+#define T_SHORT 0
+#define T_INT 1
+#define T_LONG 2
+#define T_FLOAT 3
+#define T_DOUBLE 4
+#define T_STRING 5
+#define T_OBJECT 6
+#define T_CHAR 7
+#define T_BYTE 8
+#define T_UBYTE 9
+#define T_USHORT 10
+#define T_UINT 11
+#define T_ULONG 12
+#define T_STRING_INPLACE 13
+#define T_BOOL 14
+#define T_OBJECT_EX 16
+#define T_LONGLONG 17
+#define T_ULONGLONG 18
+#define T_PYSSIZET 19
+#define T_NONE 20
+#endif
+
+#ifndef READ_RESTRICTED
+#define READ_RESTRICTED 2
+#endif
+
+#ifndef PY_WRITE_RESTRICTED
+#define PY_WRITE_RESTRICTED 4
+#endif
+
+#ifndef RESTRICTED
+#define RESTRICTED (READ_RESTRICTED | PY_WRITE_RESTRICTED)
+#endif
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
