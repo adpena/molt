@@ -8447,6 +8447,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     ) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="list")
         self.emit(MoltOp(kind="LIST_FROM_RANGE", args=[start, stop, step], result=res))
+        # Range always produces int elements.
+        if self.current_func_name == "molt_main":
+            self.global_elem_hints[res.name] = "int"
+        else:
+            self.container_elem_hints[res.name] = "int"
         return res
 
     def _match_simple_range_list_comp(
