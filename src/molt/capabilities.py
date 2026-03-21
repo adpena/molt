@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import builtins as _builtins
+from typing import TYPE_CHECKING, Any
 
-TYPE_CHECKING = False
+from molt import intrinsics as _intrinsics
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
-    from typing import Any
 else:
 
     class _TypingAlias:
@@ -17,7 +16,6 @@ else:
         def __getitem__(self, _item):
             return self
 
-    Any = object
     Callable = _TypingAlias()
     Iterable = _TypingAlias()
 
@@ -32,18 +30,7 @@ def _parse_caps(raw: str) -> set[str]:
 
 
 def _load_intrinsic(name: str) -> Callable[..., Any]:
-    value = globals().get(name)
-    if callable(value):
-        return value
-    direct = getattr(_builtins, name, None)
-    if callable(direct):
-        return direct
-    reg = getattr(_builtins, "_molt_intrinsics", None)
-    if isinstance(reg, dict):
-        value = reg.get(name)
-        if callable(value):
-            return value
-    raise RuntimeError(f"{name} intrinsic unavailable")
+    return _intrinsics.require(name, globals())
 
 
 def _env_get(key: str, default: str = "") -> str:
