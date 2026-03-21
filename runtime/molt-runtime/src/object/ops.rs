@@ -47318,3 +47318,125 @@ pub extern "C" fn molt_fstring_build(
         MoltObject::from_ptr(out_ptr).bits()
     })
 }
+
+/// Returns the value for a key in a dict WITHOUT incrementing the refcount.
+/// The dict holds the value alive. Returns 0 if the key is not found (clears
+/// any KeyError). This mirrors CPython's `PyDict_GetItem()` borrowed-reference
+/// semantics.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_dict_getitem_borrowed(dict_bits: u64, key_bits: u64) -> u64 {
+    // Pre-materialize the key to force pointer resolution and hash caching.
+    {
+        let key_obj = obj_from_bits(key_bits);
+        if let Some(key_ptr) = key_obj.as_ptr() {
+            unsafe {
+                if object_type_id(key_ptr) == TYPE_ID_STRING {
+                    let len = string_len(key_ptr);
+                    if len > 0 {
+                        std::ptr::read_volatile(string_bytes(key_ptr));
+                    }
+                }
+            }
+        }
+    }
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(dict_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            return 0;
+        };
+        unsafe {
+            let Some(dict_raw) = dict_like_bits_from_ptr(_py, ptr) else {
+                return 0;
+            };
+            let Some(dict_ptr) = obj_from_bits(dict_raw).as_ptr() else {
+                return 0;
+            };
+            if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                return 0;
+            }
+            if !ensure_hashable(_py, key_bits) {
+                clear_exception(_py);
+                return 0;
+            }
+            if let Some(val) = dict_get_in_place(_py, dict_ptr, key_bits) {
+                // Borrowed: do NOT inc_ref
+                return val;
+            }
+            // Key not found — clear any pending exception and return 0
+            if exception_pending(_py) {
+                clear_exception(_py);
+            }
+            0
+        }
+    })
+}
+
+/// Returns a list element WITHOUT incrementing the refcount.
+/// The list holds the element alive. This mirrors CPython's
+/// `PyList_GetItem()` borrowed-reference semantics.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_getitem_borrowed(list_bits: u64, index_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(list_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            return 0;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_LIST {
+                return 0;
+            }
+            let key = obj_from_bits(index_bits);
+            let idx = if let Some(i) = to_i64(key) {
+                i
+            } else {
+                return 0;
+            };
+            let len = list_len(ptr) as i64;
+            let mut i = idx;
+            if i < 0 {
+                i += len;
+            }
+            if i < 0 || i >= len {
+                return 0;
+            }
+            let elems = seq_vec_ref(ptr);
+            // Borrowed: do NOT inc_ref
+            elems[i as usize]
+        }
+    })
+}
+
+/// Returns a tuple element WITHOUT incrementing the refcount.
+/// The tuple holds the element alive. This mirrors CPython's
+/// `PyTuple_GetItem()` borrowed-reference semantics.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tuple_getitem_borrowed(tuple_bits: u64, index_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(tuple_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            return 0;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_TUPLE {
+                return 0;
+            }
+            let key = obj_from_bits(index_bits);
+            let idx = if let Some(i) = to_i64(key) {
+                i
+            } else {
+                return 0;
+            };
+            let len = tuple_len(ptr) as i64;
+            let mut i = idx;
+            if i < 0 {
+                i += len;
+            }
+            if i < 0 || i >= len {
+                return 0;
+            }
+            let elems = seq_vec_ref(ptr);
+            // Borrowed: do NOT inc_ref
+            elems[i as usize]
+        }
+    })
+}
