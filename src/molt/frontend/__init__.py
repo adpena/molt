@@ -1181,6 +1181,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self._source_is_stdlib_module = self.stdlib_hint_trust
         self.global_dict_key_hints: dict[str, str] = {}
         self.global_dict_value_hints: dict[str, str] = {}
+        self.func_return_type_hints: dict[str, str] = {}
         self.type_facts = type_facts
         self.module_name = module_name or "__main__"
         self.type_facts_module = type_facts_module or self.module_name
@@ -1945,11 +1946,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _hints_enabled(self) -> bool:
         return self.type_hint_policy in {"trust", "check"} or self.stdlib_hint_trust
 
+    def _resolve_call_return_hint(self, func_name: str | None) -> str:
+        """Return the type hint for a local function call result.
+
+        When ``--type-hints trust`` is active and the callee has a return
+        type annotation, use it instead of the generic ``Any``.
+        """
+        if func_name is not None and self._hints_enabled():
+            ret = self.func_return_type_hints.get(func_name)
+            if ret is not None:
+                return ret
+        return "Any"
+
     def _should_fast_int(self, op: MoltOp) -> bool:
         if op.kind not in _FAST_ARITH_OPS:
             return False
         return all(
-            isinstance(arg, MoltValue) and arg.type_hint == "int" for arg in op.args
+            isinstance(arg, MoltValue) and arg.type_hint in {"int", "bool"}
+            for arg in op.args
         )
 
     def _should_fast_float(self, op: MoltOp) -> bool:
@@ -5809,6 +5823,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return self._emit_module_attr_get(node.id)
             local = self._load_local_value(node.id)
             if local is not None:
+                # Apply type narrowing from isinstance() or explicit
+                # annotations when the hint policy enables it.
+                if self._hints_enabled():
+                    narrowed = self.explicit_type_hints.get(node.id)
+                    if (
+                        narrowed is not None
+                        and local.type_hint in {"Unknown", "Any", None}
+                    ):
+                        local = MoltValue(
+                            local.name, type_hint=narrowed
+                        )
                 return local
             global_val = self.globals.get(node.id)
             if global_val is None:
@@ -9770,10 +9795,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             left = self._reload_async_value(left_slot, left.type_hint)
         res_type = "Unknown"
         hint_src: MoltValue | None = None
-        complex_in = "complex" in {left.type_hint, right.type_hint}
+        # Normalise bool -> int for arithmetic type resolution (bool is a
+        # subclass of int in Python).
+        _lh = "int" if left.type_hint == "bool" else left.type_hint
+        _rh = "int" if right.type_hint == "bool" else right.type_hint
+        complex_in = "complex" in {_lh, _rh}
         if isinstance(node.op, ast.Add):
             op_kind = "ADD"
-            if left.type_hint == right.type_hint and left.type_hint in {
+            if _lh == _rh and _lh in {
                 "int",
                 "float",
                 "str",
@@ -9783,58 +9812,58 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "tuple",
                 "complex",
             }:
-                res_type = left.type_hint
-            elif {left.type_hint, right.type_hint} == {"int", "float"}:
+                res_type = _lh
+            elif {_lh, _rh} == {"int", "float"}:
                 res_type = "float"
             elif complex_in:
                 res_type = "complex"
         elif isinstance(node.op, ast.Sub):
             op_kind = "SUB"
-            if left.type_hint == right.type_hint == "int":
+            if _lh == _rh == "int":
                 res_type = "int"
-            elif "float" in {left.type_hint, right.type_hint}:
+            elif "float" in {_lh, _rh}:
                 res_type = "float"
             elif complex_in:
                 res_type = "complex"
-            elif left.type_hint in {"set", "frozenset"} and right.type_hint in {
+            elif _lh in {"set", "frozenset"} and _rh in {
                 "set",
                 "frozenset",
             }:
-                res_type = left.type_hint
+                res_type = _lh
         elif isinstance(node.op, ast.Mult):
             op_kind = "MUL"
-            if left.type_hint == right.type_hint == "int":
+            if _lh == _rh == "int":
                 res_type = "int"
-            elif "float" in {left.type_hint, right.type_hint}:
+            elif "float" in {_lh, _rh}:
                 res_type = "float"
             elif complex_in:
                 res_type = "complex"
-            elif left.type_hint in {"list", "tuple"} and right.type_hint == "int":
-                res_type = left.type_hint
+            elif _lh in {"list", "tuple"} and _rh == "int":
+                res_type = _lh
                 hint_src = left
-            elif right.type_hint in {"list", "tuple"} and left.type_hint == "int":
-                res_type = right.type_hint
+            elif _rh in {"list", "tuple"} and _lh == "int":
+                res_type = _rh
                 hint_src = right
         elif isinstance(node.op, ast.Div):
             op_kind = "DIV"
             res_type = "complex" if complex_in else "float"
         elif isinstance(node.op, ast.FloorDiv):
             op_kind = "FLOORDIV"
-            if left.type_hint == right.type_hint == "int":
+            if _lh == _rh == "int":
                 res_type = "int"
-            elif "float" in {left.type_hint, right.type_hint}:
+            elif "float" in {_lh, _rh}:
                 res_type = "float"
         elif isinstance(node.op, ast.Mod):
             op_kind = "MOD"
-            if left.type_hint == right.type_hint == "int":
+            if _lh == _rh == "int":
                 res_type = "int"
-            elif "float" in {left.type_hint, right.type_hint}:
+            elif "float" in {_lh, _rh}:
                 res_type = "float"
         elif isinstance(node.op, ast.Pow):
             op_kind = "POW"
             if complex_in:
                 res_type = "complex"
-            elif "float" in {left.type_hint, right.type_hint}:
+            elif "float" in {_lh, _rh}:
                 res_type = "float"
         elif isinstance(node.op, ast.BitOr):
             op_kind = "BIT_OR"
@@ -17790,8 +17819,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 callee = self.visit(node.func)
                 if callee is None:
                     raise NotImplementedError("Unsupported call target")
+                _ret_hint = self._resolve_call_return_hint(func_id)
                 if needs_bind:
-                    res = MoltValue(self.next_var(), type_hint="Any")
+                    res = MoltValue(self.next_var(), type_hint=_ret_hint)
                     callargs = self._emit_call_args_builder(node)
                     self.emit(
                         MoltOp(
@@ -17806,7 +17836,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     ) and callee.type_hint.startswith("Func:"):
                         func_symbol = callee.type_hint.split(":", 1)[1]
                         if func_symbol not in self.func_default_specs:
-                            res = MoltValue(self.next_var(), type_hint="Any")
+                            res = MoltValue(self.next_var(), type_hint=_ret_hint)
                             callargs = self._emit_call_args_builder(node)
                             self.emit(
                                 MoltOp(
@@ -17821,7 +17851,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                         if args is None:
                             callargs = self._emit_call_args_builder(node)
-                            res = MoltValue(self.next_var(), type_hint="Any")
+                            res = MoltValue(self.next_var(), type_hint=_ret_hint)
                             self.emit(
                                 MoltOp(
                                     kind="CALL_BIND",
@@ -17830,7 +17860,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 )
                             )
                             return res
-                        res = MoltValue(self.next_var(), type_hint="Any")
+                        res = MoltValue(self.next_var(), type_hint=_ret_hint)
                         self.emit(
                             MoltOp(
                                 kind="CALL_GUARDED",
@@ -17845,7 +17875,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     ) and callee.type_hint.startswith("ClosureFunc:"):
                         func_symbol = callee.type_hint.split(":", 1)[1]
                         if func_symbol not in self.func_default_specs:
-                            res = MoltValue(self.next_var(), type_hint="Any")
+                            res = MoltValue(self.next_var(), type_hint=_ret_hint)
                             callargs = self._emit_call_args_builder(node)
                             self.emit(
                                 MoltOp(
@@ -17860,7 +17890,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                         if args is None:
                             callargs = self._emit_call_args_builder(node)
-                            res = MoltValue(self.next_var(), type_hint="Any")
+                            res = MoltValue(self.next_var(), type_hint=_ret_hint)
                             self.emit(
                                 MoltOp(
                                     kind="CALL_BIND",
@@ -17869,7 +17899,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 )
                             )
                             return res
-                        res = MoltValue(self.next_var(), type_hint="Any")
+                        res = MoltValue(self.next_var(), type_hint=_ret_hint)
                         self.emit(
                             MoltOp(
                                 kind="CALL_GUARDED",
@@ -17886,7 +17916,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                         if args is None:
                             callargs = self._emit_call_args_builder(node)
-                            res = MoltValue(self.next_var(), type_hint="Any")
+                            res = MoltValue(self.next_var(), type_hint=_ret_hint)
                             self.emit(
                                 MoltOp(
                                     kind="CALL_BIND",
@@ -17895,7 +17925,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 )
                             )
                             return res
-                    res = MoltValue(self.next_var(), type_hint="Any")
+                    res = MoltValue(self.next_var(), type_hint=_ret_hint)
                     self.emit(
                         MoltOp(kind="CALL_FUNC", args=[callee] + args, result=res)
                     )
@@ -21962,6 +21992,58 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         return None
 
+    _ISINSTANCE_NARROW_MAP: dict[str, str] = {
+        "int": "int",
+        "float": "float",
+        "str": "str",
+        "bytes": "bytes",
+        "bytearray": "bytearray",
+        "bool": "bool",
+        "list": "list",
+        "tuple": "tuple",
+        "dict": "dict",
+        "set": "set",
+        "frozenset": "frozenset",
+        "range": "range",
+        "memoryview": "memoryview",
+    }
+
+    def _extract_isinstance_narrowing(
+        self, test: ast.expr
+    ) -> list[tuple[str, str]]:
+        """Extract (variable_name, type_hint) pairs from isinstance() tests.
+
+        Recognises:
+          - isinstance(x, int)
+          - isinstance(x, (int, float))  (ignored – union, no single narrow)
+        """
+        if not self._hints_enabled():
+            return []
+        pairs: list[tuple[str, str]] = []
+        calls: list[ast.Call] = []
+        # Support bare isinstance(x, T) and `isinstance(x, T) and ...`
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+            for val in test.values:
+                if isinstance(val, ast.Call):
+                    calls.append(val)
+        elif isinstance(test, ast.Call):
+            calls.append(test)
+        for call in calls:
+            if not (
+                isinstance(call.func, ast.Name)
+                and call.func.id == "isinstance"
+                and len(call.args) == 2
+                and isinstance(call.args[0], ast.Name)
+            ):
+                continue
+            var_name = call.args[0].id
+            classinfo = call.args[1]
+            if isinstance(classinfo, ast.Name):
+                hint = self._ISINSTANCE_NARROW_MAP.get(classinfo.id)
+                if hint is not None:
+                    pairs.append((var_name, hint))
+        return pairs
+
     def visit_If(self, node: ast.If) -> None:
         if self._is_type_checking_test(node.test):
             if node.orelse:
@@ -21976,10 +22058,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             assigned = self._collect_assigned_names(node.body + node.orelse)
             for name in sorted(assigned):
                 self._box_local(name)
+        # isinstance() type narrowing: temporarily apply type hints in the
+        # true branch so that arithmetic/iteration on the narrowed variable
+        # can exploit the known type.
+        narrowings = self._extract_isinstance_narrowing(node.test)
+        saved_hints: list[tuple[str, str | None]] = []
         self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
         self.control_flow_depth += 1
         try:
+            for var_name, hint in narrowings:
+                saved_hints.append(
+                    (var_name, self.explicit_type_hints.get(var_name))
+                )
+                self.explicit_type_hints[var_name] = hint
             self._visit_block(node.body)
+            # Restore hints before processing else branch
+            for var_name, old_hint in saved_hints:
+                if old_hint is None:
+                    self.explicit_type_hints.pop(var_name, None)
+                else:
+                    self.explicit_type_hints[var_name] = old_hint
             if node.orelse:
                 self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
                 self._visit_block(node.orelse)
@@ -25374,6 +25472,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         func_hint = f"Func:{func_symbol}"
         if has_closure:
             func_hint = f"ClosureFunc:{func_symbol}"
+        # Record return type annotation for call-site specialization
+        if self._hints_enabled() and node.returns is not None:
+            ret_hint = self._annotation_to_hint(node.returns)
+            if ret_hint is not None and ret_hint != "Any":
+                self.func_return_type_hints[func_name] = ret_hint
         func_val = MoltValue(self.next_var(), type_hint=func_hint)
         if has_closure and closure_val is not None:
             self.emit(
