@@ -30,9 +30,9 @@ def diamond(size=9):
         lines.append(" " * (size // 2 - d) + "*" * (2 * d + 1))
     return "\n".join(lines)
 
-def mandelbrot_render(width: int = 120, height: int = 35,
+def mandelbrot_render(width: int = 100, height: int = 35,
                       cx: float = -0.5, cy: float = 0.0,
-                      zoom: float = 1.0, max_iter: int = 120) -> str:
+                      zoom: float = 1.0, max_iter: int = 150) -> str:
     chars: str = " .`'\"~:;!>+r}xz&8#@"
     scale: float = 3.0 / (zoom * width)
     x_off: float = cx - scale * width / 2.0
@@ -182,9 +182,9 @@ elif route == "diamond":
     print(diamond(n))
 
 elif route == "mandelbrot":
-    w = safe_int(params.get("width", ""), 120, 20, 200)
-    h = safe_int(params.get("height", ""), 35, 10, 60)
-    mi = safe_int(params.get("iter", ""), 120, 10, 300)
+    w = safe_int(params.get("width", ""), 100, 20, 160)
+    h = safe_int(params.get("height", ""), 35, 10, 50)
+    mi = safe_int(params.get("iter", ""), 150, 10, 300)
     cx = safe_float(params.get("cx", ""), -0.5)
     cy = safe_float(params.get("cy", ""), 0.0)
     zm = safe_float(params.get("zoom", ""), 1.0, 0.1, 1e12)
