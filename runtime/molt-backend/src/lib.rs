@@ -21,9 +21,7 @@ use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_native::builder_with_options as native_isa_builder_with_options;
 #[cfg(feature = "native-backend")]
 use cranelift_object::{ObjectBuilder, ObjectModule};
-#[cfg(feature = "native-backend")]
-use std::collections::BTreeMap;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "native-backend")]
 use std::fmt::Write as _;
 #[cfg(feature = "native-backend")]
@@ -105,8 +103,8 @@ impl ImportSignatureShape {
 
 #[cfg(feature = "native-backend")]
 struct NativeBackendIrAnalysis {
-    defined_functions: HashSet<String>,
-    closure_functions: HashSet<String>,
+    defined_functions: BTreeSet<String>,
+    closure_functions: BTreeSet<String>,
     task_kinds: BTreeMap<String, TrampolineKind>,
     task_closure_sizes: BTreeMap<String, i64>,
     needs_inlining: bool,
@@ -114,9 +112,9 @@ struct NativeBackendIrAnalysis {
 
 #[cfg(feature = "native-backend")]
 fn analyze_native_backend_ir(ir: &SimpleIR) -> NativeBackendIrAnalysis {
-    let defined_functions: HashSet<String> =
+    let defined_functions: BTreeSet<String> =
         ir.functions.iter().map(|func| func.name.clone()).collect();
-    let mut closure_functions: HashSet<String> = HashSet::new();
+    let mut closure_functions: BTreeSet<String> = BTreeSet::new();
     let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
     let mut task_closure_sizes: BTreeMap<String, i64> = BTreeMap::new();
     let mut needs_inlining = false;
@@ -151,9 +149,9 @@ fn analyze_native_backend_ir(ir: &SimpleIR) -> NativeBackendIrAnalysis {
 
     if has_task_attrs {
         for func_ir in &ir.functions {
-            let mut func_obj_names: HashMap<String, String> = HashMap::new();
-            let mut const_values: HashMap<String, i64> = HashMap::new();
-            let mut const_bools: HashMap<String, bool> = HashMap::new();
+            let mut func_obj_names: BTreeMap<String, String> = BTreeMap::new();
+            let mut const_values: BTreeMap<String, i64> = BTreeMap::new();
+            let mut const_bools: BTreeMap<String, bool> = BTreeMap::new();
             for op in &func_ir.ops {
                 match op.kind.as_str() {
                     "const" => {
@@ -252,7 +250,7 @@ fn analyze_native_backend_ir(ir: &SimpleIR) -> NativeBackendIrAnalysis {
 
 #[cfg(feature = "native-backend")]
 fn find_zero_pred_blocks(func: &Function) -> Vec<Block> {
-    let mut preds: HashMap<Block, usize> = HashMap::new();
+    let mut preds: BTreeMap<Block, usize> = BTreeMap::new();
     for block in func.layout.blocks() {
         preds.entry(block).or_insert(0);
     }
@@ -662,7 +660,7 @@ impl std::ops::Deref for VarValue {
 #[cfg(feature = "native-backend")]
 fn var_get(
     builder: &mut FunctionBuilder,
-    vars: &HashMap<String, Variable>,
+    vars: &BTreeMap<String, Variable>,
     name: &str,
 ) -> Option<VarValue> {
     vars.get(name).map(|var| VarValue(builder.use_var(*var)))
@@ -671,7 +669,7 @@ fn var_get(
 #[cfg(feature = "native-backend")]
 fn def_var_named(
     builder: &mut FunctionBuilder,
-    vars: &HashMap<String, Variable>,
+    vars: &BTreeMap<String, Variable>,
     name: impl AsRef<str>,
     val: Value,
 ) {
@@ -883,7 +881,7 @@ fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
 #[cfg(feature = "native-backend")]
 fn drain_cleanup_tracked(
     names: &mut Vec<String>,
-    last_use: &HashMap<String, usize>,
+    last_use: &BTreeMap<String, usize>,
     op_idx: usize,
     skip: Option<&str>,
 ) -> Vec<String> {
@@ -905,7 +903,7 @@ fn drain_cleanup_tracked(
 #[cfg(feature = "native-backend")]
 fn collect_cleanup_tracked(
     names: &[String],
-    last_use: &HashMap<String, usize>,
+    last_use: &BTreeMap<String, usize>,
     op_idx: usize,
     skip: Option<&str>,
 ) -> Vec<String> {
@@ -927,7 +925,7 @@ fn extend_unique_tracked(dst: &mut Vec<String>, src: Vec<String>) {
         return;
     }
     // Dedup by `name` so multi-predecessor merges don't create double-decref hazards.
-    let mut seen: HashSet<String> = dst.iter().cloned().collect();
+    let mut seen: BTreeSet<String> = dst.iter().cloned().collect();
     for name in src {
         if seen.insert(name.clone()) {
             dst.push(name);
@@ -938,8 +936,8 @@ fn extend_unique_tracked(dst: &mut Vec<String>, src: Vec<String>) {
 #[cfg(feature = "native-backend")]
 fn drain_cleanup_entry_tracked(
     names: &mut Vec<String>,
-    entry_vars: &HashMap<String, Value>,
-    last_use: &HashMap<String, usize>,
+    entry_vars: &BTreeMap<String, Value>,
+    last_use: &BTreeMap<String, usize>,
     op_idx: usize,
 ) -> Vec<Value> {
     let mut cleanup = Vec::new();

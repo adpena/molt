@@ -1,7 +1,7 @@
 use crate::{FunctionIR, OpIR, SimpleIR, TrampolineKind, TrampolineSpec};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::iter::ExactSizeIterator;
 use std::rc::Rc;
 use wasm_encoder::{
@@ -132,7 +132,7 @@ struct DataSegmentRef {
 
 /// Transparent wrapper around `BTreeMap<String, u32>` that records which
 /// import names are actually looked up during code emission.  Every
-/// `Index<&str>` access inserts the key into a shared `HashSet` so we can
+/// `Index<&str>` access inserts the key into a shared `BTreeSet` so we can
 /// compute the set of *unused* imports after compilation finishes.
 ///
 /// The `used` set is behind `Rc<RefCell<…>>` so that clones (needed to
@@ -141,14 +141,14 @@ struct DataSegmentRef {
 #[derive(Clone)]
 struct TrackedImportIds {
     inner: BTreeMap<String, u32>,
-    used: Rc<RefCell<HashSet<String>>>,
+    used: Rc<RefCell<BTreeSet<String>>>,
 }
 
 impl TrackedImportIds {
     fn new(inner: BTreeMap<String, u32>) -> Self {
         Self {
             inner,
-            used: Rc::new(RefCell::new(HashSet::new())),
+            used: Rc::new(RefCell::new(BTreeSet::new())),
         }
     }
 
@@ -196,18 +196,18 @@ impl std::ops::Index<&str> for TrackedImportIds {
 }
 
 struct CompileFuncContext<'a> {
-    func_map: &'a HashMap<String, u32>,
-    func_indices: &'a HashMap<String, u32>,
-    trampoline_map: &'a HashMap<String, u32>,
+    func_map: &'a BTreeMap<String, u32>,
+    func_indices: &'a BTreeMap<String, u32>,
+    trampoline_map: &'a BTreeMap<String, u32>,
     table_base: u32,
     import_ids: &'a TrackedImportIds,
     reloc_enabled: bool,
     /// Functions eligible for multi-value return optimization.
     /// Maps function name -> number of return values (2 or 3).
-    multi_return_candidates: &'a HashMap<String, usize>,
+    multi_return_candidates: &'a BTreeMap<String, usize>,
     /// Import indices stripped in pure profile mode; calls emit `unreachable`.
     #[allow(dead_code)]
-    skipped_import_indices: &'a HashSet<u32>,
+    skipped_import_indices: &'a BTreeSet<u32>,
 }
 
 trait TypeSectionExt {
@@ -389,7 +389,7 @@ fn emit_unbox_int_local_trusted_opt(
     src_local: u32,
     dst_local: u32,
     cc: &ConstantCache,
-    known_raw: &HashMap<u32, i64>,
+    known_raw: &BTreeMap<u32, i64>,
 ) {
     if let Some(&raw) = known_raw.get(&src_local) {
         func.instruction(&Instruction::I64Const(raw));
@@ -406,7 +406,7 @@ fn emit_unbox_int_local_trusted_tee_opt(
     src_local: u32,
     dst_local: u32,
     cc: &ConstantCache,
-    known_raw: &HashMap<u32, i64>,
+    known_raw: &BTreeMap<u32, i64>,
 ) {
     if let Some(&raw) = known_raw.get(&src_local) {
         func.instruction(&Instruction::I64Const(raw));
@@ -419,7 +419,7 @@ fn emit_unbox_int_local_trusted_tee_opt(
 /// Peephole-optimized box: if `src_local` has a known raw int value in
 /// `known_raw`, emit `i64.const <boxed>` (1 instruction) instead of the
 /// 4-instruction mask+or boxing sequence.
-fn emit_box_int_from_local_opt(func: &mut Function, src_local: u32, known_raw: &HashMap<u32, i64>) {
+fn emit_box_int_from_local_opt(func: &mut Function, src_local: u32, known_raw: &BTreeMap<u32, i64>) {
     if let Some(&raw) = known_raw.get(&src_local) {
         func.instruction(&Instruction::I64Const(box_int(raw)));
     } else {
@@ -539,12 +539,12 @@ fn build_dispatch_block_map(block_for_op: &[usize]) -> Vec<u8> {
 
 #[derive(Default)]
 struct DispatchControlMaps {
-    label_to_index: HashMap<i64, usize>,
-    else_for_if: HashMap<usize, usize>,
-    end_for_if: HashMap<usize, usize>,
-    end_for_else: HashMap<usize, usize>,
-    loop_continue_target: HashMap<usize, usize>,
-    loop_break_target: HashMap<usize, usize>,
+    label_to_index: BTreeMap<i64, usize>,
+    else_for_if: BTreeMap<usize, usize>,
+    end_for_if: BTreeMap<usize, usize>,
+    end_for_else: BTreeMap<usize, usize>,
+    loop_continue_target: BTreeMap<usize, usize>,
+    loop_break_target: BTreeMap<usize, usize>,
 }
 
 fn build_dispatch_control_maps(ops: &[OpIR], include_state_labels: bool) -> DispatchControlMaps {
@@ -622,10 +622,10 @@ fn build_dispatch_control_maps(ops: &[OpIR], include_state_labels: bool) -> Disp
     maps
 }
 
-fn build_state_resume_maps(ops: &[OpIR]) -> (HashMap<i64, usize>, HashMap<String, i64>) {
-    let mut state_map: HashMap<i64, usize> = HashMap::new();
+fn build_state_resume_maps(ops: &[OpIR]) -> (BTreeMap<i64, usize>, BTreeMap<String, i64>) {
+    let mut state_map: BTreeMap<i64, usize> = BTreeMap::new();
     state_map.insert(0, 0);
-    let mut const_ints: HashMap<String, i64> = HashMap::new();
+    let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();
 
     for (idx, op) in ops.iter().enumerate() {
         match op.kind.as_str() {
@@ -651,7 +651,7 @@ fn build_state_resume_maps(ops: &[OpIR]) -> (HashMap<i64, usize>, HashMap<String
     (state_map, const_ints)
 }
 
-fn build_dense_state_remap_table(state_map: &HashMap<i64, usize>) -> Option<Vec<u8>> {
+fn build_dense_state_remap_table(state_map: &BTreeMap<i64, usize>) -> Option<Vec<u8>> {
     let mut non_negative_entries: Vec<(usize, i64)> = Vec::new();
     for (&state_id, &target_idx) in state_map {
         if state_id < 0 {
@@ -693,7 +693,7 @@ fn build_dense_state_remap_table(state_map: &HashMap<i64, usize>) -> Option<Vec<
     Some(bytes)
 }
 
-fn build_sparse_state_remap_entries(state_map: &HashMap<i64, usize>) -> Vec<(i64, i64)> {
+fn build_sparse_state_remap_entries(state_map: &BTreeMap<i64, usize>) -> Vec<(i64, i64)> {
     let mut entries = Vec::with_capacity(state_map.len());
     for (&state_id, &target_idx) in state_map {
         if state_id < 0 {
@@ -773,7 +773,7 @@ fn emit_br_table_state_remap_lookup(
     let target_block_count = unique_targets.len(); // number of case blocks
 
     // Map target_idx -> index into unique_targets (0-based).
-    let target_to_case: HashMap<i64, usize> = unique_targets
+    let target_to_case: BTreeMap<i64, usize> = unique_targets
         .iter()
         .enumerate()
         .map(|(i, &t)| (t, i))
@@ -1000,7 +1000,7 @@ pub struct WasmBackend {
     /// Import indices that were registered but stripped in `pure` profile mode.
     /// Calls to these indices emit `unreachable` instead of `call`.
     #[allow(dead_code)]
-    skipped_import_indices: HashSet<u32>,
+    skipped_import_indices: BTreeSet<u32>,
     /// Number of tail calls emitted via `return_call` (WASM tail calls proposal).
     tail_calls_emitted: usize,
 }
@@ -1035,7 +1035,7 @@ impl WasmBackend {
             data_segment_cache: BTreeMap::new(),
             molt_main_index: None,
             options,
-            skipped_import_indices: HashSet::new(),
+            skipped_import_indices: BTreeSet::new(),
             tail_calls_emitted: 0,
         }
     }
@@ -1094,9 +1094,9 @@ impl WasmBackend {
     // arity are included.
     // ------------------------------------------------------------------
     #[allow(dead_code)]
-    fn detect_multi_return_candidates(ir: &SimpleIR) -> HashMap<String, usize> {
+    fn detect_multi_return_candidates(ir: &SimpleIR) -> BTreeMap<String, usize> {
         // callee -> Option<arity>  (None means conflicting arities => ineligible)
-        let mut candidate_arity: HashMap<String, Option<usize>> = HashMap::new();
+        let mut candidate_arity: BTreeMap<String, Option<usize>> = BTreeMap::new();
 
         for func_ir in &ir.functions {
             let ops = &func_ir.ops;
@@ -1114,7 +1114,7 @@ impl WasmBackend {
 
                 // Scan forward to find consecutive tuple_index ops on result_var.
                 let mut unpack_count = 0usize;
-                let mut seen_indices: HashSet<i64> = HashSet::new();
+                let mut seen_indices: BTreeSet<i64> = BTreeSet::new();
                 for j in (i + 1)..ops.len() {
                     let next_op = &ops[j];
                     if next_op.kind != "tuple_index" {
@@ -1144,10 +1144,10 @@ impl WasmBackend {
 
                 // Record or verify consistency.
                 match candidate_arity.entry(callee.clone()) {
-                    std::collections::hash_map::Entry::Vacant(e) => {
+                    std::collections::btree_map::Entry::Vacant(e) => {
                         e.insert(Some(unpack_count));
                     }
-                    std::collections::hash_map::Entry::Occupied(mut e) => {
+                    std::collections::btree_map::Entry::Occupied(mut e) => {
                         if *e.get() != Some(unpack_count) {
                             // Conflicting arities across call sites — not eligible.
                             *e.get_mut() = None;
@@ -1157,7 +1157,7 @@ impl WasmBackend {
             }
         }
 
-        let call_site_candidates: HashMap<String, usize> = candidate_arity
+        let call_site_candidates: BTreeMap<String, usize> = candidate_arity
             .into_iter()
             .filter_map(|(name, arity)| arity.map(|a| (name, a)))
             .collect();
@@ -1165,7 +1165,7 @@ impl WasmBackend {
         // Phase 2: Verify the callee function body — every `ret` must return
         // a variable that was produced by a `tuple_new` with the expected arity.
         // This ensures the callee genuinely always returns a fixed-size tuple.
-        let func_map: HashMap<&str, &FunctionIR> =
+        let func_map: BTreeMap<&str, &FunctionIR> =
             ir.functions.iter().map(|f| (f.name.as_str(), f)).collect();
 
         call_site_candidates
@@ -1175,7 +1175,7 @@ impl WasmBackend {
                     return false;
                 };
                 // Track which variables are produced by tuple_new of the right arity.
-                let mut tuple_new_vars: HashSet<String> = HashSet::new();
+                let mut tuple_new_vars: BTreeSet<String> = BTreeSet::new();
                 let mut has_any_ret = false;
                 let mut all_rets_ok = true;
 
@@ -1248,9 +1248,9 @@ impl WasmBackend {
         let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
         let mut task_closure_sizes: BTreeMap<String, i64> = BTreeMap::new();
         for func_ir in &ir.functions {
-            let mut func_obj_names: HashMap<String, String> = HashMap::new();
-            let mut const_values: HashMap<String, i64> = HashMap::new();
-            let mut const_bools: HashMap<String, bool> = HashMap::new();
+            let mut func_obj_names: BTreeMap<String, String> = BTreeMap::new();
+            let mut const_values: BTreeMap<String, i64> = BTreeMap::new();
+            let mut const_bools: BTreeMap<String, bool> = BTreeMap::new();
             let mut pending_attrs: Vec<(String, String, String)> = Vec::new();
             for op in &func_ir.ops {
                 match op.kind.as_str() {
@@ -1365,7 +1365,7 @@ impl WasmBackend {
         // Trampolines now handle multi-value return callees by reconstructing
         // a tuple from the N return values (see compile_trampoline), so we no
         // longer need to exclude trampolined functions from the optimization.
-        let multi_return_candidates: HashMap<String, usize> =
+        let multi_return_candidates: BTreeMap<String, usize> =
             multi_return_candidates.into_iter().collect();
 
         // Type 0: () -> i64 (User functions)
@@ -1642,7 +1642,7 @@ impl WasmBackend {
         };
 
         let mut import_idx = 0;
-        let skipped_indices: HashSet<u32> = HashSet::new();
+        let skipped_indices: BTreeSet<u32> = BTreeSet::new();
         let mut add_import = |name: &str, ty: u32, ids: &mut TrackedImportIds| {
             if is_skipped_import(name) {
                 // In pure mode, skip IO/ASYNC/TIME imports entirely.
@@ -2483,7 +2483,7 @@ impl WasmBackend {
 
         let mut max_func_arity = 0usize;
         let mut max_call_arity = 0usize;
-        let mut builtin_trampoline_specs: HashMap<String, usize> = HashMap::new();
+        let mut builtin_trampoline_specs: BTreeMap<String, usize> = BTreeMap::new();
         for func_ir in &ir.functions {
             let is_poll = func_ir.name.ends_with("_poll");
             if !is_poll {
@@ -2539,7 +2539,7 @@ impl WasmBackend {
         // but preserved on the struct for future emit_call_or_unreachable use.
         self.skipped_import_indices = skipped_indices;
 
-        let mut user_type_map: HashMap<usize, u32> = HashMap::new();
+        let mut user_type_map: BTreeMap<usize, u32> = BTreeMap::new();
         // Types 0-34 are defined above (0-30 single-return, 31-34 multi-value);
         // start new dynamic signatures after them.
         let mut next_type_idx = STATIC_TYPE_COUNT;
@@ -2548,7 +2548,7 @@ impl WasmBackend {
                 continue;
             }
             let arity = func_ir.params.len();
-            if let std::collections::hash_map::Entry::Vacant(entry) = user_type_map.entry(arity) {
+            if let std::collections::btree_map::Entry::Vacant(entry) = user_type_map.entry(arity) {
                 self.types.function(
                     std::iter::repeat_n(ValType::I64, arity),
                     std::iter::once(ValType::I64),
@@ -2560,10 +2560,10 @@ impl WasmBackend {
 
         // Multi-value return type signatures for candidate functions.
         // Maps (param_count, return_count) -> type index.
-        let mut multi_return_type_map: HashMap<(usize, usize), u32> = HashMap::new();
+        let mut multi_return_type_map: BTreeMap<(usize, usize), u32> = BTreeMap::new();
         {
             // Collect unique (param_count, return_count) pairs from candidates.
-            let func_param_counts: HashMap<&str, usize> = ir
+            let func_param_counts: BTreeMap<&str, usize> = ir
                 .functions
                 .iter()
                 .map(|f| (f.name.as_str(), f.params.len()))
@@ -2599,7 +2599,7 @@ impl WasmBackend {
             .max(max_call_arity.saturating_add(3))
             .max(max_call_indirect + 1);
         for arity in 0..=max_needed_arity {
-            if let std::collections::hash_map::Entry::Vacant(entry) = user_type_map.entry(arity) {
+            if let std::collections::btree_map::Entry::Vacant(entry) = user_type_map.entry(arity) {
                 self.types.function(
                     std::iter::repeat_n(ValType::I64, arity),
                     std::iter::once(ValType::I64),
@@ -2609,7 +2609,7 @@ impl WasmBackend {
             }
         }
 
-        let mut call_indirect_type_map: HashMap<usize, u32> = HashMap::new();
+        let mut call_indirect_type_map: BTreeMap<usize, u32> = BTreeMap::new();
         for arity in 0..=max_call_indirect + 1 {
             self.types.function(
                 std::iter::repeat_n(ValType::I64, arity),
@@ -3370,7 +3370,7 @@ impl WasmBackend {
             ("molt_os_wstopsig", "os_wstopsig", 1),
             ("molt_os_wtermsig", "os_wtermsig", 1),
         ]);
-        let hardcoded_builtin_runtime_names: HashSet<&str> = builtin_table_funcs
+        let hardcoded_builtin_runtime_names: BTreeSet<&str> = builtin_table_funcs
             .iter()
             .map(|(runtime_name, _, _)| *runtime_name)
             .collect();
@@ -3389,7 +3389,7 @@ impl WasmBackend {
             .collect();
         auto_builtin_table_funcs.sort_by(|a, b| a.0.cmp(&b.0));
         let mut builtin_trampoline_funcs: Vec<(String, usize)> = Vec::new();
-        let builtin_runtime_names: HashSet<&str> = builtin_table_funcs
+        let builtin_runtime_names: BTreeSet<&str> = builtin_table_funcs
             .iter()
             .map(|(runtime_name, _, _)| *runtime_name)
             .chain(
@@ -3413,9 +3413,9 @@ impl WasmBackend {
         }
         // Intrinsic ABIs are canonicalized to i64/u64 for dynamic function-object dispatch.
         // Keep wrapper conversion sets empty so generated wrappers preserve 64-bit bits values.
-        let builtin_i32_arg0_imports: HashSet<&str> = [].into_iter().collect();
-        let builtin_i32_return_imports: HashSet<&str> = [].into_iter().collect();
-        let void_builtin_imports: HashSet<&str> = [
+        let builtin_i32_arg0_imports: BTreeSet<&str> = [].into_iter().collect();
+        let builtin_i32_return_imports: BTreeSet<&str> = [].into_iter().collect();
+        let void_builtin_imports: BTreeSet<&str> = [
             "process_drop",
             "socket_drop",
             "stream_close",
@@ -3476,7 +3476,7 @@ impl WasmBackend {
         );
         self.exports.export("molt_table", ExportKind::Table, 0);
 
-        let mut builtin_wrapper_indices = HashMap::new();
+        let mut builtin_wrapper_indices = BTreeMap::new();
         for (runtime_name, import_name, arity) in &builtin_wrapper_funcs {
             let type_idx = *user_type_map
                 .get(arity)
@@ -3507,7 +3507,7 @@ impl WasmBackend {
             builtin_wrapper_indices.insert(runtime_name.clone(), func_index);
         }
 
-        let mut table_import_wrappers = HashMap::new();
+        let mut table_import_wrappers = BTreeMap::new();
         if reloc_enabled {
             for (import_name, arity) in [
                 ("async_sleep", 1usize),
@@ -3696,8 +3696,8 @@ impl WasmBackend {
             contextlib_async_exitstack_exit_poll_idx,
             contextlib_async_exitstack_enter_context_poll_idx,
         ];
-        let mut func_to_table_idx = HashMap::new();
-        let mut func_to_index = HashMap::new();
+        let mut func_to_table_idx = BTreeMap::new();
+        let mut func_to_index = BTreeMap::new();
         func_to_index.insert(
             "molt_runtime_init".to_string(),
             self.import_ids["runtime_init"],
@@ -3788,7 +3788,7 @@ impl WasmBackend {
             func_to_index.insert(func_ir.name.clone(), user_func_start + i as u32);
             table_indices.push(user_func_start + i as u32);
         }
-        let mut func_to_trampoline_idx = HashMap::new();
+        let mut func_to_trampoline_idx = BTreeMap::new();
         for (i, (name, _)) in builtin_trampoline_funcs.iter().enumerate() {
             let idx = (i as u32)
                 + poll_table_prefix
@@ -3935,7 +3935,7 @@ impl WasmBackend {
             self.exports
                 .export("molt_main", ExportKind::Func, wrapper_index);
 
-            let mut ref_exported = HashSet::new();
+            let mut ref_exported = BTreeSet::new();
             for func_index in &table_indices {
                 if ref_exported.insert(*func_index) {
                     let name = format!("__molt_table_ref_{func_index}");
@@ -4480,7 +4480,7 @@ impl WasmBackend {
         let trampoline_map = ctx.trampoline_map;
         let table_base = ctx.table_base;
         let import_ids = ctx.import_ids;
-        let mut locals = HashMap::new();
+        let mut locals = BTreeMap::new();
         let mut local_count = 0;
         let mut local_types = Vec::new();
 
@@ -4507,8 +4507,8 @@ impl WasmBackend {
         // ever *read* (appear in op.args or op.var).  Output-only variables
         // that are never read can share a single WASM local ("dead sink"),
         // reducing the total local count and binary size.
-        let read_vars: HashSet<String> = {
-            let mut s = HashSet::new();
+        let read_vars: BTreeSet<String> = {
+            let mut s = BTreeSet::new();
             for op in &func_ir.ops {
                 if let Some(args) = &op.args {
                     for arg in args {
@@ -4522,15 +4522,15 @@ impl WasmBackend {
             s
         };
         // Also treat function parameters as always live.
-        let param_set: HashSet<String> = func_ir.params.iter().cloned().collect();
+        let param_set: BTreeSet<String> = func_ir.params.iter().cloned().collect();
 
         // --- Local variable coalescing (liveness analysis) ---
         // Compute live ranges for each variable: first write -> last read.
         // Variables whose ranges don't overlap can share a WASM local,
         // reducing total local count and binary size.
-        let coalesced_map: HashMap<String, String> = {
-            let mut first_write: HashMap<String, usize> = HashMap::new();
-            let mut last_read: HashMap<String, usize> = HashMap::new();
+        let coalesced_map: BTreeMap<String, String> = {
+            let mut first_write: BTreeMap<String, usize> = BTreeMap::new();
+            let mut last_read: BTreeMap<String, usize> = BTreeMap::new();
 
             for (op_idx, op) in func_ir.ops.iter().enumerate() {
                 if let Some(ref out) = op.out {
@@ -4576,7 +4576,7 @@ impl WasmBackend {
             // slot_repr[i] = the representative variable name for slot i.
             let mut slot_end: Vec<usize> = Vec::new();
             let mut slot_repr: Vec<String> = Vec::new();
-            let mut map: HashMap<String, String> = HashMap::new();
+            let mut map: BTreeMap<String, String> = BTreeMap::new();
 
             for (start, end, name) in &ranges {
                 // Find the lowest slot whose range has ended (end < start).
@@ -4647,10 +4647,10 @@ impl WasmBackend {
         let mut stateful = false;
         let mut saw_jump_or_label = false;
         let mut fast_int_count: usize = 0;
-        let mut const_seed_seen: HashSet<String> = HashSet::new();
+        let mut const_seed_seen: BTreeSet<String> = BTreeSet::new();
         let mut const_seed_locals_all: Vec<(u32, i64)> = Vec::new();
-        let mut defined_vars: HashSet<String> = HashSet::new();
-        let mut used_vars: HashSet<String> = HashSet::new();
+        let mut defined_vars: BTreeSet<String> = BTreeSet::new();
+        let mut used_vars: BTreeSet<String> = BTreeSet::new();
         for op in &func_ir.ops {
             if let Some(args) = &op.args {
                 for arg in args {
@@ -4734,14 +4734,14 @@ impl WasmBackend {
         }
 
         if needs_field_fast {
-            if let std::collections::hash_map::Entry::Vacant(entry) =
+            if let std::collections::btree_map::Entry::Vacant(entry) =
                 locals.entry("__wasm_tmp0".to_string())
             {
                 entry.insert(local_count);
                 local_types.push(ValType::I32);
                 local_count += 1;
             }
-            if let std::collections::hash_map::Entry::Vacant(entry) =
+            if let std::collections::btree_map::Entry::Vacant(entry) =
                 locals.entry("__wasm_tmp1".to_string())
             {
                 entry.insert(local_count);
@@ -4751,7 +4751,7 @@ impl WasmBackend {
         }
 
         if needs_alloc_resolve {
-            if let std::collections::hash_map::Entry::Vacant(entry) =
+            if let std::collections::btree_map::Entry::Vacant(entry) =
                 locals.entry("__wasm_alloc_resolve".to_string())
             {
                 entry.insert(local_count);
@@ -4761,7 +4761,7 @@ impl WasmBackend {
         }
 
         for name in ["__molt_tmp0", "__molt_tmp1", "__molt_tmp2", "__molt_tmp3"] {
-            if let std::collections::hash_map::Entry::Vacant(entry) = locals.entry(name.to_string())
+            if let std::collections::btree_map::Entry::Vacant(entry) = locals.entry(name.to_string())
             {
                 entry.insert(local_count);
                 local_types.push(ValType::I64);
@@ -4885,7 +4885,7 @@ impl WasmBackend {
         let is_multi_return_callee = multi_return_candidates.get(&func_ir.name).copied();
 
         let mut multi_ret_locals: Vec<u32> = Vec::new();
-        let mut multi_ret_tuple_vars: HashSet<String> = HashSet::new();
+        let mut multi_ret_tuple_vars: BTreeSet<String> = BTreeSet::new();
         if let Some(ret_count) = is_multi_return_callee {
             for i in 0..ret_count {
                 let name = format!("__multi_ret_{i}");
@@ -4909,8 +4909,8 @@ impl WasmBackend {
             }
         }
 
-        let mut multi_ret_call_locals: HashMap<(String, i64), u32> = HashMap::new();
-        let mut multi_ret_call_vars: HashSet<String> = HashSet::new();
+        let mut multi_ret_call_locals: BTreeMap<(String, i64), u32> = BTreeMap::new();
+        let mut multi_ret_call_vars: BTreeSet<String> = BTreeSet::new();
         for (op_idx, op) in func_ir.ops.iter().enumerate() {
             if op.kind != "call_internal" {
                 continue;
@@ -4972,7 +4972,7 @@ impl WasmBackend {
         let mut control_stack: Vec<ControlKind> = Vec::new();
         let mut try_stack: Vec<usize> = Vec::new();
         let mut label_stack: Vec<i64> = Vec::new();
-        let mut label_depths: HashMap<i64, usize> = HashMap::new();
+        let mut label_depths: BTreeMap<i64, usize> = BTreeMap::new();
 
         let dispatch_blocks = if stateful || jumpful {
             let (block_starts, block_for_op) = build_dispatch_blocks(&func_ir.ops);
@@ -5037,13 +5037,13 @@ impl WasmBackend {
                             control_stack: &mut Vec<ControlKind>,
                             try_stack: &mut Vec<usize>,
                             label_stack: &mut Vec<i64>,
-                            label_depths: &mut HashMap<i64, usize>,
+                            label_depths: &mut BTreeMap<i64, usize>,
                             base_idx: usize| {
             // Peephole state: track WASM locals whose raw (unboxed) integer
             // value is known at compile time.  Populated by `const` ops;
             // invalidated when a local is overwritten by a non-const op or
             // control flow diverges.
-            let mut known_raw_ints: HashMap<u32, i64> = HashMap::new();
+            let mut known_raw_ints: BTreeMap<u32, i64> = BTreeMap::new();
 
             // Tail call skip flag: when we emit a return_call for a
             // call_internal op, we set this to skip the immediately
@@ -11757,7 +11757,7 @@ impl WasmBackend {
             let mut scratch_control: Vec<ControlKind> = Vec::new();
             let mut scratch_try: Vec<usize> = Vec::new();
             let mut label_stack: Vec<i64> = Vec::new();
-            let mut label_depths: HashMap<i64, usize> = HashMap::new();
+            let mut label_depths: BTreeMap<i64, usize> = BTreeMap::new();
 
             let dispatch_depths: Vec<u32> = (0..block_count)
                 .map(|idx| (block_count - 1 - idx) as u32)
@@ -12158,7 +12158,7 @@ impl WasmBackend {
             func.instruction(&Instruction::End);
         } else {
             let func = &mut func;
-            let mut jump_labels: HashSet<i64> = HashSet::new();
+            let mut jump_labels: BTreeSet<i64> = BTreeSet::new();
             let mut label_order: Vec<i64> = Vec::new();
             for op in &func_ir.ops {
                 match op.kind.as_str() {
@@ -12256,7 +12256,7 @@ fn emit_call_or_unreachable(
     func: &mut Function,
     reloc_enabled: bool,
     func_index: u32,
-    skipped: &HashSet<u32>,
+    skipped: &BTreeSet<u32>,
 ) {
     if skipped.contains(&func_index) {
         func.instruction(&Instruction::Unreachable);
@@ -12384,7 +12384,7 @@ fn add_reloc_sections(
     data_relocs: &[DataRelocSite],
 ) -> Vec<u8> {
     let mut func_imports: Vec<String> = Vec::new();
-    let mut func_exports: HashMap<u32, String> = HashMap::new();
+    let mut func_exports: BTreeMap<u32, String> = BTreeMap::new();
     let mut func_import_count = 0u32;
     let mut defined_func_count = 0u32;
     let mut table_import_count = 0u32;
@@ -12730,7 +12730,7 @@ fn add_reloc_sections(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use std::collections::BTreeSet;
 
     // ---------------------------------------------------------------
     // br_table state dispatch
@@ -12821,8 +12821,8 @@ mod tests {
     }
 
     /// Replicate the read-var scanning logic from the compiler to test it in isolation.
-    fn collect_read_vars(ops: &[OpIR]) -> HashSet<String> {
-        let mut s = HashSet::new();
+    fn collect_read_vars(ops: &[OpIR]) -> BTreeSet<String> {
+        let mut s = BTreeSet::new();
         for op in ops {
             if let Some(args) = &op.args {
                 for arg in args {

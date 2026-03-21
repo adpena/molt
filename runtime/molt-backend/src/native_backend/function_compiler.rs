@@ -6,12 +6,12 @@ struct FunctionPreanalysis {
     stateful: bool,
     has_store: bool,
     var_names: Vec<String>,
-    last_use: HashMap<String, usize>,
-    if_to_end_if: HashMap<usize, usize>,
-    if_to_else: HashMap<usize, usize>,
-    else_to_end_if: HashMap<usize, usize>,
+    last_use: BTreeMap<String, usize>,
+    if_to_end_if: BTreeMap<usize, usize>,
+    if_to_else: BTreeMap<usize, usize>,
+    else_to_end_if: BTreeMap<usize, usize>,
     state_ids: Vec<i64>,
-    resume_states: HashSet<i64>,
+    resume_states: BTreeSet<i64>,
     function_exception_label_id: Option<i64>,
     /// Pre-built map from variable name -> constant integer value for O(1) lookups.
     /// Only the first definition of each name is stored (SSA correctness).
@@ -80,16 +80,16 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
     let mut has_ret = false;
     let mut stateful = false;
     let mut has_store = false;
-    let mut var_names: HashSet<String> = HashSet::new();
-    let mut last_use = HashMap::new();
-    let mut if_to_end_if = HashMap::new();
-    let mut if_to_else = HashMap::new();
-    let mut else_to_end_if = HashMap::new();
+    let mut var_names: BTreeSet<String> = BTreeSet::new();
+    let mut last_use = BTreeMap::new();
+    let mut if_to_end_if = BTreeMap::new();
+    let mut if_to_else = BTreeMap::new();
+    let mut else_to_end_if = BTreeMap::new();
     let mut if_stack: Vec<(usize, Option<usize>)> = Vec::new();
     let mut state_ids = Vec::new();
-    let mut seen_state_ids: HashSet<i64> = HashSet::new();
-    let mut resume_states = HashSet::new();
-    let mut exception_label_ids = HashSet::new();
+    let mut seen_state_ids: BTreeSet<i64> = BTreeSet::new();
+    let mut resume_states = BTreeSet::new();
+    let mut exception_label_ids = BTreeSet::new();
     let mut label_positions = Vec::new();
 
     for name in &func_ir.params {
@@ -202,10 +202,9 @@ impl SimpleBackend {
         func_ir: FunctionIR,
         task_kinds: &BTreeMap<String, TrampolineKind>,
         task_closure_sizes: &BTreeMap<String, i64>,
-        defined_functions: &HashSet<String>,
-        closure_functions: &HashSet<String>,
+        defined_functions: &BTreeSet<String>,
+        closure_functions: &BTreeSet<String>,
         emit_traces: bool,
-        pgo_profile: Option<&PgoProfileIR>,
     ) {
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
@@ -249,8 +248,8 @@ impl SimpleBackend {
             .collect();
         let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut builder_ctx);
 
-        let mut vars: HashMap<String, Variable> = HashMap::new();
-        let param_name_set: HashSet<&str> = func_ir.params.iter().map(String::as_str).collect();
+        let mut vars: BTreeMap<String, Variable> = BTreeMap::new();
+        let param_name_set: BTreeSet<&str> = func_ir.params.iter().map(String::as_str).collect();
         for name in var_names.iter() {
             let var = builder.declare_var(types::I64);
             vars.insert(name.clone(), var);
@@ -267,23 +266,23 @@ impl SimpleBackend {
         let mut trace_data: Option<(cranelift_module::DataId, i64)> = None;
         let mut tracked_vars = Vec::new();
         let mut tracked_obj_vars = Vec::new();
-        let mut entry_vars: HashMap<String, Value> = HashMap::new();
-        let mut state_blocks = HashMap::new();
+        let mut entry_vars: BTreeMap<String, Value> = BTreeMap::new();
+        let mut state_blocks = BTreeMap::new();
         let mut import_refs: BTreeMap<&'static str, FuncRef> = BTreeMap::new();
-        let mut reachable_blocks: HashSet<Block> = HashSet::new();
+        let mut reachable_blocks: BTreeSet<Block> = BTreeSet::new();
         // Cranelift SSA-variable correctness relies on sealing blocks once all predecessors
         // are known. Our IR uses structured control-flow; for `if` this means then/else
         // each have a single predecessor and can be sealed immediately, and the merge block
         // can be sealed once end_if wiring is complete.
-        let mut sealed_blocks: HashSet<Block> = HashSet::new();
+        let mut sealed_blocks: BTreeSet<Block> = BTreeSet::new();
         let mut is_block_filled = false;
         let mut if_stack: Vec<IfFrame> = Vec::new();
         let mut loop_stack: Vec<LoopFrame> = Vec::new();
         // Map closure function names to their function object variable names
-        let mut local_closure_envs: HashMap<String, String> = HashMap::new();
+        let mut local_closure_envs: BTreeMap<String, String> = BTreeMap::new();
         let mut loop_depth: i32 = 0;
-        let mut block_tracked_obj: HashMap<Block, Vec<String>> = HashMap::new();
-        let mut block_tracked_ptr: HashMap<Block, Vec<String>> = HashMap::new();
+        let mut block_tracked_obj: BTreeMap<Block, Vec<String>> = BTreeMap::new();
+        let mut block_tracked_ptr: BTreeMap<Block, Vec<String>> = BTreeMap::new();
 
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
@@ -425,12 +424,7 @@ impl SimpleBackend {
 
         // 2. Implementation
         let ops = &func_ir.ops;
-        let mut skip_ops: HashSet<usize> = HashSet::new();
-        // Escape-analysis: track stack-eligible tuples by variable name → element values.
-        // When a tuple_new is marked stack_eligible, we store its element Cranelift Values
-        // here instead of heap-allocating.  Downstream `index` ops on these tuples resolve
-        // to direct value lookups, avoiding both the allocation and the molt_index call.
-        let mut stack_tuples: HashMap<String, Vec<Value>> = HashMap::new();
+        let mut skip_ops: BTreeSet<usize> = BTreeSet::new();
         for op_idx in 0..ops.len() {
             if skip_ops.contains(&op_idx) {
                 continue;
@@ -1322,40 +1316,10 @@ impl SimpleBackend {
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f)
                     } else if op.fast_int.unwrap_or(false) {
-                        // Inline isub with overflow check + BigInt fallback.
-                        let mut sig = self.module.make_signature();
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.returns.push(AbiParam::new(types::I64));
-                        let callee = self
-                            .module
-                            .declare_function("molt_sub", Linkage::Import, &sig)
-                            .unwrap();
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
                         let diff = builder.ins().isub(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, diff);
-                        let fits_inline = int_value_fits_inline(&mut builder, diff);
-                        builder
-                            .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
-                        builder.switch_to_block(fast_block);
-                        builder.seal_block(fast_block);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
-                        builder.switch_to_block(slow_block);
-                        builder.seal_block(slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
-                        builder.switch_to_block(merge_block);
-                        builder.seal_block(merge_block);
-                        builder.block_params(merge_block)[0]
+                        box_int_value(&mut builder, diff)
                     } else {
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs);
@@ -1430,40 +1394,10 @@ impl SimpleBackend {
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f)
                     } else if op.fast_int.unwrap_or(false) {
-                        // Inline isub with overflow check + BigInt fallback.
-                        let mut sig = self.module.make_signature();
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.returns.push(AbiParam::new(types::I64));
-                        let callee = self
-                            .module
-                            .declare_function("molt_sub", Linkage::Import, &sig)
-                            .unwrap();
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
                         let diff = builder.ins().isub(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, diff);
-                        let fits_inline = int_value_fits_inline(&mut builder, diff);
-                        builder
-                            .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
-                        builder.switch_to_block(fast_block);
-                        builder.seal_block(fast_block);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
-                        builder.switch_to_block(slow_block);
-                        builder.seal_block(slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
-                        builder.switch_to_block(merge_block);
-                        builder.seal_block(merge_block);
-                        builder.block_params(merge_block)[0]
+                        box_int_value(&mut builder, diff)
                     } else {
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs);
@@ -3490,80 +3424,47 @@ impl SimpleBackend {
                 "tuple_new" => {
                     let args = op.args.as_ref().unwrap();
                     let out_name = op.out.unwrap();
+                    let size = builder.ins().iconst(types::I64, box_int(args.len() as i64));
 
-                    // --- Stack-eligible fast path: elide heap allocation ---
-                    // When escape analysis proved this tuple never escapes, we
-                    // keep the element Values in `stack_tuples` and resolve
-                    // downstream `index` ops to direct value lookups.
-                    if op.stack_eligible.unwrap_or(false) {
-                        let mut elems: Vec<Value> = Vec::with_capacity(args.len());
-                        for name in args {
-                            let val = var_get(&mut builder, &vars, name)
-                                .expect("Stack-tuple elem not found");
-                            elems.push(*val);
-                        }
-                        // We still need to define the variable (it may be
-                        // referenced by exception-check ops that just test
-                        // for null).  Use the first element or a zero sentinel.
-                        let sentinel = if let Some(&first) = elems.first() {
-                            first
-                        } else {
-                            builder.ins().iconst(types::I64, 0)
-                        };
-                        def_var_named(&mut builder, &vars, out_name.clone(), sentinel);
-                        stack_tuples.insert(out_name.to_string(), elems);
-                    } else {
-                        // --- Original heap-allocated path ---
-                        let size = builder.ins().iconst(types::I64, box_int(args.len() as i64));
+                    let mut new_sig = self.module.make_signature();
+                    new_sig.params.push(AbiParam::new(types::I64));
+                    new_sig.returns.push(AbiParam::new(types::I64));
+                    let new_callee = self
+                        .module
+                        .declare_function("molt_list_builder_new", Linkage::Import, &new_sig)
+                        .unwrap();
+                    let new_local = self.module.declare_func_in_func(new_callee, builder.func);
+                    let new_call = builder.ins().call(new_local, &[size]);
+                    let builder_ptr = builder.inst_results(new_call)[0];
 
-                        let mut new_sig = self.module.make_signature();
-                        new_sig.params.push(AbiParam::new(types::I64));
-                        new_sig.returns.push(AbiParam::new(types::I64));
-                        let new_callee = self
-                            .module
-                            .declare_function("molt_list_builder_new", Linkage::Import, &new_sig)
-                            .unwrap();
-                        let new_local = self.module.declare_func_in_func(new_callee, builder.func);
-                        let new_call = builder.ins().call(new_local, &[size]);
-                        let builder_ptr = builder.inst_results(new_call)[0];
-
-                        let mut append_sig = self.module.make_signature();
-                        append_sig.params.push(AbiParam::new(types::I64));
-                        append_sig.params.push(AbiParam::new(types::I64));
-                        let append_callee = self
-                            .module
-                            .declare_function(
-                                "molt_list_builder_append",
-                                Linkage::Import,
-                                &append_sig,
-                            )
-                            .unwrap();
-                        let append_local = self
-                            .module
-                            .declare_func_in_func(append_callee, builder.func);
-                        for name in args {
-                            let val =
-                                var_get(&mut builder, &vars, name).expect("Tuple elem not found");
-                            builder.ins().call(append_local, &[builder_ptr, *val]);
-                        }
-
-                        let mut finish_sig = self.module.make_signature();
-                        finish_sig.params.push(AbiParam::new(types::I64));
-                        finish_sig.returns.push(AbiParam::new(types::I64));
-                        let finish_callee = self
-                            .module
-                            .declare_function(
-                                "molt_tuple_builder_finish",
-                                Linkage::Import,
-                                &finish_sig,
-                            )
-                            .unwrap();
-                        let finish_local =
-                            self.module.declare_func_in_func(finish_callee, builder.func);
-                        let finish_call = builder.ins().call(finish_local, &[builder_ptr]);
-                        let tuple_bits = builder.inst_results(finish_call)[0];
-                        def_var_named(&mut builder, &vars, out_name, tuple_bits);
+                    let mut append_sig = self.module.make_signature();
+                    append_sig.params.push(AbiParam::new(types::I64));
+                    append_sig.params.push(AbiParam::new(types::I64));
+                    let append_callee = self
+                        .module
+                        .declare_function("molt_list_builder_append", Linkage::Import, &append_sig)
+                        .unwrap();
+                    let append_local = self
+                        .module
+                        .declare_func_in_func(append_callee, builder.func);
+                    for name in args {
+                        let val = var_get(&mut builder, &vars, name).expect("Tuple elem not found");
+                        builder.ins().call(append_local, &[builder_ptr, *val]);
                     }
+
+                    let mut finish_sig = self.module.make_signature();
+                    finish_sig.params.push(AbiParam::new(types::I64));
+                    finish_sig.returns.push(AbiParam::new(types::I64));
+                    let finish_callee = self
+                        .module
+                        .declare_function("molt_tuple_builder_finish", Linkage::Import, &finish_sig)
+                        .unwrap();
+                    let finish_local = self
+                        .module
+                        .declare_func_in_func(finish_callee, builder.func);
+                    let finish_call = builder.ins().call(finish_local, &[builder_ptr]);
+                    let tuple_bits = builder.inst_results(finish_call)[0];
+                    def_var_named(&mut builder, &vars, out_name, tuple_bits);
                 }
                 "list_append" => {
                     let args = op.args.as_ref().unwrap();
@@ -4708,43 +4609,20 @@ impl SimpleBackend {
                 }
                 "index" => {
                     let args = op.args.as_ref().unwrap();
-
-                    // --- Stack-tuple fast path ---
-                    // If the object being indexed is a stack-eligible tuple,
-                    // resolve the index at compile time and return the element
-                    // directly, eliding the molt_index call entirely.
-                    let resolved_stack = stack_tuples.get(&args[0]).and_then(|elems| {
-                        Self::resolve_const_int(ops, op_idx, &args[1]).and_then(|ci| {
-                            let idx = if ci < 0 {
-                                (elems.len() as i64 + ci) as usize
-                            } else {
-                                ci as usize
-                            };
-                            elems.get(idx).copied()
-                        })
-                    });
-
-                    if let Some(elem_val) = resolved_stack {
-                        def_var_named(&mut builder, &vars, op.out.unwrap(), elem_val);
-                    } else {
-                        let obj =
-                            var_get(&mut builder, &vars, &args[0]).expect("Obj not found");
-                        let idx =
-                            var_get(&mut builder, &vars, &args[1]).expect("Index not found");
-                        let mut sig = self.module.make_signature();
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.returns.push(AbiParam::new(types::I64));
-                        let callee = self
-                            .module
-                            .declare_function("molt_index", Linkage::Import, &sig)
-                            .unwrap();
-                        let local_callee =
-                            self.module.declare_func_in_func(callee, builder.func);
-                        let call = builder.ins().call(local_callee, &[*obj, *idx]);
-                        let res = builder.inst_results(call)[0];
-                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
-                    }
+                    let obj = var_get(&mut builder, &vars, &args[0]).expect("Obj not found");
+                    let idx = var_get(&mut builder, &vars, &args[1]).expect("Index not found");
+                    let mut sig = self.module.make_signature();
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let callee = self
+                        .module
+                        .declare_function("molt_index", Linkage::Import, &sig)
+                        .unwrap();
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*obj, *idx]);
+                    let res = builder.inst_results(call)[0];
+                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "store_index" => {
                     let args = op.args.as_ref().unwrap();
@@ -8530,7 +8408,7 @@ impl SimpleBackend {
                     // by this backend (caller owns), so only non-param temporaries should be
                     // released at the call site.
                     let mut arg_cleanup = Vec::new();
-                    let mut arg_cleanup_names = HashSet::new();
+                    let mut arg_cleanup_names = BTreeSet::new();
                     for (name, value) in args_names.iter().zip(args.iter()) {
                         if param_name_set.contains(name.as_str()) {
                             continue;
@@ -11551,24 +11429,6 @@ impl SimpleBackend {
                         .ins()
                         .brif(cond_bool, then_block, &[], false_block, &[]);
 
-                    // PGO: mark the rarely-taken branch side as cold so Cranelift
-                    // can improve code layout and register allocation.
-                    if let Some(profile) = pgo_profile {
-                        if let Some(bc) = profile.get_branch_count(&func_ir.name, op_idx) {
-                            let ratio = bc.taken_ratio();
-                            // If the true branch is taken >=95% of the time,
-                            // mark the false side as cold.
-                            if ratio >= 0.95 {
-                                builder.set_cold_block(false_block);
-                            }
-                            // If the false branch is taken >=95% of the time,
-                            // mark the true side (then_block) as cold.
-                            if ratio <= 0.05 {
-                                builder.set_cold_block(then_block);
-                            }
-                        }
-                    }
-
                     // Seal blocks now that their predecessor sets are complete.
                     // Structured `if` creates exactly one predecessor for each of then/else.
                     //
@@ -11984,14 +11844,13 @@ impl SimpleBackend {
                             // decref'd at the phi boundary while the output is still live,
                             // leading to UAF/segfaults for object-valued if-expressions.
                             if let Some(tracked) = block_tracked_obj.get_mut(&frame.merge_block) {
-                                let mut remove_names: HashSet<&str> =
-                                    HashSet::with_capacity(frame.phi_ops.len() * 2);
+                                let mut remove_names: BTreeSet<&str> = BTreeSet::new();
                                 for (_out, then_name, else_name) in &frame.phi_ops {
                                     remove_names.insert(then_name.as_str());
                                     remove_names.insert(else_name.as_str());
                                 }
                                 tracked.retain(|name| !remove_names.contains(name.as_str()));
-                                let mut present: HashSet<String> =
+                                let mut present: BTreeSet<String> =
                                     tracked.iter().cloned().collect();
                                 for (out, _then_name, _else_name) in &frame.phi_ops {
                                     if present.insert(out.clone()) {
