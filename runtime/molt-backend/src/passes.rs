@@ -76,12 +76,24 @@ pub(crate) fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
 )]
 const INLINE_OP_LIMIT: usize = 30;
 
+/// PGO-guided inline limit for hot functions (called >1000 times).
+/// Hot callees get a larger budget so more of their body can be inlined.
+const PGO_HOT_INLINE_OP_LIMIT: usize = 80;
+
+/// Call-count threshold above which a function is considered "hot" for
+/// inlining purposes.
+const PGO_HOT_CALL_THRESHOLD: u64 = 1000;
+
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-fn is_inlineable(func: &FunctionIR, defined_functions: &HashSet<&str>) -> bool {
-    if func.ops.len() > INLINE_OP_LIMIT {
+fn is_inlineable_with_limit(
+    func: &FunctionIR,
+    defined_functions: &HashSet<&str>,
+    op_limit: usize,
+) -> bool {
+    if func.ops.len() > op_limit {
         return false;
     }
     for op in &func.ops {
@@ -122,13 +134,29 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
 
     let mut inlineable: HashMap<String, (Vec<String>, Vec<OpIR>)> = HashMap::new();
     for func in &ir.functions {
+        // PGO-guided inlining: if the profile shows this function is called
+        // frequently (>1000 times), allow a larger op budget so more of its
+        // body can be inlined at call sites.
+        let effective_limit = if let Some(profile) = ir.profile.as_ref() {
+            if let Some(calls) = profile.get_call_count(&func.name) {
+                if calls >= PGO_HOT_CALL_THRESHOLD {
+                    limit.max(PGO_HOT_INLINE_OP_LIMIT)
+                } else {
+                    limit
+                }
+            } else {
+                limit
+            }
+        } else {
+            limit
+        };
         let func_copy = FunctionIR {
             name: func.name.clone(),
             params: func.params.clone(),
             ops: func.ops.clone(),
             param_types: func.param_types.clone(),
         };
-        if func_copy.ops.len() <= limit && is_inlineable(&func_copy, &defined_functions) {
+        if is_inlineable_with_limit(&func_copy, &defined_functions, effective_limit) {
             inlineable.insert(
                 func_copy.name.clone(),
                 (func_copy.params.clone(), func_copy.ops),
