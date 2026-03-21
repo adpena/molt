@@ -125,6 +125,9 @@ impl MountTable {
 /// Normalize a path: collapse //, resolve ., reject .. escapes.
 /// Returns None for empty or invalid paths.
 fn normalize_path(path: &str) -> Option<Cow<'_, str>> {
+    if path.contains('\0') {
+        return None;
+    }
     if path.is_empty() || !path.starts_with('/') {
         return None;
     }
@@ -261,9 +264,18 @@ pub extern "C" fn molt_vfs_inject_entry(
     data_ptr: *const u8,
     data_len: usize,
 ) {
+    if path_ptr.is_null() || (data_len > 0 && data_ptr.is_null()) {
+        return;
+    }
+    if path_len > 4096 || data_len > 64 * 1024 * 1024 {
+        return;
+    }
     let path = unsafe { std::slice::from_raw_parts(path_ptr, path_len) };
     let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
     let path_str = String::from_utf8_lossy(path).to_string();
+    if path_str.is_empty() || path_str.starts_with('/') || path_str.contains("..") || path_str.contains('\0') {
+        return; // reject unsafe paths
+    }
     let mut guard = INJECTED_BUNDLE.lock().unwrap();
     guard.get_or_insert_with(Vec::new).push((path_str, data.to_vec()));
 }
