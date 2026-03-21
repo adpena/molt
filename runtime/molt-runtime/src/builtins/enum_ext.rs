@@ -15,6 +15,7 @@
 // to get the next value.
 
 use crate::*;
+use crate::object::builders::alloc_class_obj;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Flag arithmetic helpers
@@ -332,5 +333,168 @@ pub extern "C" fn molt_enum_str_value(name_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
         }
         MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enum class creation and member lookup
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Create an enum class given a name, a list of (name, value) member tuples,
+/// and an optional tuple of base classes.
+///
+/// Returns a new type object with a `__members__` dict mapping member names
+/// to their values.  The Python wrapper uses this as the storage backend for
+/// the enum metaclass; individual member objects are constructed at the Python
+/// layer using the name/value data.
+///
+/// `name_bits`:    str — the enum class name
+/// `members_bits`: list of (str, value) 2-tuples
+/// `bases_bits`:   tuple of base classes or None
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        // Validate name
+        let name_obj = obj_from_bits(name_bits);
+        if name_obj.is_none() {
+            return raise_exception::<_>(_py, "TypeError", "enum name must be a string");
+        }
+
+        // Create the type/class object
+        let cls_ptr = alloc_class_obj(_py, name_bits);
+        if cls_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "failed to allocate enum class");
+        }
+        let cls_bits = MoltObject::from_ptr(cls_ptr).bits();
+
+        // Set bases if provided
+        if !obj_from_bits(bases_bits).is_none() {
+            if let Some(_bases_ptr) = obj_from_bits(bases_bits).as_ptr() {
+                unsafe { class_set_bases_bits(cls_ptr, bases_bits) };
+                inc_ref_bits(_py, bases_bits);
+            }
+        }
+
+        // Build __members__ dict from member tuples
+        let members_obj = obj_from_bits(members_bits);
+        let Some(members_ptr) = members_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "members must be a list");
+        };
+        let type_id = unsafe { object_type_id(members_ptr) };
+        if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
+            return raise_exception::<_>(_py, "TypeError", "members must be a list or tuple");
+        }
+        let elems = unsafe { seq_vec_ref(members_ptr) };
+
+        // Build pairs array for the dict: [key1, val1, key2, val2, ...]
+        let mut dict_pairs: Vec<u64> = Vec::with_capacity(elems.len() * 2);
+        for &elem_bits in elems.iter() {
+            let elem_obj = obj_from_bits(elem_bits);
+            let Some(eptr) = elem_obj.as_ptr() else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "each member must be a (name, value) tuple",
+                );
+            };
+            let etype = unsafe { object_type_id(eptr) };
+            if etype != TYPE_ID_TUPLE && etype != TYPE_ID_LIST {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "each member must be a (name, value) tuple",
+                );
+            }
+            let pair = unsafe { seq_vec_ref(eptr) };
+            if pair.len() < 2 {
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "each member must have at least 2 elements",
+                );
+            }
+            dict_pairs.push(pair[0]); // name
+            dict_pairs.push(pair[1]); // value
+        }
+
+        let members_dict_ptr = alloc_dict_with_pairs(_py, &dict_pairs);
+        if members_dict_ptr.is_null() {
+            dec_ref_bits(_py, cls_bits);
+            return raise_exception::<_>(_py, "MemoryError", "failed to allocate __members__ dict");
+        }
+        let members_dict_bits = MoltObject::from_ptr(members_dict_ptr).bits();
+
+        // Store __members__ on the class dict
+        if let Some(attr_key) = attr_name_bits_from_bytes(_py, b"__members__") {
+            let cls_dict_bits = unsafe { class_dict_bits(cls_ptr) };
+            if let Some(dict_ptr) = obj_from_bits(cls_dict_bits).as_ptr() {
+                unsafe {
+                    dict_set_in_place(_py, dict_ptr, attr_key, members_dict_bits);
+                }
+            }
+            dec_ref_bits(_py, attr_key);
+        }
+        dec_ref_bits(_py, members_dict_bits);
+
+        cls_bits
+    })
+}
+
+/// Look up an enum member by value.
+///
+/// Iterates the class's `__members__` dict values and returns the first member
+/// name whose value equals `value_bits`.  If no match is found, returns None.
+///
+/// `cls_bits`:   the enum class (type object)
+/// `value_bits`: the value to look up
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_enum_member(cls_bits: u64, value_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+
+        // Get __members__ from the class
+        let Some(attr_key) = attr_name_bits_from_bytes(_py, b"__members__") else {
+            return MoltObject::none().bits();
+        };
+        let members_bits = molt_getattr_builtin(cls_bits, attr_key, missing);
+        dec_ref_bits(_py, attr_key);
+
+        if exception_pending(_py) {
+            clear_exception(_py);
+            return MoltObject::none().bits();
+        }
+        if members_bits == missing {
+            return MoltObject::none().bits();
+        }
+
+        // __members__ should be a dict; iterate its key/value pairs looking
+        // for a value match.  Dict order stores [key0, val0, key1, val1, ...].
+        let members_obj = obj_from_bits(members_bits);
+        let Some(dict_ptr) = members_obj.as_ptr() else {
+            dec_ref_bits(_py, members_bits);
+            return MoltObject::none().bits();
+        };
+
+        let result = unsafe {
+            let order = dict_order(dict_ptr);
+            let mut found = MoltObject::none().bits();
+            let mut i = 0;
+            while i + 1 < order.len() {
+                let key_bits = order[i];
+                let val_bits = order[i + 1];
+                if val_bits == value_bits
+                    || obj_eq(_py, obj_from_bits(val_bits), obj_from_bits(value_bits))
+                {
+                    found = key_bits;
+                    inc_ref_bits(_py, found);
+                    break;
+                }
+                i += 2;
+            }
+            found
+        };
+
+        dec_ref_bits(_py, members_bits);
+        result
     })
 }

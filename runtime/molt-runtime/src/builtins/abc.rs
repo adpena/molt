@@ -1364,3 +1364,31 @@ pub extern "C" fn molt_abc_abstractmethod_check(cls_bits: u64) -> u64 {
         MoltObject::from_bool(len_val > 0).bits()
     })
 }
+
+// ---------------------------------------------------------------------------
+// typing helpers – lowered so the compiler can elide call frames
+// ---------------------------------------------------------------------------
+
+/// `typing.cast(typ, val)` → identity (returns val, ignores typ).
+/// Lowered so the compiler can recognise the no-op and elide the frame.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_typing_cast(_typ_bits: u64, val_bits: u64) -> u64 {
+    val_bits
+}
+
+/// `typing.get_origin(tp)` → `tp.__origin__` or None.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_typing_get_origin(tp_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        get_attr_default(_py, tp_bits, b"__origin__", MoltObject::none().bits())
+    })
+}
+
+/// `typing.get_args(tp)` → `tp.__args__` or `()`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_typing_get_args(tp_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let empty_tuple = alloc_tuple(_py, &[]) as u64;
+        get_attr_default(_py, tp_bits, b"__args__", empty_tuple)
+    })
+}

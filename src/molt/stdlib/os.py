@@ -78,6 +78,12 @@ _MOLT_OS_ACCESS = _require_intrinsic("molt_os_access")
 _MOLT_OS_CHDIR = _require_intrinsic("molt_os_chdir")
 _MOLT_OS_CPU_COUNT = _require_intrinsic("molt_os_cpu_count")
 _MOLT_OS_LINK = _require_intrinsic("molt_os_link")
+_MOLT_OS_ENVIRON = _require_intrinsic("molt_os_environ")
+_MOLT_OS_MAKEDIRS = _require_intrinsic("molt_os_makedirs")
+_MOLT_OS_PATH_JOIN = _require_intrinsic("molt_os_path_join")
+_MOLT_OS_PATH_EXISTS = _require_intrinsic("molt_os_path_exists")
+_MOLT_OS_PATH_ISFILE = _require_intrinsic("molt_os_path_isfile")
+_MOLT_OS_PATH_ISDIR = _require_intrinsic("molt_os_path_isdir")
 _MOLT_OS_TRUNCATE = _require_intrinsic("molt_os_truncate")
 _MOLT_OS_UMASK = _require_intrinsic("molt_os_umask")
 _MOLT_OS_UNAME = _require_intrinsic("molt_os_uname")
@@ -362,15 +368,36 @@ def _molt_env_get(key: str, default: Any = None) -> Any:
 
 
 def _molt_env_snapshot() -> dict[str, str]:
-    raw = _MOLT_ENV_SNAPSHOT()
-    if not isinstance(raw, dict):
+    # Prefer the new consolidated intrinsic when available.
+    if callable(_MOLT_OS_ENVIRON):
+        raw = _MOLT_OS_ENVIRON()
+        if isinstance(raw, dict):
+            out: dict[str, str] = {}
+            for key, value in raw.items():
+                if not isinstance(key, str) or not isinstance(value, str):
+                    raise RuntimeError("os env snapshot intrinsic returned invalid value")
+                out[key] = value
+            return out
+        # The Rust side may return a flat list of [k, v, k, v, ...].
+        if isinstance(raw, (list, tuple)):
+            out2: dict[str, str] = {}
+            it = iter(raw)
+            for k in it:
+                v = next(it)
+                if not isinstance(k, str) or not isinstance(v, str):
+                    raise RuntimeError("os env snapshot intrinsic returned invalid value")
+                out2[k] = v
+            return out2
+    # Fallback to the legacy snapshot intrinsic.
+    raw_legacy = _MOLT_ENV_SNAPSHOT()
+    if not isinstance(raw_legacy, dict):
         raise RuntimeError("os env snapshot intrinsic returned invalid value")
-    out: dict[str, str] = {}
-    for key, value in raw.items():
+    out3: dict[str, str] = {}
+    for key, value in raw_legacy.items():
         if not isinstance(key, str) or not isinstance(value, str):
             raise RuntimeError("os env snapshot intrinsic returned invalid value")
-        out[key] = value
-    return out
+        out3[key] = value
+    return out3
 
 
 def _molt_env_set(key: str, value: str) -> None:
@@ -831,6 +858,12 @@ class _Path:
             parts.append(fourth)
         if not parts:
             return ""
+        # Fast path: use the new 2-arg intrinsic for the common case.
+        if len(parts) == 2 and callable(_MOLT_OS_PATH_JOIN):
+            result = _MOLT_OS_PATH_JOIN(parts[0], parts[1])
+            if isinstance(parts[0], bytes):
+                return result
+            return _expect_str(result, "os_path_join")
         result = _MOLT_PATH_JOIN_MANY(parts[0], tuple(parts[1:]))
         if isinstance(parts[0], bytes):
             return result
@@ -889,18 +922,24 @@ class _Path:
     @staticmethod
     def exists(path: Any) -> bool:
         _require_cap("fs.read")
+        if callable(_MOLT_OS_PATH_EXISTS):
+            return bool(_MOLT_OS_PATH_EXISTS(path))
         intrinsic = _require_callable_intrinsic(_MOLT_PATH_EXISTS, "molt_path_exists")
         return bool(intrinsic(path))
 
     @staticmethod
     def isdir(path: Any) -> bool:
         _require_cap("fs.read")
+        if callable(_MOLT_OS_PATH_ISDIR):
+            return bool(_MOLT_OS_PATH_ISDIR(path))
         intrinsic = _require_callable_intrinsic(_MOLT_PATH_ISDIR, "molt_path_isdir")
         return bool(intrinsic(path))
 
     @staticmethod
     def isfile(path: Any) -> bool:
         _require_cap("fs.read")
+        if callable(_MOLT_OS_PATH_ISFILE):
+            return bool(_MOLT_OS_PATH_ISFILE(path))
         intrinsic = _require_callable_intrinsic(_MOLT_PATH_ISFILE, "molt_path_isfile")
         return bool(intrinsic(path))
 
@@ -1085,6 +1124,9 @@ def chmod(path: Any, mode: int) -> None:
 
 def makedirs(name: Any, mode: int = 0o777, exist_ok: bool = False) -> None:
     path = fspath(name)
+    if callable(_MOLT_OS_MAKEDIRS):
+        _MOLT_OS_MAKEDIRS(path, mode, bool(exist_ok))
+        return
     intrinsic = _require_callable_intrinsic(_MOLT_PATH_MAKEDIRS, "molt_path_makedirs")
     intrinsic(path, mode, bool(exist_ok))
 

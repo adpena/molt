@@ -19,6 +19,11 @@ _molt_re_expand_replacement = _require_intrinsic(
 _molt_re_group_values = _require_intrinsic("molt_re_group_values")
 _molt_re_split = _require_intrinsic("molt_re_split")
 _molt_re_sub = _require_intrinsic("molt_re_sub")
+_molt_re_escape = _require_intrinsic("molt_re_escape")
+_molt_re_sub_callable = _require_intrinsic("molt_re_sub_callable")
+_molt_re_match_group = _require_intrinsic("molt_re_match_group")
+_molt_re_match_groups = _require_intrinsic("molt_re_match_groups")
+_molt_re_match_groupdict = _require_intrinsic("molt_re_match_groupdict")
 
 __all__ = [
     "NOFLAG",
@@ -132,23 +137,20 @@ class Match:
     def group(self, *indices: int | str) -> Any:
         if not indices:
             indices = (0,)
-        if len(indices) == 1:
-            return self._group_value(indices[0])
-        return tuple(self._group_value(idx) for idx in indices)
+        match_tuple = (self._start, self._end, self._group_spans)
+        return _molt_re_match_group(
+            self._string, match_tuple, indices, self._pattern.groupindex
+        )
 
     def groups(self, default: Any = None) -> tuple[Any, ...]:
-        out: list[Any] = []
-        for i in range(len(self._group_spans)):
-            val = self._group_value(i + 1)
-            out.append(default if val is None else val)
-        return tuple(out)
+        match_tuple = (self._start, self._end, self._group_spans)
+        return _molt_re_match_groups(self._string, match_tuple, default)
 
     def groupdict(self, default: Any = None) -> dict[str, Any]:
-        out: dict[str, Any] = {}
-        for name, idx in self._pattern.groupindex.items():
-            val = self._group_value(idx)
-            out[name] = default if val is None else val
-        return out
+        match_tuple = (self._start, self._end, self._group_spans)
+        return _molt_re_match_groupdict(
+            self._string, match_tuple, default, self._pattern.groupindex
+        )
 
     def start(self, group: int | str = 0) -> int:
         return self._group_span(group)[0]
@@ -398,24 +400,11 @@ def _coerce_pattern(pattern: Any, flags: int) -> Pattern:
 def _subn_callable(
     pattern: Pattern, repl: object, string: str, *, count: int = 0
 ) -> tuple[str, int]:
-    """sub/subn with a callable replacement — must stay in Python."""
+    """sub/subn with a callable replacement — delegate to Rust intrinsic."""
     if count < 0:
         raise ValueError("count must be non-negative")
     text = _ensure_text(string)
-    parts: list[str] = []
-    last = 0
-    replaced = 0
-    limit = None if count == 0 else count
-    for match_obj in pattern.finditer(text, 0, None):
-        if limit is not None and replaced >= limit:
-            break
-        m_start, m_end = match_obj.span()
-        parts.append(text[last:m_start])
-        parts.append(_expand_replacement(repl, match_obj))
-        last = m_end
-        replaced += 1
-    parts.append(text[last:])
-    return ("".join(parts), replaced)
+    return _molt_re_sub_callable(pattern._handle, repl, text, count)
 
 
 # ---------------------------------------------------------------------------
@@ -466,12 +455,6 @@ def escape(pattern: object) -> str:
     """Escape special characters in pattern."""
     if not isinstance(pattern, str):
         pattern = str(pattern)
-    out: list[str] = []
-    for ch in pattern:
-        if ("a" <= ch <= "z") or ("A" <= ch <= "Z") or ("0" <= ch <= "9") or ch == "_":
-            out.append(ch)
-        else:
-            out.append("\\" + ch)
-    return "".join(out)
+    return _molt_re_escape(pattern)
 
 globals().pop("_require_intrinsic", None)

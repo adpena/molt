@@ -28,6 +28,17 @@ _MOLT_DATACLASSES_CHECK_DEFAULT_ORDER = _require_intrinsic(
 _MOLT_DATACLASSES_FIELD_FLAGS = _require_intrinsic(
     "molt_dataclasses_field_flags"
 )
+_MOLT_DATACLASSES_POST_INIT = _require_intrinsic("molt_dataclasses_post_init")
+_MOLT_DATACLASSES_FIELD_METADATA = _require_intrinsic(
+    "molt_dataclasses_field_metadata"
+)
+_MOLT_DATACLASSES_SET_FIELD_METADATA = _require_intrinsic(
+    "molt_dataclasses_set_field_metadata"
+)
+_MOLT_DATACLASSES_IS_INITVAR = _require_intrinsic("molt_dataclasses_is_initvar")
+_MOLT_DATACLASSES_IS_KW_ONLY_SENTINEL = _require_intrinsic(
+    "molt_dataclasses_is_kw_only_sentinel"
+)
 
 
 class _MISSING_TYPE:
@@ -112,6 +123,7 @@ class Field:
         self.kw_only = kw_only
         self.doc = doc
         self._field_type = _FIELD
+        _MOLT_DATACLASSES_SET_FIELD_METADATA(self, self.metadata)
 
     def __repr__(self) -> str:
         return (
@@ -236,11 +248,15 @@ def _is_classvar(annotation) -> bool:
 def _is_initvar(annotation) -> bool:
     if annotation is InitVar:
         return True
-    return isinstance(annotation, InitVar)
+    if isinstance(annotation, InitVar):
+        return True
+    return bool(_MOLT_DATACLASSES_IS_INITVAR(annotation))
 
 
 def _is_kw_only(annotation) -> bool:
-    return annotation is KW_ONLY or isinstance(annotation, _KW_ONLY_TYPE)
+    if annotation is KW_ONLY or isinstance(annotation, _KW_ONLY_TYPE):
+        return True
+    return bool(_MOLT_DATACLASSES_IS_KW_ONLY_SENTINEL(annotation))
 
 
 def _check_default_order(fields: dict[str, Field]) -> None:
@@ -380,9 +396,7 @@ def _dataclass_init(self, *args, **kwargs):
         elif field_obj._field_type is _FIELD_INITVAR and field_obj.init:
             field_name = cast(str, field_obj.name)
             initvar_values.append(values[field_name])
-    post_init = getattr(self, "__post_init__", None)
-    if post_init is not None:
-        post_init(*initvar_values)
+    _MOLT_DATACLASSES_POST_INIT(self, initvar_values)
 
 
 @recursive_repr()
