@@ -47190,3 +47190,116 @@ pub extern "C" fn molt_guarded_class_def(
 
     class_bits
 }
+
+/// Build an f-string from interleaved literal and value parts in a single call.
+///
+/// The parts array contains `(is_literal, value)` pairs as consecutive u64s:
+/// - If `is_literal` is truthy: `value` is already a string (use directly)
+/// - If `is_literal` is falsy: `value` needs conversion via `str()`
+///
+/// This consolidates the multi-op f-string assembly (N const_str + N string_format
+/// + tuple_new + string_join) into a single runtime call.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn molt_fstring_build(
+    parts_ptr: *const u64,
+    n_parts: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let n = n_parts as usize;
+        if n == 0 {
+            let ptr = alloc_string(_py, &[]);
+            return if ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(ptr).bits()
+            };
+        }
+
+        // Collect string parts — resolve values via str() as needed.
+        let mut parts: Vec<(u64, bool)> = Vec::with_capacity(n); // (string_bits, owned)
+        let mut total_len: usize = 0;
+
+        for i in 0..n {
+            let is_literal = unsafe { *parts_ptr.add(i * 2) };
+            let value_bits = unsafe { *parts_ptr.add(i * 2 + 1) };
+
+            let string_bits = if is_literal != 0 {
+                // Literal — already a string, borrow it.
+                (value_bits, false)
+            } else {
+                // Value — convert via str().
+                let converted = molt_str_from_obj(value_bits);
+                if obj_from_bits(converted).is_none() && exception_pending(_py) {
+                    // Clean up previously owned parts.
+                    for &(bits, owned) in &parts {
+                        if owned {
+                            dec_ref_bits(_py, bits);
+                        }
+                    }
+                    return MoltObject::none().bits();
+                }
+                (converted, true)
+            };
+
+            // Get string length.
+            if let Some(ptr) = obj_from_bits(string_bits.0).as_ptr() {
+                unsafe {
+                    if object_type_id(ptr) == TYPE_ID_STRING {
+                        total_len += string_len(ptr);
+                    }
+                }
+            }
+            parts.push(string_bits);
+        }
+
+        // Single part — return it directly.
+        if parts.len() == 1 {
+            let (bits, owned) = parts[0];
+            if !owned {
+                inc_ref_bits(_py, bits);
+            }
+            return bits;
+        }
+
+        // Allocate output buffer and copy all parts.
+        let out_ptr = alloc_bytes_like_with_len(_py, total_len, TYPE_ID_STRING);
+        if out_ptr.is_null() {
+            for &(bits, owned) in &parts {
+                if owned {
+                    dec_ref_bits(_py, bits);
+                }
+            }
+            return MoltObject::none().bits();
+        }
+
+        unsafe {
+            let data_base = out_ptr.add(std::mem::size_of::<usize>());
+            let mut offset = 0;
+            for &(bits, _) in &parts {
+                if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+                    if object_type_id(ptr) == TYPE_ID_STRING {
+                        let len = string_len(ptr);
+                        if len > 0 {
+                            std::ptr::copy_nonoverlapping(
+                                string_bytes(ptr),
+                                data_base.add(offset),
+                                len,
+                            );
+                            offset += len;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Release owned references.
+        for &(bits, owned) in &parts {
+            if owned {
+                dec_ref_bits(_py, bits);
+            }
+        }
+
+        MoltObject::from_ptr(out_ptr).bits()
+    })
+}
