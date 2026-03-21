@@ -77,7 +77,8 @@ use crate::{
     function_annotations_bits, function_closure_bits, function_code_bits, function_dict_bits,
     generator_context_stack_drop, generator_exception_stack_drop, generic_alias_args_bits,
     generic_alias_origin_bits, io_wait_poll_fn_addr, io_wait_release_socket, issubclass_bits,
-    iter_target_bits, map_func_bits, map_iters_ptr, module_dict_bits, module_name_bits,
+    iter_cached_tuple, iter_target_bits, map_func_bits, map_iters_ptr, module_dict_bits,
+    module_name_bits,
     process_poll_fn_addr, profile_hit, property_del_bits, property_get_bits, property_set_bits,
     range_start_bits, range_step_bits, range_stop_bits, reversed_target_bits, runtime_state,
     seq_vec_ptr, set_order_ptr, set_table_ptr, slice_start_bits, slice_step_bits, slice_stop_bits,
@@ -1392,6 +1393,10 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     let target_bits = iter_target_bits(ptr);
                     if target_bits != 0 && !obj_from_bits(target_bits).is_none() {
                         dec_ref_bits(py, target_bits);
+                    }
+                    let cached = iter_cached_tuple(ptr);
+                    if !cached.is_null() {
+                        dec_ref_ptr(py, cached);
                     }
                 }
                 TYPE_ID_REVERSED => {
