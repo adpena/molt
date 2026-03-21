@@ -356,7 +356,7 @@ def stage_optimize(
 
     t0 = time.monotonic()
     proc = subprocess.run(
-        [wasm_opt, f"-{level}", str(input_wasm), "-o", str(output_wasm)],
+        [wasm_opt, f"-{level}", "--all-features", str(input_wasm), "-o", str(output_wasm)],
         capture_output=True,
         text=True,
         timeout=300,

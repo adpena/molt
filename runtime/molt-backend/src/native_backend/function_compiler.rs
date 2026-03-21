@@ -10671,7 +10671,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out) = op.out.as_ref()
+                        && out != "none"
+                    {
+                        def_var_named(&mut builder, &vars, out.clone(), res);
+                    }
                 }
                 "check_exception" => {
                     let target_id = op.value.unwrap();
