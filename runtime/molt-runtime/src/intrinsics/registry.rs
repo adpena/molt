@@ -20,6 +20,16 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
     if module_ptr.is_null() {
         return;
     }
+    // Only install the intrinsics registry once — into the first module
+    // created (the builtins module).  Previously this ran for every module,
+    // which overwrote BUILTINS_MODULE_PTR with the *last* module created
+    // and left the lazy resolver unreachable from the actual builtins dict
+    // that Python-side `_intrinsics.py` looks up via `__builtins__`.
+    unsafe {
+        if !BUILTINS_MODULE_PTR.is_null() {
+            return;
+        }
+    }
     unsafe {
         if object_type_id(module_ptr) != TYPE_ID_MODULE {
             return;
