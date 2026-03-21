@@ -20,7 +20,9 @@ const RUNTIME_FLAG: &str = "_molt_runtime";
 static BUILTINS_MODULE_PTR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 
 pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
+    eprintln!("MOLT_INTRINSICS: install_into_builtins called");
     if module_ptr.is_null() {
+        eprintln!("MOLT_INTRINSICS: module_ptr is null, returning");
         return;
     }
     // Allow subsequent modules to update BUILTINS_MODULE_PTR so that it
@@ -86,6 +88,8 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
 
     #[cfg(target_arch = "wasm32")]
     {
+        eprintln!("MOLT_INTRINSICS: wasm32 eager registration starting ({} intrinsics)", INTRINSICS.len());
+        let mut count = 0u32;
         for spec in INTRINSICS {
             let Some(fn_ptr) = resolve_symbol(spec.symbol) else {
                 // Feature-gated intrinsics may be absent in micro builds.
@@ -106,10 +110,13 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
             if registered {
                 dec_ref_bits(_py, func_bits);
             }
+            count += 1;
         }
+        eprintln!("MOLT_INTRINSICS: wasm32 eager registration done ({count} resolved)");
     }
 
     dec_ref_bits(_py, registry_bits);
+    eprintln!("MOLT_INTRINSICS: install_into_builtins done");
 }
 
 /// Lazily resolve a single intrinsic by name, build the function object,
