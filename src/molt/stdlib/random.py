@@ -172,6 +172,8 @@ class Random:
         return seq[self._randbelow(len(seq))]
 
     def choices(self, population, weights=None, *, cum_weights=None, k=1):
+        if not isinstance(population, (list, tuple)):
+            population = list(population)
         n = len(population)
         if cum_weights is None:
             if weights is None:
