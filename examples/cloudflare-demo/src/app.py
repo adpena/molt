@@ -149,10 +149,13 @@ elif route == "primes":
     print("  count  = " + fmt_big(count))
     print("")
     if count <= 20:
-        print("  primes = " + ", ".join(str(p) for p in found))
+        primes_strs = [str(p) for p in found]
+        print("  primes = " + ", ".join(primes_strs))
     else:
-        first5 = ", ".join(str(p) for p in found[:5])
-        last5 = ", ".join(str(p) for p in found[-5:])
+        first5_strs = [str(p) for p in found[:5]]
+        last5_strs = [str(p) for p in found[-5:]]
+        first5 = ", ".join(first5_strs)
+        last5 = ", ".join(last5_strs)
         print("  first  = " + first5)
         print("  last   = " + last5)
     print("")
@@ -177,13 +180,16 @@ elif route == "mandelbrot":
 elif route == "sort":
     data = params.get("data", "42,17,93,8,55,3,71,29,64,11")
     nums = sort_data(data)
-    original = list(nums)
+    before_parts = [str(n) for n in nums]
+    before_str = ", ".join(before_parts)
     nums.sort()
+    after_parts = [str(n) for n in nums]
+    after_str = ", ".join(after_parts)
     print("Sort")
     print("=" * 40)
     print("")
-    print("  before = [" + ", ".join(str(n) for n in original) + "]")
-    print("  after  = [" + ", ".join(str(n) for n in nums) + "]")
+    print("  before = [" + before_str + "]")
+    print("  after  = [" + after_str + "]")
     print("  count  = " + str(len(nums)) + " elements")
     print("")
     print("Compiled Python on Cloudflare Workers")
