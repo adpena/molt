@@ -33,7 +33,7 @@ def diamond(size=9):
 def mandelbrot_render(width: int = 100, height: int = 35,
                       cx: float = -0.5, cy: float = 0.0,
                       zoom: float = 1.0, max_iter: int = 150) -> str:
-    chars: str = " .`'\"~:;!>+r}xz&8#@"
+    chars: str = " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"
     scale: float = 3.0 / (zoom * width)
     x_off: float = cx - scale * width / 2.0
     y_off: float = cy - scale * height / 2.0
