@@ -1829,4 +1829,146 @@ mod tests {
                 .any(|window| window == b"molt_profile_enabled")
         );
     }
+
+    #[test]
+    fn native_backend_compiles_exception_label_guard_if_without_else() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "hello_regress____molt_globals_builtin__".to_string(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "exception_stack_enter".to_string(),
+                        out: Some("v74".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_stack_depth".to_string(),
+                        out: Some("v75".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        out: Some("v76".to_string()),
+                        s_value: Some("hello_regress".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "check_exception".to_string(),
+                        value: Some(2),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "module_cache_get".to_string(),
+                        out: Some("v77".to_string()),
+                        args: Some(vec!["v76".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "check_exception".to_string(),
+                        value: Some(2),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        out: Some("v78".to_string()),
+                        s_value: Some("__dict__".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "check_exception".to_string(),
+                        value: Some(2),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "module_get_attr".to_string(),
+                        out: Some("v79".to_string()),
+                        args: Some(vec!["v77".to_string(), "v78".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "check_exception".to_string(),
+                        value: Some(2),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("v79".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "label".to_string(),
+                        value: Some(2),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_stack_set_depth".to_string(),
+                        args: Some(vec!["v75".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_stack_exit".to_string(),
+                        args: Some(vec!["v74".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_last".to_string(),
+                        out: Some("v80".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_none".to_string(),
+                        out: Some("v81".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "is".to_string(),
+                        out: Some("v82".to_string()),
+                        args: Some(vec!["v80".to_string(), "v81".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "not".to_string(),
+                        out: Some("v83".to_string()),
+                        args: Some(vec!["v82".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "if".to_string(),
+                        args: Some(vec!["v83".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "raise".to_string(),
+                        args: Some(vec!["v80".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_none".to_string(),
+                        out: Some("v84".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("v84".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "end_if".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+            }],
+            profile: None,
+        };
+
+        let bytes = SimpleBackend::new().compile(ir);
+
+        assert!(!bytes.is_empty());
+    }
 }
