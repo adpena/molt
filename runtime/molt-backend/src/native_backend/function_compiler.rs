@@ -15,9 +15,10 @@ struct FunctionPreanalysis {
 
 #[cfg(feature = "native-backend")]
 fn import_func_ref(
-    backend: &mut SimpleBackend,
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder,
-    local_refs: &mut HashMap<&'static str, FuncRef>,
+    local_refs: &mut BTreeMap<&'static str, FuncRef>,
     name: &'static str,
     params: &[types::Type],
     returns: &[types::Type],
@@ -25,8 +26,27 @@ fn import_func_ref(
     if let Some(func_ref) = local_refs.get(name) {
         return *func_ref;
     }
-    let func_id = backend.import_func_id(name, params, returns);
-    let func_ref = backend.module.declare_func_in_func(func_id, builder.func);
+    let shape = ImportSignatureShape::from_types(params, returns);
+    let func_id = if let Some((func_id, cached_shape)) = import_ids.get(name) {
+        assert_eq!(
+            cached_shape, &shape,
+            "import signature mismatch for {name}: {:?} vs {:?}",
+            cached_shape, shape
+        );
+        *func_id
+    } else {
+        let mut sig = module.make_signature();
+        for param in params {
+            sig.params.push(AbiParam::new(*param));
+        }
+        for ret in returns {
+            sig.returns.push(AbiParam::new(*ret));
+        }
+        let func_id = module.declare_function(name, Linkage::Import, &sig).unwrap();
+        import_ids.insert(name, (func_id, shape));
+        func_id
+    };
+    let func_ref = module.declare_func_in_func(func_id, builder.func);
     local_refs.insert(name, func_ref);
     func_ref
 }
@@ -212,7 +232,7 @@ impl SimpleBackend {
         let mut tracked_obj_vars = Vec::new();
         let mut entry_vars: HashMap<String, Value> = HashMap::new();
         let mut state_blocks = HashMap::new();
-        let mut import_refs: HashMap<&'static str, FuncRef> = HashMap::new();
+        let mut import_refs: BTreeMap<&'static str, FuncRef> = BTreeMap::new();
         let mut reachable_blocks: HashSet<Block> = HashSet::new();
         // Cranelift SSA-variable correctness relies on sealing blocks once all predecessors
         // are known. Our IR uses structured control-flow; for `if` this means then/else
@@ -8217,100 +8237,110 @@ impl SimpleBackend {
                     }
                     let call_site_prefix = "call_func";
 
-                    let mut resolve_sig = self.module.make_signature();
-                    resolve_sig.params.push(AbiParam::new(types::I64));
-                    resolve_sig.returns.push(AbiParam::new(types::I64));
-                    let resolve_callee = self
-                        .module
-                        .declare_function("molt_handle_resolve", Linkage::Import, &resolve_sig)
-                        .unwrap();
-                    let resolve_local = self
-                        .module
-                        .declare_func_in_func(resolve_callee, builder.func);
-                    let mut check_sig = self.module.make_signature();
-                    check_sig.params.push(AbiParam::new(types::I64));
-                    check_sig.returns.push(AbiParam::new(types::I64));
-                    let is_bound = self
-                        .module
-                        .declare_function("molt_is_bound_method", Linkage::Import, &check_sig)
-                        .unwrap();
-                    let is_bound_local = self.module.declare_func_in_func(is_bound, builder.func);
-                    let is_func = self
-                        .module
-                        .declare_function("molt_is_function_obj", Linkage::Import, &check_sig)
-                        .unwrap();
-                    let is_func_local = self.module.declare_func_in_func(is_func, builder.func);
-                    let truthy = self
-                        .module
-                        .declare_function("molt_is_truthy", Linkage::Import, &check_sig)
-                        .unwrap();
-                    let truthy_local = self.module.declare_func_in_func(truthy, builder.func);
-                    let default_kind = self
-                        .module
-                        .declare_function("molt_function_default_kind", Linkage::Import, &check_sig)
-                        .unwrap();
-                    let default_kind_local =
-                        self.module.declare_func_in_func(default_kind, builder.func);
-                    let closure_bits = self
-                        .module
-                        .declare_function("molt_function_closure_bits", Linkage::Import, &check_sig)
-                        .unwrap();
-                    let closure_bits_local =
-                        self.module.declare_func_in_func(closure_bits, builder.func);
-                    let is_generator = self
-                        .module
-                        .declare_function("molt_function_is_generator", Linkage::Import, &check_sig)
-                        .unwrap();
-                    let is_generator_local =
-                        self.module.declare_func_in_func(is_generator, builder.func);
-                    let is_coroutine = self
-                        .module
-                        .declare_function("molt_function_is_coroutine", Linkage::Import, &check_sig)
-                        .unwrap();
-                    let is_coroutine_local =
-                        self.module.declare_func_in_func(is_coroutine, builder.func);
-                    let mut missing_sig = self.module.make_signature();
-                    missing_sig.returns.push(AbiParam::new(types::I64));
-                    let missing_fn = self
-                        .module
-                        .declare_function("molt_missing", Linkage::Import, &missing_sig)
-                        .unwrap();
-                    let missing_local = self.module.declare_func_in_func(missing_fn, builder.func);
-                    let mut guard_sig = self.module.make_signature();
-                    guard_sig.returns.push(AbiParam::new(types::I64));
-                    let guard_enter = self
-                        .module
-                        .declare_function("molt_recursion_guard_enter", Linkage::Import, &guard_sig)
-                        .unwrap();
-                    let guard_enter_local =
-                        self.module.declare_func_in_func(guard_enter, builder.func);
-                    let guard_exit = self
-                        .module
-                        .declare_function(
-                            "molt_recursion_guard_exit",
-                            Linkage::Import,
-                            &self.module.make_signature(),
-                        )
-                        .unwrap();
-                    let guard_exit_local =
-                        self.module.declare_func_in_func(guard_exit, builder.func);
-                    let mut trace_sig = self.module.make_signature();
-                    trace_sig.params.push(AbiParam::new(types::I64));
-                    trace_sig.returns.push(AbiParam::new(types::I64));
-                    let trace_enter = self
-                        .module
-                        .declare_function("molt_trace_enter", Linkage::Import, &trace_sig)
-                        .unwrap();
-                    let trace_enter_local =
-                        self.module.declare_func_in_func(trace_enter, builder.func);
-                    let mut trace_exit_sig = self.module.make_signature();
-                    trace_exit_sig.returns.push(AbiParam::new(types::I64));
-                    let trace_exit = self
-                        .module
-                        .declare_function("molt_trace_exit", Linkage::Import, &trace_exit_sig)
-                        .unwrap();
-                    let trace_exit_local =
-                        self.module.declare_func_in_func(trace_exit, builder.func);
+                    let resolve_local = import_func_ref(
+                        self,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_handle_resolve",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let is_bound_local = import_func_ref(
+                        self,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_is_bound_method",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let is_func_local = import_func_ref(
+                        self,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_is_function_obj",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let truthy_local = import_func_ref(
+                        self,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_is_truthy",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let default_kind_local = import_func_ref(
+                        self,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_function_default_kind",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let closure_bits_local = import_func_ref(
+                        self,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_function_closure_bits",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let is_generator_local = import_func_ref(
+                        self,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_function_is_generator",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let is_coroutine_local = import_func_ref(
+                        self,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_function_is_coroutine",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let missing_local = import_func_ref(
+                        self,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_missing",
+                        &[],
+                        &[types::I64],
+                    );
+                    let guard_enter_local = import_func_ref(
+                        self,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_recursion_guard_enter",
+                        &[],
+                        &[types::I64],
+                    );
+                    let guard_exit_local = import_func_ref(
+                        self,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_recursion_guard_exit",
+                        &[],
+                        &[],
+                    );
+                    let trace_enter_local = import_func_ref(
+                        self,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_trace_enter",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let trace_exit_local = import_func_ref(
+                        self,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_trace_exit",
+                        &[],
+                        &[types::I64],
+                    );
                     let is_bound_call = builder.ins().call(is_bound_local, &[*func_bits]);
                     let is_bound_bits = builder.inst_results(is_bound_call)[0];
                     let truthy_call = builder.ins().call(truthy_local, &[is_bound_bits]);
@@ -8402,48 +8432,41 @@ impl SimpleBackend {
 
                     builder.switch_to_block(bound_closure_block);
                     builder.seal_block(bound_closure_block);
-                    let mut new_sig = self.module.make_signature();
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_new = self
-                        .module
-                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                        .unwrap();
-                    let callargs_new_local =
-                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let callargs_new_local = import_func_ref(
+                        self,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_new",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
                     let kw_capacity = builder.ins().iconst(types::I64, 0);
                     let callargs_call = builder
                         .ins()
                         .call(callargs_new_local, &[pos_capacity, kw_capacity]);
                     let callargs_ptr = builder.inst_results(callargs_call)[0];
-                    let mut push_sig = self.module.make_signature();
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_push_pos = self
-                        .module
-                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                        .unwrap();
-                    let callargs_push_local = self
-                        .module
-                        .declare_func_in_func(callargs_push_pos, builder.func);
+                    let callargs_push_local = import_func_ref(
+                        self,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_push_pos",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     for arg in &args {
                         builder
                             .ins()
                             .call(callargs_push_local, &[callargs_ptr, *arg]);
                     }
-                    let mut bind_sig = self.module.make_signature();
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.returns.push(AbiParam::new(types::I64));
-                    let call_bind = self
-                        .module
-                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                        .unwrap();
-                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
+                    let call_bind_local = import_func_ref(
+                        self,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_call_bind_ic",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let bound_closure_label = format!("{call_site_prefix}_bound_closure");
                     let site_bits = builder.ins().iconst(
                         types::I64,
