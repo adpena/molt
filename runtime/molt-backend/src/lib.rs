@@ -1177,6 +1177,23 @@ impl SimpleBackend {
         data_id
     }
 
+    /// Walk backwards from `before_idx` to find a `"const"` op whose `out`
+    /// matches `var_name` and return its integer value.  Used by the
+    /// iter_next peephole to resolve constant index arguments.
+    fn resolve_const_int(ops: &[OpIR], before_idx: usize, var_name: &str) -> Option<i64> {
+        for i in (0..before_idx).rev() {
+            let op = &ops[i];
+            if op.kind == "const" {
+                if let Some(ref out) = op.out {
+                    if out == var_name {
+                        return op.value;
+                    }
+                }
+            }
+        }
+        None
+    }
+
     #[cfg(test)]
     fn import_func_id(
         &mut self,
