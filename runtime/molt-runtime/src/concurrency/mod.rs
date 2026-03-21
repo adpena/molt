@@ -16,8 +16,17 @@ static THREAD_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Number of threads that have acquired the GIL at least once.
 /// Used by `gil_held()` to fast-path the common single-threaded case.
+/// When a new GIL-capable thread is spawned, call `register_gil_thread()`
+/// to increment this counter and disable the single-thread fast-path.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) static GIL_THREAD_COUNT: AtomicU64 = AtomicU64::new(1);
+
+/// Register a new GIL-capable thread. Disables the single-thread fast-path
+/// in `gil_held()` so that the actual TLS depth check is used.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn register_gil_thread() {
+    GIL_THREAD_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 thread_local! {
