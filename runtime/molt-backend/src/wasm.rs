@@ -208,6 +208,8 @@ struct CompileFuncContext<'a> {
     /// Import indices stripped in pure profile mode; calls emit `unreachable`.
     #[allow(dead_code)]
     skipped_import_indices: &'a BTreeSet<u32>,
+    /// Linear-memory offset of a scratch buffer used to spill `call_func` args.
+    call_func_spill_offset: u32,
 }
 
 trait TypeSectionExt {
@@ -2057,6 +2059,7 @@ impl WasmBackend {
         add_import("call_bind_ic", 5, &mut self.import_ids);
         add_import("call_indirect_ic", 5, &mut self.import_ids);
         add_import("invoke_ffi_ic", 7, &mut self.import_ids);
+        add_import("call_func_dispatch", 7, &mut self.import_ids);
         add_import("slice", 5, &mut self.import_ids);
         add_import("slice_new", 5, &mut self.import_ids);
         add_import("range_new", 5, &mut self.import_ids);
@@ -2541,6 +2544,13 @@ impl WasmBackend {
         // skipped_indices not used in the "skip entirely" approach,
         // but preserved on the struct for future emit_call_or_unreachable use.
         self.skipped_import_indices = skipped_indices;
+
+        // Allocate a scratch buffer in linear memory for spilling call_func args.
+        // Size: max(max_call_arity, 1) * 8 bytes (one i64 per arg).
+        let spill_slots = max_call_arity.max(1);
+        let spill_bytes = vec![0u8; spill_slots * 8];
+        let spill_segment = self.add_data_segment(reloc_enabled, &spill_bytes);
+        let call_func_spill_offset = spill_segment.offset;
 
         let mut user_type_map: BTreeMap<usize, u32> = BTreeMap::new();
         // Types 0-34 are defined above (0-30 single-return, 31-34 multi-value);
@@ -3821,6 +3831,7 @@ impl WasmBackend {
             table_base,
             multi_return_candidates: &multi_return_candidates,
             skipped_import_indices: &skipped_import_indices,
+            call_func_spill_offset,
         };
         for func_ir in &ir.functions {
             let type_idx = if func_ir.name.ends_with("_poll") {
@@ -10088,7 +10099,40 @@ impl WasmBackend {
                         let res = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalSet(res));
                     }
-                    "call_func" | "invoke_ffi" => {
+                    "call_func" => {
+                        // Outlined: spill args to linear memory, then delegate
+                        // to molt_call_func_dispatch runtime helper.
+                        let args_names = op.args.as_ref().unwrap();
+                        let func_bits = locals[&args_names[0]];
+                        let out = locals[op.out.as_ref().unwrap()];
+                        let nargs = args_names.len().saturating_sub(1);
+                        let spill_base = ctx.call_func_spill_offset;
+
+                        // Spill each arg to consecutive i64 slots in linear memory.
+                        for (i, arg_name) in args_names[1..].iter().enumerate() {
+                            let arg = locals[arg_name];
+                            // addr (i32) = spill_base + i * 8
+                            func.instruction(&Instruction::I32Const(
+                                (spill_base + (i as u32) * 8) as i32,
+                            ));
+                            func.instruction(&Instruction::LocalGet(arg));
+                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                                align: 3,
+                                offset: 0,
+                                memory_index: 0,
+                            }));
+                        }
+
+                        // Push args: func_bits, args_ptr, nargs, code_id
+                        func.instruction(&Instruction::LocalGet(func_bits));
+                        func.instruction(&Instruction::I64Const(spill_base as i64));
+                        func.instruction(&Instruction::I64Const(nargs as i64));
+                        let code_id = op.value.unwrap_or(0);
+                        func.instruction(&Instruction::I64Const(code_id));
+                        emit_call(func, reloc_enabled, import_ids["call_func_dispatch"]);
+                        func.instruction(&Instruction::LocalSet(out));
+                    }
+                    "invoke_ffi" => {
                         let args_names = op.args.as_ref().unwrap();
                         let func_bits = locals[&args_names[0]];
                         let out = locals[op.out.as_ref().unwrap()];
@@ -10106,15 +10150,11 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                         let invoke_bridge_lane =
-                            op.kind == "invoke_ffi" && op.s_value.as_deref() == Some("bridge");
-                        let call_site_label = if op.kind == "invoke_ffi" {
-                            if invoke_bridge_lane {
-                                "invoke_ffi_bridge"
-                            } else {
-                                "invoke_ffi_deopt"
-                            }
+                            op.s_value.as_deref() == Some("bridge");
+                        let call_site_label = if invoke_bridge_lane {
+                            "invoke_ffi_bridge"
                         } else {
-                            "call_func"
+                            "invoke_ffi_deopt"
                         };
                         let site_bits = box_int(stable_ic_site_id(
                             func_ir.name.as_str(),
@@ -10124,13 +10164,9 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(site_bits));
                         func.instruction(&Instruction::LocalGet(func_bits));
                         func.instruction(&Instruction::LocalGet(callargs_tmp));
-                        if op.kind == "invoke_ffi" {
-                            let require_bridge_cap = if invoke_bridge_lane { 1 } else { 0 };
-                            func.instruction(&Instruction::I64Const(box_bool(require_bridge_cap)));
-                            emit_call(func, reloc_enabled, import_ids["invoke_ffi_ic"]);
-                        } else {
-                            emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
-                        }
+                        let require_bridge_cap = if invoke_bridge_lane { 1 } else { 0 };
+                        func.instruction(&Instruction::I64Const(box_bool(require_bridge_cap)));
+                        emit_call(func, reloc_enabled, import_ids["invoke_ffi_ic"]);
                         func.instruction(&Instruction::LocalSet(out));
                     }
                     "call_bind" | "call_indirect" => {
