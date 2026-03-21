@@ -16853,11 +16853,22 @@ def _ensure_runtime_wasm(
     rustflags = env.get("RUSTFLAGS", "").strip()
     if flags:
         rustflags = f"{rustflags} {flags}".strip()
+    # Disable reference-types so that LLVM (Rust 1.94+ / LLVM 21+) does not
+    # emit GC-proposal rec groups or `exact` heap types.  These are rejected
+    # by Cloudflare Workers' V8 and by wasm-opt without --all-features.
     # Enable WASM SIMD (128-bit) for vectorized string/bytes operations.
     # Freestanding builds use the conservative baseline because the WASI stub
     # rewriter currently cannot remap SIMD-prefixed instruction streams.
-    if simd_enabled and "-C target-feature" not in rustflags:
-        rustflags = f"{rustflags} -C target-feature=+simd128".strip()
+    if "-C target-feature" not in rustflags:
+        tf_parts = ["-reference-types"]
+        if simd_enabled:
+            tf_parts.append("+simd128")
+        rustflags = f"{rustflags} -C target-feature={','.join(tf_parts)}".strip()
+    elif "-reference-types" not in rustflags:
+        # Caller already set -C target-feature; append the ref-types disable.
+        rustflags = rustflags.replace(
+            "-C target-feature=", "-C target-feature=-reference-types,", 1
+        )
     if freestanding and 'getrandom_backend="' not in rustflags:
         rustflags = f'{rustflags} --cfg getrandom_backend="unsupported"'.strip()
     cargo_runtime_features = ("wasm_freestanding",) if freestanding else ()

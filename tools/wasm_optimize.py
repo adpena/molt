@@ -23,7 +23,22 @@ from pathlib import Path
 
 # Optimization levels supported by wasm-opt.
 VALID_LEVELS = {"O1", "O2", "O3", "O4", "Os", "Oz"}
-_DEFAULT_FEATURE_FLAGS = ["--all-features"]
+# Explicit feature set instead of --all-features.  Binaryen's --all-features
+# enables --enable-custom-descriptors which rewrites typed function references
+# into `exact` heap types — rejected by Cloudflare Workers' V8 and other
+# engines that haven't shipped the custom-descriptors proposal yet.
+_DEFAULT_FEATURE_FLAGS = [
+    "--enable-bulk-memory",
+    "--enable-mutable-globals",
+    "--enable-sign-ext",
+    "--enable-nontrapping-float-to-int",
+    "--enable-simd",
+    "--enable-multivalue",
+    "--enable-reference-types",
+    "--enable-gc",
+    "--enable-tail-call",
+    "--disable-custom-descriptors",
+]
 
 
 def find_wasm_opt() -> str | None:

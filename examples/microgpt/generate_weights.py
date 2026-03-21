@@ -10,20 +10,17 @@ import json
 random.seed(42)
 
 # ---------------------------------------------------------------------------
-# Tiny synthetic dataset of short English-like names
+# Real names dataset from Karpathy's makemore
 # ---------------------------------------------------------------------------
-docs = [
-    "ada", "bob", "cal", "dan", "eva", "fin", "gus", "hal", "ida", "jan",
-    "kai", "leo", "mia", "ned", "ora", "pat", "ray", "sam", "tom", "una",
-    "val", "wes", "xia", "yul", "zoe", "abe", "bea", "cid", "dee", "eli",
-    "fay", "gia", "hud", "ina", "joe", "kim", "lou", "mae", "nik", "ola",
-    "pip", "rue", "sol", "ted", "uri", "via", "wil", "xan", "yam", "zen",
-    "alma", "bram", "cora", "dina", "emma", "fred", "gwen", "hank", "iris",
-    "jade", "kent", "lara", "mark", "nora", "omar", "paul", "reed", "sara",
-    "tina", "vera", "wade", "yara", "zara", "axel", "bret", "clay", "dawn",
-    "earl", "fern", "glen", "hope", "ivan", "jane", "kyle", "luna", "moss",
-    "neil", "opal", "rosa", "sean", "tara", "vern", "walt", "xena", "yves",
-]
+import os
+import urllib.request
+
+names_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "names.txt")
+if not os.path.exists(names_file):
+    names_url = "https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt"
+    urllib.request.urlretrieve(names_url, names_file)
+
+docs = [line.strip() for line in open(names_file) if line.strip()]
 random.shuffle(docs)
 print(f"num docs: {len(docs)}")
 
@@ -209,7 +206,7 @@ learning_rate, beta1, beta2, eps_adam = 0.01, 0.85, 0.99, 1e-8
 m = [0.0] * len(params)
 v = [0.0] * len(params)
 
-num_steps = 1000
+num_steps = 10000
 print(f"training for {num_steps} steps...")
 for step in range(num_steps):
     doc = docs[step % len(docs)]
@@ -238,8 +235,8 @@ for step in range(num_steps):
         p.data -= lr_t * m_hat / (v_hat**0.5 + eps_adam)
         p.grad = 0
 
-    if (step + 1) % 100 == 0:
-        print(f"step {step+1:4d} / {num_steps:4d} | loss {loss.data:.4f}")
+    if (step + 1) % 500 == 0:
+        print(f"step {step+1:5d} / {num_steps:5d} | loss {loss.data:.4f}")
 
 # ---------------------------------------------------------------------------
 # Quick inference sanity check
@@ -276,10 +273,9 @@ out["_meta"] = {
     "n_head": n_head,
 }
 
-path = "weights.json"
+path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "weights.json")
 with open(path, "w") as f:
     json.dump(out, f)
 
-import os
 size_kb = os.path.getsize(path) / 1024
 print(f"\nweights saved to {path} ({size_kb:.1f} KB)")
