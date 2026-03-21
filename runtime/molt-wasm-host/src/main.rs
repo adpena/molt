@@ -170,6 +170,8 @@ fn build_engine() -> Result<Engine> {
             "deterministic mode: NaN canonicalization and serial compilation enabled".to_string()
         });
     }
+    config.wasm_function_references(true);
+    config.wasm_gc(true);
     Engine::new(&config)
 }
 
