@@ -127,12 +127,8 @@ impl GilGuard {
     /// Fast-path constructor for single-threaded mode.  Skips TLS depth
     /// tracking and mutex acquisition — the caller guarantees no other
     /// GIL-capable thread exists (checked via `GIL_THREAD_COUNT`).
-    /// Fast-path GIL guard for single-threaded mode.  Increments the TLS
-    /// depth counter (so `gil_held()` / `gil_assert()` pass) but skips
-    /// the mutex.  The Drop impl decrements via the normal path.
     #[inline(always)]
     pub(crate) fn new_unchecked() -> Self {
-        let _ = GIL_DEPTH.try_with(|depth| depth.set(depth.get() + 1));
         Self {
             _marker: (),
             fallback_guard: None,
