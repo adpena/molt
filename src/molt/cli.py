@@ -2687,11 +2687,13 @@ def _resolve_build_entry(
     stdlib_root: Path,
     respect_pythonpath: bool,
     json_output: bool,
+    lib_paths: list[str] | None = None,
 ) -> tuple[_ResolvedBuildEntry | None, dict[str, Any] | None]:
     module_roots = _resolve_module_roots(
         project_root,
         cwd_root,
         respect_pythonpath=respect_pythonpath,
+        lib_paths=lib_paths or [],
     )
     source_path: Path | None = None
     entry_module: str | None = None
@@ -3096,6 +3098,7 @@ def _prepare_build_inputs(
     runtime_feedback: str | None,
     capabilities: CapabilityInput | None,
     respect_pythonpath: bool,
+    lib_paths: list[str] | None = None,
 ) -> tuple[
     tuple[
         _PreparedBuildPreamble,
@@ -3150,6 +3153,7 @@ def _prepare_build_inputs(
         stdlib_root=prepared_build_preamble.stdlib_root,
         respect_pythonpath=respect_pythonpath,
         json_output=json_output,
+        lib_paths=lib_paths or [],
     )
     if resolved_build_entry_error is not None:
         return None, resolved_build_entry_error
@@ -3175,6 +3179,7 @@ def _resolve_module_roots(
     cwd_root: Path,
     *,
     respect_pythonpath: bool,
+    lib_paths: list[str] | None = None,
 ) -> list[Path]:
     module_roots: list[Path] = []
     extra_roots = os.environ.get("MOLT_MODULE_ROOTS", "")
@@ -3201,6 +3206,18 @@ def _resolve_module_roots(
                 entry_path = Path(entry).expanduser()
                 if entry_path.exists():
                     module_roots.append(entry_path)
+    # --lib-path / [tool.molt] lib-paths: explicit third-party package roots
+    for lp in lib_paths or []:
+        lp_path = Path(lp).expanduser()
+        if lp_path.exists():
+            module_roots.append(lp_path)
+    # Auto-detect active venv site-packages when no explicit lib paths given
+    if not lib_paths:
+        venv_path = project_root / ".venv"
+        if venv_path.exists():
+            for sp in sorted(venv_path.glob("lib/python*/site-packages")):
+                if sp.is_dir():
+                    module_roots.append(sp)
     return list(dict.fromkeys(root.resolve() for root in module_roots))
 
 
@@ -18703,6 +18720,7 @@ def build(
     snapshot: bool = False,
     stdlib_profile: str | None = None,
     tree_shake: bool = True,
+    lib_paths: list[str] | None = None,
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
@@ -18736,6 +18754,7 @@ def build(
         runtime_feedback=runtime_feedback,
         capabilities=capabilities,
         respect_pythonpath=respect_pythonpath,
+        lib_paths=lib_paths or [],
     )
     if prepared_build_inputs_error is not None:
         return prepared_build_inputs_error
@@ -23438,6 +23457,12 @@ def main() -> int:
         ),
     )
     build_parser.add_argument(
+        "--lib-path",
+        action="append",
+        default=[],
+        help="Additional directories to search for Python packages (repeatable).",
+    )
+    build_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
     build_parser.add_argument(
@@ -24375,6 +24400,14 @@ def main() -> int:
         capabilities = (
             args.capabilities or build_cfg.get("capabilities") or cfg_capabilities
         )
+        cfg_lib_paths = (
+            build_cfg.get("lib_paths")
+            or build_cfg.get("lib-paths")
+            or []
+        )
+        if isinstance(cfg_lib_paths, str):
+            cfg_lib_paths = [cfg_lib_paths]
+        lib_paths: list[str] = list(args.lib_path) + list(cfg_lib_paths)
         if args.file and args.module:
             return _fail(
                 "Use a file path or --module, not both.", args.json, command="build"
@@ -24475,6 +24508,7 @@ def main() -> int:
             wasm_profile=wasm_profile,
             snapshot=getattr(args, "snapshot", False),
             stdlib_profile=stdlib_profile,
+            lib_paths=getattr(args, "lib_paths", None),
         )
     if args.command == "extension":
         if args.extension_command == "build":
