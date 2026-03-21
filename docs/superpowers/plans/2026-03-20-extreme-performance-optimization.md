@@ -1,5 +1,7 @@
 # Molt Extreme Performance Optimization Program
 
+> **Status note (2026-03-21):** this document is still useful as a broad backlog/program outline, but it is no longer the authoritative status ledger. Use [2026-03-21-performance-handoff-status.md](/Users/adpena/Projects/molt/docs/superpowers/plans/2026-03-21-performance-handoff-status.md) for current state, recent landed work, live blockers, and recommended next steps.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Achieve Jeff Dean/Gabe Newell/Chris Lattner-grade performance: native compilation faster than CPython on all benchmarks, WASM within 2x of native, Luau/Rust transpilers benchmarked and optimized, with zero regressions and full observability.
