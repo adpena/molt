@@ -2605,6 +2605,7 @@ pub extern "C" fn molt_future_features() -> u64 {
         for feature in FUTURE_FEATURES {
             let name_ptr = alloc_string(_py, feature.name.as_bytes());
             if name_ptr.is_null() {
+                eprintln!("MOLT_WARN: molt_future_features: alloc_string failed for '{}'", feature.name);
                 for bits in rows {
                     dec_ref_bits(_py, bits);
                 }
