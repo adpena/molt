@@ -23,6 +23,8 @@ use cranelift_native::builder_with_options as native_isa_builder_with_options;
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "native-backend")]
+use std::collections::HashSet;
+#[cfg(feature = "native-backend")]
 use std::fmt::Write as _;
 #[cfg(feature = "native-backend")]
 use std::sync::OnceLock;
@@ -952,6 +954,92 @@ fn drain_cleanup_entry_tracked(
         true
     });
     cleanup
+}
+
+// ---------------------------------------------------------------------------
+// RC coalescing: eliminate redundant inc_ref / dec_ref pairs.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "native-backend")]
+const CONTROL_FLOW_OPS: &[&str] = &[
+    "if", "else", "end_if", "loop_start", "loop_end", "loop_for_start",
+    "loop_for_end", "label", "state_label", "jump", "return", "state_yield",
+    "check_exception", "raise",
+];
+
+#[cfg(feature = "native-backend")]
+pub(crate) fn compute_rc_coalesce_skips(
+    ops: &[OpIR],
+    last_use: &BTreeMap<String, usize>,
+) -> (HashSet<usize>, HashSet<String>) {
+    let cf_set: HashSet<&str> = CONTROL_FLOW_OPS.iter().copied().collect();
+    let mut skip_ops: HashSet<usize> = HashSet::new();
+    let mut skip_dec_ref: HashSet<String> = HashSet::new();
+
+    for i in 0..ops.len() {
+        if skip_ops.contains(&i) { continue; }
+        let a = &ops[i];
+        let a_is_inc = matches!(a.kind.as_str(), "inc_ref" | "borrow");
+        let a_is_dec = matches!(a.kind.as_str(), "dec_ref" | "release");
+        if !a_is_inc && !a_is_dec { continue; }
+        let a_arg = match a.args.as_ref().and_then(|v| v.first()) {
+            Some(name) => name.clone(),
+            None => continue,
+        };
+        for j in (i + 1)..ops.len() {
+            let b = &ops[j];
+            if cf_set.contains(b.kind.as_str()) { break; }
+            let b_kind = b.kind.as_str();
+            let b_arg = b.args.as_ref().and_then(|v| v.first());
+            let is_match = if a_is_inc {
+                matches!(b_kind, "dec_ref" | "release")
+                    && b_arg.map(String::as_str) == Some(&a_arg)
+            } else {
+                matches!(b_kind, "inc_ref" | "borrow")
+                    && b_arg.map(String::as_str) == Some(&a_arg)
+            };
+            if is_match && !skip_ops.contains(&j) {
+                skip_ops.insert(i);
+                skip_ops.insert(j);
+                break;
+            }
+            let uses_var = b.args.as_ref()
+                .map(|args| args.iter().any(|n| n == &a_arg))
+                .unwrap_or(false)
+                || b.var.as_ref().map(|v| v == &a_arg).unwrap_or(false)
+                || b.out.as_ref().map(|o| o == &a_arg).unwrap_or(false);
+            if uses_var { break; }
+        }
+    }
+
+    for (idx, op) in ops.iter().enumerate() {
+        if skip_ops.contains(&idx) { continue; }
+        if !matches!(op.kind.as_str(), "inc_ref" | "borrow") { continue; }
+        let out_name = match op.out.as_deref() {
+            Some(name) if name != "none" => name,
+            _ => continue,
+        };
+        let last = last_use.get(out_name).copied().unwrap_or(idx);
+        if last <= idx {
+            skip_ops.insert(idx);
+            skip_dec_ref.insert(out_name.to_string());
+        }
+    }
+
+    if !skip_ops.is_empty() || !skip_dec_ref.is_empty() {
+        static RC_COALESCE_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let trace = *RC_COALESCE_TRACE.get_or_init(|| {
+            std::env::var("MOLT_RC_COALESCE_TRACE").as_deref() == Ok("1")
+        });
+        if trace {
+            eprintln!(
+                "[rc-coalesce] eliminated {} RC ops, {} dec_ref skips",
+                skip_ops.len(), skip_dec_ref.len()
+            );
+        }
+    }
+
+    (skip_ops, skip_dec_ref)
 }
 
 #[derive(Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
