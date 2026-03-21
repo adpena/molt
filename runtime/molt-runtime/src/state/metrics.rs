@@ -200,3 +200,23 @@ pub(crate) use native::{
     molt_profile_snapshot, molt_profile_struct_field_store, profile_enabled, profile_hit,
     profile_hit_bytes, profile_hit_unchecked, sample_peak_rss,
 };
+
+/// Mirrors `mach_task_basic_info` from `<mach/task_info.h>`.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[allow(dead_code)]
+pub(crate) struct MachTaskBasicInfo {
+    pub virtual_size: u64,
+    pub resident_size: u64,
+    pub resident_size_max: u64,
+    pub user_time: [u32; 2],
+    pub system_time: [u32; 2],
+}
+
+#[cfg(target_os = "macos")]
+const _: () = {
+    assert!(
+        core::mem::size_of::<MachTaskBasicInfo>() == 40,
+        "MachTaskBasicInfo layout mismatch — Apple may have changed the struct"
+    );
+};

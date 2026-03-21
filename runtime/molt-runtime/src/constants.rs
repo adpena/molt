@@ -85,6 +85,7 @@ pub(crate) static ALLOC_DICT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ALLOC_TUPLE_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ALLOC_STRING_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ALLOC_CALLARGS_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static ALLOC_BYTES_CALLARGS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static TRACEBACK_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static TRACEBACK_BUILD_FRAMES: AtomicU64 = AtomicU64::new(0);
 pub(crate) static TRACEBACK_SUPPRESS_COUNT: AtomicU64 = AtomicU64::new(0);

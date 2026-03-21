@@ -2692,6 +2692,10 @@ impl SimpleBackend {
 
                         builder.switch_to_block(fast_block);
                         builder.seal_block(fast_block);
+                        // SAFETY: Cranelift sdiv traps on INT_MIN/-1 (unlike x86 SIGFPE).
+                        // NaN-boxed ints are 47-bit (range [-(2^46), 2^46-1]), so INT64_MIN
+                        // cannot occur from unbox_int. If this invariant changes, add a guard:
+                        // rhs != -1 || lhs != INT64_MIN.
                         let quot = builder.ins().sdiv(lhs_val, rhs_val);
                         let rem = builder.ins().srem(lhs_val, rhs_val);
                         let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
@@ -2757,6 +2761,10 @@ impl SimpleBackend {
                         builder.switch_to_block(fast_block);
                         builder.seal_block(fast_block);
                         let one = builder.ins().iconst(types::I64, 1);
+                        // SAFETY: Cranelift sdiv traps on INT_MIN/-1 (unlike x86 SIGFPE).
+                        // NaN-boxed ints are 47-bit (range [-(2^46), 2^46-1]), so INT64_MIN
+                        // cannot occur from unbox_int. If this invariant changes, add a guard:
+                        // rhs != -1 || lhs != INT64_MIN.
                         let quot = builder.ins().sdiv(lhs_val, rhs_val);
                         let rem = builder.ins().srem(lhs_val, rhs_val);
                         let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);

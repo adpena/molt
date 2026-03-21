@@ -6836,6 +6836,7 @@ pub extern "C" fn molt_profile_dump() {
         let alloc_tuples = ALLOC_TUPLE_COUNT.load(AtomicOrdering::Relaxed);
         let alloc_strings = ALLOC_STRING_COUNT.load(AtomicOrdering::Relaxed);
         let alloc_callargs = ALLOC_CALLARGS_COUNT.load(AtomicOrdering::Relaxed);
+        let alloc_bytes_callargs = ALLOC_BYTES_CALLARGS.load(AtomicOrdering::Relaxed);
         let tb_builds = TRACEBACK_BUILD_COUNT.load(AtomicOrdering::Relaxed);
         let tb_frames = TRACEBACK_BUILD_FRAMES.load(AtomicOrdering::Relaxed);
         let tb_suppressed = TRACEBACK_SUPPRESS_COUNT.load(AtomicOrdering::Relaxed);
@@ -6888,7 +6889,7 @@ pub extern "C" fn molt_profile_dump() {
         let peak_rss = PEAK_RSS_BYTES.load(AtomicOrdering::Relaxed);
         let current_rss = current_rss_bytes();
         eprintln!(
-            "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={} attr_lookup={} handle_resolve={} layout_guard={} layout_guard_fail={} alloc_count={} alloc_object={} alloc_exception={} alloc_dict={} alloc_tuple={} alloc_string={} alloc_callargs={} tb_builds={} tb_frames={} tb_suppressed={} async_polls={} async_pending={} async_wakeups={} async_sleep_register={} call_bind_ic_hit={} call_bind_ic_miss={} call_indirect_noncallable_deopt={} invoke_ffi_bridge_capability_denied={} guard_tag_type_mismatch_deopt={} guard_dict_shape_layout_mismatch_deopt={} attr_site_name_hit={} attr_site_name_miss={} split_ws_ascii={} split_ws_unicode={} dict_str_int_prehash_hit={} dict_str_int_prehash_miss={} dict_str_int_prehash_deopt={} taq_ingest_calls={} taq_ingest_skip_marker={} ascii_i64_parse_fail={} alloc_bytes_total={} alloc_bytes_string={} alloc_bytes_dict={} alloc_bytes_tuple={} alloc_bytes_list={} peak_rss_bytes={} current_rss_bytes={}",
+            "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={} attr_lookup={} handle_resolve={} layout_guard={} layout_guard_fail={} alloc_count={} alloc_object={} alloc_exception={} alloc_dict={} alloc_tuple={} alloc_string={} alloc_callargs={} alloc_bytes_callargs={} tb_builds={} tb_frames={} tb_suppressed={} async_polls={} async_pending={} async_wakeups={} async_sleep_register={} call_bind_ic_hit={} call_bind_ic_miss={} call_indirect_noncallable_deopt={} invoke_ffi_bridge_capability_denied={} guard_tag_type_mismatch_deopt={} guard_dict_shape_layout_mismatch_deopt={} attr_site_name_hit={} attr_site_name_miss={} split_ws_ascii={} split_ws_unicode={} dict_str_int_prehash_hit={} dict_str_int_prehash_miss={} dict_str_int_prehash_deopt={} taq_ingest_calls={} taq_ingest_skip_marker={} ascii_i64_parse_fail={} alloc_bytes_total={} alloc_bytes_string={} alloc_bytes_dict={} alloc_bytes_tuple={} alloc_bytes_list={} peak_rss_bytes={} current_rss_bytes={}",
             call_dispatch,
             cache_hit,
             cache_miss,
@@ -6904,6 +6905,7 @@ pub extern "C" fn molt_profile_dump() {
             alloc_tuples,
             alloc_strings,
             alloc_callargs,
+            alloc_bytes_callargs,
             tb_builds,
             tb_frames,
             tb_suppressed,
@@ -6954,6 +6956,7 @@ pub extern "C" fn molt_profile_dump() {
                 "alloc_tuple": alloc_tuples,
                 "alloc_string": alloc_strings,
                 "alloc_callargs": alloc_callargs,
+                "alloc_bytes_callargs": alloc_bytes_callargs,
                 "tb_builds": tb_builds,
                 "tb_frames": tb_frames,
                 "tb_suppressed": tb_suppressed,
