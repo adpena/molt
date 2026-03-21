@@ -161,7 +161,17 @@ def test_package_intrinsics_delegate_to_stdlib_loader(
         "molt_probe",
         namespace,
     )
+    assert package_intrinsics.load_intrinsic("molt_probe", namespace) == (
+        "load",
+        "molt_probe",
+        namespace,
+    )
     assert package_intrinsics.require("molt_need", namespace) == (
+        "require",
+        "molt_need",
+        namespace,
+    )
+    assert package_intrinsics.require_intrinsic("molt_need", namespace) == (
         "require",
         "molt_need",
         namespace,

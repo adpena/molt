@@ -442,9 +442,7 @@ fn both_float_check(builder: &mut FunctionBuilder, lhs: Value, rhs: Value) -> Va
     let either_special = builder.ins().bor(lhs_special, rhs_special);
     // both_float = !(lhs_special || rhs_special)
     // Since is_nanboxed_special returns an i8 (0 or 1), we check either_special == 0
-    builder
-        .ins()
-        .icmp_imm(IntCC::Equal, either_special, 0)
+    builder.ins().icmp_imm(IntCC::Equal, either_special, 0)
 }
 
 #[cfg(feature = "native-backend")]
@@ -974,7 +972,7 @@ pub struct SimpleBackend {
 
 #[cfg(feature = "native-backend")]
 struct IfFrame {
-    else_block: Block,
+    else_block: Option<Block>,
     merge_block: Block,
     has_else: bool,
     then_terminal: bool,

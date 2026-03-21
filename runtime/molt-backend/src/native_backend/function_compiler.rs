@@ -8,7 +8,7 @@ struct FunctionPreanalysis {
     var_names: Vec<String>,
     last_use: HashMap<String, usize>,
     if_to_end_if: HashMap<usize, usize>,
-    if_skip_end: HashMap<usize, usize>,
+    if_to_else: HashMap<usize, usize>,
     else_to_end_if: HashMap<usize, usize>,
     state_ids: Vec<i64>,
     resume_states: HashSet<i64>,
@@ -80,7 +80,7 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
     let mut var_names: HashSet<String> = HashSet::new();
     let mut last_use = HashMap::new();
     let mut if_to_end_if = HashMap::new();
-    let mut if_skip_end = HashMap::new();
+    let mut if_to_else = HashMap::new();
     let mut else_to_end_if = HashMap::new();
     let mut if_stack: Vec<(usize, Option<usize>)> = Vec::new();
     let mut state_ids = Vec::new();
@@ -137,15 +137,9 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
             }
             "end_if" => {
                 if let Some((if_idx, else_idx)) = if_stack.pop() {
-                    let mut skip_end = idx;
-                    while skip_end + 1 < func_ir.ops.len()
-                        && func_ir.ops[skip_end + 1].kind == "phi"
-                    {
-                        skip_end += 1;
-                    }
                     if_to_end_if.insert(if_idx, idx);
-                    if_skip_end.insert(if_idx, skip_end);
                     if let Some(else_idx) = else_idx {
+                        if_to_else.insert(if_idx, else_idx);
                         else_to_end_if.insert(else_idx, idx);
                     }
                 }
@@ -187,7 +181,7 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
         var_names,
         last_use,
         if_to_end_if,
-        if_skip_end,
+        if_to_else,
         else_to_end_if,
         state_ids,
         resume_states,
@@ -215,7 +209,7 @@ impl SimpleBackend {
             var_names,
             last_use,
             if_to_end_if,
-            if_skip_end,
+            if_to_else,
             else_to_end_if,
             state_ids,
             resume_states,
@@ -6158,7 +6152,9 @@ impl SimpleBackend {
                     let res = if op.fast_float.unwrap_or(false) {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
-                        let cmp = builder.ins().fcmp(FloatCC::GreaterThanOrEqual, lhs_f, rhs_f);
+                        let cmp = builder
+                            .ins()
+                            .fcmp(FloatCC::GreaterThanOrEqual, lhs_f, rhs_f);
                         box_bool_value(&mut builder, cmp)
                     } else if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs);
@@ -6215,7 +6211,9 @@ impl SimpleBackend {
                         builder.seal_block(float_block);
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
-                        let fcmp = builder.ins().fcmp(FloatCC::GreaterThanOrEqual, lhs_f, rhs_f);
+                        let fcmp = builder
+                            .ins()
+                            .fcmp(FloatCC::GreaterThanOrEqual, lhs_f, rhs_f);
                         let flt_res = box_bool_value(&mut builder, fcmp);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
@@ -10897,38 +10895,72 @@ impl SimpleBackend {
                         });
                         builder.ins().call(local_dec_ref, &[*val]);
                     }
+                    let has_explicit_else = if_to_else.contains_key(&op_idx);
+                    let end_if_idx = *if_to_end_if
+                        .get(&op_idx)
+                        .expect("if without matching end_if");
+                    let has_phi_join = func_ir
+                        .ops
+                        .get(end_if_idx + 1)
+                        .is_some_and(|next| next.kind == "phi");
                     let then_block = builder.create_block();
-                    let else_block = builder.create_block();
+                    let else_block = if has_explicit_else || has_phi_join {
+                        Some(builder.create_block())
+                    } else {
+                        None
+                    };
                     let merge_block = builder.create_block();
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(then_block, current_block);
-                        builder.insert_block_after(else_block, then_block);
+                        if let Some(else_block) = else_block {
+                            builder.insert_block_after(else_block, then_block);
+                        }
                     }
                     reachable_blocks.insert(then_block);
-                    reachable_blocks.insert(else_block);
+                    if let Some(else_block) = else_block {
+                        reachable_blocks.insert(else_block);
+                    }
                     if !carry_obj.is_empty() {
                         extend_unique_tracked(
                             block_tracked_obj.entry(then_block).or_default(),
                             carry_obj.clone(),
                         );
-                        extend_unique_tracked(
-                            block_tracked_obj.entry(else_block).or_default(),
-                            carry_obj.clone(),
-                        );
+                        if let Some(else_block) = else_block {
+                            extend_unique_tracked(
+                                block_tracked_obj.entry(else_block).or_default(),
+                                carry_obj.clone(),
+                            );
+                        } else {
+                            extend_unique_tracked(
+                                block_tracked_obj.entry(merge_block).or_default(),
+                                carry_obj.clone(),
+                            );
+                        }
                     }
                     if !carry_ptr.is_empty() {
                         extend_unique_tracked(
                             block_tracked_ptr.entry(then_block).or_default(),
                             carry_ptr.clone(),
                         );
-                        extend_unique_tracked(
-                            block_tracked_ptr.entry(else_block).or_default(),
-                            carry_ptr.clone(),
-                        );
+                        if let Some(else_block) = else_block {
+                            extend_unique_tracked(
+                                block_tracked_ptr.entry(else_block).or_default(),
+                                carry_ptr.clone(),
+                            );
+                        } else {
+                            extend_unique_tracked(
+                                block_tracked_ptr.entry(merge_block).or_default(),
+                                carry_ptr.clone(),
+                            );
+                        }
+                    }
+                    let false_block = else_block.unwrap_or(merge_block);
+                    if else_block.is_none() {
+                        reachable_blocks.insert(merge_block);
                     }
                     builder
                         .ins()
-                        .brif(cond_bool, then_block, &[], else_block, &[]);
+                        .brif(cond_bool, then_block, &[], false_block, &[]);
 
                     // Seal blocks now that their predecessor sets are complete.
                     // Structured `if` creates exactly one predecessor for each of then/else.
@@ -10938,7 +10970,9 @@ impl SimpleBackend {
                     if sealed_blocks.insert(then_block) {
                         builder.seal_block(then_block);
                     }
-                    if sealed_blocks.insert(else_block) {
+                    if let Some(else_block) = else_block
+                        && sealed_blocks.insert(else_block)
+                    {
                         builder.seal_block(else_block);
                     }
 
@@ -11054,7 +11088,11 @@ impl SimpleBackend {
                         }
                     }
 
-                    switch_to_block_tracking(&mut builder, frame.else_block, &mut is_block_filled);
+                    switch_to_block_tracking(
+                        &mut builder,
+                        frame.else_block.expect("else without placeholder block"),
+                        &mut is_block_filled,
+                    );
                     frame.has_else = true;
                 }
                 "end_if" => {
@@ -11229,80 +11267,83 @@ impl SimpleBackend {
                             }
                         }
 
-                        switch_to_block_tracking(
-                            &mut builder,
-                            frame.else_block,
-                            &mut is_block_filled,
-                        );
-                        let mut phi_args: Vec<Value> = Vec::new();
-                        if !frame.phi_ops.is_empty() {
-                            if frame.phi_params.is_empty() {
-                                for (_out, _then_name, else_name) in &frame.phi_ops {
-                                    let else_val = var_get(&mut builder, &vars, else_name)
-                                        .unwrap_or_else(|| {
-                                            panic!("phi arg not found: {else_name}")
-                                        });
-                                    let ty = builder.func.dfg.value_type(*else_val);
-                                    let param = builder.append_block_param(frame.merge_block, ty);
-                                    frame.phi_params.push(param);
-                                    phi_args.push(*else_val);
+                        if let Some(else_block) = frame.else_block {
+                            switch_to_block_tracking(
+                                &mut builder,
+                                else_block,
+                                &mut is_block_filled,
+                            );
+                            let mut phi_args: Vec<Value> = Vec::new();
+                            if !frame.phi_ops.is_empty() {
+                                if frame.phi_params.is_empty() {
+                                    for (_out, _then_name, else_name) in &frame.phi_ops {
+                                        let else_val = var_get(&mut builder, &vars, else_name)
+                                            .unwrap_or_else(|| {
+                                                panic!("phi arg not found: {else_name}")
+                                            });
+                                        let ty = builder.func.dfg.value_type(*else_val);
+                                        let param =
+                                            builder.append_block_param(frame.merge_block, ty);
+                                        frame.phi_params.push(param);
+                                        phi_args.push(*else_val);
+                                    }
+                                } else {
+                                    for (_out, _then_name, else_name) in &frame.phi_ops {
+                                        let else_val = var_get(&mut builder, &vars, else_name)
+                                            .unwrap_or_else(|| {
+                                                panic!("phi arg not found: {else_name}")
+                                            });
+                                        phi_args.push(*else_val);
+                                    }
                                 }
-                            } else {
-                                for (_out, _then_name, else_name) in &frame.phi_ops {
-                                    let else_val = var_get(&mut builder, &vars, else_name)
-                                        .unwrap_or_else(|| {
-                                            panic!("phi arg not found: {else_name}")
+                            }
+                            if let Some(block) = builder.current_block() {
+                                let mut carry_obj =
+                                    block_tracked_obj.remove(&block).unwrap_or_default();
+                                let cleanup =
+                                    drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+                                for name in cleanup {
+                                    let val =
+                                        var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                                            panic!(
+                                                "Tracked obj var not found in {} op {}: {}",
+                                                func_ir.name, op_idx, name
+                                            )
                                         });
-                                    phi_args.push(*else_val);
+                                    builder.ins().call(local_dec_ref_obj, &[*val]);
                                 }
-                            }
-                        }
-                        if let Some(block) = builder.current_block() {
-                            let mut carry_obj =
-                                block_tracked_obj.remove(&block).unwrap_or_default();
-                            let cleanup =
-                                drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
-                            for name in cleanup {
-                                let val =
-                                    var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                        panic!(
-                                            "Tracked obj var not found in {} op {}: {}",
-                                            func_ir.name, op_idx, name
-                                        )
-                                    });
-                                builder.ins().call(local_dec_ref_obj, &[*val]);
-                            }
-                            if !carry_obj.is_empty() {
-                                extend_unique_tracked(
-                                    block_tracked_obj.entry(frame.merge_block).or_default(),
-                                    carry_obj,
-                                );
-                            }
+                                if !carry_obj.is_empty() {
+                                    extend_unique_tracked(
+                                        block_tracked_obj.entry(frame.merge_block).or_default(),
+                                        carry_obj,
+                                    );
+                                }
 
-                            let mut carry_ptr =
-                                block_tracked_ptr.remove(&block).unwrap_or_default();
-                            let cleanup =
-                                drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
-                            for name in cleanup {
-                                let val =
-                                    var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                        panic!(
-                                            "Tracked ptr var not found in {} op {}: {}",
-                                            func_ir.name, op_idx, name
-                                        )
-                                    });
-                                builder.ins().call(local_dec_ref, &[*val]);
+                                let mut carry_ptr =
+                                    block_tracked_ptr.remove(&block).unwrap_or_default();
+                                let cleanup =
+                                    drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+                                for name in cleanup {
+                                    let val =
+                                        var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                                            panic!(
+                                                "Tracked ptr var not found in {} op {}: {}",
+                                                func_ir.name, op_idx, name
+                                            )
+                                        });
+                                    builder.ins().call(local_dec_ref, &[*val]);
+                                }
+                                if !carry_ptr.is_empty() {
+                                    extend_unique_tracked(
+                                        block_tracked_ptr.entry(frame.merge_block).or_default(),
+                                        carry_ptr,
+                                    );
+                                }
                             }
-                            if !carry_ptr.is_empty() {
-                                extend_unique_tracked(
-                                    block_tracked_ptr.entry(frame.merge_block).or_default(),
-                                    carry_ptr,
-                                );
-                            }
+                            ensure_block_in_layout(&mut builder, frame.merge_block);
+                            reachable_blocks.insert(frame.merge_block);
+                            jump_block(&mut builder, frame.merge_block, &phi_args);
                         }
-                        ensure_block_in_layout(&mut builder, frame.merge_block);
-                        reachable_blocks.insert(frame.merge_block);
-                        jump_block(&mut builder, frame.merge_block, &phi_args);
                     }
 
                     let both_filled = frame.then_terminal && frame.else_terminal;
@@ -13162,6 +13203,7 @@ mod tests {
         assert!(analysis.has_ret);
         assert!(analysis.stateful);
         assert_eq!(analysis.if_to_end_if.get(&1), Some(&4));
+        assert_eq!(analysis.if_to_else.get(&1), Some(&3));
         assert_eq!(analysis.else_to_end_if.get(&3), Some(&4));
         assert_eq!(analysis.state_ids, vec![7, 42]);
         assert!(analysis.resume_states.contains(&7));
@@ -13169,7 +13211,7 @@ mod tests {
         assert_eq!(analysis.function_exception_label_id, Some(42));
         assert!(analysis.var_names.contains(&"msg_ptr".to_string()));
         assert!(analysis.var_names.contains(&"msg_len".to_string()));
-        assert_eq!(analysis.last_use.get("msg"), Some(&7));
-        assert_eq!(analysis.last_use.get("out"), Some(&8));
+        assert_eq!(analysis.last_use.get("msg"), Some(&8));
+        assert_eq!(analysis.last_use.get("out"), Some(&9));
     }
 }
