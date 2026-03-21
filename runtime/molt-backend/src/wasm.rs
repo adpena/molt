@@ -717,11 +717,20 @@ fn build_dispatch_control_maps(ops: &[OpIR], include_state_labels: bool) -> Disp
                     }
                 }
             }
-            "loop_start" | "loop_index_start" => {
+            "loop_start" => {
                 loop_stack.push(LoopFrame {
                     start_idx: idx,
                     break_ops: Vec::new(),
                 });
+            }
+            "loop_index_start" => {
+                // loop_index_start is always preceded by loop_start,
+                // which already pushed a LoopFrame. Update the
+                // start_idx to point here (the actual loop body start)
+                // instead of pushing a duplicate frame.
+                if let Some(frame) = loop_stack.last_mut() {
+                    frame.start_idx = idx;
+                }
             }
             "loop_continue" => {
                 if let Some(frame) = loop_stack.last() {
@@ -10857,10 +10866,8 @@ impl WasmBackend {
                         let out = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::LocalGet(start));
                         func.instruction(&Instruction::LocalSet(out));
-                        func.instruction(&Instruction::Block(BlockType::Empty));
-                        func.instruction(&Instruction::Loop(BlockType::Empty));
-                        control_stack.push(ControlKind::Block);
-                        control_stack.push(ControlKind::Loop);
+                        // Block+Loop already emitted by preceding loop_start;
+                        // do NOT push a second Block+Loop pair here.
                     }
                     "loop_index_next" => {
                         let args = op.args.as_ref().unwrap();
@@ -10882,7 +10889,9 @@ impl WasmBackend {
                         for entry in control_stack.iter().rev() {
                             match entry {
                                 ControlKind::Block if found_loop => break,
-                                ControlKind::Loop => { found_loop = true; }
+                                ControlKind::Loop => {
+                                    found_loop = true;
+                                }
                                 _ => {}
                             }
                             depth += 1;
@@ -10902,7 +10911,9 @@ impl WasmBackend {
                         for entry in control_stack.iter().rev() {
                             match entry {
                                 ControlKind::Block if found_loop => break,
-                                ControlKind::Loop => { found_loop = true; }
+                                ControlKind::Loop => {
+                                    found_loop = true;
+                                }
                                 _ => {}
                             }
                             depth += 1;
@@ -10919,7 +10930,9 @@ impl WasmBackend {
                         for entry in control_stack.iter().rev() {
                             match entry {
                                 ControlKind::Block if found_loop => break,
-                                ControlKind::Loop => { found_loop = true; }
+                                ControlKind::Loop => {
+                                    found_loop = true;
+                                }
                                 _ => {}
                             }
                             depth += 1;
