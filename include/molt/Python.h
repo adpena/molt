@@ -49,6 +49,8 @@ typedef Py_ssize_t (*lenfunc)(PyObject *);
 typedef PyObject *(*binaryfunc)(PyObject *, PyObject *);
 typedef int (*objobjargproc)(PyObject *, PyObject *, PyObject *);
 typedef int (*objobjproc)(PyObject *, PyObject *);
+typedef PyObject *(*vectorcallfunc)(PyObject *callable, PyObject *const *args,
+                                    size_t nargsf, PyObject *kwnames);
 
 typedef struct PyMappingMethods {
     lenfunc mp_length;
@@ -230,6 +232,8 @@ static inline void PyGILState_Release(PyGILState_STATE state);
 
 #define Py_TPFLAGS_DEFAULT 0UL
 #define Py_TPFLAGS_BASETYPE (1UL << 10)
+#define Py_TPFLAGS_HAVE_VECTORCALL (1UL << 11)
+#define _Py_TPFLAGS_HAVE_VECTORCALL Py_TPFLAGS_HAVE_VECTORCALL
 
 #define PyModuleDef_HEAD_INIT NULL
 
@@ -956,6 +960,184 @@ static inline PyObject *PyObject_Call(PyObject *callable, PyObject *args, PyObje
         molt_handle_decref(args_bits);
     }
     return _molt_pyobject_from_result(out);
+}
+
+/* ---- Vectorcall protocol (PEP 590) ---- */
+
+#define PY_VECTORCALL_ARGUMENTS_OFFSET ((size_t)1 << (8 * sizeof(size_t) - 1))
+
+static inline Py_ssize_t PyVectorcall_NARGS(size_t nargsf) {
+    return (Py_ssize_t)(nargsf & ~PY_VECTORCALL_ARGUMENTS_OFFSET);
+}
+
+/*
+ * PyObject_Vectorcall — "slow but correct" shim that converts the vectorcall
+ * convention into a regular PyObject_Call(callable, args_tuple, kwargs_dict).
+ */
+static inline PyObject *PyObject_Vectorcall(
+    PyObject *callable,
+    PyObject *const *args,
+    size_t nargsf,
+    PyObject *kwnames
+) {
+    Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
+    Py_ssize_t nkw = 0;
+    Py_ssize_t i;
+    MoltHandle *items = NULL;
+    MoltHandle args_bits;
+    MoltHandle kwargs_bits;
+    MoltHandle out;
+
+    if (callable == NULL) {
+        PyErr_SetString(PyExc_TypeError, "callable must not be NULL");
+        return NULL;
+    }
+
+    /* Build the positional args tuple via molt_tuple_from_array. */
+    if (nargs > 0) {
+        items = (MoltHandle *)PyMem_Malloc(sizeof(MoltHandle) * (size_t)nargs);
+        if (items == NULL) {
+            return PyErr_NoMemory();
+        }
+        for (i = 0; i < nargs; i++) {
+            items[i] = _molt_py_handle(args[i]);
+        }
+    }
+    args_bits = molt_tuple_from_array(items, (uint64_t)nargs);
+    PyMem_Free(items);
+    if (args_bits == 0 || molt_err_pending() != 0) {
+        return NULL;
+    }
+
+    /* Build the keyword-arguments dict from kwnames tuple + trailing args. */
+    kwargs_bits = molt_none();
+    if (kwnames != NULL) {
+        MoltHandle kwnames_bits = _molt_py_handle(kwnames);
+        nkw = (Py_ssize_t)molt_sequence_length(kwnames_bits);
+        if (nkw > 0) {
+            MoltHandle *kw_keys = (MoltHandle *)PyMem_Malloc(sizeof(MoltHandle) * (size_t)nkw);
+            MoltHandle *kw_vals = (MoltHandle *)PyMem_Malloc(sizeof(MoltHandle) * (size_t)nkw);
+            MoltHandle kw_dict_bits;
+            if (kw_keys == NULL || kw_vals == NULL) {
+                PyMem_Free(kw_keys);
+                PyMem_Free(kw_vals);
+                molt_handle_decref(args_bits);
+                return PyErr_NoMemory();
+            }
+            for (i = 0; i < nkw; i++) {
+                MoltHandle idx = molt_int_from_i64((int64_t)i);
+                kw_keys[i] = molt_sequence_getitem(kwnames_bits, idx);
+                molt_handle_decref(idx);
+                kw_vals[i] = _molt_py_handle(args[nargs + i]);
+            }
+            kw_dict_bits = molt_dict_from_pairs(kw_keys, kw_vals, (uint64_t)nkw);
+            for (i = 0; i < nkw; i++) {
+                molt_handle_decref(kw_keys[i]);
+            }
+            PyMem_Free(kw_keys);
+            PyMem_Free(kw_vals);
+            if (kw_dict_bits == 0 || molt_err_pending() != 0) {
+                molt_handle_decref(args_bits);
+                return NULL;
+            }
+            kwargs_bits = kw_dict_bits;
+            out = molt_object_call(_molt_py_handle(callable), args_bits, kwargs_bits);
+            molt_handle_decref(args_bits);
+            molt_handle_decref(kwargs_bits);
+            return _molt_pyobject_from_result(out);
+        }
+    }
+
+    out = molt_object_call(_molt_py_handle(callable), args_bits, kwargs_bits);
+    molt_handle_decref(args_bits);
+    return _molt_pyobject_from_result(out);
+}
+
+/*
+ * PyObject_VectorcallDict — like Vectorcall but takes a dict directly
+ * instead of kwnames + trailing positional slots.
+ */
+static inline PyObject *PyObject_VectorcallDict(
+    PyObject *callable,
+    PyObject *const *args,
+    size_t nargsf,
+    PyObject *kwdict
+) {
+    Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
+    Py_ssize_t i;
+    MoltHandle *items = NULL;
+    MoltHandle args_bits;
+    MoltHandle kwargs_bits;
+    MoltHandle out;
+
+    if (callable == NULL) {
+        PyErr_SetString(PyExc_TypeError, "callable must not be NULL");
+        return NULL;
+    }
+
+    if (nargs > 0) {
+        items = (MoltHandle *)PyMem_Malloc(sizeof(MoltHandle) * (size_t)nargs);
+        if (items == NULL) {
+            return PyErr_NoMemory();
+        }
+        for (i = 0; i < nargs; i++) {
+            items[i] = _molt_py_handle(args[i]);
+        }
+    }
+    args_bits = molt_tuple_from_array(items, (uint64_t)nargs);
+    PyMem_Free(items);
+    if (args_bits == 0 || molt_err_pending() != 0) {
+        return NULL;
+    }
+
+    kwargs_bits = (kwdict != NULL) ? _molt_py_handle(kwdict) : molt_none();
+    out = molt_object_call(_molt_py_handle(callable), args_bits, kwargs_bits);
+    molt_handle_decref(args_bits);
+    return _molt_pyobject_from_result(out);
+}
+
+/*
+ * PyObject_VectorcallMethod — look up a method by name on args[0]
+ * and call it with the vectorcall convention.
+ *
+ *   args[0] is "self", args[1..nargs-1] are positional arguments.
+ */
+static inline PyObject *PyObject_VectorcallMethod(
+    PyObject *name,
+    PyObject *const *args,
+    size_t nargsf,
+    PyObject *kwnames
+) {
+    Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
+    PyObject *callable;
+    PyObject *out;
+
+    if (name == NULL || nargs < 1 || args == NULL || args[0] == NULL) {
+        PyErr_SetString(PyExc_TypeError,
+            "PyObject_VectorcallMethod: name and self must not be NULL");
+        return NULL;
+    }
+
+    callable = PyObject_GetAttr(args[0], name);
+    if (callable == NULL) {
+        return NULL;
+    }
+
+    /*
+     * Forward args[1..] to the resolved method.  The method is already
+     * bound to args[0], so we skip self.
+     */
+    {
+        size_t method_nargsf = (size_t)(nargs - 1);
+        /* Preserve PY_VECTORCALL_ARGUMENTS_OFFSET if it was set. */
+        if (nargsf & PY_VECTORCALL_ARGUMENTS_OFFSET) {
+            method_nargsf |= PY_VECTORCALL_ARGUMENTS_OFFSET;
+        }
+        out = PyObject_Vectorcall(callable, args + 1, method_nargsf, kwnames);
+    }
+
+    Py_DECREF(callable);
+    return out;
 }
 
 static inline PyObject *PyObject_GetItem(PyObject *obj, PyObject *key) {

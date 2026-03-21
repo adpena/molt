@@ -15280,8 +15280,11 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                             continue;
                         }
                         // Non-numeric value: fall back to generic sum.
+                        // total_owned must be set here because the done-check
+                        // at the top of the next iteration reads it.
                         all_numeric = false;
                         total_bits = MoltObject::from_float(fsum + comp).bits();
+                        total_owned = true;
                     }
                     let next_bits = molt_add(total_bits, val_bits);
                     if obj_from_bits(next_bits).is_none() {
