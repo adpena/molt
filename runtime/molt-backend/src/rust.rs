@@ -15,7 +15,7 @@
 //! strategy as the Luau backend.
 
 use crate::{FunctionIR, OpIR, SimpleIR};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 #[derive(Clone)]
@@ -28,17 +28,17 @@ enum AliasBinding {
 pub struct RustBackend {
     output: String,
     indent: usize,
-    hoisted_vars: HashSet<String>,
+    hoisted_vars: BTreeSet<String>,
     /// When true, emit `use molt_rs::*;` instead of the inline MoltValue prelude.
     /// The caller is responsible for adding `molt-rs` to `Cargo.toml`.
     use_crate: bool,
     /// Tracks phi var → (frame_var, slot_var) from store_index ops inside loops.
     /// Used to emit a writeback when loop_index_next updates the phi var,
     /// so the locals frame stays coherent after the loop exits.
-    phi_to_frame: HashMap<String, (String, String)>,
+    phi_to_frame: BTreeMap<String, (String, String)>,
     /// Best-effort alias graph from temporaries to their source bindings.
     /// Used to propagate side-effecting mutations on cloned temps back to roots.
-    aliases: HashMap<String, AliasBinding>,
+    aliases: BTreeMap<String, AliasBinding>,
     /// Current function params (as Rust identifiers) for call-by-object writeback.
     current_params: Vec<String>,
     current_is_main: bool,
@@ -49,10 +49,10 @@ impl RustBackend {
         Self {
             output: String::with_capacity(8192),
             indent: 0,
-            hoisted_vars: HashSet::new(),
+            hoisted_vars: BTreeSet::new(),
             use_crate: false,
-            phi_to_frame: HashMap::new(),
-            aliases: HashMap::new(),
+            phi_to_frame: BTreeMap::new(),
+            aliases: BTreeMap::new(),
             current_params: Vec::new(),
             current_is_main: false,
         }
@@ -149,7 +149,7 @@ impl RustBackend {
 
     fn emit_alias_writeback(&mut self, var: &str) {
         let mut cur = var.to_string();
-        let mut seen = HashSet::new();
+        let mut seen = BTreeSet::new();
         while let Some(binding) = self.aliases.get(&cur).cloned() {
             let next = match binding {
                 AliasBinding::Value(parent) => {
@@ -1283,7 +1283,7 @@ impl RustBackend {
             self.clear_alias(&out_name);
         }
 
-        let declare = |out_name: &str, rhs: &str, hoisted: &HashSet<String>| -> String {
+        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
             if hoisted.contains(out_name) {
                 format!("{out_name} = {rhs};")
             } else {
@@ -2875,9 +2875,9 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
 
 fn collect_phi_assignments(
     ops: &[OpIR],
-    hoisted_vars: &mut HashSet<String>,
-) -> HashMap<usize, Vec<(String, Vec<String>)>> {
-    let mut phi_assignments: HashMap<usize, Vec<(String, Vec<String>)>> = HashMap::new();
+    hoisted_vars: &mut BTreeSet<String>,
+) -> BTreeMap<usize, Vec<(String, Vec<String>)>> {
+    let mut phi_assignments: BTreeMap<usize, Vec<(String, Vec<String>)>> = BTreeMap::new();
     let mut i = 0;
     while i < ops.len() {
         if ops[i].kind == "end_if" {
@@ -2909,13 +2909,13 @@ fn collect_phi_assignments(
 
 fn build_phi_injection_maps(
     ops: &[OpIR],
-    phi_assignments: &HashMap<usize, Vec<(String, Vec<String>)>>,
+    phi_assignments: &BTreeMap<usize, Vec<(String, Vec<String>)>>,
 ) -> (
-    HashMap<usize, Vec<(String, String)>>,
-    HashMap<usize, Vec<(String, String)>>,
+    BTreeMap<usize, Vec<(String, String)>>,
+    BTreeMap<usize, Vec<(String, String)>>,
 ) {
-    let mut before_else: HashMap<usize, Vec<(String, String)>> = HashMap::new();
-    let mut before_end_if: HashMap<usize, Vec<(String, String)>> = HashMap::new();
+    let mut before_else: BTreeMap<usize, Vec<(String, String)>> = BTreeMap::new();
+    let mut before_end_if: BTreeMap<usize, Vec<(String, String)>> = BTreeMap::new();
     let mut if_stack: Vec<(usize, Option<usize>)> = Vec::new();
     for (idx, op) in ops.iter().enumerate() {
         match op.kind.as_str() {
@@ -2966,10 +2966,10 @@ fn build_phi_injection_maps(
     (before_else, before_end_if)
 }
 
-fn collect_scope_escapes(ops: &[OpIR], func: &FunctionIR, hoisted_vars: &mut HashSet<String>) {
+fn collect_scope_escapes(ops: &[OpIR], func: &FunctionIR, hoisted_vars: &mut BTreeSet<String>) {
     let mut depth: i32 = 0;
-    let mut decl_depth: HashMap<String, i32> = HashMap::new();
-    let param_set: HashSet<String> = func.params.iter().map(|p| rust_ident(p)).collect();
+    let mut decl_depth: BTreeMap<String, i32> = BTreeMap::new();
+    let param_set: BTreeSet<String> = func.params.iter().map(|p| rust_ident(p)).collect();
 
     for op in ops {
         match op.kind.as_str() {
