@@ -1,3 +1,4 @@
+use core::sync::atomic::{AtomicPtr, Ordering};
 use crate::intrinsics::generated::{INTRINSICS, resolve_symbol};
 use crate::{
     MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING, alloc_dict_with_pairs,
@@ -14,7 +15,9 @@ const RUNTIME_FLAG: &str = "_molt_runtime";
 
 /// Pointer to the builtins module, stored so the lazy resolver can locate the
 /// intrinsics registry dict without re-traversing the module hierarchy.
-static mut BUILTINS_MODULE_PTR: *mut u8 = core::ptr::null_mut();
+/// Uses `AtomicPtr` so that concurrent calls on native multi-threaded targets
+/// cannot race on the null check (on wasm32 single-threaded atomics are no-ops).
+static BUILTINS_MODULE_PTR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 
 pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
     if module_ptr.is_null() {
@@ -58,11 +61,9 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
     set_dict_bool(_py, dict_ptr, RUNTIME_FLAG, true);
 
     // Store builtins module pointer for the lazy resolver.
-    // Safety: single-threaded WASM — no data race.
-    unsafe {
-        inc_ref_bits(_py, MoltObject::from_ptr(module_ptr).bits());
-        BUILTINS_MODULE_PTR = module_ptr;
-    }
+    // AtomicPtr ensures thread safety on native multi-threaded targets.
+    inc_ref_bits(_py, MoltObject::from_ptr(module_ptr).bits());
+    BUILTINS_MODULE_PTR.store(module_ptr, Ordering::Release);
 
     // Lazy intrinsics: do NOT eagerly build function objects for all 2377
     // intrinsics.  Instead, resolve on demand in `molt_intrinsic_resolve`.
@@ -127,7 +128,7 @@ pub extern "C" fn molt_intrinsic_resolve(name_bits: u64) -> u64 {
         };
 
         // Cache in the registry dict so subsequent lookups hit the fast path.
-        let builtins_ptr = unsafe { BUILTINS_MODULE_PTR };
+        let builtins_ptr = BUILTINS_MODULE_PTR.load(Ordering::Acquire);
         if !builtins_ptr.is_null() {
             let dict_bits = unsafe { module_dict_bits(builtins_ptr) };
             if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
