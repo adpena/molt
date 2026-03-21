@@ -241,7 +241,63 @@ fn read_dir_recursive(base: &str) -> Vec<(String, Vec<u8>)> {
 /// - `MOLT_VFS_TMP_QUOTA_MB` – quota in MiB for the `/tmp` mount (default 64).
 ///
 /// Returns `None` when `MOLT_VFS_BUNDLE` is not set.
+// ---------------------------------------------------------------------------
+// Embedded bundle support for WASM targets (no filesystem access)
+// ---------------------------------------------------------------------------
+
+use std::sync::Mutex;
+
+/// Global slot for bundle data injected by the host before `_start`.
+/// On Cloudflare Workers, worker.js writes the tar/entry data here
+/// via `molt_vfs_inject_bundle` before calling the WASM entry point.
+static INJECTED_BUNDLE: Mutex<Option<Vec<(String, Vec<u8>)>>> = Mutex::new(None);
+
+/// Host calls this to inject bundle entries before `_start`.
+/// Each entry is (path, content). Called from JS or the WASM host.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vfs_inject_entry(
+    path_ptr: *const u8,
+    path_len: usize,
+    data_ptr: *const u8,
+    data_len: usize,
+) {
+    let path = unsafe { std::slice::from_raw_parts(path_ptr, path_len) };
+    let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
+    let path_str = String::from_utf8_lossy(path).to_string();
+    let mut guard = INJECTED_BUNDLE.lock().unwrap();
+    guard.get_or_insert_with(Vec::new).push((path_str, data.to_vec()));
+}
+
+/// Host calls this to signal all entries have been injected.
+/// Returns the number of entries loaded.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vfs_inject_finish() -> i32 {
+    let guard = INJECTED_BUNDLE.lock().unwrap();
+    guard.as_ref().map_or(0, |v| v.len() as i32)
+}
+
+/// Load VFS from injected entries (WASM) or environment (native).
 pub(crate) fn load_vfs() -> Option<VfsState> {
+    // Check for injected bundle first (WASM path)
+    let injected = INJECTED_BUNDLE.lock().unwrap().take();
+    if let Some(entries) = injected {
+        if !entries.is_empty() {
+            let mut mt = MountTable::new();
+            mt.add_mount(
+                "/bundle",
+                Arc::new(bundle::BundleFs::from_entries(entries)),
+            );
+            let quota_mb = std::env::var("MOLT_VFS_TMP_QUOTA_MB")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(64);
+            mt.add_mount("/tmp", Arc::new(tmp::TmpFs::new(quota_mb)));
+            mt.add_mount("/dev", Arc::new(dev::DevFs::new()));
+            return Some(VfsState::from_table(mt));
+        }
+    }
+
+    // Native path: load from MOLT_VFS_BUNDLE env var
     let bundle_path = std::env::var("MOLT_VFS_BUNDLE").ok()?;
 
     let mut mt = MountTable::new();
