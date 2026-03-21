@@ -1186,12 +1186,27 @@ def _strip_debug_sections(data: bytes) -> bytes | None:
     return _build_sections(keep)
 
 
-def _strip_internal_exports(data: bytes) -> bytes | None:
-    """Remove __molt_table_ref_ exports that only exist for relocatable linking.
+_ESSENTIAL_EXPORTS = frozenset({
+    "memory",
+    "molt_memory",
+    "molt_main",
+    "molt_table_init",
+    "molt_table",
+    "molt_set_wasm_table_base",
+    "__indirect_function_table",
+})
 
-    After linking, these exports serve no purpose but each one adds an entry
-    that V8 must process.  On large modules with 1000+ functions this adds
-    significant overhead.
+
+def _strip_internal_exports(data: bytes) -> bytes | None:
+    """Remove exports that only exist for internal ABI wiring or relocatable linking.
+
+    After linking, these exports serve no purpose but each one marks its
+    target function as a module root, preventing dead-code elimination by
+    wasm-opt.  Stripping them is critical for enabling the DCE pass to
+    remove thousands of unreachable runtime functions.
+
+    Only the exports actually referenced by the host JS (worker.js) are
+    retained (see ``_ESSENTIAL_EXPORTS``).
     """
     sections = _parse_sections(data)
     new_sections: list[tuple[int, bytes]] = []
@@ -1213,7 +1228,7 @@ def _strip_internal_exports(data: bytes) -> bytes | None:
             offset += 1
             _, offset = _read_varuint(payload, offset)
             entry_bytes = payload[entry_start:offset]
-            if name.startswith("__molt_table_ref_") or name.startswith("__molt_output_"):
+            if name not in _ESSENTIAL_EXPORTS:
                 modified = True
                 continue
             entries.append(entry_bytes)
@@ -1224,6 +1239,161 @@ def _strip_internal_exports(data: bytes) -> bytes | None:
         new_sections.append((section_id, bytes(rebuilt)))
     if not modified:
         return None
+    return _build_sections(new_sections)
+
+
+def _collect_code_referenced_funcs(sections: list[tuple[int, bytes]]) -> set[int]:
+    """Scan the code section for function indices referenced by ``call`` instructions.
+
+    Returns the set of function indices that appear as direct call targets.
+    This is intentionally conservative -- functions reached only via
+    ``call_indirect`` (through the element/table) are NOT included, which is
+    exactly what we want: element entries whose targets never appear in a
+    direct ``call`` are candidates for neutralisation.
+    """
+    called: set[int] = set()
+    for sid, payload in sections:
+        if sid != 10:
+            continue
+        offset = 0
+        func_count, offset = _read_varuint(payload, offset)
+        for _ in range(func_count):
+            body_size, offset = _read_varuint(payload, offset)
+            body_end = offset + body_size
+            # Skip local declarations
+            pos = offset
+            try:
+                local_count, pos = _read_varuint(payload, pos)
+                for _lc in range(local_count):
+                    _, pos = _read_varuint(payload, pos)  # count
+                    pos += 1  # type byte
+            except (IndexError, ValueError):
+                offset = body_end
+                continue
+            # Scan for call opcode (0x10) and read the immediate func index
+            while pos < body_end:
+                b = payload[pos]
+                if b == 0x10:  # call
+                    pos += 1
+                    try:
+                        idx, pos = _read_varuint(payload, pos)
+                        called.add(idx)
+                    except (IndexError, ValueError):
+                        break
+                else:
+                    pos += 1
+            offset = body_end
+    return called
+
+
+def _collect_element_func_indices(sections: list[tuple[int, bytes]]) -> set[int]:
+    """Return the set of function indices referenced by active element segments."""
+    indices: set[int] = set()
+    for sid, payload in sections:
+        if sid != 9:
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        for _ in range(count):
+            flags = payload[offset]
+            offset += 1
+            if flags != 0:
+                # Non-trivial segment (passive, declarative, etc.) -- skip rest
+                break
+            # Active segment for table 0: i32.const <offset> end <count> <idx>*
+            if payload[offset] != 0x41:
+                break
+            offset += 1
+            _, offset = _read_varuint(payload, offset)  # table offset
+            if payload[offset] != 0x0B:
+                break
+            offset += 1  # end
+            n, offset = _read_varuint(payload, offset)
+            for _ in range(n):
+                idx, offset = _read_varuint(payload, offset)
+                indices.add(idx)
+    return indices
+
+
+def _neutralize_dead_element_entries(data: bytes) -> bytes | None:
+    """Replace indirect-call table entries for dead functions with the sentinel.
+
+    After linking, the element section (section 9) populates the indirect
+    function table.  Many entries point to runtime functions that are never
+    actually dispatched -- they exist only because the runtime compiled them
+    with ``#[no_mangle]`` and ``wasm-ld`` preserved them.
+
+    This pass identifies function indices that appear ONLY in the element
+    section (never as a direct ``call`` target in the code section) and
+    replaces them with function index 0 (the sentinel/trap function).
+    Once neutralised, wasm-opt's ``--remove-unused-module-elements`` and
+    ``--dce`` passes can eliminate the now-unreferenced function bodies,
+    typically removing 30-40% of all functions.
+    """
+    try:
+        sections = _parse_sections(data)
+    except ValueError:
+        return None
+
+    code_called = _collect_code_referenced_funcs(sections)
+    elem_indices = _collect_element_func_indices(sections)
+    # Functions only in the element table, never directly called from code
+    dead_indices = elem_indices - code_called
+
+    if not dead_indices:
+        return None
+
+    # Rebuild the element section, replacing dead entries with sentinel (0)
+    new_sections: list[tuple[int, bytes]] = []
+    replaced = 0
+    for sid, payload in sections:
+        if sid != 9:
+            new_sections.append((sid, payload))
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        new_payload = bytearray(_write_varuint(count))
+        for seg_i in range(count):
+            flags = payload[offset]
+            offset += 1
+            if flags != 0:
+                # Passive/declarative segment -- copy remainder as-is
+                new_payload.append(flags)
+                new_payload.extend(payload[offset:])
+                break
+            new_payload.append(flags)
+            # i32.const opcode
+            new_payload.append(payload[offset])
+            offset += 1
+            # LEB128 table offset
+            leb_start = offset
+            _, offset = _read_varuint(payload, offset)
+            new_payload.extend(payload[leb_start:offset])
+            # end opcode
+            new_payload.append(payload[offset])
+            offset += 1
+            # function count
+            leb_start = offset
+            n, offset = _read_varuint(payload, offset)
+            new_payload.extend(payload[leb_start:offset])
+            # rewrite function indices
+            for _ in range(n):
+                idx, offset = _read_varuint(payload, offset)
+                if idx in dead_indices:
+                    new_payload.extend(_write_varuint(0))
+                    replaced += 1
+                else:
+                    new_payload.extend(_write_varuint(idx))
+        new_sections.append((sid, bytes(new_payload)))
+
+    if replaced == 0:
+        return None
+
+    print(
+        f"Neutralised {replaced:,} dead element entries "
+        f"({len(dead_indices):,} unique functions eligible for DCE)",
+        file=sys.stderr,
+    )
     return _build_sections(new_sections)
 
 

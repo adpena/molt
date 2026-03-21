@@ -23,7 +23,7 @@ from pathlib import Path
 
 # Optimization levels supported by wasm-opt.
 VALID_LEVELS = {"O1", "O2", "O3", "O4", "Os", "Oz"}
-_DEFAULT_FEATURE_FLAGS = ["--enable-bulk-memory", "--enable-reference-types"]
+_DEFAULT_FEATURE_FLAGS = ["--all-features"]
 
 
 def find_wasm_opt() -> str | None:
