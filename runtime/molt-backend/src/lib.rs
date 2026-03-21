@@ -1059,10 +1059,10 @@ impl SimpleBackend {
                     panic!("invalid MOLT_BACKEND_LIBCALL_CALL_CONV={libcall_call_conv:?}: {err:?}")
                 });
         }
-        // Cranelift verifier is expensive — it validates every instruction in
-        // every function. Disable by default for both debug and release builds.
-        // Enable explicitly with MOLT_BACKEND_ENABLE_VERIFIER=1 for debugging.
-        let default_enable_verifier = false;
+        // Cranelift verifier catches IR invariant violations (type mismatches,
+        // dominator tree bugs). Enable in debug builds; disable in release for
+        // speed. Override with MOLT_BACKEND_ENABLE_VERIFIER=0|1.
+        let default_enable_verifier = cfg!(debug_assertions);
         let enable_verifier = env_setting("MOLT_BACKEND_ENABLE_VERIFIER")
             .as_deref()
             .map(parse_truthy_env)
