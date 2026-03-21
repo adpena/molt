@@ -20354,24 +20354,16 @@ fn utf8_count_prefix_blocked(bytes: &[u8], prefix_len: usize) -> i64 {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn count_utf8_bytes(bytes: &[u8]) -> i64 {
-    if std::str::from_utf8(bytes).is_ok() {
-        simdutf::count_utf8(bytes) as i64
-    } else {
-        wtf8_codepoint_count_scan(bytes)
-    }
+    // simdutf::count_utf8 counts non-continuation bytes, which works
+    // correctly on both valid UTF-8 and WTF-8. No validation needed.
+    simdutf::count_utf8(bytes) as i64
 }
 
 #[cfg(target_arch = "wasm32")]
 fn count_utf8_bytes(bytes: &[u8]) -> i64 {
-    // WASM SIMD fast path: count codepoints by counting bytes that are NOT
-    // continuation bytes (i.e. bytes whose top two bits are NOT 0b10xxxxxx).
-    // A continuation byte has the pattern 10xx_xxxx, so (byte & 0xC0) == 0x80.
-    // We count non-continuation bytes to get codepoint count.
-    if std::str::from_utf8(bytes).is_ok() {
-        unsafe { count_utf8_codepoints_wasm_simd(bytes) }
-    } else {
-        wtf8_codepoint_count_scan(bytes)
-    }
+    // WASM SIMD fast path: count non-continuation bytes directly.
+    // Works on valid UTF-8 and WTF-8 alike — no validation needed.
+    unsafe { count_utf8_codepoints_wasm_simd(bytes) }
 }
 
 #[cfg(target_arch = "wasm32")]
