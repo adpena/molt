@@ -864,6 +864,184 @@ pub(crate) fn escape_analysis(func_ir: &mut FunctionIR) {
 }
 
 // ---------------------------------------------------------------------------
+// Loop-invariant type narrowing pass
+//
+// Scans for loop regions (loop_start..loop_end and loop_index_start..loop_end)
+// and propagates `fast_int = true` onto arithmetic ops inside loop bodies
+// whose operands are all known to be integers.
+//
+// A variable is "known-int" if it is produced by:
+//   - `const` (integer literal)
+//   - `const_bool` (booleans are int-compatible in Python arithmetic)
+//   - `loop_index_start` / `loop_index_next` (range loop induction variable)
+//   - An arithmetic op that already has `fast_int = true`
+//   - Any op with `type_hint = "int"` or `type_hint = "bool"`
+//
+// The pass runs in two phases:
+//   1. Pre-loop: collect known-int variables from ops before the loop.
+//   2. Loop body (iterated to fixpoint): propagate known-int through the
+//      loop body and set `fast_int = true` on eligible arithmetic ops.
+//
+// This eliminates N-1 redundant tag checks per loop for variables whose
+// integer type is loop-invariant (e.g. `total += i` where both are ints).
+// ---------------------------------------------------------------------------
+
+/// Op kinds eligible for fast_int promotion when all operands are known-int.
+/// Split into two categories: ops that produce ints and ops that produce bools.
+const FAST_INT_ARITH_OPS: &[&str] = &[
+    "add",
+    "sub",
+    "mul",
+    "inplace_add",
+    "inplace_sub",
+    "inplace_mul",
+    "floordiv",
+    "inplace_floordiv",
+    "mod",
+    "inplace_mod",
+    "bit_and",
+    "bit_or",
+    "bit_xor",
+    "inplace_bit_and",
+    "inplace_bit_or",
+    "inplace_bit_xor",
+    "lshift",
+    "rshift",
+    "lt",
+    "le",
+    "gt",
+    "ge",
+    "eq",
+    "ne",
+];
+
+/// Comparison ops produce bool, not int; their outputs should not be treated
+/// as known-int for downstream propagation (though they benefit from fast_int
+/// for skipping tag checks on their *operands*).
+const COMPARISON_OPS: &[&str] = &["lt", "le", "gt", "ge", "eq", "ne"];
+
+/// Op kinds that produce a known-int output regardless of inputs.
+const INT_PRODUCING_OPS: &[&str] = &[
+    "const",
+    "const_bool",
+    "loop_index_start",
+    "loop_index_next",
+    "len",
+];
+
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
+pub(crate) fn propagate_loop_fast_int(func_ir: &mut FunctionIR) {
+    if std::env::var("MOLT_DISABLE_LOOP_FAST_INT").is_ok() {
+        return;
+    }
+
+    let ops = &func_ir.ops;
+    let len = ops.len();
+
+    // Phase 1: Find all loop regions (pairs of start_idx, end_idx).
+    // Note: indexed loops emit LOOP_START + LOOP_INDEX_START as a pair,
+    // but only one LOOP_END closes them. We skip LOOP_START when it is
+    // immediately followed by LOOP_INDEX_START (the codegen does the same).
+    let mut loop_regions: Vec<(usize, usize)> = Vec::new();
+    let mut loop_start_stack: Vec<usize> = Vec::new();
+    for (idx, op) in ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "loop_start" => {
+                let next_is_index = ops
+                    .get(idx + 1)
+                    .is_some_and(|next| next.kind == "loop_index_start");
+                if !next_is_index {
+                    loop_start_stack.push(idx);
+                }
+                // If next is loop_index_start, let that one push instead.
+            }
+            "loop_index_start" => {
+                loop_start_stack.push(idx);
+            }
+            "loop_end" => {
+                if let Some(start) = loop_start_stack.pop() {
+                    loop_regions.push((start, idx));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if loop_regions.is_empty() {
+        return;
+    }
+
+    // Phase 2: Build the initial known-int set from all ops before loops.
+    // We track which variable names are known to hold integer values.
+    let mut known_int: BTreeSet<String> = BTreeSet::new();
+    for op in ops.iter() {
+        if let Some(ref out) = op.out {
+            if INT_PRODUCING_OPS.contains(&op.kind.as_str()) {
+                known_int.insert(out.clone());
+            } else if matches!(op.type_hint.as_deref(), Some("int") | Some("bool")) {
+                known_int.insert(out.clone());
+            } else if op.fast_int.unwrap_or(false) {
+                // An arithmetic op already marked fast_int produces an int.
+                known_int.insert(out.clone());
+            }
+        }
+    }
+
+    // Phase 3: For each loop region, propagate fast_int in the loop body.
+    // We iterate to fixpoint because setting fast_int on one op may make
+    // its output known-int, which enables fast_int on downstream ops.
+    let mut changed_any = false;
+    for &(start, end) in &loop_regions {
+        // Iterate to fixpoint over the loop body.
+        let mut made_progress = true;
+        while made_progress {
+            made_progress = false;
+            for idx in start..=end.min(len - 1) {
+                let op = &func_ir.ops[idx];
+                let kind = op.kind.as_str();
+
+                // Check if this op is eligible for fast_int promotion.
+                if !FAST_INT_ARITH_OPS.contains(&kind) {
+                    continue;
+                }
+                let is_comparison = COMPARISON_OPS.contains(&kind);
+                // Already has fast_int — just ensure output is tracked.
+                if op.fast_int.unwrap_or(false) {
+                    if !is_comparison {
+                        if let Some(ref out) = op.out {
+                            if known_int.insert(out.clone()) {
+                                made_progress = true;
+                            }
+                        }
+                    }
+                    continue;
+                }
+                // Check if all operands are known-int.
+                let all_int = op.args.as_ref().map_or(false, |args| {
+                    args.len() >= 2 && args.iter().all(|a| known_int.contains(a))
+                });
+                if all_int {
+                    // Promote to fast_int.
+                    func_ir.ops[idx].fast_int = Some(true);
+                    // Comparisons produce bool, not int — don't add to known_int.
+                    if !is_comparison {
+                        if let Some(ref out) = func_ir.ops[idx].out {
+                            known_int.insert(out.clone());
+                        }
+                    }
+                    made_progress = true;
+                    changed_any = true;
+                }
+            }
+        }
+    }
+    let _ = changed_any;
+}
+
+// ---------------------------------------------------------------------------
 // Pre-built constant integer map for O(1) lookups during compilation.
 //
 // Scans all ops once and records the first `const` definition for each
@@ -889,4 +1067,203 @@ pub(crate) fn build_const_int_map(ops: &[OpIR]) -> BTreeMap<String, i64> {
         }
     }
     map
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_op(kind: &str) -> OpIR {
+        OpIR {
+            kind: kind.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn make_const_int(out: &str, val: i64) -> OpIR {
+        OpIR {
+            kind: "const".to_string(),
+            value: Some(val),
+            out: Some(out.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn make_arith(kind: &str, args: &[&str], out: &str) -> OpIR {
+        OpIR {
+            kind: kind.to_string(),
+            args: Some(args.iter().map(|s| s.to_string()).collect()),
+            out: Some(out.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn make_loop_index_start(arg: &str, out: &str) -> OpIR {
+        OpIR {
+            kind: "loop_index_start".to_string(),
+            args: Some(vec![arg.to_string()]),
+            out: Some(out.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn make_loop_index_next(arg: &str, out: &str) -> OpIR {
+        OpIR {
+            kind: "loop_index_next".to_string(),
+            args: Some(vec![arg.to_string()]),
+            out: Some(out.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_loop_fast_int_basic_range_loop() {
+        // Simulates: total = 0; for i in range(n): total += i
+        // The IR pattern for indexed loops is: loop_start, loop_index_start, ..., loop_end
+        // The loop_start is a no-op when followed by loop_index_start.
+        let mut func = FunctionIR {
+            name: "test".to_string(),
+            params: vec![],
+            param_types: None,
+            ops: vec![
+                make_const_int("total_init", 0),        // 0
+                make_const_int("start", 0),              // 1
+                make_op("loop_start"),                   // 2 (skipped for indexed loops)
+                make_loop_index_start("start", "i"),     // 3
+                make_arith("inplace_add", &["total_init", "i"], "total_next"), // 4
+                make_const_int("step", 1),               // 5
+                make_arith("add", &["i", "step"], "next_i"), // 6
+                make_loop_index_next("next_i", "i"),     // 7
+                make_op("loop_continue"),                // 8
+                make_op("loop_end"),                     // 9
+            ],
+        };
+
+        propagate_loop_fast_int(&mut func);
+
+        // The inplace_add should now have fast_int=true
+        assert_eq!(func.ops[4].fast_int, Some(true), "inplace_add should be fast_int");
+        // The add (i + step) should also be fast_int
+        assert_eq!(func.ops[6].fast_int, Some(true), "add should be fast_int");
+    }
+
+    #[test]
+    fn test_loop_fast_int_already_set() {
+        // If fast_int is already set, the pass should not change it.
+        let mut func = FunctionIR {
+            name: "test".to_string(),
+            params: vec![],
+            param_types: None,
+            ops: vec![
+                make_const_int("a", 1),
+                make_const_int("b", 2),
+                make_op("loop_start"),
+                {
+                    let mut op = make_arith("add", &["a", "b"], "c");
+                    op.fast_int = Some(true);
+                    op
+                },
+                make_op("loop_end"),
+            ],
+        };
+
+        propagate_loop_fast_int(&mut func);
+
+        assert_eq!(func.ops[3].fast_int, Some(true));
+    }
+
+    #[test]
+    fn test_loop_fast_int_no_loop() {
+        // No loop — pass should be a no-op.
+        let mut func = FunctionIR {
+            name: "test".to_string(),
+            params: vec![],
+            param_types: None,
+            ops: vec![
+                make_const_int("a", 1),
+                make_const_int("b", 2),
+                make_arith("add", &["a", "b"], "c"),
+            ],
+        };
+
+        let original_fast_int = func.ops[2].fast_int;
+        propagate_loop_fast_int(&mut func);
+
+        // Outside a loop, the pass should not touch the op.
+        assert_eq!(func.ops[2].fast_int, original_fast_int);
+    }
+
+    #[test]
+    fn test_loop_fast_int_unknown_operand() {
+        // If one operand is not known-int, fast_int should not be set.
+        let mut func = FunctionIR {
+            name: "test".to_string(),
+            params: vec![],
+            param_types: None,
+            ops: vec![
+                make_const_int("a", 1),
+                make_op("loop_start"),
+                // "unknown" is not produced by any known-int op
+                make_arith("add", &["a", "unknown"], "c"),
+                make_op("loop_end"),
+            ],
+        };
+
+        propagate_loop_fast_int(&mut func);
+
+        assert_eq!(func.ops[2].fast_int, None, "should not set fast_int with unknown operand");
+    }
+
+    #[test]
+    fn test_loop_fast_int_chained_ops() {
+        // Chain: a + b -> c, then c + a -> d (fixpoint iteration needed)
+        let mut func = FunctionIR {
+            name: "test".to_string(),
+            params: vec![],
+            param_types: None,
+            ops: vec![
+                make_const_int("a", 1),
+                make_const_int("b", 2),
+                make_op("loop_start"),
+                make_arith("add", &["a", "b"], "c"),
+                make_arith("add", &["c", "a"], "d"),
+                make_op("loop_end"),
+            ],
+        };
+
+        propagate_loop_fast_int(&mut func);
+
+        assert_eq!(func.ops[3].fast_int, Some(true), "first add should be fast_int");
+        assert_eq!(func.ops[4].fast_int, Some(true), "chained add should be fast_int via fixpoint");
+    }
+
+    #[test]
+    fn test_loop_fast_int_type_hint_propagation() {
+        // An op with type_hint="int" should make its output known-int.
+        let mut func = FunctionIR {
+            name: "test".to_string(),
+            params: vec![],
+            param_types: None,
+            ops: vec![
+                make_const_int("a", 1),
+                {
+                    let mut op = make_op("index");
+                    op.out = Some("x".to_string());
+                    op.type_hint = Some("int".to_string());
+                    op
+                },
+                make_op("loop_start"),
+                make_arith("add", &["a", "x"], "c"),
+                make_op("loop_end"),
+            ],
+        };
+
+        propagate_loop_fast_int(&mut func);
+
+        assert_eq!(func.ops[3].fast_int, Some(true), "add with type_hint int operand should be fast_int");
+    }
 }

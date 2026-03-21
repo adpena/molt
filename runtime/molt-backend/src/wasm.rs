@@ -1221,6 +1221,9 @@ impl WasmBackend {
             crate::fold_constants(&mut func_ir.ops);
             crate::fold_constants_cross_block(&mut func_ir.ops);
         }
+        for func_ir in &mut ir.functions {
+            crate::propagate_loop_fast_int(func_ir);
+        }
         crate::inline_functions(&mut ir);
 
         // Multi-value return candidate detection (§3.1).
