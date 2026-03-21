@@ -1644,6 +1644,10 @@ pub(crate) unsafe fn object_attr_lookup_raw(
             inc_ref_bits(_py, val);
             return Some(val);
         }
+        // Use black_box to prevent LLVM from caching stale values across
+        // re-entrant calls through inc_ref_bits/dec_ref_bits above.
+        let cached_attr_bits = std::hint::black_box(cached_attr_bits);
+        let class_ptr_opt = std::hint::black_box(class_ptr_opt);
         if let (Some(val_bits), Some(class_ptr)) = (cached_attr_bits, class_ptr_opt) {
             if let Some(bound) = descriptor_bind(_py, val_bits, class_ptr, Some(obj_ptr)) {
                 return Some(bound);
