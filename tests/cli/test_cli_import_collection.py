@@ -4303,6 +4303,40 @@ def test_build_module_graph_metadata_bundles_related_views(tmp_path: Path) -> No
     assert metadata.stdlib_like_by_module["pkg"] is False
 
 
+def test_augment_module_graph_does_not_add_entry_alias_as_second_module(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path
+    examples_dir = project_root / "examples"
+    examples_dir.mkdir()
+    source_path = examples_dir / "hello.py"
+    source_path.write_text("print('hello')\n")
+    stdlib_root = cli._stdlib_root_path()
+    module_graph = {"hello": source_path}
+
+    augmentation, error = cli._augment_module_graph_for_entry_and_runtime(
+        source_path=source_path,
+        entry_module="hello",
+        module_roots=[project_root, examples_dir],
+        stdlib_root=stdlib_root,
+        roots=[project_root, examples_dir, stdlib_root],
+        project_root=project_root,
+        stdlib_allowlist=cli._stdlib_allowlist(),
+        entry_imports=(),
+        module_resolution_cache=cli._ModuleResolutionCache(),
+        module_graph=module_graph,
+        module_reasons={},
+        diagnostics_enabled=False,
+        json_output=False,
+        target="native",
+    )
+
+    assert error is None
+    assert augmentation is not None
+    assert set(module_graph) == {"hello"}
+    assert list(module_graph.values()) == [source_path]
+
+
 def test_module_lowering_metadata_view_reuses_precomputed_maps(tmp_path: Path) -> None:
     module_path = tmp_path / "pkg.py"
     module_path.write_text("VALUE = 1\n")
