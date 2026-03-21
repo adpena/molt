@@ -1209,6 +1209,47 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                     inc_ref_bits(_py, a);
                     return a;
                 }
+                if ltype == TYPE_ID_STRING {
+                    // In-place string concat: O(n) amortised when refcount == 1.
+                    let header = &mut *header_from_obj_ptr(ptr);
+                    if header.ref_count.load(std::sync::atomic::Ordering::Relaxed) == 1
+                        && (header.flags & crate::object::HEADER_FLAG_IMMORTAL) == 0
+                    {
+                        let rhs_obj = obj_from_bits(b);
+                        if let Some(r_ptr) = rhs_obj.as_ptr() {
+                            if object_type_id(r_ptr) == TYPE_ID_STRING {
+                                let l_len = string_len(ptr);
+                                let r_len = string_len(r_ptr);
+                                let needed = std::mem::size_of::<MoltHeader>()
+                                    + std::mem::size_of::<usize>()
+                                    + l_len + r_len;
+                                if header.size >= needed {
+                                    // Fast: spare capacity — append in place, zero alloc
+                                    let l_data = string_bytes(ptr) as *mut u8;
+                                    let r_data = string_bytes(r_ptr);
+                                    std::ptr::copy_nonoverlapping(r_data, l_data.add(l_len), r_len);
+                                    *(ptr as *mut usize) = l_len + r_len;
+                                    header.state = 0; // invalidate hash
+                                    inc_ref_bits(_py, a);
+                                    return a;
+                                }
+                                // Slow: allocate 2x, amortised growth
+                                let new_cap = std::cmp::max(header.size * 2, needed + 64);
+                                let new_ptr = alloc_object(_py, new_cap, TYPE_ID_STRING);
+                                if !new_ptr.is_null() {
+                                    let l_data = string_bytes(ptr);
+                                    let r_data = string_bytes(r_ptr);
+                                    let n_data = string_bytes(new_ptr) as *mut u8;
+                                    std::ptr::copy_nonoverlapping(l_data, n_data, l_len);
+                                    std::ptr::copy_nonoverlapping(r_data, n_data.add(l_len), r_len);
+                                    *(new_ptr as *mut usize) = l_len + r_len;
+                                    return MoltObject::from_ptr(new_ptr).bits();
+                                }
+                            }
+                        }
+                    }
+                    // Fall through to regular add (concat)
+                }
                 if ltype == TYPE_ID_BYTEARRAY {
                     if bytearray_concat_in_place(_py, ptr, b) {
                         inc_ref_bits(_py, a);
