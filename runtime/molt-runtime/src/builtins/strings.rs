@@ -1861,6 +1861,86 @@ fn is_wtf8(bytes: &[u8]) -> bool {
 
 // --- String/bytes FFI ---
 
+// --- Const string intern cache ---
+// `const_str` IR ops in the native backend call `molt_string_from_bytes` with a
+// pointer into a fixed data segment.  The *same* pointer+len pair always refers to
+// the same string literal, so we can use the raw pointer as a cheap cache key to
+// avoid re-allocating the string object on every execution of the same `const_str`.
+//
+// The cache is TLS, direct-mapped, 32 slots.  On a hit we inc-ref the cached bits
+// and return them.  On a miss we allocate normally and cache the result.
+
+const CONST_STR_CACHE_SIZE: usize = 32; // must be power of 2
+
+struct ConstStrCacheEntry {
+    /// Raw data-segment pointer used as identity key.
+    data_ptr: usize,
+    len: usize,
+    bits: u64,
+}
+
+struct ConstStrCache {
+    slots: [Option<ConstStrCacheEntry>; CONST_STR_CACHE_SIZE],
+}
+
+impl ConstStrCache {
+    const fn new() -> Self {
+        const NONE: Option<ConstStrCacheEntry> = None;
+        Self {
+            slots: [NONE; CONST_STR_CACHE_SIZE],
+        }
+    }
+
+    #[inline]
+    fn slot_index(data_ptr: usize, len: usize) -> usize {
+        // Mix pointer and length for a quick hash.
+        let h = data_ptr.wrapping_mul(0x9e37_79b9) ^ len;
+        h & (CONST_STR_CACHE_SIZE - 1)
+    }
+
+    fn lookup(&self, data_ptr: usize, len: usize) -> Option<u64> {
+        let idx = Self::slot_index(data_ptr, len);
+        self.slots[idx]
+            .as_ref()
+            .filter(|e| e.data_ptr == data_ptr && e.len == len)
+            .map(|e| e.bits)
+    }
+
+    fn insert(&mut self, _py: &crate::PyToken<'_>, data_ptr: usize, len: usize, bits: u64) {
+        let idx = Self::slot_index(data_ptr, len);
+        if let Some(prev) = self.slots[idx].take() {
+            dec_ref_bits(_py, prev.bits);
+        }
+        inc_ref_bits(_py, bits);
+        self.slots[idx] = Some(ConstStrCacheEntry {
+            data_ptr,
+            len,
+            bits,
+        });
+    }
+
+    fn clear(&mut self, _py: &crate::PyToken<'_>) {
+        for slot in self.slots.iter_mut() {
+            if let Some(prev) = slot.take() {
+                dec_ref_bits(_py, prev.bits);
+            }
+        }
+    }
+}
+
+use std::cell::RefCell;
+
+thread_local! {
+    static CONST_STR_TLS: RefCell<ConstStrCache> = RefCell::new(ConstStrCache::new());
+}
+
+/// Clear the const-string intern cache (called during runtime teardown).
+pub fn clear_const_str_cache(_py: &crate::PyToken<'_>) {
+    let _ = CONST_STR_TLS.try_with(|cell| {
+        cell.borrow_mut().clear(_py);
+    });
+}
+
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
 #[unsafe(no_mangle)]
@@ -1888,6 +1968,17 @@ pub unsafe extern "C" fn molt_string_from_bytes(
                 *out = MoltObject::from_ptr(obj_ptr).bits();
                 return 0;
             }
+
+            // --- Const string intern fast path ---
+            // `const_str` ops always pass the same data-segment pointer for
+            // the same literal, so (ptr, len) is an identity key.
+            let data_key = ptr as usize;
+            if let Some(bits) = CONST_STR_TLS.with(|cell| cell.borrow().lookup(data_key, len)) {
+                inc_ref_bits(_py, bits);
+                *out = bits;
+                return 0;
+            }
+
             let slice = std::slice::from_raw_parts(ptr, len);
             if !is_wtf8(slice) {
                 return 1;
@@ -1896,7 +1987,15 @@ pub unsafe extern "C" fn molt_string_from_bytes(
             if obj_ptr.is_null() {
                 return 2;
             }
-            *out = MoltObject::from_ptr(obj_ptr).bits();
+            let bits = MoltObject::from_ptr(obj_ptr).bits();
+
+            // Cache the newly allocated string for future calls with the
+            // same data-segment pointer.
+            CONST_STR_TLS.with(|cell| {
+                cell.borrow_mut().insert(_py, data_key, len, bits);
+            });
+
+            *out = bits;
             0
         })
     }
