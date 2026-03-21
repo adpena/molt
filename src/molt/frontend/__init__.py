@@ -26811,6 +26811,35 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 f"Control-flow op {op.kind} requires int label, got {raw!r} ({type(raw).__name__})"
             )
 
+        # The midend LICM pass hoists CONST_NONE ops out of loops, and the
+        # CSE then merges them with earlier CONST_NONE ops in the pre-loop
+        # block.  This creates an alias (e.g. v187 -> v182) but the alias
+        # only applies within the pre-loop block.  The IS instruction that
+        # originally used v187 remains inside the loop, now referencing an
+        # undefined variable.  The Cranelift backend defaults undefined i64
+        # variables to 0, and since box_none() != 0, the IS(exc, none) check
+        # always returns False, causing raise_if_pending to fire spuriously
+        # with a TypeError.
+        #
+        # Fix: collect all variable names produced by CONST_NONE ops after
+        # the midend.  In the lowering loop, re-emit const_none immediately
+        # before every IS instruction that references one of these variables
+        # to guarantee the definition and use share the same Cranelift block.
+        const_none_vars: set[str] = {
+            o.result.name for o in ops if o.kind == "CONST_NONE" and o.result.name != "none"
+        }
+        # Also collect variables that WERE produced by CONST_NONE but whose
+        # definition was eliminated by DCE/CSE.  These are variables
+        # referenced in IS args whose names are NOT defined by any op.
+        defined_vars: set[str] = {
+            o.result.name for o in ops if o.result.name != "none"
+        }
+        for o in ops:
+            if o.kind == "IS":
+                for a in o.args:
+                    if isinstance(a, MoltValue) and a.type_hint == "None" and a.name not in defined_vars:
+                        const_none_vars.add(a.name)
+
         for op in ops:
             if op.kind == "CONST":
                 value = op.args[0]
@@ -27125,6 +27154,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "IS":
+                # Re-materialise any CONST_NONE variable referenced by this
+                # IS instruction so the definition and use share the same
+                # Cranelift basic block.
+                for a in op.args:
+                    if isinstance(a, MoltValue) and a.name in const_none_vars:
+                        json_ops.append(
+                            {"kind": "const_none", "out": a.name}
+                        )
                 json_ops.append(
                     {
                         "kind": "is",
