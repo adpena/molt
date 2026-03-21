@@ -1947,19 +1947,32 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return self.type_hint_policy in {"trust", "check"} or self.stdlib_hint_trust
 
     def _resolve_call_return_hint(self, func_name: str | None) -> str:
-        """Return the type hint for a local function call result.
-
-        When ``--type-hints trust`` is active and the callee has a return
-        type annotation, use it instead of the generic ``Any``.
-        """
+        """Return the type hint for a local function call result."""
         if func_name is not None and self._hints_enabled():
             ret = self.func_return_type_hints.get(func_name)
             if ret is not None:
                 return ret
         return "Any"
 
+    # --- Automatic type inference (no --type-hints trust required) ----------
+    _SAFE_INFER_HINTS = frozenset({"int", "float", "bool", "str", "bytes"})
+
+    def _infer_annotation_hint(self, annotation: "ast.expr | None") -> str | None:
+        """Extract a type hint from a parameter annotation for inference only."""
+        if annotation is None:
+            return None
+        hint = self._annotation_to_hint(annotation)
+        if hint is not None and hint in self._SAFE_INFER_HINTS:
+            return hint
+        return None
+
     def _should_fast_int(self, op: MoltOp) -> bool:
-        if op.kind not in _FAST_ARITH_OPS:
+        if op.kind not in {
+            "ADD", "SUB", "MUL", "INPLACE_ADD", "INPLACE_SUB", "INPLACE_MUL",
+            "BIT_OR", "BIT_AND", "BIT_XOR", "INPLACE_BIT_OR", "INPLACE_BIT_AND",
+            "INPLACE_BIT_XOR", "LSHIFT", "RSHIFT", "DIV", "FLOORDIV", "MOD",
+            "LT", "LE", "GT", "GE", "EQ", "NE",
+        }:
             return False
         return all(
             isinstance(arg, MoltValue) and arg.type_hint in {"int", "bool"}
@@ -1967,11 +1980,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
 
     def _should_fast_float(self, op: MoltOp) -> bool:
-        if op.kind not in _FAST_ARITH_OPS:
+        if op.kind not in {
+            "ADD", "SUB", "MUL", "INPLACE_ADD", "INPLACE_SUB", "INPLACE_MUL",
+            "DIV", "FLOORDIV", "MOD", "LT", "LE", "GT", "GE", "EQ", "NE",
+        }:
             return False
         return all(
             isinstance(arg, MoltValue) and arg.type_hint == "float" for arg in op.args
-        )
 
     def _emit_bridge_unavailable(self, message: str) -> MoltValue:
         msg_val = MoltValue(self.next_var(), type_hint="str")
@@ -11671,6 +11686,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             self.explicit_type_hints[arg.arg] = explicit
                     if explicit is not None:
                         hint = explicit
+                if hint is None:
+                    hint = self._infer_annotation_hint(arg.annotation)
                 if hint is not None:
                     self.async_local_hints[arg.arg] = hint
             self._store_return_slot_for_stateful()
@@ -11983,6 +12000,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         hint = explicit
                     elif hint is None:
                         hint = "Any"
+                if hint is None:
+                    hint = self._infer_annotation_hint(arg.annotation)
                 value = MoltValue(arg.arg, type_hint=hint or "Unknown")
                 if hint is not None:
                     self._apply_hint_to_value(arg.arg, value, hint)
@@ -12173,6 +12192,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 self.explicit_type_hints[arg.arg] = explicit
                         if explicit is not None:
                             hint = explicit
+                    if hint is None:
+                        hint = self._infer_annotation_hint(arg.annotation)
                     if hint is not None:
                         self.async_local_hints[arg.arg] = hint
                 self._store_return_slot_for_stateful()
@@ -12373,6 +12394,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             hint = explicit
                         elif hint is None:
                             hint = "Any"
+                    if hint is None:
+                        hint = self._infer_annotation_hint(arg.annotation)
                     value = MoltValue(arg.arg, type_hint=hint or "Unknown")
                     if hint is not None:
                         self._apply_hint_to_value(arg.arg, value, hint)
@@ -12509,6 +12532,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             self.explicit_type_hints[arg.arg] = explicit
                     if explicit is not None:
                         hint = explicit
+                if hint is None:
+                    hint = self._infer_annotation_hint(arg.annotation)
                 if hint is not None:
                     self.async_local_hints[arg.arg] = hint
             self._store_return_slot_for_stateful()
@@ -12647,6 +12672,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         hint = explicit
                     elif hint is None:
                         hint = "Any"
+                if hint is None:
+                    hint = self._infer_annotation_hint(arg.annotation)
                 value = MoltValue(arg.arg, type_hint=hint or "Unknown")
                 if hint is not None:
                     self._apply_hint_to_value(arg.arg, value, hint)
@@ -24639,14 +24666,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.async_locals_base = GEN_CONTROL_SIZE
             for i, arg in enumerate(arg_nodes):
                 self.async_locals[arg.arg] = self.async_locals_base + i * 8
+                hint = None
                 if self._hints_enabled():
                     hint = self.explicit_type_hints.get(arg.arg)
                     if hint is None:
                         hint = self._annotation_to_hint(arg.annotation)
                         if hint is not None:
                             self.explicit_type_hints[arg.arg] = hint
-                    if hint is not None:
-                        self.async_local_hints[arg.arg] = hint
+                if hint is None:
+                    hint = self._infer_annotation_hint(arg.annotation)
+                if hint is not None:
+                    self.async_local_hints[arg.arg] = hint
             self._store_return_slot_for_stateful()
             self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
             self._init_scope_async_locals(arg_nodes)
@@ -24835,6 +24865,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         hint = explicit
                     elif hint is None:
                         hint = "Any"
+                if hint is None:
+                    hint = self._infer_annotation_hint(arg.annotation)
                 value = MoltValue(arg.arg, type_hint=hint or "Unknown")
                 if hint is not None:
                     self._apply_hint_to_value(arg.arg, value, hint)
@@ -24962,14 +24994,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.free_var_hints = free_var_hints
         for i, arg in enumerate(arg_nodes):
             self.async_locals[arg.arg] = self.async_locals_base + i * 8
+            hint = None
             if self._hints_enabled():
                 hint = self.explicit_type_hints.get(arg.arg)
                 if hint is None:
                     hint = self._annotation_to_hint(arg.annotation)
                     if hint is not None:
                         self.explicit_type_hints[arg.arg] = hint
-                if hint is not None:
-                    self.async_local_hints[arg.arg] = hint
+            if hint is None:
+                hint = self._infer_annotation_hint(arg.annotation)
+            if hint is not None:
+                self.async_local_hints[arg.arg] = hint
         self._store_return_slot_for_stateful()
         self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
         self._init_scope_async_locals(arg_nodes)
@@ -25099,6 +25134,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     hint = explicit
                 elif hint is None:
                     hint = "Any"
+            if hint is None:
+                hint = self._infer_annotation_hint(arg.annotation)
             value = MoltValue(arg.arg, type_hint=hint or "Unknown")
             if hint is not None:
                 self._apply_hint_to_value(arg.arg, value, hint)
@@ -25574,6 +25611,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         self.explicit_type_hints[arg.arg] = hint
             if hint is None and self._hints_enabled():
                 hint = "Any"
+            if hint is None:
+                hint = self._infer_annotation_hint(arg.annotation)
             value = MoltValue(arg.arg, type_hint=hint or "Unknown")
             if hint is not None:
                 self._apply_hint_to_value(arg.arg, value, hint)
@@ -25985,6 +26024,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         self.explicit_type_hints[arg.arg] = hint
             if hint is None and self._hints_enabled():
                 hint = "Any"
+            if hint is None:
+                hint = self._infer_annotation_hint(arg.annotation)
             value = MoltValue(arg.arg, type_hint=hint or "Unknown")
             if hint is not None:
                 self._apply_hint_to_value(arg.arg, value, hint)
