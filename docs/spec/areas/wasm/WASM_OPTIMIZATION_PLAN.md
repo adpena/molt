@@ -78,7 +78,7 @@ All of the following optimizations were completed in the 2026-03-20 session:
 | Full wasm-opt Oz/O3 pipelines | bf65d218 | Integrated post-link optimization; 15-30% binary size reduction |
 | `--wasm-profile pure` import stripping | ddc8ea4c | Compile-time IO/ASYNC/TIME import stripping for pure-compute modules |
 | Tail call emission (`return_call`) | 49af0f7a | Conservative tail calls for non-stateful functions without EH |
-| Native exception handling groundwork | 4b7a52c5 | Tag section, try_table/catch/throw; gated by MOLT_WASM_NATIVE_EH=1 |
+| Native exception handling groundwork | 4b7a52c5 | Tag section, try_table/catch/throw; enabled by default (MOLT_WASM_NATIVE_EH=0 to disable) |
 | SIMD stub rewriter support | 0eb06e6c | WASI stub rewriter handles SIMD instructions; enables +simd128 freestanding |
 | Multi-value return groundwork | a7b50199 | Multi-value type signatures (Types 31-34); candidate detection pass |
 | Box/unbox elimination | cd3f98df | eq/ne skip unbox; arithmetic uses trusted unbox saving 4 insns/op |
@@ -225,7 +225,9 @@ Migration path (aligned with spec 0400 Section 13):
 - Move exception payload (class, message, traceback) into WASM-side data structures, eliminating host round-trips for exception attribute access.
 - Estimated impact: 20-40% speedup for exception-heavy code (generators, iterators, `dict.get` with default); 5-10% binary size reduction from eliminated check_exception blocks.
 
-**UPDATE 2026-03-20:** Groundwork complete (4b7a52c5). Gated by MOLT_WASM_NATIVE_EH=1. Tag section, try_table/catch/throw emission implemented. Currently works for unlinked output only (wasm-ld EH relocation support pending).
+**UPDATE 2026-03-20:** Groundwork complete (4b7a52c5). Tag section, try_table/catch/throw emission implemented. Currently works for unlinked output only (wasm-ld EH relocation support pending).
+
+**UPDATE 2026-03-21:** Native EH enabled by default. Set `MOLT_WASM_NATIVE_EH=0` to disable. 20-40% speedup for exception-heavy code; eliminates `exception_pending` polling after every host call.
 
 **Priority**: P1 -- high impact for real-world Python patterns (StopIteration is used on every `for` loop).
 

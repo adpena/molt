@@ -66,7 +66,7 @@ const BR_TABLE_MIN_ENTRIES: usize = 5;
 // Estimated impact: 20-40% speedup for exception-heavy code; 5-10%
 // binary size reduction from eliminating exception_pending checks.
 //
-// Gated by MOLT_WASM_NATIVE_EH=1 environment variable.
+// Enabled by default; set MOLT_WASM_NATIVE_EH=0 to disable.
 // ---------------------------------------------------------------------------
 
 /// Type index for the exception tag payload: (i64) -> ()
@@ -1077,7 +1077,7 @@ pub struct WasmCompileOptions {
     pub data_base: u32,
     pub table_base: u32,
     /// Enable native WASM exception handling (WASM 3.0 EH proposal).
-    /// Gated by `MOLT_WASM_NATIVE_EH=1` environment variable.
+    /// Enabled by default; set `MOLT_WASM_NATIVE_EH=0` to disable.
     pub native_eh_enabled: bool,
     /// WASM profile for compile-time import stripping.
     /// Gated by `MOLT_WASM_PROFILE` environment variable ("full" or "pure").
@@ -1100,7 +1100,7 @@ impl Default for WasmCompileOptions {
                 Ok(value) => value.parse::<u32>().unwrap_or(RELOC_TABLE_BASE_DEFAULT),
                 Err(_) => RELOC_TABLE_BASE_DEFAULT,
             },
-            native_eh_enabled: matches!(std::env::var("MOLT_WASM_NATIVE_EH").as_deref(), Ok("1")),
+            native_eh_enabled: !matches!(std::env::var("MOLT_WASM_NATIVE_EH").as_deref(), Ok("0")),
             wasm_profile: match std::env::var("MOLT_WASM_PROFILE").as_deref() {
                 Ok("pure") => WasmProfile::Pure,
                 _ => WasmProfile::Full,
@@ -4181,7 +4181,7 @@ impl WasmBackend {
                 );
             } else {
                 eprintln!(
-                    "[molt-wasm-import-audit] native EH disabled (set MOLT_WASM_NATIVE_EH=1)"
+                    "[molt-wasm-import-audit] native EH disabled (MOLT_WASM_NATIVE_EH=0)"
                 );
             }
 

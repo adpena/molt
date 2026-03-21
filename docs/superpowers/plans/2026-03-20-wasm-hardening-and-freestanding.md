@@ -1020,7 +1020,7 @@ Beyond the six planned tasks, ten additional performance optimizations were impl
 
 11. **Tail call emission (`return_call`)** (49af0f7a): Conservative tail call optimization for non-stateful functions without exception handling. Emits `return_call` / `return_call_indirect` instead of `call` + `return` in tail position. Reports eligible function count via `MOLT_WASM_IMPORT_AUDIT=1`.
 
-12. **Native exception handling groundwork** (4b7a52c5): WASM native EH support gated by `MOLT_WASM_NATIVE_EH=1`. Implements tag section emission, `try_table`/`catch`/`throw` instruction generation. Currently works for unlinked output only (wasm-ld EH relocation support pending).
+12. **Native exception handling groundwork** (4b7a52c5): WASM native EH support enabled by default (set `MOLT_WASM_NATIVE_EH=0` to disable). Implements tag section emission, `try_table`/`catch`/`throw` instruction generation. Currently works for unlinked output only (wasm-ld EH relocation support pending).
 
 13. **SIMD stub rewriter support** (0eb06e6c): The WASI stub rewriter (`tools/wasm_stub_wasi.py`) now correctly handles SIMD instructions, enabling freestanding builds with `+simd128` target features.
 
