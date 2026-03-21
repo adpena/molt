@@ -2219,9 +2219,10 @@ def _run_wasm_ld(
             updated = _declare_ref_func_elements(linked_bytes)
         except ValueError as exc:
             print(
-                f"Failed to declare ref.func elements: {exc}", file=sys.stderr
+                f"Warning: skipping ref.func element declaration: {exc}",
+                file=sys.stderr,
             )
-            return 1
+            updated = None
         if updated is not None:
             linked.write_bytes(updated)
             linked_bytes = updated
