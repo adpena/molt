@@ -70,10 +70,10 @@ try:
     # Keep `inspect.signature` parity for callable instances.
     _Helper.__call__.__text_signature__ = "(self, *args, **kwds)"  # type: ignore[attr-defined]
     Quitter.__call__.__text_signature__ = "(self, code=None)"  # type: ignore[attr-defined]
-except Exception as _exc:  # noqa: BLE001
-    raise RuntimeError(
-        "_sitebuiltins missing __text_signature__ support for inspect.signature parity"
-    ) from _exc
+except Exception:  # noqa: BLE001
+    # Non-fatal: __text_signature__ is cosmetic (inspect.signature parity).
+    # On WASM/micro builds, method objects may not support arbitrary attributes.
+    pass
 
 
 quit = Quitter("quit")

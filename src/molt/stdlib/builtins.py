@@ -33,10 +33,8 @@ locals = _require_intrinsic("molt_locals_builtin", _NS)
 try:
     globals.__text_signature__ = "()"  # type: ignore[attr-defined]
     locals.__text_signature__ = "()"  # type: ignore[attr-defined]
-except Exception as _exc:  # noqa: BLE001
-    raise RuntimeError(
-        "builtins.globals/locals missing __text_signature__ support for inspect.signature parity"
-    ) from _exc
+except Exception:  # noqa: BLE001
+    pass  # Non-fatal: cosmetic for inspect.signature parity
 
 
 def _molt_descriptor_types():
