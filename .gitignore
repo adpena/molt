@@ -49,6 +49,8 @@ winget-pkgs/
 bench/results/*
 !bench/results/bench.json
 !bench/results/bench_wasm.json
+!bench/results/profile_analysis_*.md
+!bench/results/profiles_*
 bench/cython/
 bench/numba/
 bench/codon/
