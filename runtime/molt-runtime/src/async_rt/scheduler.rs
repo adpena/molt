@@ -2739,16 +2739,7 @@ impl MoltScheduler {
                 let stealers_clone = stealers.clone();
                 let running_clone = Arc::clone(&running);
 
-                crate::concurrency::register_gil_thread();
                 let handle = thread::spawn(move || {
-                    struct _GilThreadGuard;
-                    impl Drop for _GilThreadGuard {
-                        fn drop(&mut self) {
-                            crate::concurrency::unregister_gil_thread();
-                        }
-                    }
-                    let _gtg = _GilThreadGuard;
-
                     if async_trace_enabled() {
                         eprintln!("molt async trace: worker_start idx={}", i);
                     }
