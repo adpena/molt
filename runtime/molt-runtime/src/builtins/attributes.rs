@@ -4640,17 +4640,43 @@ pub unsafe extern "C" fn molt_get_attr_object(
                 }
                 return molt_get_attr_generic(ptr, attr_name_ptr, attr_name_len_bits);
             }
-            if (obj.is_int() || obj.is_bool())
-                && let Some(func_bits) = int_method_bits(_py, attr_name)
-            {
-                let bound_bits = molt_bound_method_new(func_bits, obj_bits);
-                return bound_bits as i64;
+            if obj.is_int() || obj.is_bool() {
+                if let Some(func_bits) = int_method_bits(_py, attr_name) {
+                    let bound_bits = molt_bound_method_new(func_bits, obj_bits);
+                    return bound_bits as i64;
+                }
             }
-            if obj.is_float()
-                && let Some(func_bits) = float_method_bits(_py, attr_name)
+            if obj.is_float() {
+                if let Some(func_bits) = float_method_bits(_py, attr_name) {
+                    let bound_bits = molt_bound_method_new(func_bits, obj_bits);
+                    return bound_bits as i64;
+                }
+            }
+            // Inline int/float/bool: fall back to class-based resolution
+            // so that inherited methods (e.g. object.__init__) are found.
+            // Check the specific type first, then fall through to `object`.
             {
-                let bound_bits = molt_bound_method_new(func_bits, obj_bits);
-                return bound_bits as i64;
+                let builtins = builtin_classes(_py);
+                let class_bits = if obj.is_float() {
+                    builtins.float
+                } else if obj.is_bool() {
+                    builtins.bool
+                } else if obj.is_int() {
+                    builtins.int
+                } else {
+                    0
+                };
+                if class_bits != 0 {
+                    if let Some(func_bits) = builtin_class_method_bits(_py, class_bits, attr_name) {
+                        let bound_bits = molt_bound_method_new(func_bits, obj_bits);
+                        return bound_bits as i64;
+                    }
+                    // Inherited from object (base of all builtin numeric types).
+                    if let Some(func_bits) = builtin_class_method_bits(_py, builtins.object, attr_name) {
+                        let bound_bits = molt_bound_method_new(func_bits, obj_bits);
+                        return bound_bits as i64;
+                    }
+                }
             }
             attr_error(_py, type_name(_py, obj), attr_name)
         })
@@ -4934,15 +4960,37 @@ pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
                 ) as u64;
             }
             let obj = obj_from_bits(obj_bits);
-            if (obj.is_int() || obj.is_bool())
-                && let Some(func_bits) = int_method_bits(_py, &attr_name)
-            {
-                return molt_bound_method_new(func_bits, obj_bits);
+            if obj.is_int() || obj.is_bool() {
+                if let Some(func_bits) = int_method_bits(_py, &attr_name) {
+                    return molt_bound_method_new(func_bits, obj_bits);
+                }
             }
-            if obj.is_float()
-                && let Some(func_bits) = float_method_bits(_py, &attr_name)
+            if obj.is_float() {
+                if let Some(func_bits) = float_method_bits(_py, &attr_name) {
+                    return molt_bound_method_new(func_bits, obj_bits);
+                }
+            }
+            // Inline int/float/bool: fall back to class-based resolution
+            // so that inherited methods (e.g. object.__init__) are found.
             {
-                return molt_bound_method_new(func_bits, obj_bits);
+                let builtins = builtin_classes(_py);
+                let class_bits = if obj.is_float() {
+                    builtins.float
+                } else if obj.is_bool() {
+                    builtins.bool
+                } else if obj.is_int() {
+                    builtins.int
+                } else {
+                    0
+                };
+                if class_bits != 0 {
+                    if let Some(func_bits) = builtin_class_method_bits(_py, class_bits, &attr_name) {
+                        return molt_bound_method_new(func_bits, obj_bits);
+                    }
+                    if let Some(func_bits) = builtin_class_method_bits(_py, builtins.object, &attr_name) {
+                        return molt_bound_method_new(func_bits, obj_bits);
+                    }
+                }
             }
             attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits) as u64
         }

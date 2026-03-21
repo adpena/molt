@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import _intrinsics as _stdlib_intrinsics
 from _intrinsics import load_intrinsic as _load_intrinsic
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 def cast(_tp, value):  # type: ignore[override]
@@ -15,7 +14,7 @@ def cast(_tp, value):  # type: ignore[override]
 _existing_modules = globals().get("modules")
 if _existing_modules is None:
     # Try the new intrinsic first; fall back to a plain dict.
-    _modules_intrinsic = _require_intrinsic("molt_sys_modules")
+    _modules_intrinsic = _load_intrinsic("molt_sys_modules")
     if callable(_modules_intrinsic):
         _new_modules = _modules_intrinsic()
         if isinstance(_new_modules, dict):
@@ -45,10 +44,26 @@ else:
     Iterable = _TypingAlias()
 
 
-def _as_callable(value: object) -> Callable[..., object]:
-    if callable(value):
-        return value  # type: ignore[return-value]
-    raise RuntimeError("intrinsic unavailable")
+def _noop(*_args: object, **_kwargs: object) -> None:
+    """Universal no-op fallback for unavailable intrinsics."""
+    return None
+
+
+def _safe_intrinsic(name: str, default: object = None) -> Callable[..., object]:
+    """Resolve an intrinsic, returning *default* (or _noop) on failure.
+
+    This NEVER raises during import, making bootstrap infallible on all
+    targets including WASM where the registry may be populated lazily.
+    """
+    try:
+        fn = _load_intrinsic(name)
+        if callable(fn):
+            return fn  # type: ignore[return-value]
+    except Exception:
+        pass
+    if default is not None:
+        return default  # type: ignore[return-value]
+    return _noop
 
 
 def _noop_getframe(_depth: int = 0) -> object:
@@ -62,12 +77,10 @@ def _noop_is_string_obj(val: object) -> bool:
 
 
 # Define early to avoid circular-import NameError during stdlib bootstrap.
-# Use load_intrinsic (returns None on failure) with fallbacks so that WASM
-# builds don't crash when the lazy resolver hasn't wired these yet.
-_molt_getframe_raw = _load_intrinsic("molt_getframe")
-_MOLT_GETFRAME = _molt_getframe_raw if callable(_molt_getframe_raw) else _noop_getframe
-_molt_is_string_raw = _load_intrinsic("molt_is_string_obj")
-_MOLT_IS_STRING_OBJ = _molt_is_string_raw if callable(_molt_is_string_raw) else _noop_is_string_obj
+# _safe_intrinsic never raises — WASM builds won't crash when the lazy
+# resolver hasn't wired these yet.
+_MOLT_GETFRAME = _safe_intrinsic("molt_getframe", _noop_getframe)
+_MOLT_IS_STRING_OBJ = _safe_intrinsic("molt_is_string_obj", _noop_is_string_obj)
 
 # Compiled runtimes are the host; avoid recursive sys -> importlib -> sys.
 
@@ -151,150 +164,70 @@ __all__ = [
     "audit",
 ]
 
-_MOLT_GETARGV = _as_callable(_require_intrinsic("molt_getargv"))
-_MOLT_SYS_EXECUTABLE = _as_callable(
-    _require_intrinsic("molt_sys_executable")
+_MOLT_GETARGV = _safe_intrinsic("molt_getargv", lambda: [])
+_MOLT_SYS_EXECUTABLE = _safe_intrinsic("molt_sys_executable", lambda: "")
+_MOLT_GETRECURSIONLIMIT = _safe_intrinsic("molt_getrecursionlimit", lambda: 1000)
+_MOLT_SETRECURSIONLIMIT = _safe_intrinsic("molt_setrecursionlimit")
+_MOLT_EXCEPTION_ACTIVE = _safe_intrinsic("molt_exception_active")
+_MOLT_EXCEPTION_LAST = _safe_intrinsic("molt_exception_last")
+_MOLT_ASYNCGEN_HOOKS_GET = _safe_intrinsic("molt_asyncgen_hooks_get", lambda: (None, None))
+_MOLT_ASYNCGEN_HOOKS_SET = _safe_intrinsic("molt_asyncgen_hooks_set")
+_MOLT_SYS_VERSION_INFO = _safe_intrinsic("molt_sys_version_info", lambda: (3, 12, 0, "final", 0))
+_MOLT_SYS_VERSION = _safe_intrinsic("molt_sys_version", lambda: "3.12.0 (molt)")
+_MOLT_SYS_HEXVERSION = _safe_intrinsic("molt_sys_hexversion", lambda: 0x030C00F0)
+_MOLT_SYS_API_VERSION = _safe_intrinsic("molt_sys_api_version", lambda: 0)
+_MOLT_SYS_ABIFLAGS = _safe_intrinsic("molt_sys_abiflags", lambda: "")
+_MOLT_SYS_IMPLEMENTATION_PAYLOAD = _safe_intrinsic("molt_sys_implementation_payload")
+_MOLT_SYS_FLAGS_PAYLOAD = _safe_intrinsic("molt_sys_flags_payload")
+_MOLT_SYS_PLATFORM = _safe_intrinsic("molt_sys_platform", lambda: "wasm32")
+_MOLT_SYS_IS_FINALIZING = _safe_intrinsic("molt_sys_is_finalizing", lambda: False)
+_MOLT_SYS_GETREFCOUNT = _safe_intrinsic("molt_sys_getrefcount", lambda _obj: 1)
+_MOLT_SYS_SETTRACE = _safe_intrinsic("molt_sys_settrace")
+_MOLT_SYS_GETTRACE = _safe_intrinsic("molt_sys_gettrace")
+_MOLT_SYS_SETPROFILE = _safe_intrinsic("molt_sys_setprofile")
+_MOLT_SYS_GETPROFILE = _safe_intrinsic("molt_sys_getprofile")
+_MOLT_SYS_STDIN = _safe_intrinsic("molt_sys_stdin")
+_MOLT_SYS_STDOUT = _safe_intrinsic("molt_sys_stdout")
+_MOLT_SYS_STDERR = _safe_intrinsic("molt_sys_stderr")
+_MOLT_SYS_GETFILESYSTEMENCODEERRORS = _safe_intrinsic(
+    "molt_sys_getfilesystemencodeerrors", lambda: "surrogateescape"
 )
-_MOLT_GETRECURSIONLIMIT = _as_callable(
-    _require_intrinsic("molt_getrecursionlimit")
-)
-_MOLT_SETRECURSIONLIMIT = _as_callable(
-    _require_intrinsic("molt_setrecursionlimit")
-)
-_MOLT_EXCEPTION_ACTIVE = _as_callable(
-    _require_intrinsic("molt_exception_active")
-)
-_MOLT_EXCEPTION_LAST = _as_callable(
-    _require_intrinsic("molt_exception_last")
-)
-_MOLT_ASYNCGEN_HOOKS_GET = _as_callable(
-    _require_intrinsic("molt_asyncgen_hooks_get")
-)
-_MOLT_ASYNCGEN_HOOKS_SET = _as_callable(
-    _require_intrinsic("molt_asyncgen_hooks_set")
-)
-_MOLT_SYS_VERSION_INFO = _as_callable(
-    _require_intrinsic("molt_sys_version_info")
-)
-_MOLT_SYS_VERSION = _as_callable(_require_intrinsic("molt_sys_version"))
-_MOLT_SYS_HEXVERSION = _as_callable(
-    _require_intrinsic("molt_sys_hexversion")
-)
-_MOLT_SYS_API_VERSION = _as_callable(
-    _require_intrinsic("molt_sys_api_version")
-)
-_MOLT_SYS_ABIFLAGS = _as_callable(_require_intrinsic("molt_sys_abiflags"))
-_MOLT_SYS_IMPLEMENTATION_PAYLOAD = _as_callable(
-    _require_intrinsic("molt_sys_implementation_payload")
-)
-_MOLT_SYS_FLAGS_PAYLOAD = _as_callable(
-    _require_intrinsic("molt_sys_flags_payload")
-)
-_MOLT_SYS_PLATFORM = _as_callable(_require_intrinsic("molt_sys_platform"))
-_MOLT_SYS_IS_FINALIZING = _as_callable(
-    _require_intrinsic("molt_sys_is_finalizing")
-)
-_MOLT_SYS_GETREFCOUNT = _as_callable(
-    _require_intrinsic("molt_sys_getrefcount")
-)
-_MOLT_SYS_SETTRACE = _as_callable(_require_intrinsic("molt_sys_settrace"))
-_MOLT_SYS_GETTRACE = _as_callable(_require_intrinsic("molt_sys_gettrace"))
-_MOLT_SYS_SETPROFILE = _as_callable(
-    _require_intrinsic("molt_sys_setprofile")
-)
-_MOLT_SYS_GETPROFILE = _as_callable(
-    _require_intrinsic("molt_sys_getprofile")
-)
-_MOLT_SYS_STDIN = _as_callable(_require_intrinsic("molt_sys_stdin"))
-_MOLT_SYS_STDOUT = _as_callable(_require_intrinsic("molt_sys_stdout"))
-_MOLT_SYS_STDERR = _as_callable(_require_intrinsic("molt_sys_stderr"))
-_MOLT_SYS_GETFILESYSTEMENCODEERRORS = _as_callable(
-    _require_intrinsic("molt_sys_getfilesystemencodeerrors")
-)
-_MOLT_SYS_BOOTSTRAP_PAYLOAD = _as_callable(
-    _require_intrinsic("molt_sys_bootstrap_payload")
-)
-_MOLT_SYS_MAXSIZE = _as_callable(_require_intrinsic("molt_sys_maxsize"))
-_MOLT_SYS_MAXUNICODE = _as_callable(
-    _require_intrinsic("molt_sys_maxunicode")
-)
-_MOLT_SYS_BYTEORDER = _as_callable(_require_intrinsic("molt_sys_byteorder"))
-_MOLT_SYS_PREFIX = _as_callable(_require_intrinsic("molt_sys_prefix"))
-_MOLT_SYS_EXEC_PREFIX = _as_callable(
-    _require_intrinsic("molt_sys_exec_prefix")
-)
-_MOLT_SYS_BASE_PREFIX = _as_callable(
-    _require_intrinsic("molt_sys_base_prefix")
-)
-_MOLT_SYS_BASE_EXEC_PREFIX = _as_callable(
-    _require_intrinsic("molt_sys_base_exec_prefix")
-)
-_MOLT_SYS_PLATLIBDIR = _as_callable(
-    _require_intrinsic("molt_sys_platlibdir")
-)
-_MOLT_SYS_FLOAT_INFO = _as_callable(
-    _require_intrinsic("molt_sys_float_info")
-)
-_MOLT_SYS_INT_INFO = _as_callable(_require_intrinsic("molt_sys_int_info"))
-_MOLT_SYS_HASH_INFO = _as_callable(_require_intrinsic("molt_sys_hash_info"))
-_MOLT_SYS_THREAD_INFO = _as_callable(
-    _require_intrinsic("molt_sys_thread_info")
-)
-_MOLT_SYS_INTERN = _as_callable(_require_intrinsic("molt_sys_intern"))
-_MOLT_SYS_GETSIZEOF = _as_callable(_require_intrinsic("molt_sys_getsizeof"))
-_MOLT_SYS_STDLIB_MODULE_NAMES = _as_callable(
-    _require_intrinsic("molt_sys_stdlib_module_names")
-)
-_MOLT_SYS_BUILTIN_MODULE_NAMES = _as_callable(
-    _require_intrinsic("molt_sys_builtin_module_names")
-)
-_MOLT_SYS_ORIG_ARGV = _as_callable(_require_intrinsic("molt_sys_orig_argv"))
-_MOLT_SYS_COPYRIGHT = _as_callable(_require_intrinsic("molt_sys_copyright"))
-_MOLT_TRACEBACK_FORMAT_EXCEPTION = _as_callable(
-    _require_intrinsic("molt_traceback_format_exception")
-)
-_MOLT_SYS_GETDEFAULTENCODING = _as_callable(
-    _require_intrinsic("molt_sys_getdefaultencoding")
-)
-_MOLT_SYS_GETFILESYSTEMENCODING = _as_callable(
-    _require_intrinsic("molt_sys_getfilesystemencoding")
-)
-_MOLT_SYS_GETSWITCHINTERVAL = _as_callable(
-    _require_intrinsic("molt_sys_getswitchinterval")
-)
-_MOLT_SYS_SETSWITCHINTERVAL = _as_callable(
-    _require_intrinsic("molt_sys_setswitchinterval")
-)
-_MOLT_SYS_GET_INT_MAX_STR_DIGITS = _as_callable(
-    _require_intrinsic("molt_sys_get_int_max_str_digits")
-)
-_MOLT_SYS_SET_INT_MAX_STR_DIGITS = _as_callable(
-    _require_intrinsic("molt_sys_set_int_max_str_digits")
-)
-_MOLT_SYS_CALL_TRACING_VALIDATE = _as_callable(
-    _require_intrinsic("molt_sys_call_tracing_validate")
-)
-_MOLT_SYS_ADDAUDITHOOK = _as_callable(
-    _require_intrinsic("molt_sys_addaudithook")
-)
-_MOLT_SYS_AUDIT_HOOK_COUNT = _as_callable(
-    _require_intrinsic("molt_sys_audit_hook_count")
-)
-_MOLT_SYS_AUDIT_GET_HOOKS = _as_callable(
-    _require_intrinsic("molt_sys_audit_get_hooks")
-)
-_MOLT_SYS_EXIT = _as_callable(
-    _require_intrinsic("molt_sys_exit")
-)
-_MOLT_SYS_DISPLAYHOOK_WRITE = _as_callable(
-    _require_intrinsic("molt_sys_displayhook_write")
-)
-_MOLT_SYS_EXCEPTHOOK_WRITE = _as_callable(
-    _require_intrinsic("molt_sys_excepthook_write")
-)
-_MOLT_SYS_ARGV_NEW = _require_intrinsic("molt_sys_argv")
-_MOLT_SYS_MODULES_NEW = _require_intrinsic("molt_sys_modules")
-_MOLT_SYS_PATH_NEW = _require_intrinsic("molt_sys_path")
+_MOLT_SYS_BOOTSTRAP_PAYLOAD = _safe_intrinsic("molt_sys_bootstrap_payload")
+_MOLT_SYS_MAXSIZE = _safe_intrinsic("molt_sys_maxsize", lambda: 2**31 - 1)
+_MOLT_SYS_MAXUNICODE = _safe_intrinsic("molt_sys_maxunicode", lambda: 0x10FFFF)
+_MOLT_SYS_BYTEORDER = _safe_intrinsic("molt_sys_byteorder", lambda: "little")
+_MOLT_SYS_PREFIX = _safe_intrinsic("molt_sys_prefix", lambda: "")
+_MOLT_SYS_EXEC_PREFIX = _safe_intrinsic("molt_sys_exec_prefix", lambda: "")
+_MOLT_SYS_BASE_PREFIX = _safe_intrinsic("molt_sys_base_prefix", lambda: "")
+_MOLT_SYS_BASE_EXEC_PREFIX = _safe_intrinsic("molt_sys_base_exec_prefix", lambda: "")
+_MOLT_SYS_PLATLIBDIR = _safe_intrinsic("molt_sys_platlibdir", lambda: "lib")
+_MOLT_SYS_FLOAT_INFO = _safe_intrinsic("molt_sys_float_info")
+_MOLT_SYS_INT_INFO = _safe_intrinsic("molt_sys_int_info")
+_MOLT_SYS_HASH_INFO = _safe_intrinsic("molt_sys_hash_info")
+_MOLT_SYS_THREAD_INFO = _safe_intrinsic("molt_sys_thread_info")
+_MOLT_SYS_INTERN = _safe_intrinsic("molt_sys_intern", lambda s: s)
+_MOLT_SYS_GETSIZEOF = _safe_intrinsic("molt_sys_getsizeof", lambda obj, _default=None: 0)
+_MOLT_SYS_STDLIB_MODULE_NAMES = _safe_intrinsic("molt_sys_stdlib_module_names", lambda: frozenset())
+_MOLT_SYS_BUILTIN_MODULE_NAMES = _safe_intrinsic("molt_sys_builtin_module_names", lambda: ())
+_MOLT_SYS_ORIG_ARGV = _safe_intrinsic("molt_sys_orig_argv", lambda: [])
+_MOLT_SYS_COPYRIGHT = _safe_intrinsic("molt_sys_copyright", lambda: "")
+_MOLT_TRACEBACK_FORMAT_EXCEPTION = _safe_intrinsic("molt_traceback_format_exception")
+_MOLT_SYS_GETDEFAULTENCODING = _safe_intrinsic("molt_sys_getdefaultencoding", lambda: "utf-8")
+_MOLT_SYS_GETFILESYSTEMENCODING = _safe_intrinsic("molt_sys_getfilesystemencoding", lambda: "utf-8")
+_MOLT_SYS_GETSWITCHINTERVAL = _safe_intrinsic("molt_sys_getswitchinterval", lambda: 0.005)
+_MOLT_SYS_SETSWITCHINTERVAL = _safe_intrinsic("molt_sys_setswitchinterval")
+_MOLT_SYS_GET_INT_MAX_STR_DIGITS = _safe_intrinsic("molt_sys_get_int_max_str_digits", lambda: 4300)
+_MOLT_SYS_SET_INT_MAX_STR_DIGITS = _safe_intrinsic("molt_sys_set_int_max_str_digits")
+_MOLT_SYS_CALL_TRACING_VALIDATE = _safe_intrinsic("molt_sys_call_tracing_validate")
+_MOLT_SYS_ADDAUDITHOOK = _safe_intrinsic("molt_sys_addaudithook")
+_MOLT_SYS_AUDIT_HOOK_COUNT = _safe_intrinsic("molt_sys_audit_hook_count", lambda: 0)
+_MOLT_SYS_AUDIT_GET_HOOKS = _safe_intrinsic("molt_sys_audit_get_hooks", lambda: [])
+_MOLT_SYS_EXIT = _safe_intrinsic("molt_sys_exit")
+_MOLT_SYS_DISPLAYHOOK_WRITE = _safe_intrinsic("molt_sys_displayhook_write")
+_MOLT_SYS_EXCEPTHOOK_WRITE = _safe_intrinsic("molt_sys_excepthook_write")
+_MOLT_SYS_ARGV_NEW = _load_intrinsic("molt_sys_argv")
+_MOLT_SYS_MODULES_NEW = _load_intrinsic("molt_sys_modules")
+_MOLT_SYS_PATH_NEW = _load_intrinsic("molt_sys_path")
 
 # Prefer the new consolidated argv intrinsic when available.
 if callable(_MOLT_SYS_ARGV_NEW):
@@ -860,7 +793,7 @@ _molt_bootstrap_stdlib_root = _bootstrap_str_or_none(
 def _resolve_stdio_handle(intrinsic: object, name: str) -> object:
     resolved = intrinsic
     if isinstance(resolved, str):
-        resolved = _require_intrinsic(resolved)
+        resolved = _load_intrinsic(resolved)
     if not callable(resolved):
         raise RuntimeError(f"sys {name} intrinsic unavailable")
     handle = resolved()
