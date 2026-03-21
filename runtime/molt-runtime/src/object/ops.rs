@@ -7036,25 +7036,33 @@ fn number_as_f64(obj: MoltObject) -> Option<f64> {
 }
 
 fn sum_floats_scalar(elems: &[u64], acc: f64) -> Option<f64> {
-    let mut sum = acc;
+    let mut vals: Vec<f64> = Vec::with_capacity(elems.len());
     for &bits in elems {
         let obj = MoltObject::from_bits(bits);
-        sum += number_as_f64(obj)?;
+        vals.push(number_as_f64(obj)?);
     }
-    Some(sum)
+    Some(sum_f64_neumaier(&vals, acc))
 }
 
 // ---------------------------------------------------------------------------
 // SIMD-accelerated float sum: SSE2 (2×f64), AVX2 (4×f64), NEON (2×f64)
 // ---------------------------------------------------------------------------
 
-/// Scalar float sum on pre-extracted f64 values (no NaN-box decode overhead).
-fn sum_f64_raw_scalar(vals: &[f64], acc: f64) -> f64 {
+/// Neumaier compensated summation on pre-extracted f64 values.
+/// Matches CPython >= 3.12 `sum()` for float sequences.
+fn sum_f64_neumaier(vals: &[f64], acc: f64) -> f64 {
     let mut sum = acc;
-    for &v in vals {
-        sum += v;
+    let mut comp = 0.0_f64;
+    for &x in vals {
+        let t = sum + x;
+        if sum.abs() >= x.abs() {
+            comp += (sum - t) + x;
+        } else {
+            comp += (x - t) + sum;
+        }
+        sum = t;
     }
-    sum
+    sum + comp
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -7135,34 +7143,16 @@ unsafe fn sum_f64_simd_wasm32(vals: &[f64], acc: f64) -> f64 {
     }
 }
 
-/// Try to extract all elements as f64, then SIMD-sum. Returns None if any
-/// element is not a number (falls back to scalar path in caller).
+/// Extract all elements as f64 and compute Neumaier compensated sum.
+/// Returns None if any element is not a number (falls back to generic path).
+/// Uses Neumaier summation instead of SIMD to match CPython >= 3.12 `sum()`.
 fn sum_floats_simd(elems: &[u64], acc: f64) -> Option<f64> {
-    // Pre-extract all f64 values (avoids per-element branch inside SIMD loop)
+    // Pre-extract all f64 values
     let mut vals: Vec<f64> = Vec::with_capacity(elems.len());
     for &bits in elems {
         vals.push(number_as_f64(MoltObject::from_bits(bits))?);
     }
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("avx2") {
-            return Some(unsafe { sum_f64_simd_x86_64_avx2(&vals, acc) });
-        }
-        if std::arch::is_x86_feature_detected!("sse2") {
-            return Some(unsafe { sum_f64_simd_x86_64(&vals, acc) });
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            return Some(unsafe { sum_f64_simd_aarch64(&vals, acc) });
-        }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        return Some(unsafe { sum_f64_simd_wasm32(&vals, acc) });
-    }
-    Some(sum_f64_raw_scalar(&vals, acc))
+    Some(sum_f64_neumaier(&vals, acc))
 }
 
 // ---------------------------------------------------------------------------
@@ -15222,8 +15212,95 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
         if obj_from_bits(iter_obj).is_none() {
             return raise_not_iterable(_py, iter_bits);
         }
+        // CPython >= 3.12 uses Neumaier compensated summation for float sums.
+        // Detect float accumulation and switch to compensated mode.
         let mut total_bits = start_bits;
         let mut total_owned = false;
+        let start_f = to_f64(start_obj);
+        // If start is a number, try Neumaier compensated path.
+        if let Some(start_val) = start_f {
+            let mut fsum = start_val;
+            let mut comp = 0.0_f64; // Neumaier compensation term
+            let mut all_numeric = true;
+            loop {
+                let pair_bits = molt_iter_next(iter_obj);
+                let pair_obj = obj_from_bits(pair_bits);
+                let Some(pair_ptr) = pair_obj.as_ptr() else {
+                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+                };
+                unsafe {
+                    if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "object is not an iterator",
+                        );
+                    }
+                    let elems = seq_vec_ref(pair_ptr);
+                    if elems.len() < 2 {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "object is not an iterator",
+                        );
+                    }
+                    let val_bits = elems[0];
+                    let done_bits = elems[1];
+                    if is_truthy(_py, obj_from_bits(done_bits)) {
+                        if all_numeric {
+                            let result = fsum + comp;
+                            return MoltObject::from_float(result).bits();
+                        }
+                        if !total_owned {
+                            inc_ref_bits(_py, total_bits);
+                        }
+                        return total_bits;
+                    }
+                    let val_obj = obj_from_bits(val_bits);
+                    if all_numeric {
+                        // Check if value is float-coercible and stay in compensated mode
+                        let item_f = if let Some(f) = val_obj.as_float() {
+                            Some(f)
+                        } else if let Some(i) = to_i64(val_obj) {
+                            Some(i as f64)
+                        } else {
+                            None
+                        };
+                        if let Some(x) = item_f {
+                            // Neumaier compensated summation step
+                            let t = fsum + x;
+                            if fsum.abs() >= x.abs() {
+                                comp += (fsum - t) + x;
+                            } else {
+                                comp += (x - t) + fsum;
+                            }
+                            fsum = t;
+                            total_bits = MoltObject::from_float(fsum).bits();
+                            total_owned = true;
+                            continue;
+                        }
+                        // Non-numeric value: fall back to generic sum.
+                        all_numeric = false;
+                        total_bits = MoltObject::from_float(fsum + comp).bits();
+                    }
+                    let next_bits = molt_add(total_bits, val_bits);
+                    if obj_from_bits(next_bits).is_none() {
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
+                        return binary_type_error(
+                            _py,
+                            obj_from_bits(total_bits),
+                            obj_from_bits(val_bits),
+                            "+",
+                        );
+                    }
+                    total_bits = next_bits;
+                    total_owned = true;
+                }
+            }
+        }
+        // Non-numeric start: generic path
         loop {
             let pair_bits = molt_iter_next(iter_obj);
             let pair_obj = obj_from_bits(pair_bits);
