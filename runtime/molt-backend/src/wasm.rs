@@ -1225,10 +1225,6 @@ impl WasmBackend {
         }
         for func_ir in &mut ir.functions {
             crate::fold_constants(&mut func_ir.ops);
-            crate::fold_constants_cross_block(&mut func_ir.ops);
-        }
-        for func_ir in &mut ir.functions {
-            crate::propagate_loop_fast_int(func_ir);
         }
         crate::inline_functions(&mut ir);
 
@@ -5075,28 +5071,22 @@ impl WasmBackend {
                             label_depths: &mut BTreeMap<i64, usize>,
                             base_idx: usize| {
             // --- RC coalescing: eliminate redundant inc_ref/dec_ref pairs ---
-            // Compute last-use index for each variable within this op slice,
-            // then find paired inc/dec ops that cancel out.
             let last_use_local: BTreeMap<String, usize> = {
                 let mut lu = BTreeMap::new();
                 for (i, op) in ops.iter().enumerate() {
                     if let Some(var) = &op.var {
-                        if var != "none" {
-                            lu.insert(var.clone(), i);
-                        }
+                        if var != "none" { lu.insert(var.clone(), i); }
                     }
                     if let Some(args) = &op.args {
                         for name in args {
-                            if name != "none" {
-                                lu.insert(name.clone(), i);
-                            }
+                            if name != "none" { lu.insert(name.clone(), i); }
                         }
                     }
                 }
                 lu
             };
             let (rc_skip_inc, _rc_skip_dec) =
-                crate::compute_rc_coalesce_skips(ops, &last_use_local);
+                crate::passes::compute_rc_coalesce_skips(ops, &last_use_local);
 
             // Peephole state: track WASM locals whose raw (unboxed) integer
             // value is known at compile time.  Populated by `const` ops;
