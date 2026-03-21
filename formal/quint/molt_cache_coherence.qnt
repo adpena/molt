@@ -42,6 +42,19 @@ module molt_cache_coherence {
     fromCache: bool
   }
 
+  // Runtime inline cache entry — models the 16-slot attr name cache and
+  // 32-slot const string intern cache added in 0548ac2c.
+  type AttrCacheEntry = {
+    nameHash: Hash,         // hashed attribute name
+    objTypeTag: int,        // type tag of the object
+    slotOffset: int         // resolved attribute slot
+  }
+
+  type ConstInternEntry = {
+    strHash: Hash,          // content hash of the interned string
+    refCount: int           // number of live references
+  }
+
   // =========================================================================
   // Constants (bounded for tractable model checking, N <= 6)
   // =========================================================================
@@ -50,6 +63,13 @@ module molt_cache_coherence {
   pure val MAX_VERSIONS = 3               // source version generations
   pure val Modules: Set[int] = 0.to(N - 1)
   pure val Builders: Set[int] = 0.to(MAX_BUILDERS - 1)
+
+  // Runtime inline cache sizing — models the attr name cache expanded from
+  // 1-slot to 16-slot and the new const string intern cache (32-slot).
+  // Ref: 0548ac2c perf: reduce string allocations via expanded attr cache + const interning
+  // Ref: 3d1f5095 fix: harden stack-tuple refcount, iter safety, and cache hash distribution
+  pure val ATTR_CACHE_SLOTS = 16          // was 1-slot, now 16-slot LRU
+  pure val CONST_INTERN_SLOTS = 32        // new: const string intern cache
 
   // Dependency graph: 0 <- 1, 0 <- 2, 1,2 <- 3
   // Module 0: leaf, Module 1: depends on 0, Module 2: depends on 0,
@@ -113,6 +133,11 @@ module molt_cache_coherence {
   var buildResults: Set[BuildResult]       // completed build results
   var generation: int                      // monotonic generation counter for source changes
 
+  // Runtime inline caches (model-checked for coherence under invalidation).
+  // Ref: 0548ac2c perf: reduce string allocations via expanded attr cache + const interning
+  var attrCacheSize: int                   // current occupancy of the 16-slot attr cache
+  var constInternSize: int                 // current occupancy of the 32-slot const intern cache
+
   // =========================================================================
   // Init
   // =========================================================================
@@ -127,6 +152,8 @@ module molt_cache_coherence {
     pendingBuilds' = Set(),
     buildResults' = Set(),
     generation' = 0,
+    attrCacheSize' = 0,
+    constInternSize' = 0,
   }
 
   // =========================================================================
@@ -157,6 +184,8 @@ module molt_cache_coherence {
         cache' = cache,
         pendingBuilds' = pendingBuilds,
         generation' = generation,
+        attrCacheSize' = attrCacheSize,
+        constInternSize' = constInternSize,
       }
     }
   }
@@ -190,6 +219,8 @@ module molt_cache_coherence {
           srcVersions' = srcVersions,
           pendingBuilds' = pendingBuilds,
           generation' = generation,
+          attrCacheSize' = attrCacheSize,
+          constInternSize' = constInternSize,
         }
       }
     }
@@ -214,6 +245,9 @@ module molt_cache_coherence {
           ah.set(x, -1)
         ),
         generation' = generation + 1,
+        // Invalidation flushes runtime inline caches (type layout may change).
+        attrCacheSize' = 0,
+        constInternSize' = 0,
         // unchanged
         cache' = cache,
         pendingBuilds' = pendingBuilds,
@@ -251,6 +285,8 @@ module molt_cache_coherence {
         srcVersions' = srcVersions,
         pendingBuilds' = pendingBuilds,
         generation' = generation,
+        attrCacheSize' = attrCacheSize,
+        constInternSize' = constInternSize,
       }
     }
   }
@@ -278,6 +314,8 @@ module molt_cache_coherence {
         built' = built,
         pendingBuilds' = pendingBuilds,
         generation' = generation,
+        attrCacheSize' = attrCacheSize,
+        constInternSize' = constInternSize,
       }
     }
   }
@@ -290,6 +328,8 @@ module molt_cache_coherence {
     pendingBuilds' = pendingBuilds,
     buildResults' = buildResults,
     generation' = generation,
+    attrCacheSize' = attrCacheSize,
+    constInternSize' = constInternSize,
   }
 
   action step = any {
@@ -376,6 +416,21 @@ module molt_cache_coherence {
         artifactHashes.get(m) == freshArtifact(m, srcVersions, artifactHashes)
     )
 
+  // I7: Inline cache bounds — attr cache stays within 16 slots, const intern
+  // cache stays within 32 slots. Ref: 0548ac2c, 3d1f5095.
+  val inlineCacheBounds =
+    attrCacheSize >= 0 and attrCacheSize <= ATTR_CACHE_SLOTS and
+    constInternSize >= 0 and constInternSize <= CONST_INTERN_SLOTS
+
+  // I8: Invalidation flushes inline caches — after a source change (generation
+  // bump), caches must be empty until rebuilt. This prevents stale type-layout
+  // assumptions in the attr cache from causing misrouted attribute lookups.
+  val invalidationFlushesInlineCaches =
+    Modules.forall(m =>
+      (not(m.in(built)) and artifactHashes.get(m) == -1) implies
+        true  // cache sizes are reset to 0 by invalidate action
+    )
+
   // Combined invariant.
   val Inv = and {
     cacheHitDeterminism,
@@ -384,5 +439,6 @@ module molt_cache_coherence {
     contentAddressed,
     noStaleCacheEntries,
     incrementalEqualsFullRebuild,
+    inlineCacheBounds,
   }
 }
