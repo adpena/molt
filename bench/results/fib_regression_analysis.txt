@@ -1,0 +1,129 @@
+# fib Regression Analysis: Dict Allocation in Call Frames
+
+## Root Cause
+
+**Unconditional locals-dict allocation in `start_function()`** at
+`src/molt/frontend/__init__.py:2431-2441`.
+
+Every non-`molt_main` function unconditionally calls `_init_locals_cache()`,
+which emits a `DICT_NEW` IR op at function entry.  This heap-allocates a
+Python dict on **every call** -- even for functions like `fib` that never
+invoke `locals()`.
+
+The offending code (added in commit `3452a9b9`, 2026-02-14):
+
+```python
+# src/molt/frontend/__init__.py, inside start_function()
+if name != "molt_main":
+    self._init_locals_cache()          # <-- unconditional DICT_NEW
+    cache_val = self.locals_cache_val
+    if cache_val is not None:
+        self.emit(
+            MoltOp(
+                kind="FRAME_LOCALS_SET",
+                args=[cache_val],
+                result=MoltValue("none"),
+            )
+        )
+```
+
+The intent was to support aliased `locals()` calls like
+`getattr(builtins, "locals")()`.  However, the individual function-definition
+visitors (`visit_FunctionDef`, `visit_AsyncFunctionDef`, lambda visitors)
+already contain the correct guarded pattern:
+
+```python
+needs_locals_cache = self._function_contains_locals_call(node)
+...
+if needs_locals_cache:
+    self._init_locals_cache()
+```
+
+Because `start_function()` runs first and sets `self.locals_cache_val`, the
+conditional calls in the visitors are effectively no-ops -- the damage is
+already done.
+
+## Evidence
+
+| Metric | Value |
+|--------|-------|
+| `fib(30)` recursive calls | 2,692,537 |
+| `ALLOC_DICT_COUNT` | 2,693,923 |
+| Expected dict allocs for `fib` | 0 |
+| Baseline speedup (before regression) | 3.07x vs CPython |
+| Current speedup | 0.05x vs CPython (~20x slower) |
+
+The `ALLOC_DICT_COUNT` counter is incremented at
+`runtime/molt-runtime/src/object/mod.rs:599` for every `TYPE_ID_DICT`
+allocation.  The near-exact match with call count confirms one dict per
+call.
+
+## Files Involved
+
+| File | Role |
+|------|------|
+| `src/molt/frontend/__init__.py:2431` | **Bug site** -- unconditional `_init_locals_cache()` in `start_function()` |
+| `src/molt/frontend/__init__.py:4792` | `_init_locals_cache()` -- emits `DICT_NEW` |
+| `src/molt/frontend/__init__.py:25361` | Correct guarded call in `visit_FunctionDef` (non-generator branch) |
+| `runtime/molt-runtime/src/builtins/containers_alloc.rs:10` | `molt_dict_new` -- runtime dict allocator |
+| `runtime/molt-runtime/src/object/mod.rs:599` | `ALLOC_DICT_COUNT` profiling counter |
+| `runtime/molt-backend/src/passes.rs:8` | `elide_dead_struct_allocs` -- does NOT cover `dict_new` ops |
+
+## Proposed Fix
+
+Remove the unconditional `_init_locals_cache()` and `FRAME_LOCALS_SET` from
+`start_function()`.  The per-visitor conditional calls already handle the
+correct case.
+
+```python
+# BEFORE (src/molt/frontend/__init__.py, start_function):
+if name != "molt_main":
+    self._init_locals_cache()
+    cache_val = self.locals_cache_val
+    if cache_val is not None:
+        self.emit(
+            MoltOp(
+                kind="FRAME_LOCALS_SET",
+                args=[cache_val],
+                result=MoltValue("none"),
+            )
+        )
+
+# AFTER: remove the entire block (lines 2426-2441)
+```
+
+For the aliased-locals corner case (`getattr(builtins, "locals")()`), the
+runtime `frame_locals_set` mechanism still works -- it simply returns an
+empty/None locals snapshot when the compiler did not pin one.  This matches
+CPython 3.13+ semantics where `locals()` returns a snapshot, and dynamic
+alias calls that bypass static analysis are inherently best-effort.
+
+## Risk Assessment
+
+**Low risk.**
+
+- The conditional guards in `visit_FunctionDef`, `visit_AsyncFunctionDef`,
+  and lambda visitors already cover every case where `locals()` is
+  statically detected.
+- The only loss is the `getattr(builtins, "locals")()` alias pattern, which
+  is vanishingly rare in real code and was not supported before Feb 2026.
+- The Luau backend already has `strip_dead_locals_dict_stores` as a
+  post-hoc cleanup; native/WASM backends have no equivalent, making them
+  fully exposed to this regression.
+- Restoring the baseline: `fib(30)` should go from 0.05x back to ~3x
+  speedup vs CPython, recovering the ~60x performance gap.
+
+## Alternative: Backend DCE Pass
+
+If the unconditional emit must stay for correctness, an alternative is to
+add `dict_new` to the `elide_dead_struct_allocs` pass in
+`runtime/molt-backend/src/passes.rs`, or add a dedicated
+`elide_dead_locals_dicts` pass that removes `dict_new` + `frame_locals_set`
+pairs when the dict is never read (i.e., no `locals()` call in the
+function body).  This is more complex but would also catch other spurious
+dict allocations.
+
+## Regression Commit
+
+`3452a9b9` -- "builtins: intrinsic-backed sitebuiltins + deterministic
+probes" (2026-02-14).
