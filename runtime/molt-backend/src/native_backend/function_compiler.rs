@@ -3543,6 +3543,49 @@ impl SimpleBackend {
                     let tuple_bits = builder.inst_results(finish_call)[0];
                     def_var_named(&mut builder, &vars, out_name, tuple_bits);
                 }
+                "unpack_sequence" => {
+                    // Outlined sequence unpacking: args[0] is the sequence,
+                    // args[1..] are the output variable names.
+                    // op.value holds the expected element count.
+                    let args = op.args.as_ref().unwrap();
+                    let seq_val = var_get(&mut builder, &vars, &args[0])
+                        .expect("Unpack sequence source not found");
+                    let expected_count = op.value.unwrap() as usize;
+
+                    // Allocate a stack slot for the output array.
+                    let slot_size = std::cmp::max(expected_count, 1) * 8;
+                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        slot_size as u32,
+                        3, // align_shift: 2^3 = 8-byte alignment
+                    ));
+                    let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
+
+                    let expected_val =
+                        builder.ins().iconst(types::I64, expected_count as i64);
+
+                    // Call molt_unpack_sequence(seq_bits, expected_count, output_ptr) -> u64
+                    let unpack_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_unpack_sequence",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    builder
+                        .ins()
+                        .call(unpack_local, &[*seq_val, expected_val, out_ptr]);
+
+                    // Load each element from the output array into its named variable.
+                    for i in 0..expected_count {
+                        let elem = builder
+                            .ins()
+                            .stack_load(types::I64, out_slot, (i * 8) as i32);
+                        def_var_named(&mut builder, &vars, &args[1 + i], elem);
+                    }
+                }
                 "list_append" => {
                     let args = op.args.as_ref().unwrap();
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
