@@ -5042,6 +5042,30 @@ impl WasmBackend {
                             label_stack: &mut Vec<i64>,
                             label_depths: &mut BTreeMap<i64, usize>,
                             base_idx: usize| {
+            // --- RC coalescing: eliminate redundant inc_ref/dec_ref pairs ---
+            // Compute last-use index for each variable within this op slice,
+            // then find paired inc/dec ops that cancel out.
+            let last_use_local: BTreeMap<String, usize> = {
+                let mut lu = BTreeMap::new();
+                for (i, op) in ops.iter().enumerate() {
+                    if let Some(var) = &op.var {
+                        if var != "none" {
+                            lu.insert(var.clone(), i);
+                        }
+                    }
+                    if let Some(args) = &op.args {
+                        for name in args {
+                            if name != "none" {
+                                lu.insert(name.clone(), i);
+                            }
+                        }
+                    }
+                }
+                lu
+            };
+            let (rc_skip_inc, _rc_skip_dec) =
+                crate::compute_rc_coalesce_skips(ops, &last_use_local);
+
             // Peephole state: track WASM locals whose raw (unboxed) integer
             // value is known at compile time.  Populated by `const` ops;
             // invalidated when a local is overwritten by a non-const op or
@@ -9703,35 +9727,49 @@ impl WasmBackend {
                         }
                     }
                     "inc_ref" | "borrow" => {
-                        let args_names = op.args.as_ref().expect("inc_ref/borrow args missing");
-                        let src_name = args_names
-                            .first()
-                            .expect("inc_ref/borrow requires one source arg");
-                        let src = locals[src_name];
-                        func.instruction(&Instruction::LocalGet(src));
-                        emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
-                        if let Some(out_name) = op.out.as_ref()
+                        if !rc_skip_inc.contains(&rel_idx) {
+                            let args_names = op.args.as_ref().expect("inc_ref/borrow args missing");
+                            let src_name = args_names
+                                .first()
+                                .expect("inc_ref/borrow requires one source arg");
+                            let src = locals[src_name];
+                            func.instruction(&Instruction::LocalGet(src));
+                            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                            if let Some(out_name) = op.out.as_ref()
+                                && out_name != "none"
+                            {
+                                let out = locals[out_name];
+                                func.instruction(&Instruction::LocalGet(src));
+                                func.instruction(&Instruction::LocalSet(out));
+                            }
+                        } else if let Some(out_name) = op.out.as_ref()
                             && out_name != "none"
                         {
+                            // RC coalesced: still alias output to input.
+                            let args_names = op.args.as_ref().unwrap();
+                            let src_name = args_names.first().unwrap();
+                            let src = locals[src_name];
                             let out = locals[out_name];
                             func.instruction(&Instruction::LocalGet(src));
                             func.instruction(&Instruction::LocalSet(out));
                         }
                     }
                     "dec_ref" | "release" => {
-                        let args_names = op.args.as_ref().expect("dec_ref/release args missing");
-                        let src_name = args_names
-                            .first()
-                            .expect("dec_ref/release requires one source arg");
-                        let src = locals[src_name];
-                        func.instruction(&Instruction::LocalGet(src));
-                        emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
-                        if let Some(out_name) = op.out.as_ref()
-                            && out_name != "none"
-                        {
-                            let out = locals[out_name];
-                            func.instruction(&Instruction::I64Const(box_none()));
-                            func.instruction(&Instruction::LocalSet(out));
+                        if !rc_skip_inc.contains(&rel_idx) {
+                            let args_names = op.args.as_ref().expect("dec_ref/release args missing");
+                            let src_name = args_names
+                                .first()
+                                .expect("dec_ref/release requires one source arg");
+                            let src = locals[src_name];
+                            func.instruction(&Instruction::LocalGet(src));
+                            emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
+                            if let Some(out_name) = op.out.as_ref()
+                                && out_name != "none"
+                            {
+                                let out = locals[out_name];
+                                func.instruction(&Instruction::I64Const(box_none()));
+                                func.instruction(&Instruction::LocalSet(out));
+                            }
                         }
                     }
                     "box" | "unbox" | "cast" | "widen" => {
