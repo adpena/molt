@@ -28944,6 +28944,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "UNPACK_SEQUENCE":
+                # args[0] is the sequence, args[1:] are output variable names
+                json_ops.append(
+                    {
+                        "kind": "unpack_sequence",
+                        "args": [arg.name for arg in op.args],
+                        "value": op.metadata["expected_count"],
+                    }
+                )
             elif op.kind == "STORE_INDEX":
                 json_ops.append(
                     {
