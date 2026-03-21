@@ -1,7 +1,7 @@
 #[cfg(feature = "native-backend")]
 use cranelift_codegen::Context;
 #[cfg(feature = "native-backend")]
-use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 #[cfg(feature = "native-backend")]
 use cranelift_codegen::ir::{
     AbiParam, Block, BlockArg, FuncRef, Function, InstBuilder, MemFlags, StackSlotData,
@@ -415,6 +415,36 @@ fn fused_both_int_check(
     let tag_shift = builder.ins().iconst(types::I64, INT_WIDTH as i64);
     let upper = builder.ins().ushr(combined, tag_shift);
     builder.ins().icmp_imm(IntCC::Equal, upper, 0)
+}
+
+/// Check whether a NaN-boxed value is a special tagged type (int/bool/none/ptr/pending)
+/// rather than a plain f64.
+///
+/// All NaN-boxed specials have bits 62..48 in the range `0x7FF9..=0x7FFD`.
+/// Returns true if the value IS a special (i.e., NOT a float).
+#[cfg(feature = "native-backend")]
+fn is_nanboxed_special(builder: &mut FunctionBuilder, val: Value) -> Value {
+    // Shift right by 48 to isolate the tag field, then check range [0x7FF9, 0x7FFD].
+    let shift48 = builder.ins().iconst(types::I64, 48);
+    let tag16 = builder.ins().ushr(val, shift48);
+    // tag16 - 0x7FF9; result < 5 means it's a tagged special
+    let base = builder.ins().iconst(types::I64, 0x7FF9);
+    let adjusted = builder.ins().isub(tag16, base);
+    let limit = builder.ins().iconst(types::I64, 5);
+    builder.ins().icmp(IntCC::UnsignedLessThan, adjusted, limit)
+}
+
+/// Check that both NaN-boxed values are plain f64 (not tagged specials).
+#[cfg(feature = "native-backend")]
+fn both_float_check(builder: &mut FunctionBuilder, lhs: Value, rhs: Value) -> Value {
+    let lhs_special = is_nanboxed_special(builder, lhs);
+    let rhs_special = is_nanboxed_special(builder, rhs);
+    let either_special = builder.ins().bor(lhs_special, rhs_special);
+    // both_float = !(lhs_special || rhs_special)
+    // Since is_nanboxed_special returns an i8 (0 or 1), we check either_special == 0
+    builder
+        .ins()
+        .icmp_imm(IntCC::Equal, either_special, 0)
 }
 
 #[cfg(feature = "native-backend")]
