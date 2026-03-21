@@ -148,7 +148,7 @@ inherits = "release"
 opt-level = 2
 lto = "off"
 codegen-units = 128
-strip = true
+strip = false
 
 # WASM-optimized release profile: full LTO with single codegen unit for
 # maximum cross-crate inlining and dead code elimination. Build time
