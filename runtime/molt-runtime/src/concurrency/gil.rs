@@ -124,18 +124,6 @@ pub(crate) struct PyToken<'gil> {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl GilGuard {
-    /// Fast-path constructor for single-threaded mode.  Skips TLS depth
-    /// tracking and mutex acquisition — the caller guarantees no other
-    /// GIL-capable thread exists (checked via `GIL_THREAD_COUNT`).
-    #[inline(always)]
-    pub(crate) fn new_unchecked() -> Self {
-        Self {
-            _marker: (),
-            fallback_guard: None,
-            fallback_depth: false,
-        }
-    }
-
     pub(crate) fn new() -> Self {
         let needs_lock = match GIL_DEPTH.try_with(|depth| {
             let current = depth.get();
