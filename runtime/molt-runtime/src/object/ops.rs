@@ -39237,6 +39237,59 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
     })
 }
 
+/// Unboxed iteration primitive: advances the iterator and writes the yielded
+/// value directly to `*value_out` instead of allocating a `(value, done)` tuple.
+///
+/// Returns a MoltObject bool: `True` when exhausted, `False` when a value was
+/// produced (written to `*value_out`).  Returns `None` (null bits) when an
+/// exception is pending.
+///
+/// The native backend emits this in place of the
+/// `molt_iter_next` + `molt_index(pair,1)` + `molt_index(pair,0)` sequence,
+/// eliminating two `molt_index` dispatch calls and the intermediate tuple
+/// allocation per loop iteration.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let pair_bits = molt_iter_next(iter_bits);
+        if exception_pending(_py) {
+            // If molt_iter_next produced an owned pair before the
+            // exception was detected, drop it to avoid a leak.
+            if !obj_from_bits(pair_bits).is_none() {
+                dec_ref_bits(_py, pair_bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let pair_obj = obj_from_bits(pair_bits);
+        let Some(pair_ptr) = pair_obj.as_ptr() else {
+            // None result with no exception – treat as exhausted.
+            return MoltObject::from_bool(true).bits();
+        };
+        unsafe {
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                dec_ref_bits(_py, pair_bits);
+                return MoltObject::from_bool(true).bits();
+            }
+            let elems = seq_vec_ref(pair_ptr);
+            if elems.len() < 2 {
+                dec_ref_bits(_py, pair_bits);
+                return MoltObject::from_bool(true).bits();
+            }
+            let val_bits = elems[0];
+            let done_bits = elems[1];
+            let done = is_truthy(_py, obj_from_bits(done_bits));
+            // Drop the intermediate tuple – the caller only needs val_bits.
+            dec_ref_bits(_py, pair_bits);
+            if done {
+                return MoltObject::from_bool(true).bits();
+            }
+            // Write the value to the caller-provided output slot.
+            std::ptr::write(value_out, val_bits);
+            MoltObject::from_bool(false).bits()
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_anext(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
