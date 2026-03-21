@@ -16,34 +16,44 @@ SYMBOL_OVERRIDES = {
     "molt_async_sleep": "molt_async_sleep_new",
 }
 
-# Map symbol prefixes to Cargo feature gates so the generated
-# resolve_symbol() compiles on builds without stdlib_full.
-_SYMBOL_FEATURE_PREFIXES: list[tuple[str, str]] = [
-    ("molt_hash_", "stdlib_crypto"),
-    ("molt_hmac_", "stdlib_crypto"),
+# Map symbol prefixes to Cargo feature flags. When a feature is disabled the
+# resolve_symbol entry is excluded so the linker can drop the corresponding
+# code.  Ordering matters: longest prefix wins.
+_SYMBOL_FEATURE_GATES: list[tuple[str, str]] = [
+    # crypto: hashlib, hmac, secrets, pbkdf2, scrypt, compare_digest
+    ("molt_hash_",      "stdlib_crypto"),
+    ("molt_hmac_",      "stdlib_crypto"),
     ("molt_compare_digest", "stdlib_crypto"),
     ("molt_pbkdf2_hmac", "stdlib_crypto"),
-    ("molt_scrypt", "stdlib_crypto"),
-    ("molt_secrets_", "stdlib_crypto"),
+    ("molt_scrypt",     "stdlib_crypto"),
+    ("molt_secrets_",   "stdlib_crypto"),
+    # compression: bz2, lzma, deflate, inflate, gzip, tarfile, zlib
+    ("molt_bz2_",       "stdlib_compression"),
+    ("molt_lzma_",      "stdlib_compression"),
+    ("molt_deflate_",   "stdlib_compression"),
+    ("molt_inflate_",   "stdlib_compression"),
+    ("molt_gzip_",      "stdlib_compression"),
+    ("molt_tarfile_",   "stdlib_compression"),
+    ("molt_zlib_",      "stdlib_compression"),
     ("molt_compression_streams_", "stdlib_compression"),
-    ("molt_deflate_raw", "stdlib_compression"),
-    ("molt_inflate_raw", "stdlib_compression"),
-    ("molt_bz2_", "stdlib_compression"),
-    ("molt_gzip_", "stdlib_compression"),
-    ("molt_lzma_", "stdlib_compression"),
-    ("molt_zlib_", "stdlib_compression"),
-    ("molt_tarfile_", "stdlib_compression"),
-    ("molt_msgpack_", "stdlib_serialization"),
-    ("molt_cbor_", "stdlib_serialization"),
-    ("molt_ast_", "stdlib_ast"),
-    ("molt_glob_glob", "stdlib_fs_extra"),
+    # serialization: cbor, msgpack
+    ("molt_cbor_",      "stdlib_serialization"),
+    ("molt_msgpack_",   "stdlib_serialization"),
+    # ast
+    ("molt_ast_",       "stdlib_ast"),
+    # fs_extra: glob, tempfile
+    ("molt_glob_glob",  "stdlib_fs_extra"),
     ("molt_glob_iglob", "stdlib_fs_extra"),
-    ("molt_tempfile_", "stdlib_fs_extra"),
+    ("molt_glob_pattern", "stdlib_fs_extra"),
+    ("molt_tempfile_",  "stdlib_fs_extra"),
+    # archive: zipfile
+    ("molt_zipfile_",   "stdlib_archive"),
 ]
 
 
-def _feature_for_symbol(symbol: str) -> str | None:
-    for prefix, feature in _SYMBOL_FEATURE_PREFIXES:
+def _feature_gate_for_symbol(symbol: str) -> str | None:
+    """Return the Cargo feature gate for *symbol*, or None if ungated."""
+    for prefix, feature in _SYMBOL_FEATURE_GATES:
         if symbol.startswith(prefix):
             return feature
     return None
@@ -163,9 +173,6 @@ def _write_generated_rs(entries: list[tuple[str, str, int]]) -> None:
     lines.append("}\n\n")
     lines.append("pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[\n")
     for name, symbol, arity in entries:
-        feat = _feature_for_symbol(symbol)
-        if feat:
-            lines.append(f'    #[cfg(feature = "{feat}")]\n')
         lines.append(
             f'    IntrinsicSpec {{ name: "{name}", symbol: "{symbol}", arity: {arity} }},\n'
         )
@@ -177,9 +184,9 @@ def _write_generated_rs(entries: list[tuple[str, str, int]]) -> None:
         if symbol in seen_symbols:
             continue
         seen_symbols.add(symbol)
-        feat = _feature_for_symbol(symbol)
-        if feat:
-            lines.append(f'        #[cfg(feature = "{feat}")]\n')
+        gate = _feature_gate_for_symbol(symbol)
+        if gate:
+            lines.append(f'        #[cfg(feature = "{gate}")]\n')
         lines.append(
             f'        "{symbol}" => Some(crate::{symbol} as *const () as usize as u64),\n'
         )
