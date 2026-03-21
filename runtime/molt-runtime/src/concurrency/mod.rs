@@ -14,6 +14,11 @@ pub(crate) use locks::*;
 #[cfg(not(target_arch = "wasm32"))]
 static THREAD_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+/// Number of threads that have acquired the GIL at least once.
+/// Used by `gil_held()` to fast-path the common single-threaded case.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) static GIL_THREAD_COUNT: AtomicU64 = AtomicU64::new(1);
+
 #[cfg(not(target_arch = "wasm32"))]
 thread_local! {
     static THREAD_ID: u64 = THREAD_ID_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
