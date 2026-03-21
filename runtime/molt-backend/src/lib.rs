@@ -71,8 +71,11 @@ mod native_backend_consts {
     pub(super) const TASK_KIND_FUTURE: i64 = 0;
     pub(super) const TASK_KIND_GENERATOR: i64 = 1;
     pub(super) const TASK_KIND_COROUTINE: i64 = 2;
+    #[allow(dead_code)]
     pub(super) const FUNC_DEFAULT_NONE: i64 = 1;
+    #[allow(dead_code)]
     pub(super) const FUNC_DEFAULT_DICT_POP: i64 = 2;
+    #[allow(dead_code)]
     pub(super) const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
     pub(super) const HEADER_SIZE_BYTES: i32 = 40;
     pub(super) const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
