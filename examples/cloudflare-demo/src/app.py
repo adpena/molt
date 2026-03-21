@@ -30,9 +30,9 @@ def diamond(size=9):
         lines.append(" " * (size // 2 - d) + "*" * (2 * d + 1))
     return "\n".join(lines)
 
-def mandelbrot_render(width: int = 100, height: int = 35,
+def mandelbrot_render(width: int = 80, height: int = 30,
                       cx: float = -0.5, cy: float = 0.0,
-                      zoom: float = 1.0, max_iter: int = 150) -> str:
+                      zoom: float = 1.0, max_iter: int = 60) -> str:
     chars: str = " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"
     scale: float = 3.0 / (zoom * width)
     x_off: float = cx - scale * width / 2.0
@@ -74,7 +74,9 @@ def sort_data(data_str):
             continue
         try:
             nums.append(int(s))
-        except (ValueError, TypeError):
+        except ValueError:
+            bad.append(s)
+        except TypeError:
             bad.append(s)
     return nums, bad
 
@@ -90,7 +92,9 @@ def fizzbuzz(n):
 def safe_int(s, default, lo=0, hi=1000000):
     try:
         v = int(s)
-    except (ValueError, TypeError):
+    except ValueError:
+        return default
+    except TypeError:
         return default
     if v < lo:
         return lo
@@ -101,7 +105,9 @@ def safe_int(s, default, lo=0, hi=1000000):
 def safe_float(s, default, lo=-1e15, hi=1e15):
     try:
         v = float(s)
-    except (ValueError, TypeError):
+    except ValueError:
+        return default
+    except TypeError:
         return default
     if v < lo:
         return lo
@@ -115,8 +121,8 @@ def fmt_big(n):
         return s
     parts = []
     while len(s) > 3:
-        parts.append(s[-3:])
-        s = s[:-3]
+        parts.append(s[len(s) - 3:])
+        s = s[:len(s) - 3]
     parts.append(s)
     parts.reverse()
     return ",".join(parts)
@@ -125,6 +131,14 @@ def truncate_num(s, digits=60):
     if len(s) <= digits:
         return s
     return s[:digits] + "... (" + fmt_big(len(s)) + " digits)"
+
+def _join_ints(lst):
+    result = []
+    i = 0
+    while i < len(lst):
+        result.append(str(lst[i]))
+        i = i + 1
+    return ", ".join(result)
 
 # --- Request parsing ---
 import sys
@@ -144,7 +158,7 @@ route = parts[0] if parts else ""
 # --- Routes ---
 
 if route == "fib":
-    n = safe_int(parts[1] if len(parts) > 1 else "", 100, 0, 10000)
+    n = safe_int(parts[1] if len(parts) > 1 else "", 50, 0, 10000)
     result = fibonacci(n)
     result_str = str(result)
     print("Fibonacci")
@@ -168,12 +182,23 @@ elif route == "primes":
     print("  count  = " + fmt_big(count))
     print("")
     if count <= 20:
-        print("  primes = " + ", ".join(str(p) for p in found))
+        print("  primes = " + _join_ints(found))
     else:
-        first5 = ", ".join(str(p) for p in found[:5])
-        last5 = ", ".join(str(p) for p in found[-5:])
-        print("  first  = " + first5)
-        print("  last   = " + last5)
+        first5 = []
+        i = 0
+        while i < 5 and i < count:
+            first5.append(str(found[i]))
+            i = i + 1
+        last5 = []
+        start = count - 5
+        if start < 0:
+            start = 0
+        i = start
+        while i < count:
+            last5.append(str(found[i]))
+            i = i + 1
+        print("  first  = " + ", ".join(first5))
+        print("  last   = " + ", ".join(last5))
     print("")
     print("github.com/adpena/molt")
 
@@ -182,9 +207,9 @@ elif route == "diamond":
     print(diamond(n))
 
 elif route == "mandelbrot":
-    w = safe_int(params.get("width", ""), 100, 20, 160)
-    h = safe_int(params.get("height", ""), 35, 10, 50)
-    mi = safe_int(params.get("iter", ""), 150, 10, 300)
+    w = safe_int(params.get("width", ""), 80, 20, 160)
+    h = safe_int(params.get("height", ""), 30, 10, 50)
+    mi = safe_int(params.get("iter", ""), 60, 10, 300)
     cx = safe_float(params.get("cx", ""), -0.5)
     cy = safe_float(params.get("cy", ""), 0.0)
     zm = safe_float(params.get("zoom", ""), 1.0, 0.1, 1e12)
@@ -241,9 +266,17 @@ elif route == "sort":
     if len(nums) > 1000:
         print("Error: too many elements (max 1000)")
         sys.exit(1)
-    before = [str(n) for n in nums]
+    before = []
+    i = 0
+    while i < len(nums):
+        before.append(str(nums[i]))
+        i = i + 1
     nums.sort()
-    after = [str(n) for n in nums]
+    after = []
+    i = 0
+    while i < len(nums):
+        after.append(str(nums[i]))
+        i = i + 1
     print("Sort")
     print("=" * 40)
     print("")
@@ -264,7 +297,7 @@ elif route == "fizzbuzz":
     print(fizzbuzz(n))
 
 elif route == "pi":
-    n = safe_int(parts[1] if len(parts) > 1 else "", 100000, 1, 500000)
+    n = safe_int(parts[1] if len(parts) > 1 else "", 10000, 1, 500000)
     total = 0.0
     for i in range(n):
         total += ((-1.0) ** i) / (2.0 * i + 1.0)
@@ -287,26 +320,26 @@ elif route == "bench":
     print("Benchmark Suite")
     print("=" * 50)
     print("")
-    print("Running fib(1000) + primes(10000) + mandelbrot(100x40)")
+    print("Running fib(500) + primes(1000) + mandelbrot(40x15)")
     print("")
 
-    fib_result = fibonacci(1000)
+    fib_result = fibonacci(500)
     fib_digits = len(str(fib_result))
-    print("  [1/3] fib(1000)          = " + str(fib_digits) + " digits   OK")
+    print("  [1/3] fib(500)          = " + str(fib_digits) + " digits   OK")
 
-    prime_list = primes_up_to(10000)
+    prime_list = primes_up_to(1000)
     prime_count = len(prime_list)
-    print("  [2/3] primes(10000)      = " + str(prime_count) + " primes   OK")
+    print("  [2/3] primes(1000)      = " + str(prime_count) + " primes   OK")
 
-    mb = mandelbrot_render(100, 40, -0.5, 0.0, 1.0, 80)
+    mb = mandelbrot_render(40, 15, -0.5, 0.0, 1.0, 40)
     mb_chars = len(mb)
-    print("  [3/3] mandelbrot(100x40) = " + str(mb_chars) + " chars    OK")
+    print("  [3/3] mandelbrot(40x15) = " + str(mb_chars) + " chars    OK")
 
     print("")
     print("All benchmarks completed in x-molt-elapsed-ms (see header).")
     print("")
     print("This is compiled Python, not interpreted.")
-    print("Binary: 2.9 MB gzip | Cloudflare Workers free tier.")
+    print("Binary: 2.8 MB gzip | Cloudflare Workers free tier.")
 
 else:
     if route:

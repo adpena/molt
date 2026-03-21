@@ -97,6 +97,17 @@ pub extern "C" fn molt_type_of(val_bits: u64) -> u64 {
     })
 }
 
+/// Returns the type of an object WITHOUT incrementing the refcount.
+/// The type is guaranteed alive because the object holds a strong reference
+/// to its type internally. This is the borrowed-reference equivalent of
+/// `molt_type_of` and mirrors CPython's `Py_TYPE()` semantics.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_type_of_borrowed(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        type_of_bits(_py, val_bits)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_type_new(
     cls_bits: u64,
