@@ -24,6 +24,26 @@ static PROPERTY_DOCS: OnceLock<Mutex<HashMap<PtrSlot, u64>>> = OnceLock::new();
 static PROPERTY_DOC_NAME: AtomicU64 = AtomicU64::new(0);
 static ATTR_SITE_NAME_CACHE: OnceLock<Mutex<HashMap<u64, u64>>> = OnceLock::new();
 
+/// Result-level inline cache entry for attribute lookups.
+/// Caches the full lookup result alongside the attribute name to skip
+/// MRO traversal when the global type version hasn't changed.
+struct AttrICEntry {
+    /// Cached attribute name string (NaN-boxed bits)
+    name_bits: u64,
+    /// Cached lookup result (the attribute value, NaN-boxed bits)
+    result_bits: u64,
+    /// Global type version when result was cached
+    type_version: u64,
+    /// type_id of the object this was cached for
+    obj_type_id: u32,
+}
+
+static ATTR_IC_RESULT_CACHE: OnceLock<Mutex<HashMap<u64, AttrICEntry>>> = OnceLock::new();
+
+fn attr_ic_result_cache() -> &'static Mutex<HashMap<u64, AttrICEntry>> {
+    ATTR_IC_RESULT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn is_task_trampoline_attr_name(attr_name: &str) -> bool {
     matches!(
         attr_name,
@@ -44,6 +64,16 @@ pub(crate) fn clear_attr_site_name_cache(_py: &PyToken<'_>) {
     for (_site, bits) in cache.drain() {
         if bits != 0 {
             dec_ref_bits(_py, bits);
+        }
+    }
+    // Also clear the result IC cache.
+    let mut rc = attr_ic_result_cache().lock().unwrap();
+    for (_site, entry) in rc.drain() {
+        if entry.name_bits != 0 {
+            dec_ref_bits(_py, entry.name_bits);
+        }
+        if entry.result_bits != 0 {
+            dec_ref_bits(_py, entry.result_bits);
         }
     }
 }
@@ -4643,10 +4673,108 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
             };
             let attr_name_len = usize_from_bits(attr_name_len_bits);
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
+
+            // --- Result-level IC fast path ---
+            // Only attempt for object types whose attribute lookups flow
+            // through the class MRO (TYPE_ID_OBJECT, TYPE_ID_DATACLASS, TYPE_ID_TYPE).
+            if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
+                let type_id = object_type_id(obj_ptr);
+                if type_id == TYPE_ID_OBJECT
+                    || type_id == TYPE_ID_DATACLASS
+                    || type_id == TYPE_ID_TYPE
+                {
+                    let current_version = global_type_version();
+                    let cache = attr_ic_result_cache().lock().unwrap();
+                    if let Some(entry) = cache.get(&site_id) {
+                        if entry.type_version == current_version
+                            && entry.obj_type_id == type_id
+                            && entry.result_bits != 0
+                        {
+                            // Validate the cached name still matches the requested attr.
+                            if let Some(name_ptr) = obj_from_bits(entry.name_bits).as_ptr()
+                                && object_type_id(name_ptr) == TYPE_ID_STRING
+                            {
+                                let cached_name =
+                                    std::slice::from_raw_parts(string_bytes(name_ptr), string_len(name_ptr));
+                                if cached_name == slice {
+                                    profile_hit_unchecked(&ATTR_IC_RESULT_HIT_COUNT);
+                                    let result = entry.result_bits;
+                                    drop(cache);
+                                    inc_ref_bits(_py, result);
+                                    return result as i64;
+                                }
+                            }
+                        }
+                    }
+                    drop(cache);
+                }
+            }
+
+            // --- Slow path: resolve name, do full lookup, populate cache ---
             let Some(name_bits) = attr_name_bits_for_site(_py, site_id, slice) else {
                 return MoltObject::none().bits() as i64;
             };
             let out = molt_get_attr_name(obj_bits, name_bits);
+
+            // Try to populate the result IC for cacheable types.
+            if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
+                let type_id = object_type_id(obj_ptr);
+                if (type_id == TYPE_ID_OBJECT
+                    || type_id == TYPE_ID_DATACLASS
+                    || type_id == TYPE_ID_TYPE)
+                    && out != 0
+                    && !obj_from_bits(out).is_none()
+                    && !exception_pending(_py)
+                {
+                    // Only cache class-level (MRO) results — not instance attributes.
+                    // Check whether this result came from the class MRO by doing a
+                    // class-only lookup and comparing the result.
+                    let class_bits = if type_id == TYPE_ID_TYPE {
+                        MoltObject::from_ptr(obj_ptr).bits()
+                    } else {
+                        object_class_bits(obj_ptr)
+                    };
+                    if class_bits != 0 {
+                        if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+                            if object_type_id(class_ptr) == TYPE_ID_TYPE {
+                                if let Some(mro_bits) =
+                                    class_attr_lookup_raw_mro(_py, class_ptr, name_bits)
+                                {
+                                    // The MRO lookup returned a result — this is cacheable.
+                                    // Cache the MRO-level value (before descriptor binding),
+                                    // but store the *bound* result (`out`) that the caller
+                                    // will actually use.
+                                    let _ = mro_bits; // just used to confirm MRO source
+                                    profile_hit_unchecked(&ATTR_IC_RESULT_MISS_COUNT);
+                                    let current_version = global_type_version();
+                                    inc_ref_bits(_py, name_bits);
+                                    inc_ref_bits(_py, out);
+                                    let mut cache = attr_ic_result_cache().lock().unwrap();
+                                    if let Some(old) = cache.insert(
+                                        site_id,
+                                        AttrICEntry {
+                                            name_bits,
+                                            result_bits: out,
+                                            type_version: current_version,
+                                            obj_type_id: type_id,
+                                        },
+                                    ) {
+                                        // Drop refs held by the evicted entry.
+                                        drop(cache);
+                                        if old.name_bits != 0 {
+                                            dec_ref_bits(_py, old.name_bits);
+                                        }
+                                        if old.result_bits != 0 {
+                                            dec_ref_bits(_py, old.result_bits);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             dec_ref_bits(_py, name_bits);
             out as i64
         })

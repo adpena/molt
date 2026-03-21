@@ -436,6 +436,9 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
         }
         dec_ref_bits(_py, members_dict_bits);
 
+        // Bump layout version so inline caches (IC) are invalidated.
+        unsafe { class_bump_layout_version(cls_ptr) };
+
         cls_bits
     })
 }

@@ -536,6 +536,8 @@ pub(crate) unsafe fn class_bump_layout_version(ptr: *mut u8) {
         let current = class_layout_version_bits(ptr);
         class_set_layout_version_bits(ptr, current.wrapping_add(1));
     }
+    // Also bump the global type version so inline caches are invalidated.
+    super::bump_type_version();
 }
 
 pub(crate) unsafe fn classmethod_func_bits(ptr: *mut u8) -> u64 {

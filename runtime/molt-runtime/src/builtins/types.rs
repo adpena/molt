@@ -842,6 +842,7 @@ pub extern "C" fn molt_class_set_layout_version(class_bits: u64, version_bits: u
                 _ => return raise_exception::<_>(_py, "TypeError", "layout version must be int"),
             };
             class_set_layout_version_bits(class_ptr, version);
+            crate::bump_type_version();
         }
         MoltObject::none().bits()
     })

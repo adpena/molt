@@ -7,6 +7,21 @@ use std::sync::{Arc, Mutex, OnceLock};
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
 
+/// Global type version counter. Incremented whenever ANY class is modified
+/// (attribute set/deleted, base class changed, __dict__ mutated).
+/// Inline caches compare against this to detect staleness.
+static GLOBAL_TYPE_VERSION: AtomicU64 = AtomicU64::new(1);
+
+#[inline(always)]
+pub fn global_type_version() -> u64 {
+    GLOBAL_TYPE_VERSION.load(AtomicOrdering::Relaxed)
+}
+
+#[inline(always)]
+pub fn bump_type_version() -> u64 {
+    GLOBAL_TYPE_VERSION.fetch_add(1, AtomicOrdering::Relaxed) + 1
+}
+
 pub(crate) mod accessors;
 pub(crate) mod buffer2d;
 pub(crate) mod builders;

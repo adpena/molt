@@ -18967,7 +18967,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 return res
 
-            if target_info is not None:
+            if target_info is not None or imported_from is not None:
                 target_module = None
                 if imported_from == "molt":
                     if func_id in MOLT_DIRECT_CALLS.get("molt", set()):
