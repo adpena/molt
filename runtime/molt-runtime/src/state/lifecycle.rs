@@ -1,6 +1,7 @@
 use crate::PyToken;
 use crate::builtins::attr::clear_attr_tls_caches;
 use crate::builtins::attributes::clear_attr_site_name_cache;
+use crate::builtins::strings::clear_const_str_cache;
 use crate::call::bind::clear_call_bind_ic_cache;
 use crate::object::utf8_cache::{
     UTF8_CACHE_MAX_ENTRIES, UTF8_COUNT_CACHE_SHARDS, Utf8CacheStore, Utf8CountCacheStore,
@@ -278,6 +279,7 @@ fn clear_thread_local_state(_py: &PyToken<'_>) {
     let _ = CURRENT_TOKEN.try_with(|cell| cell.set(1));
     let _ = PARSE_ARENA.try_with(|arena| arena.borrow_mut().clear());
     clear_attr_tls_caches(_py);
+    clear_const_str_cache(_py);
     clear_utf8_count_tls();
     let _ = GIL_DEPTH.try_with(|depth| depth.set(0));
 }
