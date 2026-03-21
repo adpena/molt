@@ -14383,6 +14383,200 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
     }
 }
 
+/// Outlined dynamic function call dispatch for the `call_func` op.
+///
+/// Handles the full Python call protocol:
+/// - Handle resolution (promises/futures)
+/// - Bound method unwrapping (extracts self + func)
+/// - Function object detection and direct fn_ptr dispatch
+/// - Closure detection (delegates to callargs for closures)
+/// - Arity matching with default arg handling
+/// - Recursion guard and tracing
+/// - Fallback to `molt_call_bind` for non-function callables
+///
+/// Arguments:
+///   func_bits: the callable (could be function, bound method, or any callable)
+///   args_ptr: pointer to array of argument bits (spilled to stack by caller)
+///   nargs: number of arguments
+///   code_id: unique code ID for this call site (tracing); 0 means no tracing
+///
+/// Returns: the call result bits
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn molt_call_func_dispatch(
+    func_bits: u64,
+    args_ptr: *const u64,
+    nargs: u64,
+    code_id: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let n = nargs as usize;
+
+        // Read arguments from the spilled stack slot.
+        let args: Vec<u64> = unsafe {
+            (0..n).map(|i| *args_ptr.add(i)).collect()
+        };
+
+        // --- Step 1: Bound method unwrap ---
+        let (effective_func, effective_args) = unsafe {
+            if let Some(ptr) = maybe_ptr_from_bits(func_bits) {
+                if object_type_id(ptr) == TYPE_ID_BOUND_METHOD {
+                    let inner = bound_method_func_bits(ptr);
+                    let self_bits = bound_method_self_bits(ptr);
+                    let mut combined = Vec::with_capacity(n + 1);
+                    combined.push(self_bits);
+                    combined.extend_from_slice(&args);
+                    (inner, combined)
+                } else {
+                    (func_bits, args)
+                }
+            } else {
+                (func_bits, args)
+            }
+        };
+
+        // --- Step 2: Check if it's a plain function object ---
+        let func_ptr = match maybe_ptr_from_bits(effective_func) {
+            Some(ptr) if unsafe { object_type_id(ptr) == TYPE_ID_FUNCTION } => ptr,
+            _ => {
+                // Not a function — use the generic callargs dispatch.
+                return molt_call_func_via_callargs(func_bits, &effective_args);
+            }
+        };
+
+        // --- Step 3: Check for closure ---
+        // Closures need the full callargs path for env capture setup.
+        let has_closure = unsafe { function_closure_bits(func_ptr) } != 0;
+        if has_closure {
+            return molt_call_func_via_callargs(func_bits, &effective_args);
+        }
+
+        // --- Step 4: Direct call fast path ---
+        let fn_ptr_val = unsafe { function_fn_ptr(func_ptr) };
+        let func_arity = unsafe { function_arity(func_ptr) } as usize;
+        let eff_nargs = effective_args.len();
+
+        if func_arity == eff_nargs {
+            // Exact arity match — fast path.
+            return molt_call_func_direct(
+                _py, fn_ptr_val, &effective_args, code_id, func_bits,
+            );
+        }
+
+        // --- Step 5: Handle missing args with defaults ---
+        if eff_nargs < func_arity {
+            let missing = func_arity - eff_nargs;
+            if missing <= 2 {
+                let default_kind = molt_function_default_kind(effective_func);
+                let mut padded = effective_args.clone();
+
+                let filled = match (missing, default_kind) {
+                    (1, FUNC_DEFAULT_NONE) => {
+                        padded.push(MoltObject::none().bits());
+                        true
+                    }
+                    (1, FUNC_DEFAULT_DICT_POP) => {
+                        padded.push(MoltObject::from_int(1).bits());
+                        true
+                    }
+                    (1, FUNC_DEFAULT_DICT_UPDATE) => {
+                        padded.push(missing_bits(_py));
+                        true
+                    }
+                    (1, FUNC_DEFAULT_ZERO) => {
+                        padded.push(MoltObject::from_int(0).bits());
+                        true
+                    }
+                    (1, FUNC_DEFAULT_NEG_ONE) => {
+                        padded.push(MoltObject::from_int(-1).bits());
+                        true
+                    }
+                    (1, FUNC_DEFAULT_MISSING) => {
+                        padded.push(missing_bits(_py));
+                        true
+                    }
+                    (2, FUNC_DEFAULT_NONE2) => {
+                        padded.push(MoltObject::none().bits());
+                        padded.push(MoltObject::none().bits());
+                        true
+                    }
+                    (2, FUNC_DEFAULT_DICT_POP) => {
+                        padded.push(MoltObject::none().bits());
+                        padded.push(MoltObject::from_int(0).bits());
+                        true
+                    }
+                    _ => false,
+                };
+
+                if filled {
+                    return molt_call_func_direct(
+                        _py, fn_ptr_val, &padded, code_id, func_bits,
+                    );
+                }
+            }
+        }
+
+        // Arity mismatch we can't handle inline — fallback.
+        molt_call_func_via_callargs(func_bits, &effective_args)
+    })
+}
+
+/// Direct function call through fn_ptr with recursion guard and optional tracing.
+fn molt_call_func_direct(
+    _py: &crate::concurrency::PyToken<'_>,
+    fn_ptr: u64,
+    args: &[u64],
+    code_id: u64,
+    callable_bits: u64,
+) -> u64 {
+    if !recursion_guard_enter() {
+        return raise_exception::<u64>(
+            _py, "RecursionError", "maximum recursion depth exceeded",
+        );
+    }
+    if code_id != 0 {
+        if let Some(func_ptr) = obj_from_bits(callable_bits).as_ptr() {
+            unsafe {
+                let code_bits = match object_type_id(func_ptr) {
+                    TYPE_ID_FUNCTION => ensure_function_code_bits(_py, func_ptr),
+                    TYPE_ID_BOUND_METHOD => {
+                        let bf = bound_method_func_bits(func_ptr);
+                        if let Some(bp) = obj_from_bits(bf).as_ptr() {
+                            if object_type_id(bp) == TYPE_ID_FUNCTION {
+                                ensure_function_code_bits(_py, bp)
+                            } else {
+                                MoltObject::none().bits()
+                            }
+                        } else {
+                            MoltObject::none().bits()
+                        }
+                    }
+                    _ => MoltObject::none().bits(),
+                };
+                frame_stack_push(_py, code_bits);
+            }
+        }
+    }
+    let result = unsafe { molt_guarded_call_dispatch(fn_ptr, args.as_ptr(), args.len()) };
+    if code_id != 0 {
+        frame_stack_pop(_py);
+    }
+    recursion_guard_exit();
+    result
+}
+
+/// Fallback: build a CallArgs and dispatch through `molt_call_bind`.
+fn molt_call_func_via_callargs(callable_bits: u64, args: &[u64]) -> u64 {
+    let nargs = args.len() as u64;
+    let pos_cap = MoltObject::from_int(nargs as i64).bits();
+    let kw_cap = MoltObject::from_int(0).bits();
+    let callargs_bits = molt_callargs_new(pos_cap, kw_cap);
+    for &arg in args {
+        unsafe { molt_callargs_push_pos(callargs_bits, arg) };
+    }
+    molt_call_bind(callable_bits, callargs_bits)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_trace_set_line(line_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
