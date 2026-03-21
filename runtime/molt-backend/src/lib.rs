@@ -40,7 +40,7 @@ pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir
 use crate::native_backend::TrampolineKey;
 pub(crate) use crate::passes::{
     apply_profile_order, build_const_int_map, elide_dead_struct_allocs, escape_analysis,
-    fold_constants, inline_functions,
+    fold_constants, fold_constants_cross_block, inline_functions,
 };
 
 #[cfg(feature = "luau-backend")]
@@ -1240,6 +1240,7 @@ impl SimpleBackend {
         }
         for func_ir in &mut ir.functions {
             fold_constants(&mut func_ir.ops);
+            fold_constants_cross_block(&mut func_ir.ops);
         }
         let mut ir_analysis = analyze_native_backend_ir(&ir);
         if ir_analysis.needs_inlining {
