@@ -37,6 +37,7 @@ pub(crate) mod decimal;
 pub(crate) mod difflib;
 pub(crate) mod enum_ext;
 pub(crate) mod exceptions;
+pub(crate) mod fcntl;
 pub(crate) mod fnmatch;
 pub(crate) mod fractions;
 pub(crate) mod frames;

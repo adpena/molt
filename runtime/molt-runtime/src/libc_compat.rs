@@ -35,6 +35,13 @@ pub const O_TRUNC: i32 = 0x200;
 pub const O_EXCL: i32 = 0x80;
 pub const O_NONBLOCK: i32 = 0x800;
 
+// fcntl commands and flags (Linux values for WASM compat).
+pub const F_GETFD: i32 = 1;
+pub const F_SETFD: i32 = 2;
+pub const F_GETFL: i32 = 3;
+pub const F_SETFL: i32 = 4;
+pub const FD_CLOEXEC: i32 = 1;
+
 // Synthetic signal numbers used by wasm/native-lite fallback paths.
 pub const SIGHUP: i32 = 1;
 pub const SIGINT: i32 = 2;
