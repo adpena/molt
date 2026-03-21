@@ -25,13 +25,18 @@ unsafe extern "C" {
 }
 
 #[cfg(target_arch = "wasm32")]
-static WASM_CTORS: OnceLock<()> = OnceLock::new();
+static WASM_CTORS_DONE: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_arch = "wasm32")]
 fn ensure_wasm_ctors() {
-    WASM_CTORS.get_or_init(|| unsafe {
+    if WASM_CTORS_DONE.load(AtomicOrdering::Acquire) {
+        return;
+    }
+    // Mark as in-progress BEFORE calling ctors to prevent recursive entry.
+    WASM_CTORS_DONE.store(true, AtomicOrdering::Release);
+    unsafe {
         __wasm_call_ctors();
-    });
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
