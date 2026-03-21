@@ -10,6 +10,10 @@ pub(crate) mod attr;
 pub(crate) mod attributes;
 pub(crate) mod base64_mod;
 pub(crate) mod binascii;
+#[cfg(feature = "mod_compression")]
+pub(crate) mod bz2;
+#[cfg(not(feature = "mod_compression"))]
+#[path = "bz2_stub.rs"]
 pub(crate) mod bz2;
 pub(crate) mod callable;
 pub(crate) mod classes;
@@ -50,9 +54,9 @@ pub(crate) mod ipaddress;
 pub(crate) mod itertools;
 pub(crate) mod json;
 pub(crate) mod logging_ext;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "mod_compression"))]
 pub(crate) mod lzma;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", not(feature = "mod_compression")))]
 #[path = "lzma_wasm.rs"]
 pub(crate) mod lzma;
 pub(crate) mod math;
@@ -73,6 +77,10 @@ pub(crate) mod select;
 pub(crate) mod shutil;
 pub(crate) mod signal_ext;
 pub(crate) mod sitebuiltins;
+#[cfg(feature = "mod_tls")]
+pub(crate) mod ssl;
+#[cfg(not(feature = "mod_tls"))]
+#[path = "ssl_stub.rs"]
 pub(crate) mod ssl;
 pub(crate) mod string_ext;
 pub(crate) mod stringprep;

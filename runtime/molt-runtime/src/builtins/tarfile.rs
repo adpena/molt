@@ -243,12 +243,18 @@ fn decompress_gzip(data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+#[cfg(feature = "mod_compression")]
 fn decompress_bzip2(data: &[u8]) -> Result<Vec<u8>, String> {
     use bzip2::read::BzDecoder;
     let mut decoder = BzDecoder::new(data);
     let mut out = Vec::new();
     decoder.read_to_end(&mut out).map_err(|e| e.to_string())?;
     Ok(out)
+}
+
+#[cfg(not(feature = "mod_compression"))]
+fn decompress_bzip2(_data: &[u8]) -> Result<Vec<u8>, String> {
+    Err("bzip2 support requires the 'mod_compression' feature".to_string())
 }
 
 fn compress_gzip(data: &[u8]) -> Result<Vec<u8>, String> {
@@ -259,12 +265,18 @@ fn compress_gzip(data: &[u8]) -> Result<Vec<u8>, String> {
     enc.finish().map_err(|e| e.to_string())
 }
 
+#[cfg(feature = "mod_compression")]
 fn compress_bzip2(data: &[u8]) -> Result<Vec<u8>, String> {
     use bzip2::Compression;
     use bzip2::write::BzEncoder;
     let mut enc = BzEncoder::new(Vec::new(), Compression::default());
     enc.write_all(data).map_err(|e| e.to_string())?;
     enc.finish().map_err(|e| e.to_string())
+}
+
+#[cfg(not(feature = "mod_compression"))]
+fn compress_bzip2(_data: &[u8]) -> Result<Vec<u8>, String> {
+    Err("bzip2 support requires the 'mod_compression' feature".to_string())
 }
 
 // ── Tar write helpers ─────────────────────────────────────────────────────
