@@ -58,21 +58,35 @@ inductive Expr where
   deriving DecidableEq, Repr
 
 /-- SSA instruction: assign `dst` := `rhs`. dst is fresh in SSA.
-    Corresponds to a MoltOp with out=dst and evaluated rhs. -/
+    Corresponds to a MoltOp with out=dst and evaluated rhs.
+
+    fast_int_hint / fast_float_hint: optional type specialization flags propagated
+    from type inference. When true, the backend may emit specialized integer or
+    float arithmetic without a type-tag check. Added to match implementation:
+      2e1cab40 perf: propagate type facts to IR fast_int/fast_float flags
+      14ad1fe3 perf: automatic int type inference from range/len/literals -/
 structure Instr where
   dst : Var
   rhs : Expr
+  fast_int_hint   : Bool := false
+  fast_float_hint : Bool := false
   deriving Repr
 
 /-- Block terminators with explicit argument passing (block params).
     In the real Molt IR these are represented as if/else/end_if + label/jump opcodes;
-    the block-parameter form is a proof-friendly abstraction of the same semantics. -/
+    the block-parameter form is a proof-friendly abstraction of the same semantics.
+
+    `yield` models the STATE_YIELD opcode used by generator/coroutine lowering.
+    It suspends execution, yielding `val` to the caller, and resumes at `resume`
+    when the generator is next iterated. Matches the implementation in
+    src/molt/frontend/cfg_analysis.py (STATE_YIELD as a block terminator). -/
 inductive Terminator where
   | ret (e : Expr)
   | jmp (target : Label) (args : List Expr)
   | br  (cond : Expr)
        (thenLabel : Label) (thenArgs : List Expr)
        (elseLabel : Label) (elseArgs : List Expr)
+  | yield (val : Expr) (resume : Label) (resumeArgs : List Expr)
   deriving Repr
 
 /-- A basic block with parameters, instructions, and a terminator.
@@ -112,5 +126,7 @@ def termVars : Terminator → List Var
   | .jmp _ args => args.bind exprVars
   | .br cond _ thenArgs _ elseArgs =>
       exprVars cond ++ thenArgs.bind exprVars ++ elseArgs.bind exprVars
+  | .yield val _ resumeArgs =>
+      exprVars val ++ resumeArgs.bind exprVars
 
 end MoltTIR
