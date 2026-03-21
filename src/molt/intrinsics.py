@@ -27,3 +27,11 @@ def load(name: str, namespace: Mapping[str, Any] | None = None) -> Any | None:
 
 def require(name: str, namespace: Mapping[str, Any] | None = None) -> Any:
     return _loader.require_intrinsic(name, namespace)
+
+
+def load_intrinsic(name: str, namespace: Mapping[str, Any] | None = None) -> Any | None:
+    return load(name, namespace)
+
+
+def require_intrinsic(name: str, namespace: Mapping[str, Any] | None = None) -> Any:
+    return require(name, namespace)
