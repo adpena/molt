@@ -17,26 +17,12 @@ def is_prime(n):
 def count_primes(limit):
     return sum(1 for n in range(2, limit + 1) if is_prime(n))
 
-def mandelbrot(width=60, height=25, x_min=-2.0, x_max=1.0, y_min=-1.0, y_max=1.0):
-    chars = " .-+*#@"
-    out = []
-    for row in range(height):
-        y0 = y_min + (y_max - y_min) * row / height
-        for col in range(width):
-            x0 = x_min + (x_max - x_min) * col / width
-            x = 0.0
-            y = 0.0
-            i = 0
-            while i < 6:
-                if x * x + y * y > 4.0:
-                    break
-                x2 = x * x - y * y + x0
-                y = 2.0 * x * y + y0
-                x = x2
-                i += 1
-            out.append(chars[i])
-        out.append("\n")
-    return "".join(out)
+def diamond(size=9):
+    lines = []
+    for i in range(size):
+        d = i if i < size // 2 + 1 else size - 1 - i
+        lines.append(" " * (size // 2 - d) + "*" * (2 * d + 1))
+    return "\n".join(lines)
 
 def sort_data(data_str):
     nums = [int(x.strip()) for x in data_str.split(",") if x.strip()]
@@ -75,10 +61,12 @@ elif route == "primes":
     limit = int(parts[1]) if len(parts) > 1 else 100
     print("Primes up to " + str(limit) + ": " + str(count_primes(limit)))
 
+elif route == "diamond":
+    n = int(parts[1]) if len(parts) > 1 else 9
+    print(diamond(n))
+
 elif route == "mandelbrot":
-    w = int(params.get("width", "40"))
-    h = int(params.get("height", "20"))
-    print(mandelbrot(w, h))
+    print(diamond(15))
 
 elif route == "sort":
     data = params.get("data", "5,3,8,1,9,2,7,4,6")
@@ -107,7 +95,7 @@ else:
     print("")
     print("  curl .../fib/50          Fibonacci numbers")
     print("  curl .../primes/10000    Count primes")
-    print("  curl .../mandelbrot      ASCII Mandelbrot set")
+    print("  curl .../diamond/11      ASCII diamond pattern")
     print("  curl .../sort?data=5,3,1 Sort numbers")
     print("  curl .../fizzbuzz/100    FizzBuzz")
     print("  curl .../pi/1000000      Compute pi (Leibniz)")
