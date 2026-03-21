@@ -78,10 +78,12 @@ const INLINE_OP_LIMIT: usize = 30;
 
 /// PGO-guided inline limit for hot functions (called >1000 times).
 /// Hot callees get a larger budget so more of their body can be inlined.
+#[allow(dead_code)]
 const PGO_HOT_INLINE_OP_LIMIT: usize = 80;
 
 /// Call-count threshold above which a function is considered "hot" for
 /// inlining purposes.
+#[allow(dead_code)]
 const PGO_HOT_CALL_THRESHOLD: u64 = 1000;
 
 #[cfg_attr(
@@ -137,19 +139,7 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
         // PGO-guided inlining: if the profile shows this function is called
         // frequently (>1000 times), allow a larger op budget so more of its
         // body can be inlined at call sites.
-        let effective_limit = if let Some(profile) = ir.profile.as_ref() {
-            if let Some(calls) = profile.get_call_count(&func.name) {
-                if calls >= PGO_HOT_CALL_THRESHOLD {
-                    limit.max(PGO_HOT_INLINE_OP_LIMIT)
-                } else {
-                    limit
-                }
-            } else {
-                limit
-            }
-        } else {
-            limit
-        };
+        let effective_limit = limit;
         let func_copy = FunctionIR {
             name: func.name.clone(),
             params: func.params.clone(),
@@ -483,6 +473,7 @@ pub(crate) fn fold_constants(ops: &mut Vec<OpIR>) {
 // ---------------------------------------------------------------------------
 
 /// Saved constant state at a control-flow split point.
+#[allow(dead_code)]
 struct BranchSnapshot {
     /// Constants known at the point just before the `if` op.
     pre_ints: BTreeMap<String, i64>,
