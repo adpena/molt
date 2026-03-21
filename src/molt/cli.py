@@ -13155,6 +13155,7 @@ def _prepare_backend_setup(
     warnings: list[str],
     cache: bool,
     ir: Mapping[str, Any],
+    stdlib_profile: str | None = None,
 ) -> tuple[_PreparedBackendSetup | None, dict[str, Any] | None]:
     runtime_state = _initialize_runtime_artifact_state(
         is_rust_transpile=is_rust_transpile,
@@ -13188,6 +13189,7 @@ def _prepare_backend_setup(
         runtime_cargo_profile=runtime_cargo_profile,
         molt_root=molt_root,
         cargo_timeout=cargo_timeout,
+        stdlib_profile=stdlib_profile,
     ):
         return None, _fail("Runtime build failed", json_output, command="build")
     return _PreparedBackendSetup(
@@ -14041,6 +14043,7 @@ def _run_backend_pipeline(
         warnings=prepared_build_preamble.warnings,
         cache=cache,
         ir=ir,
+        stdlib_profile=stdlib_profile,
     )
     if prepared_backend_setup_error is not None:
         return prepared_backend_setup_error
@@ -14203,6 +14206,7 @@ def _run_backend_pipeline(
             runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
             molt_root=prepared_build_roots.molt_root,
             cargo_timeout=prepared_build_config.cargo_timeout,
+            stdlib_profile=stdlib_profile,
         ):
             return _fail("Runtime build failed", json_output, command="build")
     prepared_native_link, prepared_native_link_error = _prepare_native_link(
@@ -15298,6 +15302,7 @@ def _ensure_runtime_lib_ready(
     runtime_cargo_profile: str,
     molt_root: Path,
     cargo_timeout: float | None,
+    stdlib_profile: str | None = None,
 ) -> bool:
     runtime_lib = runtime_state.runtime_lib
     if runtime_lib is None:
@@ -15309,6 +15314,7 @@ def _ensure_runtime_lib_ready(
         runtime_cargo_profile,
         molt_root,
         cargo_timeout,
+        stdlib_profile=stdlib_profile,
     )
 
 
@@ -16860,9 +16866,15 @@ def _ensure_runtime_lib(
     cargo_profile: str,
     project_root: Path,
     cargo_timeout: float | None,
+    stdlib_profile: str | None = None,
 ) -> bool:
     rustflags = os.environ.get("RUSTFLAGS", "")
     runtime_features = _runtime_cargo_features(target_triple)
+    # When stdlib_profile is micro, include the marker in the fingerprint
+    # so full and micro builds are kept distinct in the cache.
+    fingerprint_features: tuple[str, ...] = runtime_features
+    if stdlib_profile == "micro":
+        fingerprint_features = tuple(list(runtime_features) + ["stdlib_micro", "no-default-features"])
     fingerprint_path = _runtime_fingerprint_path(
         project_root, runtime_lib, cargo_profile, target_triple
     )
@@ -16872,7 +16884,7 @@ def _ensure_runtime_lib(
         cargo_profile=cargo_profile,
         target_triple=target_triple,
         rustflags=rustflags,
-        runtime_features=runtime_features,
+        runtime_features=fingerprint_features,
         stored_fingerprint=stored_fingerprint,
     )
     lock_target = target_triple or "native"
@@ -16912,7 +16924,12 @@ def _ensure_runtime_lib(
         if not json_output:
             print("Runtime sources changed; rebuilding runtime...")
         cmd = ["cargo", "build", "-p", "molt-runtime", "--profile", cargo_profile]
-        if runtime_features:
+        if stdlib_profile == "micro":
+            cmd.append("--no-default-features")
+            # Re-enable only the micro marker and any explicit runtime features.
+            micro_features = list(runtime_features) + ["stdlib_micro"]
+            cmd.extend(["--features", ",".join(micro_features)])
+        elif runtime_features:
             cmd.extend(["--features", ",".join(runtime_features)])
         if target_triple:
             cmd.extend(["--target", target_triple])
