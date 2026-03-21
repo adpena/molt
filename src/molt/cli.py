@@ -4626,17 +4626,33 @@ def _roots_for_module(
     return roots
 
 
+# Core modules always included in the module graph.  The micro profile
+# restricts this to the absolute minimum needed to run pure-computation
+# benchmarks (builtins + sys).  Everything else is still available via lazy
+# initialisation if user code actually imports it.
+_CORE_STDLIB_MODULES_FULL = (
+    "builtins",
+    "sys",
+    "types",
+    "importlib",
+    "importlib.util",
+    "importlib.machinery",
+)
+_CORE_STDLIB_MODULES_MICRO = (
+    "builtins",
+    "sys",
+)
+
+
 def _ensure_core_stdlib_modules(
     module_graph: dict[str, Path], stdlib_root: Path
 ) -> None:
-    for name in (
-        "builtins",
-        "sys",
-        "types",
-        "importlib",
-        "importlib.util",
-        "importlib.machinery",
-    ):
+    stdlib_profile = os.environ.get("MOLT_STDLIB_PROFILE")
+    if stdlib_profile == "micro":
+        core_modules = _CORE_STDLIB_MODULES_MICRO
+    else:
+        core_modules = _CORE_STDLIB_MODULES_FULL
+    for name in core_modules:
         path = _resolve_module_path(name, [stdlib_root])
         if path is not None:
             module_graph.setdefault(name, path)
@@ -10840,20 +10856,53 @@ def _append_entry_sys_init_op(
     entry_init: str,
     register_global_code_id: Callable[[str], int],
     next_var: int,
+    lazy: bool = False,
 ) -> int:
     sys_init = SimpleTIRGenerator.module_init_symbol("sys")
-    sys_out_var = f"v{next_var}"
-    next_var += 1
-    entry_call_idx = _entry_call_index(entry_ops, entry_init)
-    entry_ops[entry_call_idx:entry_call_idx] = [
-        {
-            "kind": "call",
-            "s_value": sys_init,
-            "args": [],
-            "out": sys_out_var,
-            "value": register_global_code_id(sys_init),
-        }
-    ]
+    if lazy:
+        # Lazy sys init: check module cache first, only call molt_init_sys if
+        # the module is not yet initialised.  This mirrors the pattern emitted
+        # by _emit_module_load in the frontend so that sys initialisation is
+        # deferred until the first real import.
+        name_var = f"v{next_var}"
+        next_var += 1
+        cache_var = f"v{next_var}"
+        next_var += 1
+        none_var = f"v{next_var}"
+        next_var += 1
+        is_none_var = f"v{next_var}"
+        next_var += 1
+        sys_out_var = f"v{next_var}"
+        next_var += 1
+        entry_call_idx = _entry_call_index(entry_ops, entry_init)
+        entry_ops[entry_call_idx:entry_call_idx] = [
+            {"kind": "const_str", "s_value": "sys", "out": name_var},
+            {"kind": "module_cache_get", "args": [name_var], "out": cache_var},
+            {"kind": "const_none", "out": none_var},
+            {"kind": "is", "args": [cache_var, none_var], "out": is_none_var},
+            {"kind": "if", "args": [is_none_var]},
+            {
+                "kind": "call",
+                "s_value": sys_init,
+                "args": [],
+                "out": sys_out_var,
+                "value": register_global_code_id(sys_init),
+            },
+            {"kind": "end_if"},
+        ]
+    else:
+        sys_out_var = f"v{next_var}"
+        next_var += 1
+        entry_call_idx = _entry_call_index(entry_ops, entry_init)
+        entry_ops[entry_call_idx:entry_call_idx] = [
+            {
+                "kind": "call",
+                "s_value": sys_init,
+                "args": [],
+                "out": sys_out_var,
+                "value": register_global_code_id(sys_init),
+            }
+        ]
     return next_var
 
 
@@ -11095,6 +11144,7 @@ def _prepare_backend_ir(
     pgo_profile_summary: Any | None,
     runtime_feedback_summary: Any | None,
     emit_ir_path: Path | None,
+    stdlib_profile: str | None = None,
 ) -> tuple[_PreparedBackendIR | None, dict[str, Any] | None]:
     entry_path: Path | None = None
     if entry_module != "__main__":
@@ -11152,11 +11202,17 @@ def _prepare_backend_ir(
     entry_call_idx = _entry_call_index(entry_ops, entry_init)
     next_var = _next_tir_var_index(entry_ops)
     if "sys" in module_graph:
+        # When stdlib_profile is "micro", defer sys initialisation until the
+        # module is actually imported (lazy=True).  The standard profile keeps
+        # the eager init for backwards compatibility with code that expects
+        # sys to be available before the first explicit import.
+        lazy_sys = stdlib_profile == "micro"
         next_var = _append_entry_sys_init_op(
             entry_ops,
             entry_init=entry_init,
             register_global_code_id=register_global_code_id,
             next_var=next_var,
+            lazy=lazy_sys,
         )
         entry_call_idx = _entry_call_index(entry_ops, entry_init)
     module_code_ops, next_var = _build_module_code_ops(
@@ -12279,15 +12335,18 @@ def _augment_support_modules(
         generated_module_source_paths.setdefault(
             IMPORTER_MODULE_NAME, _logical_generated_module_path(IMPORTER_MODULE_NAME)
         )
-    machinery_path = _resolve_module_path("importlib.machinery", [stdlib_root])
-    if machinery_path is not None:
-        module_graph.setdefault("importlib.machinery", machinery_path)
-        if diagnostics_enabled and "importlib.machinery" in module_graph:
-            _record_module_reason(
-                module_reasons,
-                "importlib.machinery",
-                "machinery_support",
-            )
+    # Skip importlib.machinery for micro profile — it is only needed for
+    # the full import system which micro-profile benchmarks don't use.
+    if os.environ.get("MOLT_STDLIB_PROFILE") != "micro":
+        machinery_path = _resolve_module_path("importlib.machinery", [stdlib_root])
+        if machinery_path is not None:
+            module_graph.setdefault("importlib.machinery", machinery_path)
+            if diagnostics_enabled and "importlib.machinery" in module_graph:
+                _record_module_reason(
+                    module_reasons,
+                    "importlib.machinery",
+                    "machinery_support",
+                )
     return _SupportModuleAugmentation(
         namespace_module_names=frozenset(namespace_modules),
         generated_module_source_paths=generated_module_source_paths,
@@ -12315,16 +12374,14 @@ def _augment_module_graph_for_entry_and_runtime(
     explicit_imports = set(entry_imports)
     stub_skip_modules = STUB_MODULES - entry_imports
     stub_parents = STUB_PARENT_MODULES - entry_imports
+    stdlib_profile = os.environ.get("MOLT_STDLIB_PROFILE")
+    if stdlib_profile == "micro":
+        core_module_names = _CORE_STDLIB_MODULES_MICRO
+    else:
+        core_module_names = _CORE_STDLIB_MODULES_FULL
     core_paths = [
         path
-        for name in (
-            "builtins",
-            "sys",
-            "types",
-            "importlib",
-            "importlib.util",
-            "importlib.machinery",
-        )
+        for name in core_module_names
         if (path := module_graph.get(name)) is not None
     ]
     if core_paths:
@@ -13849,6 +13906,7 @@ def _run_backend_pipeline(
         pgo_profile_summary=prepared_build_config.pgo_profile_summary,
         runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
         emit_ir_path=output_layout.emit_ir_path,
+        stdlib_profile=stdlib_profile,
     )
     if prepared_backend_ir_error is not None:
         return prepared_backend_ir_error
@@ -18735,6 +18793,10 @@ def build(
     # --wasm-profile: pass to backend via environment variable.
     if wasm_profile and wasm_profile != "full":
         os.environ["MOLT_WASM_PROFILE"] = wasm_profile
+    # --stdlib-profile: propagate to module graph construction so that the
+    # micro profile can exclude heavy core modules from the dependency closure.
+    if stdlib_profile:
+        os.environ["MOLT_STDLIB_PROFILE"] = stdlib_profile
     if file_path and module:
         return _fail(
             "Use a file path or --module, not both.", json_output, command="build"
