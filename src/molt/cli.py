@@ -18921,6 +18921,7 @@ def build(
     stdlib_profile: str | None = None,
     tree_shake: bool = True,
     lib_paths: list[str] | None = None,
+    split_runtime: bool = False,
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
@@ -23551,6 +23552,17 @@ def main() -> int:
         ),
     )
     build_parser.add_argument(
+        "--split-runtime",
+        action="store_true",
+        default=False,
+        help=(
+            "Produce separate runtime and app WASM modules instead of a single "
+            "linked binary. Outputs app.wasm + molt_runtime.wasm + manifest.json. "
+            "On Cloudflare Workers, this reduces total compressed size from ~2.8MB "
+            "to ~850KB by allowing separate module caching."
+        ),
+    )
+    build_parser.add_argument(
         "--wasm-profile",
         choices=["full", "pure"],
         default="full",
@@ -24713,6 +24725,7 @@ def main() -> int:
             snapshot=getattr(args, "snapshot", False),
             stdlib_profile=stdlib_profile,
             lib_paths=getattr(args, "lib_paths", None),
+            split_runtime=getattr(args, "split_runtime", False),
         )
     if args.command == "extension":
         if args.extension_command == "build":
