@@ -177,6 +177,23 @@ def _compute_successors(
     if not blocks:
         return successors
 
+    # Collect resume-target blocks: blocks immediately following a STATE_YIELD.
+    # These are only reachable via STATE_SWITCH dispatch, not via normal
+    # fall-through from the STATE_YIELD block.
+    state_yield_resume_blocks: list[int] = []
+    for block in blocks:
+        for idx in range(block.start, block.end):
+            op = ops[idx]
+            if op.kind == "STATE_YIELD" and idx + 1 < len(ops):
+                resume_block = index_to_block.get(idx + 1)
+                if resume_block is not None:
+                    state_yield_resume_blocks.append(resume_block)
+    # Also collect STATE_LABEL blocks as resume targets (for async state machines).
+    for block in blocks:
+        op = ops[block.start]
+        if op.kind == "STATE_LABEL":
+            state_yield_resume_blocks.append(block.id)
+
     def add_succ(block_id: int, succ: int | None) -> None:
         if succ is None:
             return
@@ -267,6 +284,19 @@ def _compute_successors(
             add_succ(block_id, label_to_block.get(target))
             continue
         if op.kind in {"RETURN", "RAISE", "RAISE_CAUSE", "RERAISE"}:
+            continue
+        if op.kind == "STATE_YIELD":
+            # STATE_YIELD suspends the generator (returns to caller).
+            # The block after it is only reachable via STATE_SWITCH on
+            # the next call to next()/send()/throw(), NOT via fall-through.
+            # Treat it like a RETURN (no successors).
+            continue
+        if op.kind == "STATE_SWITCH":
+            # STATE_SWITCH dispatches to any resume block in the function:
+            # blocks after STATE_YIELD ops and STATE_LABEL blocks.
+            add_succ(block_id, next_block)
+            for resume_block in state_yield_resume_blocks:
+                add_succ(block_id, resume_block)
             continue
 
         add_succ(block_id, next_block)
