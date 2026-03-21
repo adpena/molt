@@ -2383,6 +2383,13 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_json_parse_error_msg", symbol: "molt_json_parse_error_msg", arity: 1 },
     IntrinsicSpec { name: "molt_namedtuple_validate_fields", symbol: "molt_namedtuple_validate_fields", arity: 3 },
     IntrinsicSpec { name: "molt_random_binomialvariate", symbol: "molt_random_binomialvariate", arity: 3 },
+    IntrinsicSpec { name: "molt_fcntl", symbol: "molt_fcntl", arity: 3 },
+    IntrinsicSpec { name: "molt_fcntl_f_getfl", symbol: "molt_fcntl_f_getfl", arity: 0 },
+    IntrinsicSpec { name: "molt_fcntl_f_setfl", symbol: "molt_fcntl_f_setfl", arity: 0 },
+    IntrinsicSpec { name: "molt_fcntl_f_getfd", symbol: "molt_fcntl_f_getfd", arity: 0 },
+    IntrinsicSpec { name: "molt_fcntl_f_setfd", symbol: "molt_fcntl_f_setfd", arity: 0 },
+    IntrinsicSpec { name: "molt_fcntl_fd_cloexec", symbol: "molt_fcntl_fd_cloexec", arity: 0 },
+    IntrinsicSpec { name: "molt_fcntl_o_nonblock", symbol: "molt_fcntl_o_nonblock", arity: 0 },
 ];
 
 pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
@@ -4763,6 +4770,13 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_json_parse_error_msg" => Some(crate::molt_json_parse_error_msg as *const () as usize as u64),
         "molt_namedtuple_validate_fields" => Some(crate::molt_namedtuple_validate_fields as *const () as usize as u64),
         "molt_random_binomialvariate" => Some(crate::molt_random_binomialvariate as *const () as usize as u64),
+        "molt_fcntl" => Some(crate::molt_fcntl as *const () as usize as u64),
+        "molt_fcntl_f_getfl" => Some(crate::molt_fcntl_f_getfl as *const () as usize as u64),
+        "molt_fcntl_f_setfl" => Some(crate::molt_fcntl_f_setfl as *const () as usize as u64),
+        "molt_fcntl_f_getfd" => Some(crate::molt_fcntl_f_getfd as *const () as usize as u64),
+        "molt_fcntl_f_setfd" => Some(crate::molt_fcntl_f_setfd as *const () as usize as u64),
+        "molt_fcntl_fd_cloexec" => Some(crate::molt_fcntl_fd_cloexec as *const () as usize as u64),
+        "molt_fcntl_o_nonblock" => Some(crate::molt_fcntl_o_nonblock as *const () as usize as u64),
         _ => None,
     }
 }

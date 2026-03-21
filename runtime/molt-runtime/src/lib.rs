@@ -210,6 +210,7 @@ pub(crate) use crate::builtins::exceptions::{
     task_last_exception_drop, task_raise_active,
 };
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
+pub use crate::builtins::fcntl::*;
 pub use crate::builtins::fnmatch::*;
 pub use crate::builtins::fractions::*;
 pub use crate::builtins::functions::*;

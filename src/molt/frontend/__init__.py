@@ -3626,6 +3626,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             key_map.pop(dest, None)
             val_map.pop(dest, None)
 
+    def _copy_container_hints_for_boxed(self, var_name: str, ssa_name: str) -> None:
+        """Copy container element/dict hints from a Python variable name to a
+        fresh SSA name produced when loading a boxed local.  This bridges the
+        gap between the hint maps (keyed by variable name on store) and the
+        queries (keyed by SSA name on load)."""
+        if self.current_func_name == "molt_main":
+            elem_map = self.global_elem_hints
+            key_map = self.global_dict_key_hints
+            val_map = self.global_dict_value_hints
+        else:
+            elem_map = self.container_elem_hints
+            key_map = self.dict_key_hints
+            val_map = self.dict_value_hints
+        if var_name in elem_map:
+            elem_map[ssa_name] = elem_map[var_name]
+        if var_name in key_map:
+            key_map[ssa_name] = key_map[var_name]
+        if var_name in val_map:
+            val_map[ssa_name] = val_map[var_name]
+
     def _container_elem_hint(self, value: MoltValue) -> str | None:
         if value.name in self.container_elem_hints:
             return self.container_elem_hints[value.name]
@@ -6929,6 +6949,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if hint is not None:
                 res.type_hint = hint
             self.emit(MoltOp(kind="INDEX", args=[cell, idx], result=res))
+            # Propagate container element hints from the variable name to the
+            # fresh SSA name so that downstream iteration / arithmetic sees
+            # the element type.
+            self._copy_container_hints_for_boxed(name, res.name)
             if name in self.unbound_check_names:
                 self._emit_unbound_local_guard(res, name)
             return res
@@ -8475,6 +8499,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_list_from_iter(self, iterable: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="list")
         self.emit(MoltOp(kind="LIST_NEW", args=[], result=res))
+        elem_hint = self._iterable_element_hint(iterable) or "Any"
         iter_obj = self._emit_iter_new(iterable)
         zero = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[0], result=zero))
@@ -8487,13 +8512,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(
             MoltOp(kind="LOOP_BREAK_IF_TRUE", args=[done], result=MoltValue("none"))
         )
-        item = MoltValue(self.next_var(), type_hint="Any")
+        item = MoltValue(self.next_var(), type_hint=elem_hint)
         self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
         self.emit(
             MoltOp(kind="LIST_APPEND", args=[res, item], result=MoltValue("none"))
         )
         self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+        # Propagate element hint to the result list.
+        if elem_hint not in {"Any", "Unknown"}:
+            if self.current_func_name == "molt_main":
+                self.global_elem_hints[res.name] = elem_hint
+            else:
+                self.container_elem_hints[res.name] = elem_hint
         return res
 
     def _emit_list_from_aiter(self, iterable: MoltValue) -> MoltValue:
@@ -10472,7 +10503,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(
             MoltOp(kind="LOOP_BREAK_IF_TRUE", args=[done], result=MoltValue("none"))
         )
-        item = MoltValue(self.next_var(), type_hint="Any")
+        iter_elem_hint = self._iterable_element_hint(iterable_val) or "Any"
+        item = MoltValue(self.next_var(), type_hint=iter_elem_hint)
         self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
         # Bind the loop variable so the element expression can reference it.
         old_local = self.locals.get(target_name)
@@ -10491,6 +10523,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(
             MoltOp(kind="LIST_APPEND", args=[res, elt_val], result=MoltValue("none"))
         )
+        # Propagate element type hint to the result list.
+        elt_hint = elt_val.type_hint if isinstance(elt_val, MoltValue) else None
+        if elt_hint and elt_hint not in {"Any", "Unknown"}:
+            if self.current_func_name == "molt_main":
+                self.global_elem_hints[res.name] = elt_hint
+            else:
+                self.container_elem_hints[res.name] = elt_hint
         # Restore the previous binding (if any).
         if old_local is not None:
             self.locals[target_name] = old_local
