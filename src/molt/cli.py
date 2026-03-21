@@ -16570,16 +16570,6 @@ def _ensure_backend_binary(
                 cargo_output = cargo_output.with_suffix(exe_suffix)
             if cargo_output.exists() and cargo_output != backend_bin:
                 shutil.copy2(cargo_output, backend_bin)
-                # Remove the cargo output at the default path so that it does
-                # not poison subsequent native builds.  The feature-tagged copy
-                # at ``backend_bin`` is the canonical artifact for this feature
-                # set; leaving the default path around with the wrong features
-                # causes "backend binary was built without native-backend
-                # support" errors when a native build runs next.
-                try:
-                    cargo_output.unlink()
-                except OSError:
-                    pass
         # -- Post-build feature probe (defense-in-depth) -----------------
         # Cargo's incremental cache may skip recompilation when only
         # features change, leaving a binary built for the wrong target.
