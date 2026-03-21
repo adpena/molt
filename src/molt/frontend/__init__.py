@@ -1573,6 +1573,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return symbol
 
     def _reset_module_chunk_state(self) -> None:
+        # Merge all module-level names defined so far into module_chunk_globals
+        # so subsequent chunks can resolve them via MODULE_GET_GLOBAL.  This
+        # covers class definitions, function definitions, imports, and plain
+        # assignments — any name that was added to self.globals during prior
+        # chunks.  Without this, names defined in chunk N but referenced in
+        # chunk N+M would fall through to incorrect resolution paths (e.g.
+        # stdlib_allowlist matching a variable alias against a module name).
+        self.module_chunk_globals.update(self.globals.keys())
         self.locals = {}
         self.boxed_locals = {}
         self.closure_locals = set()
