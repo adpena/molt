@@ -23,14 +23,13 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
     if module_ptr.is_null() {
         return;
     }
-    // Only install the intrinsics registry once — into the first module
-    // created (the builtins module).  Previously this ran for every module,
-    // which overwrote BUILTINS_MODULE_PTR with the *last* module created
-    // and left the lazy resolver unreachable from the actual builtins dict
-    // that Python-side `_intrinsics.py` looks up via `__builtins__`.
-    if !BUILTINS_MODULE_PTR.load(Ordering::Relaxed).is_null() {
-        return;
-    }
+    // Allow subsequent modules to update BUILTINS_MODULE_PTR so that it
+    // always points at the most-recently-created module.  The old "first
+    // module only" guard caused BUILTINS_MODULE_PTR to be locked to the
+    // __main__ module, but it must point at whichever module the runtime
+    // considers "builtins" for lazy intrinsic resolution to work.
+    // The `registry_installed` check below still prevents the intrinsics
+    // dict from being installed more than once per module.
     unsafe {
         if object_type_id(module_ptr) != TYPE_ID_MODULE {
             return;
@@ -60,8 +59,12 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
 
     // Store builtins module pointer for the lazy resolver.
     // AtomicPtr ensures thread safety on native multi-threaded targets.
+    // Dec-ref the previous pointer (if any) to avoid leaking a ref.
+    let prev = BUILTINS_MODULE_PTR.swap(module_ptr, Ordering::AcqRel);
     inc_ref_bits(_py, MoltObject::from_ptr(module_ptr).bits());
-    BUILTINS_MODULE_PTR.store(module_ptr, Ordering::Release);
+    if !prev.is_null() {
+        dec_ref_bits(_py, MoltObject::from_ptr(prev).bits());
+    }
 
     // Lazy intrinsics: do NOT eagerly build function objects for all 2377
     // intrinsics.  Instead, resolve on demand in `molt_intrinsic_resolve`.
