@@ -68,6 +68,16 @@ class LoopBoundFact:
     compare_result: str
 
 
+_FAST_ARITH_OPS = frozenset({
+    "ADD", "SUB", "MUL",
+    "INPLACE_ADD", "INPLACE_SUB", "INPLACE_MUL",
+    "BIT_OR", "BIT_AND", "BIT_XOR",
+    "INPLACE_BIT_OR", "INPLACE_BIT_AND", "INPLACE_BIT_XOR",
+    "LSHIFT", "RSHIFT",
+    "DIV", "FLOORDIV", "MOD",
+    "LT", "LE", "GT", "GE", "EQ", "NE",
+})
+
 _SCCP_OVERDEFINED = object()
 _SCCP_UNKNOWN = object()
 _SCCP_MISSING = object()  # Sentinel for MISSING values — must never propagate or fold
@@ -1936,36 +1946,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return self.type_hint_policy in {"trust", "check"} or self.stdlib_hint_trust
 
     def _should_fast_int(self, op: MoltOp) -> bool:
-        if not self._fast_int_enabled():
-            return False
-        if op.kind not in {
-            "ADD",
-            "SUB",
-            "MUL",
-            "INPLACE_ADD",
-            "INPLACE_SUB",
-            "INPLACE_MUL",
-            "BIT_OR",
-            "BIT_AND",
-            "BIT_XOR",
-            "INPLACE_BIT_OR",
-            "INPLACE_BIT_AND",
-            "INPLACE_BIT_XOR",
-            "LSHIFT",
-            "RSHIFT",
-            "DIV",
-            "FLOORDIV",
-            "MOD",
-            "LT",
-            "LE",
-            "GT",
-            "GE",
-            "EQ",
-            "NE",
-        }:
+        if op.kind not in _FAST_ARITH_OPS:
             return False
         return all(
             isinstance(arg, MoltValue) and arg.type_hint == "int" for arg in op.args
+        )
+
+    def _should_fast_float(self, op: MoltOp) -> bool:
+        if op.kind not in _FAST_ARITH_OPS:
+            return False
+        return all(
+            isinstance(arg, MoltValue) and arg.type_hint == "float" for arg in op.args
         )
 
     def _emit_bridge_unavailable(self, message: str) -> MoltValue:
@@ -26906,6 +26897,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._should_fast_int(op):
                     add_entry["fast_int"] = True
+                elif self._should_fast_float(op):
+                    add_entry["fast_float"] = True
                 json_ops.append(add_entry)
             elif op.kind == "INPLACE_ADD":
                 add_entry = {
@@ -26915,6 +26908,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._should_fast_int(op):
                     add_entry["fast_int"] = True
+                elif self._should_fast_float(op):
+                    add_entry["fast_float"] = True
                 json_ops.append(add_entry)
             elif op.kind == "SUB":
                 sub_entry: dict[str, Any] = {
@@ -26924,6 +26919,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._should_fast_int(op):
                     sub_entry["fast_int"] = True
+                elif self._should_fast_float(op):
+                    sub_entry["fast_float"] = True
                 json_ops.append(sub_entry)
             elif op.kind == "INPLACE_SUB":
                 sub_entry = {
@@ -26933,6 +26930,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._should_fast_int(op):
                     sub_entry["fast_int"] = True
+                elif self._should_fast_float(op):
+                    sub_entry["fast_float"] = True
                 json_ops.append(sub_entry)
             elif op.kind == "MUL":
                 mul_entry: dict[str, Any] = {
@@ -26942,6 +26941,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._should_fast_int(op):
                     mul_entry["fast_int"] = True
+                elif self._should_fast_float(op):
+                    mul_entry["fast_float"] = True
                 json_ops.append(mul_entry)
             elif op.kind == "INPLACE_MUL":
                 mul_entry = {
@@ -26951,6 +26952,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._should_fast_int(op):
                     mul_entry["fast_int"] = True
+                elif self._should_fast_float(op):
+                    mul_entry["fast_float"] = True
                 json_ops.append(mul_entry)
             elif op.kind == "DIV":
                 div_entry: dict[str, Any] = {
@@ -26960,6 +26963,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._should_fast_int(op):
                     div_entry["fast_int"] = True
+                elif self._should_fast_float(op):
+                    div_entry["fast_float"] = True
                 json_ops.append(div_entry)
             elif op.kind == "FLOORDIV":
                 floordiv_entry: dict[str, Any] = {
@@ -26969,6 +26974,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._should_fast_int(op):
                     floordiv_entry["fast_int"] = True
+                elif self._should_fast_float(op):
+                    floordiv_entry["fast_float"] = True
                 json_ops.append(floordiv_entry)
             elif op.kind == "MOD":
                 mod_entry: dict[str, Any] = {
@@ -26978,6 +26985,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._should_fast_int(op):
                     mod_entry["fast_int"] = True
+                elif self._should_fast_float(op):
+                    mod_entry["fast_float"] = True
                 json_ops.append(mod_entry)
             elif op.kind == "POW":
                 json_ops.append(
@@ -27099,6 +27108,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._should_fast_int(op):
                     lt_entry["fast_int"] = True
+                elif self._should_fast_float(op):
+                    lt_entry["fast_float"] = True
                 json_ops.append(lt_entry)
             elif op.kind == "LE":
                 le_entry: dict[str, Any] = {
@@ -27108,6 +27119,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._should_fast_int(op):
                     le_entry["fast_int"] = True
+                elif self._should_fast_float(op):
+                    le_entry["fast_float"] = True
                 json_ops.append(le_entry)
             elif op.kind == "GT":
                 gt_entry: dict[str, Any] = {
@@ -27117,6 +27130,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._should_fast_int(op):
                     gt_entry["fast_int"] = True
+                elif self._should_fast_float(op):
+                    gt_entry["fast_float"] = True
                 json_ops.append(gt_entry)
             elif op.kind == "GE":
                 ge_entry: dict[str, Any] = {
@@ -27126,6 +27141,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._should_fast_int(op):
                     ge_entry["fast_int"] = True
+                elif self._should_fast_float(op):
+                    ge_entry["fast_float"] = True
                 json_ops.append(ge_entry)
             elif op.kind == "EQ":
                 eq_entry: dict[str, Any] = {
@@ -27135,6 +27152,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._should_fast_int(op):
                     eq_entry["fast_int"] = True
+                elif self._should_fast_float(op):
+                    eq_entry["fast_float"] = True
                 json_ops.append(eq_entry)
             elif op.kind == "NE":
                 ne_entry: dict[str, Any] = {
@@ -27144,6 +27163,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }
                 if self._should_fast_int(op):
                     ne_entry["fast_int"] = True
+                elif self._should_fast_float(op):
+                    ne_entry["fast_float"] = True
                 json_ops.append(ne_entry)
             elif op.kind == "STRING_EQ":
                 json_ops.append(
