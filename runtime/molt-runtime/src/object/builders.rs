@@ -963,7 +963,25 @@ pub(crate) fn alloc_bytes_like_with_len(_py: &PyToken<'_>, len: usize, type_id: 
     ptr
 }
 
+/// Cached empty string singleton. Allocated once, immortal (never freed).
+static EMPTY_STRING_PTR: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
 pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
+    // Fast path: return the immortal empty string singleton.
+    if bytes.is_empty() {
+        let bits = *EMPTY_STRING_PTR.get_or_init(|| {
+            let ptr = alloc_bytes_like_with_len(_py, 0, TYPE_ID_STRING);
+            if !ptr.is_null() {
+                unsafe {
+                    let header = header_from_obj_ptr(ptr);
+                    (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+                    (*header).ref_count.store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            ptr as u64
+        });
+        return bits as *mut u8;
+    }
     let ptr = alloc_bytes_like_with_len(_py, bytes.len(), TYPE_ID_STRING);
     if ptr.is_null() {
         return ptr;
@@ -987,7 +1005,25 @@ pub(crate) fn alloc_bytes_like(_py: &PyToken<'_>, bytes: &[u8], type_id: u32) ->
     ptr
 }
 
+/// Cached empty bytes singleton. Allocated once, immortal.
+static EMPTY_BYTES_PTR: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
 pub(crate) fn alloc_bytes(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
+    // Fast path: return the immortal empty bytes singleton.
+    if bytes.is_empty() {
+        let bits = *EMPTY_BYTES_PTR.get_or_init(|| {
+            let ptr = alloc_bytes_like(_py, &[], TYPE_ID_BYTES);
+            if !ptr.is_null() {
+                unsafe {
+                    let header = header_from_obj_ptr(ptr);
+                    (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+                    (*header).ref_count.store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            ptr as u64
+        });
+        return bits as *mut u8;
+    }
     alloc_bytes_like(_py, bytes, TYPE_ID_BYTES)
 }
 
