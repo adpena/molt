@@ -932,12 +932,16 @@ static inline PyObject *PyObject_GetAttrString(PyObject *obj, const char *name) 
 }
 
 static inline int PyObject_SetAttr(PyObject *obj, PyObject *name, PyObject *value) {
+    if (obj == NULL || name == NULL) {
+        PyErr_SetString(PyExc_SystemError, "null object passed to PyObject_SetAttr");
+        return -1;
+    }
     return molt_object_setattr(_molt_py_handle(obj), _molt_py_handle(name), _molt_py_handle(value));
 }
 
 static inline int PyObject_SetAttrString(PyObject *obj, const char *name, PyObject *value) {
-    if (name == NULL) {
-        PyErr_SetString(PyExc_TypeError, "attribute name must not be NULL");
+    if (obj == NULL || name == NULL) {
+        PyErr_SetString(PyExc_SystemError, "null object passed to PyObject_SetAttrString");
         return -1;
     }
     return molt_object_setattr_bytes(
@@ -945,14 +949,16 @@ static inline int PyObject_SetAttrString(PyObject *obj, const char *name, PyObje
 }
 
 static inline int PyObject_HasAttr(PyObject *obj, PyObject *name) {
+    if (obj == NULL || name == NULL) {
+        return 0;
+    }
     return molt_object_hasattr(_molt_py_handle(obj), _molt_py_handle(name));
 }
 
 static inline int PyObject_HasAttrString(PyObject *obj, const char *name) {
     PyObject *name_obj;
     int out;
-    if (name == NULL) {
-        PyErr_SetString(PyExc_TypeError, "attribute name must not be NULL");
+    if (obj == NULL || name == NULL) {
         return 0;
     }
     name_obj = _molt_pyobject_from_result(_molt_string_from_utf8(name));
@@ -1185,11 +1191,19 @@ static inline PyObject *PyObject_VectorcallMethod(
 }
 
 static inline PyObject *PyObject_GetItem(PyObject *obj, PyObject *key) {
+    if (obj == NULL || key == NULL) {
+        PyErr_SetString(PyExc_SystemError, "null object passed to PyObject_GetItem");
+        return NULL;
+    }
     return _molt_pyobject_from_result(
         molt_mapping_getitem(_molt_py_handle(obj), _molt_py_handle(key)));
 }
 
 static inline int PyObject_IsTrue(PyObject *obj) {
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_SystemError, "null object passed to PyObject_IsTrue");
+        return -1;
+    }
     return molt_object_truthy(_molt_py_handle(obj));
 }
 
@@ -1197,6 +1211,10 @@ static inline Py_hash_t PyObject_Hash(PyObject *obj) {
     PyObject *hash_method;
     PyObject *hash_value;
     long long out;
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_SystemError, "null object passed to PyObject_Hash");
+        return (Py_hash_t)-1;
+    }
     hash_method = PyObject_GetAttrString(obj, "__hash__");
     if (hash_method == NULL) {
         return (Py_hash_t)-1;
@@ -2494,10 +2512,18 @@ static inline PyObject *PyLong_FromUnsignedLongLong(unsigned long long value) {
 }
 
 static inline long PyLong_AsLong(PyObject *obj) {
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_SystemError, "null object passed to PyLong_AsLong");
+        return -1;
+    }
     return (long)molt_int_as_i64(_molt_py_handle(obj));
 }
 
 static inline long long PyLong_AsLongLong(PyObject *obj) {
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_SystemError, "null object passed to PyLong_AsLongLong");
+        return -1;
+    }
     return (long long)molt_int_as_i64(_molt_py_handle(obj));
 }
 
@@ -2513,6 +2539,10 @@ static inline PyObject *PyFloat_FromDouble(double value) {
 }
 
 static inline double PyFloat_AsDouble(PyObject *obj) {
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_SystemError, "null object passed to PyFloat_AsDouble");
+        return -1.0;
+    }
     return molt_float_as_f64(_molt_py_handle(obj));
 }
 
@@ -2631,7 +2661,7 @@ static inline PyObject *PyDict_GetItem(PyObject *dict, PyObject *key) {
 static inline PyObject *PyDict_GetItemString(PyObject *dict, const char *key) {
     MoltHandle key_bits;
     MoltHandle out;
-    if (key == NULL) {
+    if (dict == NULL || key == NULL) {
         return NULL;
     }
     key_bits = _molt_string_from_utf8(key);
@@ -2654,7 +2684,12 @@ static inline int PyDict_Contains(PyObject *dict, PyObject *key) {
 }
 
 static inline PyObject *PyDict_GetItemWithError(PyObject *dict, PyObject *key) {
-    MoltHandle out = molt_mapping_getitem(_molt_py_handle(dict), _molt_py_handle(key));
+    MoltHandle out;
+    if (dict == NULL || key == NULL) {
+        PyErr_SetString(PyExc_SystemError, "null object passed to PyDict_GetItemWithError");
+        return NULL;
+    }
+    out = molt_mapping_getitem(_molt_py_handle(dict), _molt_py_handle(key));
     if (out == 0 || molt_err_pending() != 0) {
         /* Unlike PyDict_GetItem, do NOT clear errors — propagate them. */
         return NULL;
@@ -2760,7 +2795,12 @@ static inline PyObject *PyUnicode_FromString(const char *value) {
 
 static inline const char *PyUnicode_AsUTF8AndSize(PyObject *value, Py_ssize_t *size_out) {
     uint64_t len = 0;
-    const uint8_t *ptr = molt_string_as_ptr(_molt_py_handle(value), &len);
+    const uint8_t *ptr;
+    if (value == NULL) {
+        PyErr_SetString(PyExc_SystemError, "null object passed to PyUnicode_AsUTF8AndSize");
+        return NULL;
+    }
+    ptr = molt_string_as_ptr(_molt_py_handle(value), &len);
     if (ptr == NULL || molt_err_pending() != 0) {
         return NULL;
     }
@@ -2811,7 +2851,12 @@ static inline PyObject *PyBytes_FromStringAndSize(const char *value, Py_ssize_t 
 
 static inline int PyBytes_AsStringAndSize(PyObject *value, char **buf, Py_ssize_t *len_out) {
     uint64_t len = 0;
-    const uint8_t *ptr = molt_bytes_as_ptr(_molt_py_handle(value), &len);
+    const uint8_t *ptr;
+    if (value == NULL) {
+        PyErr_SetString(PyExc_SystemError, "null object passed to PyBytes_AsStringAndSize");
+        return -1;
+    }
+    ptr = molt_bytes_as_ptr(_molt_py_handle(value), &len);
     if (ptr == NULL || molt_err_pending() != 0) {
         return -1;
     }
@@ -3577,7 +3622,8 @@ static inline PyObject *_molt_sequence_fast_get_item_borrowed(PyObject *seq, Py_
     if (item == NULL) {
         return NULL;
     }
-    Py_DECREF(item);
+    /* Borrowed-ref semantics: do NOT Py_DECREF — the item is kept alive
+     * by the containing sequence. */
     return item;
 }
 #define PySequence_Fast_GET_ITEM(obj, index)                                       \
@@ -3618,6 +3664,10 @@ static inline int _molt_rich_compare_call_dunder(
 }
 
 static inline int PyObject_RichCompareBool(PyObject *v, PyObject *w, int op) {
+    if (v == NULL || w == NULL) {
+        PyErr_SetString(PyExc_SystemError, "null object passed to PyObject_RichCompareBool");
+        return -1;
+    }
     switch (op) {
         case Py_EQ:
             return molt_object_equal(_molt_py_handle(v), _molt_py_handle(w));
@@ -5896,7 +5946,8 @@ static inline PyObject *PyImport_AddModule(const char *name) {
     }
     module = PyImport_ImportModule(name);
     if (module != NULL) {
-        Py_DECREF(module);
+        /* Borrowed-ref semantics: do NOT Py_DECREF — the module stays alive
+         * in sys.modules; callers expect a borrowed pointer. */
         return module;
     }
     PyErr_Clear();
@@ -5910,7 +5961,8 @@ static inline PyObject *PyImport_AddModule(const char *name) {
         return NULL;
     }
     module = _molt_pyobject_from_handle(module_bits);
-    Py_DECREF(module);
+    /* Borrowed-ref semantics: do NOT Py_DECREF — the newly created module
+     * is kept alive by the runtime's module registry. */
     return module;
 }
 
@@ -5925,7 +5977,8 @@ static inline PyObject *PyImport_GetModuleDict(void) {
     if (modules == NULL) {
         return NULL;
     }
-    Py_DECREF(modules);
+    /* Borrowed-ref semantics: do NOT Py_DECREF — the dict is kept alive
+     * as an attribute of sys. */
     return modules;
 }
 
@@ -6002,7 +6055,8 @@ static inline PyObject *PyEval_GetBuiltins(void) {
     if (builtins_dict == NULL) {
         return NULL;
     }
-    Py_DECREF(builtins_dict);
+    /* Borrowed-ref semantics: do NOT Py_DECREF — the dict is kept alive
+     * as an attribute of the builtins module. */
     return builtins_dict;
 }
 
@@ -6064,7 +6118,8 @@ static inline PyObject *PySys_GetObject(const char *name) {
     if (obj == NULL) {
         return NULL;
     }
-    Py_DECREF(obj);
+    /* Borrowed-ref semantics: do NOT Py_DECREF — the object is kept alive
+     * as an attribute of sys. */
     return obj;
 }
 
