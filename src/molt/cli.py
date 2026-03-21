@@ -16497,7 +16497,29 @@ def _ensure_backend_binary(
         if stored_fingerprint is None:
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
         if not _artifact_needs_rebuild(backend_bin, fingerprint, stored_fingerprint):
-            return True
+            # Quick probe: verify the cached binary actually supports the
+            # requested target.  Cargo feature collisions can leave a binary
+            # with the right fingerprint but wrong compiled features.
+            _quick_target = "wasm" if "wasm-backend" in backend_features else "native"
+            _quick_ir = json.dumps({
+                "functions": [], "module": "__probe__", "entry": "main",
+                "metadata": {"target": _quick_target, "deterministic": True},
+            }).encode()
+            try:
+                _qp = subprocess.run(
+                    [str(backend_bin)], input=_quick_ir,
+                    capture_output=True, timeout=10,
+                )
+                if (
+                    _qp.returncode != 0
+                    and b"without" in _qp.stderr
+                    and b"support" in _qp.stderr
+                ):
+                    pass  # Fall through to rebuild
+                else:
+                    return True
+            except (subprocess.TimeoutExpired, OSError):
+                return True  # Probe failed; trust fingerprint
         canonical_target_root = _canonical_target_root(project_root)
         canonical_backend_bin = canonical_target_root / _cargo_profile_dir(
             cargo_profile
@@ -16568,6 +16590,58 @@ def _ensure_backend_binary(
                 cargo_output = cargo_output.with_suffix(exe_suffix)
             if cargo_output.exists() and cargo_output != backend_bin:
                 shutil.copy2(cargo_output, backend_bin)
+        # -- Post-build feature probe (defense-in-depth) -----------------
+        # Cargo's incremental cache may skip recompilation when only
+        # features change, leaving a binary built for the wrong target.
+        # Probe the binary and, on mismatch, clean + rebuild once.
+        _probe_target = "wasm" if "wasm-backend" in backend_features else "native"
+        _probe_ir = json.dumps({
+            "functions": [], "module": "__probe__", "entry": "main",
+            "metadata": {"target": _probe_target, "deterministic": True},
+        }).encode()
+        try:
+            _probe = subprocess.run(
+                [str(backend_bin)], input=_probe_ir,
+                capture_output=True, timeout=10,
+            )
+            _probe_err = _probe.stderr.decode(errors="replace")
+            if (
+                _probe.returncode != 0
+                and "without" in _probe_err
+                and "support" in _probe_err
+            ):
+                if not json_output:
+                    print(
+                        "Backend feature mismatch detected; cleaning and rebuilding...",
+                        file=sys.stderr,
+                    )
+                subprocess.run(
+                    ["cargo", "clean", "-p", "molt-backend", "--profile", cargo_profile],
+                    cwd=project_root, env=build_env, capture_output=True, timeout=30,
+                )
+                try:
+                    rebuild = _run_cargo_with_sccache_retry(
+                        cmd, cwd=project_root, env=build_env,
+                        timeout=cargo_timeout, json_output=json_output,
+                        label="Backend rebuild (feature fix)",
+                    )
+                except subprocess.TimeoutExpired:
+                    if not json_output:
+                        print("Backend rebuild timed out.", file=sys.stderr)
+                    return False
+                if rebuild.returncode != 0:
+                    if not json_output:
+                        err = rebuild.stderr.strip() or rebuild.stdout.strip()
+                        if err:
+                            print(err, file=sys.stderr)
+                    return False
+                # Re-copy to feature-tagged path after rebuild
+                if backend_features != _DEFAULT_BACKEND_FEATURES:
+                    if cargo_output.exists() and cargo_output != backend_bin:
+                        shutil.copy2(cargo_output, backend_bin)
+        except (subprocess.TimeoutExpired, OSError):
+            pass  # Probe failed; proceed optimistically
+        # -- End post-build feature probe --------------------------------
         if fingerprint is not None:
             try:
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
