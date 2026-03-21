@@ -81,6 +81,153 @@ mod native_backend_consts {
 use native_backend_consts::*;
 
 #[cfg(feature = "native-backend")]
+struct NativeBackendIrAnalysis {
+    defined_functions: HashSet<String>,
+    closure_functions: HashSet<String>,
+    task_kinds: BTreeMap<String, TrampolineKind>,
+    task_closure_sizes: BTreeMap<String, i64>,
+    needs_inlining: bool,
+}
+
+#[cfg(feature = "native-backend")]
+fn analyze_native_backend_ir(ir: &SimpleIR) -> NativeBackendIrAnalysis {
+    let defined_functions: HashSet<String> =
+        ir.functions.iter().map(|func| func.name.clone()).collect();
+    let mut closure_functions: HashSet<String> = HashSet::new();
+    let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
+    let mut task_closure_sizes: BTreeMap<String, i64> = BTreeMap::new();
+    let mut needs_inlining = false;
+    let mut has_task_attrs = false;
+
+    for func_ir in &ir.functions {
+        for op in &func_ir.ops {
+            match op.kind.as_str() {
+                "call_internal" => needs_inlining = true,
+                "func_new_closure" => {
+                    if let Some(name) = op.s_value.as_ref() {
+                        closure_functions.insert(name.clone());
+                    }
+                }
+                "set_attr_generic_obj" => {
+                    if matches!(
+                        op.s_value.as_deref(),
+                        Some(
+                            "__molt_is_generator__"
+                                | "__molt_is_coroutine__"
+                                | "__molt_is_async_generator__"
+                                | "__molt_closure_size__"
+                        )
+                    ) {
+                        has_task_attrs = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if has_task_attrs {
+        for func_ir in &ir.functions {
+            let mut func_obj_names: HashMap<String, String> = HashMap::new();
+            let mut const_values: HashMap<String, i64> = HashMap::new();
+            let mut const_bools: HashMap<String, bool> = HashMap::new();
+            for op in &func_ir.ops {
+                match op.kind.as_str() {
+                    "const" => {
+                        let Some(out) = op.out.as_ref() else {
+                            continue;
+                        };
+                        let val = op.value.unwrap_or(0);
+                        const_values.insert(out.clone(), val);
+                    }
+                    "const_bool" => {
+                        let Some(out) = op.out.as_ref() else {
+                            continue;
+                        };
+                        let val = op.value.unwrap_or(0) != 0;
+                        const_bools.insert(out.clone(), val);
+                    }
+                    "func_new" | "func_new_closure" => {
+                        let Some(name) = op.s_value.as_ref() else {
+                            continue;
+                        };
+                        if let Some(out) = op.out.as_ref() {
+                            func_obj_names.insert(out.clone(), name.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for op in &func_ir.ops {
+                if op.kind != "set_attr_generic_obj" {
+                    continue;
+                }
+                let Some(attr) = op.s_value.as_deref() else {
+                    continue;
+                };
+                if attr != "__molt_is_generator__"
+                    && attr != "__molt_is_coroutine__"
+                    && attr != "__molt_is_async_generator__"
+                    && attr != "__molt_closure_size__"
+                {
+                    continue;
+                }
+                let args = op.args.as_ref().expect("set_attr_generic_obj args missing");
+                let Some(func_name) = func_obj_names.get(&args[0]) else {
+                    continue;
+                };
+                match attr {
+                    "__molt_is_generator__"
+                    | "__molt_is_coroutine__"
+                    | "__molt_is_async_generator__" => {
+                        let val_name = &args[1];
+                        let is_true = const_bools
+                            .get(val_name)
+                            .copied()
+                            .or_else(|| const_values.get(val_name).map(|val| *val != 0))
+                            .unwrap_or(false);
+                        if is_true {
+                            if !func_name.ends_with("_poll") {
+                                continue;
+                            }
+                            let kind = match attr {
+                                "__molt_is_generator__" => TrampolineKind::Generator,
+                                "__molt_is_coroutine__" => TrampolineKind::Coroutine,
+                                "__molt_is_async_generator__" => TrampolineKind::AsyncGen,
+                                _ => TrampolineKind::Plain,
+                            };
+                            if let Some(prev) = task_kinds.insert(func_name.clone(), kind)
+                                && prev != kind
+                            {
+                                panic!(
+                                    "conflicting task kinds for {func_name}: {:?} vs {:?}",
+                                    prev, kind
+                                );
+                            }
+                        }
+                    }
+                    "__molt_closure_size__" => {
+                        let val_name = &args[1];
+                        if let Some(size) = const_values.get(val_name) {
+                            task_closure_sizes.insert(func_name.clone(), *size);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    NativeBackendIrAnalysis {
+        defined_functions,
+        closure_functions,
+        task_kinds,
+        task_closure_sizes,
+        needs_inlining,
+    }
+}
+
+#[cfg(feature = "native-backend")]
 fn find_zero_pred_blocks(func: &Function) -> Vec<Block> {
     let mut preds: HashMap<Block, usize> = HashMap::new();
     for block in func.layout.blocks() {
@@ -667,85 +814,6 @@ fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
 }
 
 #[cfg(feature = "native-backend")]
-fn compute_last_use(ops: &[OpIR]) -> HashMap<String, usize> {
-    let mut last_use = HashMap::new();
-    for (idx, op) in ops.iter().enumerate() {
-        if let Some(args) = &op.args {
-            for name in args {
-                last_use.insert(name.clone(), idx);
-            }
-        }
-        if let Some(var) = &op.var {
-            last_use.insert(var.clone(), idx);
-        }
-    }
-    last_use
-}
-
-#[cfg(feature = "native-backend")]
-fn collect_var_names(params: &[String], ops: &[OpIR]) -> Vec<String> {
-    let mut names: HashSet<String> = HashSet::new();
-    for name in params {
-        if name != "none" {
-            names.insert(name.clone());
-        }
-    }
-    for op in ops {
-        if let Some(out) = &op.out
-            && out != "none"
-        {
-            names.insert(out.clone());
-            if op.kind == "const_str" || op.kind == "const_bytes" {
-                names.insert(format!("{}_ptr", out));
-                names.insert(format!("{}_len", out));
-            }
-        }
-        if let Some(var) = &op.var
-            && var != "none"
-        {
-            names.insert(var.clone());
-        }
-        if let Some(args) = &op.args {
-            for name in args {
-                if name != "none" {
-                    names.insert(name.clone());
-                }
-            }
-        }
-    }
-    let mut names: Vec<String> = names.into_iter().collect();
-    names.sort();
-    names
-}
-
-#[cfg(feature = "native-backend")]
-fn compute_if_end_maps(ops: &[OpIR]) -> (HashMap<usize, usize>, HashMap<usize, usize>) {
-    let mut if_to_end: HashMap<usize, usize> = HashMap::new();
-    let mut else_to_end: HashMap<usize, usize> = HashMap::new();
-    let mut stack: Vec<(usize, Option<usize>)> = Vec::new();
-    for (idx, op) in ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "if" => stack.push((idx, None)),
-            "else" => {
-                if let Some((_, else_idx)) = stack.last_mut() {
-                    *else_idx = Some(idx);
-                }
-            }
-            "end_if" => {
-                if let Some((if_idx, else_idx)) = stack.pop() {
-                    if_to_end.insert(if_idx, idx);
-                    if let Some(else_idx) = else_idx {
-                        else_to_end.insert(else_idx, idx);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    (if_to_end, else_to_end)
-}
-
-#[cfg(feature = "native-backend")]
 fn drain_cleanup_tracked(
     names: &mut Vec<String>,
     last_use: &HashMap<String, usize>,
@@ -1069,7 +1137,11 @@ impl SimpleBackend {
         for func_ir in &mut ir.functions {
             elide_dead_struct_allocs(func_ir);
         }
-        inline_functions(&mut ir);
+        let mut ir_analysis = analyze_native_backend_ir(&ir);
+        if ir_analysis.needs_inlining {
+            inline_functions(&mut ir);
+            ir_analysis = analyze_native_backend_ir(&ir);
+        }
         // Conditional trace elimination: skip emitting trace_enter/trace_exit calls
         // when tracing is disabled. Each guarded call site emits 2 trace function calls
         // (enter + exit); eliminating them saves codegen work on cache misses and
@@ -1079,113 +1151,13 @@ impl SimpleBackend {
             .as_deref()
             .map(parse_truthy_env)
             .unwrap_or(false);
-        let defined_functions: HashSet<String> =
-            ir.functions.iter().map(|func| func.name.clone()).collect();
-        // Track which functions are closures (need implicit env param in direct calls)
-        let mut closure_functions: HashSet<String> = HashSet::new();
-        // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
-        let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
-        // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
-        let mut task_closure_sizes: BTreeMap<String, i64> = BTreeMap::new();
-        for func_ir in &ir.functions {
-            let mut func_obj_names: HashMap<String, String> = HashMap::new();
-            let mut const_values: HashMap<String, i64> = HashMap::new();
-            let mut const_bools: HashMap<String, bool> = HashMap::new();
-            for op in &func_ir.ops {
-                match op.kind.as_str() {
-                    "const" => {
-                        let Some(out) = op.out.as_ref() else {
-                            continue;
-                        };
-                        let val = op.value.unwrap_or(0);
-                        const_values.insert(out.clone(), val);
-                    }
-                    "const_bool" => {
-                        let Some(out) = op.out.as_ref() else {
-                            continue;
-                        };
-                        let val = op.value.unwrap_or(0) != 0;
-                        const_bools.insert(out.clone(), val);
-                    }
-                    "func_new" | "func_new_closure" => {
-                        let Some(name) = op.s_value.as_ref() else {
-                            continue;
-                        };
-                        if op.kind == "func_new_closure" {
-                            closure_functions.insert(name.clone());
-                        }
-                        if let Some(out) = op.out.as_ref() {
-                            func_obj_names.insert(out.clone(), name.clone());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            for op in &func_ir.ops {
-                if op.kind != "set_attr_generic_obj" {
-                    continue;
-                }
-                let Some(attr) = op.s_value.as_deref() else {
-                    continue;
-                };
-                if attr != "__molt_is_generator__"
-                    && attr != "__molt_is_coroutine__"
-                    && attr != "__molt_is_async_generator__"
-                    && attr != "__molt_closure_size__"
-                {
-                    continue;
-                }
-                let args = op.args.as_ref().expect("set_attr_generic_obj args missing");
-                let Some(func_name) = func_obj_names.get(&args[0]) else {
-                    continue;
-                };
-                match attr {
-                    "__molt_is_generator__"
-                    | "__molt_is_coroutine__"
-                    | "__molt_is_async_generator__" => {
-                        let val_name = &args[1];
-                        let is_true = const_bools
-                            .get(val_name)
-                            .copied()
-                            .or_else(|| const_values.get(val_name).map(|val| *val != 0))
-                            .unwrap_or(false);
-                        if is_true {
-                            if !func_name.ends_with("_poll") {
-                                continue;
-                            }
-                            let kind = match attr {
-                                "__molt_is_generator__" => TrampolineKind::Generator,
-                                "__molt_is_coroutine__" => TrampolineKind::Coroutine,
-                                "__molt_is_async_generator__" => TrampolineKind::AsyncGen,
-                                _ => TrampolineKind::Plain,
-                            };
-                            if let Some(prev) = task_kinds.insert(func_name.clone(), kind)
-                                && prev != kind
-                            {
-                                panic!(
-                                    "conflicting task kinds for {func_name}: {:?} vs {:?}",
-                                    prev, kind
-                                );
-                            }
-                        }
-                    }
-                    "__molt_closure_size__" => {
-                        let val_name = &args[1];
-                        if let Some(size) = const_values.get(val_name) {
-                            task_closure_sizes.insert(func_name.clone(), *size);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
         for func_ir in ir.functions {
             self.compile_func(
                 func_ir,
-                &task_kinds,
-                &task_closure_sizes,
-                &defined_functions,
-                &closure_functions,
+                &ir_analysis.task_kinds,
+                &ir_analysis.task_closure_sizes,
+                &ir_analysis.defined_functions,
+                &ir_analysis.closure_functions,
                 emit_traces,
             );
         }
@@ -1539,7 +1511,9 @@ impl SimpleBackend {
 
 #[cfg(all(test, feature = "native-backend"))]
 mod tests {
-    use super::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
+    use super::{
+        FunctionIR, OpIR, SimpleBackend, SimpleIR, TrampolineKind, analyze_native_backend_ir,
+    };
     use std::sync::{Mutex, OnceLock};
 
     fn backend_env_lock() -> &'static Mutex<()> {
@@ -1611,5 +1585,79 @@ mod tests {
                 .windows(b"molt_trace_exit".len())
                 .any(|window| window == b"molt_trace_exit")
         );
+    }
+
+    #[test]
+    fn native_backend_ir_analysis_skips_inlining_without_internal_calls() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![OpIR {
+                    kind: "ret".to_string(),
+                    ..OpIR::default()
+                }],
+                param_types: None,
+            }],
+            profile: None,
+        };
+
+        let analysis = analyze_native_backend_ir(&ir);
+
+        assert!(!analysis.needs_inlining);
+        assert!(analysis.defined_functions.contains("molt_main"));
+    }
+
+    #[test]
+    fn native_backend_ir_analysis_collects_task_metadata_once_needed() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "const_bool".to_string(),
+                        out: Some("flag".to_string()),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("closure_size".to_string()),
+                        value: Some(3),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "func_new_closure".to_string(),
+                        out: Some("poll_obj".to_string()),
+                        s_value: Some("worker_poll".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "set_attr_generic_obj".to_string(),
+                        s_value: Some("__molt_is_coroutine__".to_string()),
+                        args: Some(vec!["poll_obj".to_string(), "flag".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "set_attr_generic_obj".to_string(),
+                        s_value: Some("__molt_closure_size__".to_string()),
+                        args: Some(vec!["poll_obj".to_string(), "closure_size".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+            }],
+            profile: None,
+        };
+
+        let analysis = analyze_native_backend_ir(&ir);
+
+        assert!(analysis.closure_functions.contains("worker_poll"));
+        assert_eq!(
+            analysis.task_kinds.get("worker_poll"),
+            Some(&TrampolineKind::Coroutine)
+        );
+        assert_eq!(analysis.task_closure_sizes.get("worker_poll"), Some(&3));
     }
 }
