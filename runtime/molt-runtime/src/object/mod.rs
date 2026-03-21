@@ -30,6 +30,7 @@ use crate::builtins::{
 };
 use crate::provenance::{register_ptr, release_ptr, resolve_ptr};
 use crate::{
+    ALLOC_BYTES_DICT, ALLOC_BYTES_LIST, ALLOC_BYTES_STRING, ALLOC_BYTES_TOTAL, ALLOC_BYTES_TUPLE,
     ALLOC_CALLARGS_COUNT, ALLOC_COUNT, ALLOC_DICT_COUNT, ALLOC_EXCEPTION_COUNT, ALLOC_OBJECT_COUNT,
     ALLOC_STRING_COUNT, ALLOC_TUPLE_COUNT, GEN_CLOSED_OFFSET, GEN_EXC_DEPTH_OFFSET,
     GEN_SEND_OFFSET, GEN_THROW_OFFSET, PyToken, TYPE_ID_ASYNC_GENERATOR, TYPE_ID_BIGINT,
@@ -79,7 +80,8 @@ use crate::{
     generic_alias_origin_bits, io_wait_poll_fn_addr, io_wait_release_socket, issubclass_bits,
     iter_cached_tuple, iter_target_bits, map_func_bits, map_iters_ptr, module_dict_bits,
     module_name_bits,
-    process_poll_fn_addr, profile_hit, property_del_bits, property_get_bits, property_set_bits,
+    process_poll_fn_addr, profile_hit, profile_hit_bytes, property_del_bits, property_get_bits,
+    property_set_bits,
     range_start_bits, range_step_bits, range_stop_bits, reversed_target_bits, runtime_state,
     seq_vec_ptr, set_order_ptr, set_table_ptr, slice_start_bits, slice_step_bits, slice_stop_bits,
     staticmethod_func_bits, task_cancel_message_clear, thread_poll_fn_addr, union_type_args_bits,
@@ -490,7 +492,9 @@ pub(crate) fn alloc_object_zeroed_with_pool(
         return std::ptr::null_mut();
     }
     profile_hit(_py, &ALLOC_COUNT);
+    profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, total_size as u64);
     profile_alloc_type(_py, type_id);
+    profile_alloc_type_bytes(_py, type_id, total_size);
     unsafe {
         let header = header_ptr as *mut MoltHeader;
         (*header).type_id = type_id;
@@ -518,7 +522,9 @@ pub(crate) fn alloc_object_zeroed(_py: &PyToken<'_>, total_size: usize, type_id:
             return std::ptr::null_mut();
         }
         profile_hit(_py, &ALLOC_COUNT);
+        profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, total_size as u64);
         profile_alloc_type(_py, type_id);
+        profile_alloc_type_bytes(_py, type_id, total_size);
         let header = ptr as *mut MoltHeader;
         (*header).type_id = type_id;
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
@@ -573,7 +579,9 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
         return std::ptr::null_mut();
     }
     profile_hit(_py, &ALLOC_COUNT);
+    profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, total_size as u64);
     profile_alloc_type(_py, type_id);
+    profile_alloc_type_bytes(_py, type_id, total_size);
     unsafe {
         let header = header_ptr as *mut MoltHeader;
         (*header).type_id = type_id;
@@ -601,6 +609,18 @@ fn profile_alloc_type(_py: &PyToken<'_>, type_id: u32) {
         TYPE_ID_TUPLE => profile_hit(_py, &ALLOC_TUPLE_COUNT),
         TYPE_ID_STRING => profile_hit(_py, &ALLOC_STRING_COUNT),
         TYPE_ID_CALLARGS => profile_hit(_py, &ALLOC_CALLARGS_COUNT),
+        _ => {}
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", inline(always))]
+fn profile_alloc_type_bytes(_py: &PyToken<'_>, type_id: u32, total_size: usize) {
+    let bytes = total_size as u64;
+    match type_id {
+        TYPE_ID_DICT => profile_hit_bytes(_py, &ALLOC_BYTES_DICT, bytes),
+        TYPE_ID_TUPLE => profile_hit_bytes(_py, &ALLOC_BYTES_TUPLE, bytes),
+        TYPE_ID_STRING => profile_hit_bytes(_py, &ALLOC_BYTES_STRING, bytes),
+        TYPE_ID_LIST | TYPE_ID_LIST_BUILDER => profile_hit_bytes(_py, &ALLOC_BYTES_LIST, bytes),
         _ => {}
     }
 }

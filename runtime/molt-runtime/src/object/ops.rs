@@ -6843,8 +6843,17 @@ pub extern "C" fn molt_profile_dump() {
         let taq_ingest_calls = TAQ_INGEST_CALL_COUNT.load(AtomicOrdering::Relaxed);
         let taq_ingest_skip_marker = TAQ_INGEST_SKIP_MARKER_COUNT.load(AtomicOrdering::Relaxed);
         let ascii_i64_parse_fail = ASCII_I64_PARSE_FAIL_COUNT.load(AtomicOrdering::Relaxed);
+        let alloc_bytes_total = ALLOC_BYTES_TOTAL.load(AtomicOrdering::Relaxed);
+        let alloc_bytes_string = ALLOC_BYTES_STRING.load(AtomicOrdering::Relaxed);
+        let alloc_bytes_dict = ALLOC_BYTES_DICT.load(AtomicOrdering::Relaxed);
+        let alloc_bytes_tuple = ALLOC_BYTES_TUPLE.load(AtomicOrdering::Relaxed);
+        let alloc_bytes_list = ALLOC_BYTES_LIST.load(AtomicOrdering::Relaxed);
+        // Take a final RSS sample before dumping.
+        sample_peak_rss();
+        let peak_rss = PEAK_RSS_BYTES.load(AtomicOrdering::Relaxed);
+        let current_rss = current_rss_bytes();
         eprintln!(
-            "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={} attr_lookup={} handle_resolve={} layout_guard={} layout_guard_fail={} alloc_count={} alloc_object={} alloc_exception={} alloc_dict={} alloc_tuple={} alloc_string={} alloc_callargs={} tb_builds={} tb_frames={} tb_suppressed={} async_polls={} async_pending={} async_wakeups={} async_sleep_register={} call_bind_ic_hit={} call_bind_ic_miss={} call_indirect_noncallable_deopt={} invoke_ffi_bridge_capability_denied={} guard_tag_type_mismatch_deopt={} guard_dict_shape_layout_mismatch_deopt={} attr_site_name_hit={} attr_site_name_miss={} split_ws_ascii={} split_ws_unicode={} dict_str_int_prehash_hit={} dict_str_int_prehash_miss={} dict_str_int_prehash_deopt={} taq_ingest_calls={} taq_ingest_skip_marker={} ascii_i64_parse_fail={}",
+            "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={} attr_lookup={} handle_resolve={} layout_guard={} layout_guard_fail={} alloc_count={} alloc_object={} alloc_exception={} alloc_dict={} alloc_tuple={} alloc_string={} alloc_callargs={} tb_builds={} tb_frames={} tb_suppressed={} async_polls={} async_pending={} async_wakeups={} async_sleep_register={} call_bind_ic_hit={} call_bind_ic_miss={} call_indirect_noncallable_deopt={} invoke_ffi_bridge_capability_denied={} guard_tag_type_mismatch_deopt={} guard_dict_shape_layout_mismatch_deopt={} attr_site_name_hit={} attr_site_name_miss={} split_ws_ascii={} split_ws_unicode={} dict_str_int_prehash_hit={} dict_str_int_prehash_miss={} dict_str_int_prehash_deopt={} taq_ingest_calls={} taq_ingest_skip_marker={} ascii_i64_parse_fail={} alloc_bytes_total={} alloc_bytes_string={} alloc_bytes_dict={} alloc_bytes_tuple={} alloc_bytes_list={} peak_rss_bytes={} current_rss_bytes={}",
             call_dispatch,
             cache_hit,
             cache_miss,
@@ -6882,7 +6891,14 @@ pub extern "C" fn molt_profile_dump() {
             dict_str_int_prehash_deopt,
             taq_ingest_calls,
             taq_ingest_skip_marker,
-            ascii_i64_parse_fail
+            ascii_i64_parse_fail,
+            alloc_bytes_total,
+            alloc_bytes_string,
+            alloc_bytes_dict,
+            alloc_bytes_tuple,
+            alloc_bytes_list,
+            peak_rss,
+            current_rss,
         );
         let payload = serde_json::json!({
             "schema_version": 1,
@@ -6910,6 +6926,15 @@ pub extern "C" fn molt_profile_dump() {
                 "async_pending": async_pending,
                 "async_wakeups": async_wakeups,
                 "async_sleep_register": async_sleep_reg,
+                "alloc_bytes_total": alloc_bytes_total,
+                "alloc_bytes_string": alloc_bytes_string,
+                "alloc_bytes_dict": alloc_bytes_dict,
+                "alloc_bytes_tuple": alloc_bytes_tuple,
+                "alloc_bytes_list": alloc_bytes_list,
+            },
+            "memory": {
+                "peak_rss_bytes": peak_rss,
+                "current_rss_bytes": current_rss,
             },
             "hot_paths": {
                 "call_bind_ic_hit": call_bind_ic_hit,

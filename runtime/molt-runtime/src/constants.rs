@@ -118,3 +118,11 @@ pub(crate) static GUARD_DICT_SHAPE_LAYOUT_FAIL_EXPECTED_VERSION_INVALID_COUNT: A
     AtomicU64::new(0);
 pub(crate) static GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT: AtomicU64 =
     AtomicU64::new(0);
+
+// Byte-level allocation tracking counters.
+pub(crate) static ALLOC_BYTES_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) static ALLOC_BYTES_STRING: AtomicU64 = AtomicU64::new(0);
+pub(crate) static ALLOC_BYTES_DICT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static ALLOC_BYTES_TUPLE: AtomicU64 = AtomicU64::new(0);
+pub(crate) static ALLOC_BYTES_LIST: AtomicU64 = AtomicU64::new(0);
+pub(crate) static PEAK_RSS_BYTES: AtomicU64 = AtomicU64::new(0);
