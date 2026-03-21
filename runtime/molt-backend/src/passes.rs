@@ -1267,6 +1267,123 @@ mod tests {
 
         assert_eq!(func.ops[3].fast_int, Some(true), "add with type_hint int operand should be fast_int");
     }
+
+    // --- RC coalescing tests ---
+
+    fn make_ref_op(kind: &str, arg: &str) -> OpIR {
+        OpIR {
+            kind: kind.to_string(),
+            args: Some(vec![arg.to_string()]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn rc_coalescing_eliminates_adjacent_inc_dec_pair() {
+        let mut func = FunctionIR {
+            name: "test".to_string(),
+            params: vec!["x".to_string()],
+            param_types: None,
+            ops: vec![
+                make_ref_op("inc_ref", "x"),
+                make_ref_op("dec_ref", "x"),
+                make_op("ret_void"),
+            ],
+        };
+
+        rc_coalescing(&mut func);
+
+        // Both inc_ref and dec_ref should be eliminated.
+        assert_eq!(func.ops.len(), 1);
+        assert_eq!(func.ops[0].kind, "ret_void");
+    }
+
+    #[test]
+    fn rc_coalescing_preserves_pair_across_control_flow() {
+        let mut func = FunctionIR {
+            name: "test".to_string(),
+            params: vec!["x".to_string()],
+            param_types: None,
+            ops: vec![
+                make_ref_op("inc_ref", "x"),
+                make_op("if"),
+                make_ref_op("dec_ref", "x"),
+                make_op("ret_void"),
+            ],
+        };
+
+        rc_coalescing(&mut func);
+
+        // The pair should NOT be eliminated because `if` is control flow.
+        assert_eq!(func.ops.len(), 4);
+    }
+
+    #[test]
+    fn rc_coalescing_handles_borrow_release_pair() {
+        let mut func = FunctionIR {
+            name: "test".to_string(),
+            params: vec!["y".to_string()],
+            param_types: None,
+            ops: vec![
+                make_ref_op("borrow", "y"),
+                make_ref_op("release", "y"),
+                make_op("ret_void"),
+            ],
+        };
+
+        rc_coalescing(&mut func);
+
+        assert_eq!(func.ops.len(), 1);
+        assert_eq!(func.ops[0].kind, "ret_void");
+    }
+
+    #[test]
+    fn rc_coalescing_preserves_pair_with_intervening_use() {
+        let mut func = FunctionIR {
+            name: "test".to_string(),
+            params: vec!["x".to_string()],
+            param_types: None,
+            ops: vec![
+                make_ref_op("inc_ref", "x"),
+                // An op that uses x as an argument — breaks the window.
+                make_arith("add", &["x", "x"], "y"),
+                make_ref_op("dec_ref", "x"),
+                make_op("ret_void"),
+            ],
+        };
+
+        rc_coalescing(&mut func);
+
+        // The pair should NOT be eliminated because of the intervening use.
+        assert_eq!(func.ops.len(), 4);
+    }
+
+    #[test]
+    fn rc_coalescing_eliminates_different_vars_independently() {
+        let mut func = FunctionIR {
+            name: "test".to_string(),
+            params: vec!["a".to_string(), "b".to_string()],
+            param_types: None,
+            ops: vec![
+                make_ref_op("inc_ref", "a"),
+                make_ref_op("inc_ref", "b"),
+                make_ref_op("dec_ref", "a"),
+                make_ref_op("dec_ref", "b"),
+                make_op("ret_void"),
+            ],
+        };
+
+        rc_coalescing(&mut func);
+
+        // inc_ref(a)/dec_ref(a) cannot be eliminated because inc_ref(b) intervenes
+        // (it doesn't use 'a' though). Let's check what actually happens.
+        // The scan finds inc_ref(a) at 0, then looks at 1 (inc_ref(b) — not a
+        // dec_ref of a, and doesn't use a), then at 2 (dec_ref(a) — match!).
+        // So indices 0,2 are eliminated. Then inc_ref(b) at 1, looks at 3
+        // (dec_ref(b) — match!), indices 1,3 eliminated.
+        assert_eq!(func.ops.len(), 1);
+        assert_eq!(func.ops[0].kind, "ret_void");
+    }
 }
 
 /// Identify pairs of `inc_ref`/`dec_ref` ops that cancel within a basic block.
@@ -1335,4 +1452,77 @@ pub(crate) fn compute_rc_coalesce_skips(
     }
 
     (skip_ops, skip_dec_ref)
+}
+
+/// Build a last-use map: for each variable name, the index of the last op that
+/// references it (via `var`, `args`, or `out`).
+fn build_last_use_map(ops: &[OpIR]) -> BTreeMap<String, usize> {
+    let mut last_use = BTreeMap::new();
+    for (i, op) in ops.iter().enumerate() {
+        if let Some(var) = &op.var {
+            if var != "none" {
+                last_use.insert(var.clone(), i);
+            }
+        }
+        if let Some(args) = &op.args {
+            for name in args {
+                if name != "none" {
+                    last_use.insert(name.clone(), i);
+                }
+            }
+        }
+        if let Some(out) = &op.out {
+            if out != "none" {
+                last_use.insert(out.clone(), i);
+            }
+        }
+    }
+    last_use
+}
+
+/// RC coalescing pass: eliminate redundant `inc_ref`/`dec_ref` pairs within
+/// basic blocks.  When an `inc_ref(x)` is followed by `dec_ref(x)` (or vice
+/// versa) with no intervening store, call, control-flow, or other use that
+/// could observe the refcount, the pair is removed.  Also removes trailing
+/// `inc_ref` ops whose output is never used (the corresponding `dec_ref` at
+/// function exit is skipped as well).
+///
+/// This is the IR-level counterpart of `compute_rc_coalesce_skips`, which is
+/// applied at codegen time.  Running it as an early pass shrinks the op stream
+/// for all downstream analyses and backends.
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
+pub(crate) fn rc_coalescing(func_ir: &mut FunctionIR) {
+    if std::env::var("MOLT_DISABLE_RC_COALESCE").is_ok() {
+        return;
+    }
+
+    let last_use = build_last_use_map(&func_ir.ops);
+    let (skip_ops, skip_dec_ref) = compute_rc_coalesce_skips(&func_ir.ops, &last_use);
+
+    if skip_ops.is_empty() && skip_dec_ref.is_empty() {
+        return;
+    }
+
+    let mut new_ops = Vec::with_capacity(func_ir.ops.len());
+    for (idx, op) in func_ir.ops.iter().enumerate() {
+        // Skip ops identified as redundant inc_ref/dec_ref pairs by index.
+        if skip_ops.contains(&idx) {
+            continue;
+        }
+        // Skip dec_ref/release ops whose variable was flagged by the
+        // dead-inc_ref analysis (the inc_ref was removed, so the dec_ref
+        // must be removed too).
+        if matches!(op.kind.as_str(), "dec_ref" | "release") {
+            if let Some(arg) = op.args.as_ref().and_then(|a| a.first()) {
+                if skip_dec_ref.contains(arg.as_str()) {
+                    continue;
+                }
+            }
+        }
+        new_ops.push(op.clone());
+    }
+    func_ir.ops = new_ops;
 }
