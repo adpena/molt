@@ -3,116 +3,51 @@
 Missing intrinsics must raise immediately; fallback is not permitted.
 """
 
-_REGISTRY_NAME = "_molt_intrinsics"
+import builtins as _builtins
+
+_LOOKUP_NAME = "_molt_intrinsic_lookup"
+_RUNTIME_FLAG = "_molt_runtime"
+_STRICT_FLAG = "_molt_intrinsics_strict"
 
 
 def _is_intrinsic_value(value):
     return callable(value)
 
 
-def _lookup_builtin_obj(builtins_obj, name):
-    if isinstance(builtins_obj, dict):
-        return builtins_obj.get(name)
-    return getattr(builtins_obj, name, None)
-
-
-def _lookup_name_and_alias(builtins_obj, name):
-    value = _lookup_builtin_obj(builtins_obj, name)
-    if _is_intrinsic_value(value):
-        return value
-    if name.startswith("molt_"):
-        alias = f"_molt_{name[5:]}"
-        value = _lookup_builtin_obj(builtins_obj, alias)
-        if _is_intrinsic_value(value):
-            return value
+def _lookup_helper():
+    helper = globals().get(_LOOKUP_NAME)
+    if callable(helper):
+        return helper
+    helper = getattr(_builtins, _LOOKUP_NAME, None)
+    if callable(helper):
+        return helper
     return None
 
 
-def _lookup_registry(builtins_obj, name):
-    reg = _lookup_builtin_obj(builtins_obj, _REGISTRY_NAME)
-    if isinstance(reg, dict):
-        value = reg.get(name)
-        if _is_intrinsic_value(value):
-            return value
-        # Lazy resolution: intrinsics are not eagerly populated at startup.
-        # Call the runtime resolver which builds the function object on demand
-        # and caches it in the registry dict for subsequent lookups.
-        resolver = reg.get("_molt_lazy_resolve")
-        if callable(resolver):
-            resolved = resolver(name)
-            if _is_intrinsic_value(resolved):
-                return resolved
-    return None
-
-
-def _lookup_from_builtins_obj(builtins_obj, name):
-    if builtins_obj is None:
-        return None
-    value = _lookup_registry(builtins_obj, name)
-    if value is not None:
-        return value
-    return _lookup_name_and_alias(builtins_obj, name)
-
-
-def _lookup_runtime_builtins(name):
-    try:
-        import builtins as _builtins
-    except Exception:
-        return None
-    return _lookup_from_builtins_obj(_builtins, name)
-
-
-def require_intrinsic(name, namespace=None):
-    if namespace is not None:
-        getter = getattr(namespace, "get", None)
-        if getter is not None:
-            value = getter(name)
-            if _is_intrinsic_value(value):
-                return value
-            value = getter(_REGISTRY_NAME)
-            if isinstance(value, dict):
-                hit = value.get(name)
-                if _is_intrinsic_value(hit):
-                    return hit
-                resolver = value.get("_molt_lazy_resolve")
-                if callable(resolver):
-                    resolved = resolver(name)
-                    if _is_intrinsic_value(resolved):
-                        return resolved
-            caller_builtins = getter("__builtins__")
-            value = _lookup_from_builtins_obj(caller_builtins, name)
-            if value is not None:
-                return value
-            value = _lookup_runtime_builtins(name)
-            if value is not None:
-                return value
-        else:
-            # Allow direct intrinsic values to be passed in as the namespace.
-            if _is_intrinsic_value(namespace):
-                return namespace
-
-    module_registry = globals().get(_REGISTRY_NAME)
-    if isinstance(module_registry, dict):
-        value = module_registry.get(name)
-        if _is_intrinsic_value(value):
-            return value
-        resolver = module_registry.get("_molt_lazy_resolve")
-        if callable(resolver):
-            resolved = resolver(name)
-            if _is_intrinsic_value(resolved):
-                return resolved
-
-    module_builtins = globals().get("__builtins__")
-    value = _lookup_from_builtins_obj(module_builtins, name)
-    if value is not None:
-        return value
-
-    value = _lookup_runtime_builtins(name)
-    if value is not None:
-        return value
-
-    raise RuntimeError(f"intrinsic unavailable: {name}")
+def runtime_active():
+    return bool(
+        _lookup_helper() is not None
+        or globals().get(_RUNTIME_FLAG, False)
+        or globals().get(_STRICT_FLAG, False)
+        or getattr(_builtins, _RUNTIME_FLAG, False)
+        or getattr(_builtins, _STRICT_FLAG, False)
+    )
 
 
 def load_intrinsic(name, namespace=None):
-    return require_intrinsic(name, namespace)
+    helper = _lookup_helper()
+    if helper is None:
+        return None
+    value = helper(name)
+    if _is_intrinsic_value(value):
+        return value
+    return None
+
+
+def require_intrinsic(name, namespace=None):
+    value = load_intrinsic(name, namespace)
+    if value is not None:
+        return value
+    if not runtime_active():
+        raise RuntimeError("Molt runtime intrinsics unavailable (runtime inactive)")
+    raise RuntimeError(f"intrinsic unavailable: {name}")
