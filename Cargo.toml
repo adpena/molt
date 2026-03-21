@@ -239,6 +239,16 @@ lto = "off"
 codegen-units = 128
 strip = false
 
+# Size-optimized release profile for micro stdlib builds.
+# Uses opt-level "z" (minimize binary size) with full LTO.
+[profile.release-size]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
 # WASM-optimized release profile: full LTO with single codegen unit for
 # maximum cross-crate inlining and dead code elimination. Build time
 # increases but runtime wasm artifacts are cached and infrequently rebuilt.
