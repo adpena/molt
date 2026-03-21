@@ -16,6 +16,38 @@ SYMBOL_OVERRIDES = {
     "molt_async_sleep": "molt_async_sleep_new",
 }
 
+# Map symbol prefixes to Cargo feature gates so the generated
+# resolve_symbol() compiles on builds without stdlib_full.
+_SYMBOL_FEATURE_PREFIXES: list[tuple[str, str]] = [
+    ("molt_hash_", "stdlib_crypto"),
+    ("molt_hmac_", "stdlib_crypto"),
+    ("molt_compare_digest", "stdlib_crypto"),
+    ("molt_pbkdf2_hmac", "stdlib_crypto"),
+    ("molt_scrypt", "stdlib_crypto"),
+    ("molt_secrets_", "stdlib_crypto"),
+    ("molt_compression_streams_", "stdlib_compression"),
+    ("molt_deflate_raw", "stdlib_compression"),
+    ("molt_inflate_raw", "stdlib_compression"),
+    ("molt_bz2_", "stdlib_compression"),
+    ("molt_gzip_", "stdlib_compression"),
+    ("molt_lzma_", "stdlib_compression"),
+    ("molt_zlib_", "stdlib_compression"),
+    ("molt_tarfile_", "stdlib_compression"),
+    ("molt_msgpack_", "stdlib_serialization"),
+    ("molt_cbor_", "stdlib_serialization"),
+    ("molt_ast_", "stdlib_ast"),
+    ("molt_glob_glob", "stdlib_fs_extra"),
+    ("molt_glob_iglob", "stdlib_fs_extra"),
+    ("molt_tempfile_", "stdlib_fs_extra"),
+]
+
+
+def _feature_for_symbol(symbol: str) -> str | None:
+    for prefix, feature in _SYMBOL_FEATURE_PREFIXES:
+        if symbol.startswith(prefix):
+            return feature
+    return None
+
 
 _DEF_RE = re.compile(
     r"^def\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\((?P<params>.*)\)\s*->\s*(?P<ret>[^:]+):\s*\.\.\.\s*$"
@@ -131,6 +163,9 @@ def _write_generated_rs(entries: list[tuple[str, str, int]]) -> None:
     lines.append("}\n\n")
     lines.append("pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[\n")
     for name, symbol, arity in entries:
+        feat = _feature_for_symbol(symbol)
+        if feat:
+            lines.append(f'    #[cfg(feature = "{feat}")]\n')
         lines.append(
             f'    IntrinsicSpec {{ name: "{name}", symbol: "{symbol}", arity: {arity} }},\n'
         )
@@ -142,6 +177,9 @@ def _write_generated_rs(entries: list[tuple[str, str, int]]) -> None:
         if symbol in seen_symbols:
             continue
         seen_symbols.add(symbol)
+        feat = _feature_for_symbol(symbol)
+        if feat:
+            lines.append(f'        #[cfg(feature = "{feat}")]\n')
         lines.append(
             f'        "{symbol}" => Some(crate::{symbol} as *const () as usize as u64),\n'
         )

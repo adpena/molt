@@ -33,6 +33,15 @@ pub(crate) fn unregister_gil_thread() {
     GIL_THREAD_COUNT.fetch_sub(1, AtomicOrdering::Release);
 }
 
+// WASM is single-threaded — GIL thread tracking is a no-op.
+#[cfg(target_arch = "wasm32")]
+#[inline]
+pub(crate) fn register_gil_thread() {}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+pub(crate) fn unregister_gil_thread() {}
+
 #[cfg(not(target_arch = "wasm32"))]
 static THREAD_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 

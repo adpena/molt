@@ -16614,9 +16614,12 @@ def _ensure_backend_binary(
             "functions": [], "module": "__probe__", "entry": "main",
             "metadata": {"target": _probe_target, "deterministic": True},
         }).encode()
+        _probe_cmd = [str(backend_bin)]
+        if _probe_target == "wasm":
+            _probe_cmd.extend(["--target", "wasm"])
         try:
             _probe = subprocess.run(
-                [str(backend_bin)], input=_probe_ir,
+                _probe_cmd, input=_probe_ir,
                 capture_output=True, timeout=10,
             )
             _probe_err = _probe.stderr.decode(errors="replace")
