@@ -4124,6 +4124,93 @@ def _module_dependency_closure(
     return closure
 
 
+_DEAD_MODULE_ELIMINATION_SAFELIST: frozenset[str] = frozenset(
+    {
+        "builtins",
+        "sys",
+        "os",
+        "os.path",
+        "_collections_abc",
+        "abc",
+        "io",
+        "typing",
+        "types",
+        "functools",
+        "collections",
+        "collections.abc",
+        "enum",
+        "dataclasses",
+        "warnings",
+        "importlib",
+        "importlib.util",
+        "importlib.machinery",
+        "importlib.abc",
+        "_thread",
+        "threading",
+        "copyreg",
+        "keyword",
+        "operator",
+        "reprlib",
+        "itertools",
+        IMPORTER_MODULE_NAME,
+        "molt.stdlib",
+    }
+)
+
+
+def _compute_reachable_modules(
+    entry_module: str,
+    module_deps: dict[str, set[str]],
+    module_names: Collection[str],
+) -> set[str]:
+    """Compute modules transitively reachable from *entry_module*."""
+    reachable: set[str] = set()
+    queue: deque[str] = deque()
+
+    def _seed(name: str) -> None:
+        if name in reachable:
+            return
+        reachable.add(name)
+        queue.append(name)
+
+    _seed(entry_module)
+    module_name_set = set(module_names)
+    for safe in _DEAD_MODULE_ELIMINATION_SAFELIST:
+        if safe in module_name_set:
+            _seed(safe)
+    while queue:
+        current = queue.popleft()
+        for dep in module_deps.get(current, ()):
+            _seed(dep)
+    parents_to_add: set[str] = set()
+    for name in list(reachable):
+        parts = name.split(".")
+        for i in range(1, len(parts)):
+            parent = ".".join(parts[:i])
+            if parent in module_name_set:
+                parents_to_add.add(parent)
+    reachable.update(parents_to_add)
+    return reachable
+
+
+def _apply_dead_module_elimination(
+    module_order: list[str],
+    module_layers: list[list[str]],
+    entry_module: str,
+    module_deps: dict[str, set[str]],
+    module_names: Collection[str],
+) -> tuple[list[str], list[list[str]], int]:
+    """Filter *module_order* and *module_layers* to only reachable modules."""
+    reachable = _compute_reachable_modules(entry_module, module_deps, module_names)
+    filtered_order = [m for m in module_order if m in reachable]
+    filtered_layers = [
+        [m for m in layer if m in reachable] for layer in module_layers
+    ]
+    filtered_layers = [layer for layer in filtered_layers if layer]
+    eliminated_count = len(module_order) - len(filtered_order)
+    return filtered_order, filtered_layers, eliminated_count
+
+
 def _module_dependency_closures(
     module_deps: dict[str, set[str]],
     module_names: Collection[str],
@@ -4426,11 +4513,7 @@ def _build_module_lowering_metadata(
         logical_source_path_by_module[module_name] = generated_module_source_paths.get(
             module_name, str(module_path)
         )
-        entry_override_by_module[module_name] = (
-            None
-            if module_name == entry_module and entry_module != "__main__"
-            else entry_module
-        )
+        entry_override_by_module[module_name] = entry_module
         module_is_namespace_by_module[module_name] = module_name in namespace_modules
         module_is_package_by_module[module_name] = module_path.name == "__init__.py"
     return (
@@ -11155,33 +11238,30 @@ def _prepare_backend_ir(
                 json_output,
                 command="build",
             )
-        entry_lower_error = _lower_entry_module_as_main(
-            lowering_context=_EntryFrontendLoweringContext(
-                entry_module=entry_module,
-                entry_path=entry_path,
-                parse_codec=parse_codec,
-                type_hint_policy=type_hint_policy,
-                fallback_policy=fallback_policy,
-                type_facts=type_facts,
-                enable_phi=enable_phi,
-                known_modules=known_modules,
-                known_classes=known_classes,
-                stdlib_allowlist=stdlib_allowlist,
-                known_func_defaults=known_func_defaults,
-                module_chunking=module_chunking,
-                module_chunk_max_ops=module_chunk_max_ops,
-                optimization_profile=optimization_profile,
-                pgo_hot_function_names=pgo_hot_function_names,
-                frontend_phase_timeout=frontend_phase_timeout,
-            ),
-            integration_state=integration_state,
-            diagnostics_state=diagnostics_state,
-            record_frontend_timing=record_frontend_timing,
-            fail=fail,
-            json_output=json_output,
+        # Dedup: the entry module is already compiled with entry_module=
+        # entry_module (giving it __main__ semantics — dynamic __name__,
+        # MODULE_CACHE_SET for "__main__", etc.).  Emit a thin trampoline
+        # molt_init___main__ that delegates to the real init instead of
+        # re-compiling the entire module.
+        _entry_real_init = SimpleTIRGenerator.module_init_symbol(entry_module)
+        _main_init = SimpleTIRGenerator.module_init_symbol("__main__")
+        _trampoline_code_id = _register_global_code_id_with_state(
+            integration_state, _entry_real_init
         )
-        if entry_lower_error is not None:
-            return None, entry_lower_error
+        integration_state.functions.append({
+            "name": _main_init,
+            "params": [],
+            "ops": [
+                {
+                    "kind": "call",
+                    "s_value": _entry_real_init,
+                    "args": [],
+                    "out": "v0",
+                    "value": _trampoline_code_id,
+                },
+                {"kind": "ret_void"},
+            ],
+        })
 
     functions = integration_state.functions
     global_code_ids = integration_state.global_code_ids
@@ -15001,9 +15081,31 @@ def _prepare_frontend_pipeline(
         midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
         midend_pass_stats_by_function=midend_pass_stats_by_function,
     )
+    _dme_module_order: list[str] = list(prepared_frontend_analysis.module_order)
+    _dme_module_layers: list[list[str]] = list(prepared_frontend_analysis.module_layers)
+    if os.environ.get("MOLT_DEAD_MODULE_ELIMINATION") == "1":
+        _dme_module_order, _dme_module_layers, _dme_eliminated = (
+            _apply_dead_module_elimination(
+                _dme_module_order,
+                _dme_module_layers,
+                entry_module=resolved_build_entry.entry_module,
+                module_deps=prepared_frontend_analysis.module_deps,
+                module_names=set(prepared_module_graph.module_graph),
+            )
+        )
+        if _dme_eliminated > 0:
+            import sys as _dme_sys
+
+            print(
+                f"[molt] dead module elimination: skipping {_dme_eliminated} "
+                f"unreachable modules (compiling {len(_dme_module_order)} of "
+                f"{len(prepared_frontend_analysis.module_order)})",
+                file=_dme_sys.stderr,
+            )
+
     prepared_frontend_run_ticket = _PreparedFrontendRunTicket(
-        module_order=prepared_frontend_analysis.module_order,
-        module_layers=prepared_frontend_analysis.module_layers,
+        module_order=_dme_module_order,
+        module_layers=_dme_module_layers,
         frontend_parallel_config=(
             prepared_frontend_lowering_config.frontend_parallel_config
         ),
@@ -15025,7 +15127,7 @@ def _prepare_frontend_pipeline(
             prepared_build_outputs.known_modules,
             prepared_build_outputs.generated_module_source_paths,
             prepared_frontend_analysis.known_func_defaults,
-            prepared_frontend_analysis.module_order,
+            _dme_module_order,
             prepared_frontend_lowering_config.type_facts,
             prepared_frontend_lowering_config.known_classes,
             prepared_frontend_lowering_config.enable_phi,
