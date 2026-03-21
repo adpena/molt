@@ -647,25 +647,32 @@ pub(crate) fn alloc_tuple_with_capacity(
 }
 
 /// Cached empty tuple singleton. Allocated once, immortal (never freed).
-/// This avoids a heap allocation + Vec creation for every `()` in Python.
-static EMPTY_TUPLE_PTR: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+/// Uses AtomicU64 instead of OnceLock to avoid recursive init panics on WASM.
+static EMPTY_TUPLE_PTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) fn alloc_tuple(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
     // Fast path: return the immortal empty tuple singleton.
     if elems.is_empty() {
-        let bits = *EMPTY_TUPLE_PTR.get_or_init(|| {
+        let cached = EMPTY_TUPLE_PTR.load(std::sync::atomic::Ordering::Relaxed);
+        let bits = if cached != 0 {
+            cached
+        } else {
             let ptr = alloc_tuple_with_capacity(_py, &[], 0);
             if !ptr.is_null() {
-                // Mark as immortal so inc_ref/dec_ref are no-ops.
                 unsafe {
                     let header = header_from_obj_ptr(ptr);
                     (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL;
-                    // Set refcount high to prevent accidental dealloc.
                     (*header).ref_count.store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
                 }
+                // CAS: if another thread beat us, use theirs (single-threaded on WASM, but safe)
+                let _ = EMPTY_TUPLE_PTR.compare_exchange(
+                    0, ptr as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
             }
-            ptr as u64
-        });
+            EMPTY_TUPLE_PTR.load(std::sync::atomic::Ordering::Relaxed)
+        };
         return bits as *mut u8;
     }
     let cap = if elems.len() <= MAX_SMALL_LIST {
@@ -963,13 +970,15 @@ pub(crate) fn alloc_bytes_like_with_len(_py: &PyToken<'_>, len: usize, type_id: 
     ptr
 }
 
-/// Cached empty string singleton. Allocated once, immortal (never freed).
-static EMPTY_STRING_PTR: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+/// Cached empty string singleton. Uses AtomicU64 to avoid recursive init panics on WASM.
+static EMPTY_STRING_PTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
-    // Fast path: return the immortal empty string singleton.
     if bytes.is_empty() {
-        let bits = *EMPTY_STRING_PTR.get_or_init(|| {
+        let cached = EMPTY_STRING_PTR.load(std::sync::atomic::Ordering::Relaxed);
+        let bits = if cached != 0 {
+            cached
+        } else {
             let ptr = alloc_bytes_like_with_len(_py, 0, TYPE_ID_STRING);
             if !ptr.is_null() {
                 unsafe {
@@ -977,9 +986,14 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
                     (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL;
                     (*header).ref_count.store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
                 }
+                let _ = EMPTY_STRING_PTR.compare_exchange(
+                    0, ptr as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
             }
-            ptr as u64
-        });
+            EMPTY_STRING_PTR.load(std::sync::atomic::Ordering::Relaxed)
+        };
         return bits as *mut u8;
     }
     let ptr = alloc_bytes_like_with_len(_py, bytes.len(), TYPE_ID_STRING);
@@ -1005,13 +1019,15 @@ pub(crate) fn alloc_bytes_like(_py: &PyToken<'_>, bytes: &[u8], type_id: u32) ->
     ptr
 }
 
-/// Cached empty bytes singleton. Allocated once, immortal.
-static EMPTY_BYTES_PTR: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+/// Cached empty bytes singleton. Uses AtomicU64 to avoid recursive init panics on WASM.
+static EMPTY_BYTES_PTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) fn alloc_bytes(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
-    // Fast path: return the immortal empty bytes singleton.
     if bytes.is_empty() {
-        let bits = *EMPTY_BYTES_PTR.get_or_init(|| {
+        let cached = EMPTY_BYTES_PTR.load(std::sync::atomic::Ordering::Relaxed);
+        let bits = if cached != 0 {
+            cached
+        } else {
             let ptr = alloc_bytes_like(_py, &[], TYPE_ID_BYTES);
             if !ptr.is_null() {
                 unsafe {
@@ -1019,9 +1035,14 @@ pub(crate) fn alloc_bytes(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
                     (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL;
                     (*header).ref_count.store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
                 }
+                let _ = EMPTY_BYTES_PTR.compare_exchange(
+                    0, ptr as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
             }
-            ptr as u64
-        });
+            EMPTY_BYTES_PTR.load(std::sync::atomic::Ordering::Relaxed)
+        };
         return bits as *mut u8;
     }
     alloc_bytes_like(_py, bytes, TYPE_ID_BYTES)
