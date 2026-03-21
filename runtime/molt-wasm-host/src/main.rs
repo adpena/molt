@@ -4698,6 +4698,15 @@ fn main() -> Result<()> {
         register_call_indirect_exports(&mut store, &output_instance, &registry, &call_names)?;
         set_memory_from_exports(&mut store, &output_instance);
 
+        // Initialize the indirect function table if the export exists.
+        // New binaries use molt_table_init to populate the table dynamically
+        // via table.set + ref.func instead of passive element segments.
+        if let Some(table_init) = output_instance.get_func(&mut store, "molt_table_init") {
+            debug_log(|| "calling molt_table_init".to_string());
+            table_init.call(&mut store, &[], &mut []).context("molt_table_init failed")?;
+            debug_log(|| "molt_table_init completed".to_string());
+        }
+
         // Snapshot restore: if valid, skip molt_main.
         let restored = if let Some(ref restore_path) = snapshot_restore_path {
             restore_snapshot(
