@@ -1072,12 +1072,13 @@ impl SimpleBackend {
         inline_functions(&mut ir);
         // Conditional trace elimination: skip emitting trace_enter/trace_exit calls
         // when tracing is disabled. Each guarded call site emits 2 trace function calls
-        // (enter + exit); eliminating them saves ~10ns per call in release builds.
-        // Default: emit traces in debug builds, skip in release builds.
+        // (enter + exit); eliminating them saves codegen work on cache misses and
+        // keeps the default native backend lane focused on production semantics.
+        // Trace emission is opt-in via MOLT_BACKEND_EMIT_TRACES=1.
         let emit_traces = env_setting("MOLT_BACKEND_EMIT_TRACES")
             .as_deref()
             .map(parse_truthy_env)
-            .unwrap_or(cfg!(debug_assertions));
+            .unwrap_or(false);
         let defined_functions: HashSet<String> =
             ir.functions.iter().map(|func| func.name.clone()).collect();
         // Track which functions are closures (need implicit env param in direct calls)
@@ -1533,5 +1534,82 @@ impl SimpleBackend {
         }
         trampoline_ids.insert(key, trampoline_id);
         trampoline_id
+    }
+}
+
+#[cfg(all(test, feature = "native-backend"))]
+mod tests {
+    use super::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
+    use std::sync::{Mutex, OnceLock};
+
+    fn backend_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn compile_trace_probe_object(emit_traces_env: Option<&str>) -> Vec<u8> {
+        let _guard = backend_env_lock().lock().expect("env lock poisoned");
+        match emit_traces_env {
+            Some(value) => unsafe { std::env::set_var("MOLT_BACKEND_EMIT_TRACES", value) },
+            None => unsafe { std::env::remove_var("MOLT_BACKEND_EMIT_TRACES") },
+        }
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "trace_enter_slot".to_string(),
+                        value: Some(7),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "trace_exit".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+            }],
+            profile: None,
+        };
+        let bytes = SimpleBackend::new().compile(ir);
+        unsafe { std::env::remove_var("MOLT_BACKEND_EMIT_TRACES") };
+        bytes
+    }
+
+    #[test]
+    fn native_backend_skips_trace_imports_by_default() {
+        let bytes = compile_trace_probe_object(None);
+
+        assert!(
+            !bytes
+                .windows(b"molt_trace_enter_slot".len())
+                .any(|window| window == b"molt_trace_enter_slot")
+        );
+        assert!(
+            !bytes
+                .windows(b"molt_trace_exit".len())
+                .any(|window| window == b"molt_trace_exit")
+        );
+    }
+
+    #[test]
+    fn native_backend_can_opt_in_trace_imports() {
+        let bytes = compile_trace_probe_object(Some("1"));
+
+        assert!(
+            bytes
+                .windows(b"molt_trace_enter_slot".len())
+                .any(|window| window == b"molt_trace_enter_slot")
+        );
+        assert!(
+            bytes
+                .windows(b"molt_trace_exit".len())
+                .any(|window| window == b"molt_trace_exit")
+        );
     }
 }
