@@ -8,6 +8,7 @@ struct FunctionPreanalysis {
     var_names: Vec<String>,
     last_use: HashMap<String, usize>,
     if_to_end_if: HashMap<usize, usize>,
+    if_skip_end: HashMap<usize, usize>,
     else_to_end_if: HashMap<usize, usize>,
     state_ids: Vec<i64>,
     resume_states: HashSet<i64>,
@@ -79,6 +80,7 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
     let mut var_names: HashSet<String> = HashSet::new();
     let mut last_use = HashMap::new();
     let mut if_to_end_if = HashMap::new();
+    let mut if_skip_end = HashMap::new();
     let mut else_to_end_if = HashMap::new();
     let mut if_stack: Vec<(usize, Option<usize>)> = Vec::new();
     let mut state_ids = Vec::new();
@@ -135,7 +137,14 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
             }
             "end_if" => {
                 if let Some((if_idx, else_idx)) = if_stack.pop() {
+                    let mut skip_end = idx;
+                    while skip_end + 1 < func_ir.ops.len()
+                        && func_ir.ops[skip_end + 1].kind == "phi"
+                    {
+                        skip_end += 1;
+                    }
                     if_to_end_if.insert(if_idx, idx);
+                    if_skip_end.insert(if_idx, skip_end);
                     if let Some(else_idx) = else_idx {
                         else_to_end_if.insert(else_idx, idx);
                     }
@@ -178,6 +187,7 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
         var_names,
         last_use,
         if_to_end_if,
+        if_skip_end,
         else_to_end_if,
         state_ids,
         resume_states,
@@ -205,6 +215,7 @@ impl SimpleBackend {
             var_names,
             last_use,
             if_to_end_if,
+            if_skip_end,
             else_to_end_if,
             state_ids,
             resume_states,
@@ -412,28 +423,18 @@ impl SimpleBackend {
 
         // 2. Implementation
         let ops = &func_ir.ops;
-        let mut skip_ops: HashSet<usize> = HashSet::new();
+        let mut skip_until_idx = 0usize;
         for op_idx in 0..ops.len() {
-            if skip_ops.contains(&op_idx) {
+            if op_idx < skip_until_idx {
                 continue;
             }
-            let op = ops[op_idx].clone();
+            let op = &ops[op_idx];
             sync_block_filled(&builder, &mut is_block_filled);
             if is_block_filled {
                 if op.kind == "if"
-                    && let Some(&end_if_idx) = if_to_end_if.get(&op_idx)
+                    && let Some(&skip_end_idx) = if_skip_end.get(&op_idx)
                 {
-                    for idx in op_idx..=end_if_idx {
-                        skip_ops.insert(idx);
-                    }
-                    let mut phi_idx = end_if_idx + 1;
-                    while phi_idx < ops.len() {
-                        if ops[phi_idx].kind != "phi" {
-                            break;
-                        }
-                        skip_ops.insert(phi_idx);
-                        phi_idx += 1;
-                    }
+                    skip_until_idx = skip_end_idx.saturating_add(1);
                     continue;
                 }
                 match op.kind.as_str() {
@@ -10962,9 +10963,9 @@ impl SimpleBackend {
                             }
                             let out = next.out.clone().expect("phi output missing");
                             phi_ops.push((out, args[0].clone(), args[1].clone()));
-                            skip_ops.insert(scan_idx);
                             scan_idx += 1;
                         }
+                        skip_until_idx = skip_until_idx.max(scan_idx);
                         frame.phi_ops = phi_ops;
                     }
 
@@ -11062,9 +11063,9 @@ impl SimpleBackend {
                             }
                             let out = next.out.clone().expect("phi output missing");
                             phi_ops.push((out, args[0].clone(), args[1].clone()));
-                            skip_ops.insert(scan_idx);
                             scan_idx += 1;
                         }
+                        skip_until_idx = skip_until_idx.max(scan_idx);
                         frame.phi_ops = phi_ops;
                     }
 
