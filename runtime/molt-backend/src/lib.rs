@@ -81,6 +81,23 @@ mod native_backend_consts {
 use native_backend_consts::*;
 
 #[cfg(feature = "native-backend")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ImportSignatureShape {
+    params: Vec<String>,
+    returns: Vec<String>,
+}
+
+#[cfg(feature = "native-backend")]
+impl ImportSignatureShape {
+    fn from_types(params: &[types::Type], returns: &[types::Type]) -> Self {
+        Self {
+            params: params.iter().map(ToString::to_string).collect(),
+            returns: returns.iter().map(ToString::to_string).collect(),
+        }
+    }
+}
+
+#[cfg(feature = "native-backend")]
 struct NativeBackendIrAnalysis {
     defined_functions: HashSet<String>,
     closure_functions: HashSet<String>,
@@ -919,6 +936,7 @@ pub struct SimpleBackend {
     ctx: Context,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     trampoline_ids: BTreeMap<TrampolineKey, cranelift_module::FuncId>,
+    import_ids: HashMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     data_pool: BTreeMap<Vec<u8>, cranelift_module::DataId>,
     next_data_id: u64,
@@ -1105,6 +1123,7 @@ impl SimpleBackend {
             module,
             ctx,
             trampoline_ids: BTreeMap::new(),
+            import_ids: HashMap::new(),
             data_pool: BTreeMap::new(),
             next_data_id: 0,
         }
@@ -1129,6 +1148,37 @@ impl SimpleBackend {
         module.define_data(data_id, &data_ctx).unwrap();
         data_pool.insert(bytes.to_vec(), data_id);
         data_id
+    }
+
+    fn import_func_id(
+        &mut self,
+        name: &'static str,
+        params: &[types::Type],
+        returns: &[types::Type],
+    ) -> cranelift_module::FuncId {
+        let shape = ImportSignatureShape::from_types(params, returns);
+        if let Some((func_id, cached_shape)) = self.import_ids.get(name) {
+            assert_eq!(
+                cached_shape, &shape,
+                "import signature mismatch for {name}: {:?} vs {:?}",
+                cached_shape, shape
+            );
+            return *func_id;
+        }
+
+        let mut sig = self.module.make_signature();
+        for param in params {
+            sig.params.push(AbiParam::new(*param));
+        }
+        for ret in returns {
+            sig.returns.push(AbiParam::new(*ret));
+        }
+        let func_id = self
+            .module
+            .declare_function(name, Linkage::Import, &sig)
+            .unwrap();
+        self.import_ids.insert(name, (func_id, shape));
+        func_id
     }
 
     pub fn compile(mut self, ir: SimpleIR) -> Vec<u8> {
@@ -1514,6 +1564,7 @@ mod tests {
     use super::{
         FunctionIR, OpIR, SimpleBackend, SimpleIR, TrampolineKind, analyze_native_backend_ir,
     };
+    use cranelift_codegen::ir::types;
     use std::sync::{Mutex, OnceLock};
 
     fn backend_env_lock() -> &'static Mutex<()> {
@@ -1659,5 +1710,16 @@ mod tests {
             Some(&TrampolineKind::Coroutine)
         );
         assert_eq!(analysis.task_closure_sizes.get("worker_poll"), Some(&3));
+    }
+
+    #[test]
+    fn native_backend_import_ids_are_cached_by_symbol() {
+        let mut backend = SimpleBackend::new();
+
+        let first = backend.import_func_id("molt_dec_ref", &[types::I64], &[]);
+        let second = backend.import_func_id("molt_dec_ref", &[types::I64], &[]);
+
+        assert_eq!(first, second);
+        assert_eq!(backend.import_ids.len(), 1);
     }
 }
