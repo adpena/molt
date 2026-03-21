@@ -7053,6 +7053,25 @@ unsafe fn sum_f64_simd_aarch64(vals: &[f64], acc: f64) -> f64 {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+unsafe fn sum_f64_simd_wasm32(vals: &[f64], acc: f64) -> f64 {
+    unsafe {
+        use std::arch::wasm32::*;
+        let mut i = 0usize;
+        let mut vec_sum = f64x2_splat(0.0);
+        while i + 2 <= vals.len() {
+            let vec = v128_load(vals.as_ptr().add(i) as *const v128);
+            vec_sum = f64x2_add(vec_sum, vec);
+            i += 2;
+        }
+        let mut sum = acc + f64x2_extract_lane::<0>(vec_sum) + f64x2_extract_lane::<1>(vec_sum);
+        for &v in &vals[i..] {
+            sum += v;
+        }
+        sum
+    }
+}
+
 /// Try to extract all elements as f64, then SIMD-sum. Returns None if any
 /// element is not a number (falls back to scalar path in caller).
 fn sum_floats_simd(elems: &[u64], acc: f64) -> Option<f64> {
@@ -7075,6 +7094,10 @@ fn sum_floats_simd(elems: &[u64], acc: f64) -> Option<f64> {
         if std::arch::is_aarch64_feature_detected!("neon") {
             return Some(unsafe { sum_f64_simd_aarch64(&vals, acc) });
         }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return Some(unsafe { sum_f64_simd_wasm32(&vals, acc) });
     }
     Some(sum_f64_raw_scalar(&vals, acc))
 }
@@ -20280,7 +20303,44 @@ fn count_utf8_bytes(bytes: &[u8]) -> i64 {
 
 #[cfg(target_arch = "wasm32")]
 fn count_utf8_bytes(bytes: &[u8]) -> i64 {
-    wtf8_codepoint_count_scan(bytes)
+    // WASM SIMD fast path: count codepoints by counting bytes that are NOT
+    // continuation bytes (i.e. bytes whose top two bits are NOT 0b10xxxxxx).
+    // A continuation byte has the pattern 10xx_xxxx, so (byte & 0xC0) == 0x80.
+    // We count non-continuation bytes to get codepoint count.
+    if std::str::from_utf8(bytes).is_ok() {
+        unsafe { count_utf8_codepoints_wasm_simd(bytes) }
+    } else {
+        wtf8_codepoint_count_scan(bytes)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+unsafe fn count_utf8_codepoints_wasm_simd(bytes: &[u8]) -> i64 {
+    unsafe {
+        use std::arch::wasm32::*;
+        let mut count = 0i64;
+        let mut i = 0usize;
+        let cont_mask = u8x16_splat(0xC0);
+        let cont_pat = u8x16_splat(0x80);
+        while i + 16 <= bytes.len() {
+            let chunk = v128_load(bytes.as_ptr().add(i) as *const v128);
+            // Isolate top 2 bits, compare to 0x80 → continuation bytes
+            let masked = v128_and(chunk, cont_mask);
+            let is_cont = u8x16_eq(masked, cont_pat);
+            // Bitmask: bit set for each continuation byte
+            let mask = u8x16_bitmask(is_cont);
+            // 16 minus number of continuation bytes = number of codepoint-starting bytes
+            count += (16 - mask.count_ones()) as i64;
+            i += 16;
+        }
+        // Scalar tail
+        for &b in &bytes[i..] {
+            if (b & 0xC0) != 0x80 {
+                count += 1;
+            }
+        }
+        count
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -24098,6 +24158,37 @@ fn simd_is_all_ascii_whitespace(bytes: &[u8]) -> bool {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            use std::arch::wasm32::*;
+            let space = u8x16_splat(b' ');
+            let tab = u8x16_splat(b'\t');
+            let nl = u8x16_splat(b'\n');
+            let cr = u8x16_splat(b'\r');
+            let vt = u8x16_splat(0x0b);
+            let ff = u8x16_splat(0x0c);
+            while i + 16 <= bytes.len() {
+                let chunk = v128_load(ptr.add(i) as *const v128);
+                let is_ws = v128_or(
+                    v128_or(
+                        v128_or(u8x16_eq(chunk, space), u8x16_eq(chunk, tab)),
+                        u8x16_eq(chunk, nl),
+                    ),
+                    v128_or(
+                        u8x16_eq(chunk, cr),
+                        v128_or(u8x16_eq(chunk, vt), u8x16_eq(chunk, ff)),
+                    ),
+                );
+                // All bytes must be whitespace → all bitmask bits set
+                if u8x16_bitmask(is_ws) != 0xFFFF {
+                    return false;
+                }
+                i += 16;
+            }
+        }
+    }
+
     // Scalar tail
     while i < bytes.len() {
         if !bytes_ascii_space(bytes[i]) {
@@ -24154,6 +24245,29 @@ fn simd_is_all_ascii_alpha(bytes: &[u8]) -> bool {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            use std::arch::wasm32::*;
+            let case_bit = u8x16_splat(0x20);
+            let a_lower = u8x16_splat(b'a');
+            let z_lower = u8x16_splat(b'z');
+            while i + 16 <= bytes.len() {
+                let chunk = v128_load(bytes.as_ptr().add(i) as *const v128);
+                let lowered = v128_or(chunk, case_bit);
+                // Range check: a <= lowered <= z
+                // lowered >= a: use unsigned saturating sub; if (lowered - a) didn't underflow, >= a
+                let ge_a = u8x16_ge(lowered, a_lower);
+                let le_z = u8x16_le(lowered, z_lower);
+                let is_alpha = v128_and(ge_a, le_z);
+                if u8x16_bitmask(is_alpha) != 0xFFFF {
+                    return false;
+                }
+                i += 16;
+            }
+        }
+    }
+
     while i < bytes.len() {
         if !bytes[i].is_ascii_alphabetic() {
             return false;
@@ -24197,6 +24311,25 @@ fn simd_is_all_ascii_digit(bytes: &[u8]) -> bool {
                 let le_9 = _mm_cmpgt_epi8(_mm_set1_epi8((b'9' + 1) as i8), chunk);
                 let is_digit = _mm_and_si128(ge_0, le_9);
                 if _mm_movemask_epi8(is_digit) != 0xFFFF {
+                    return false;
+                }
+                i += 16;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            use std::arch::wasm32::*;
+            let zero = u8x16_splat(b'0');
+            let nine = u8x16_splat(b'9');
+            while i + 16 <= bytes.len() {
+                let chunk = v128_load(bytes.as_ptr().add(i) as *const v128);
+                let ge_0 = u8x16_ge(chunk, zero);
+                let le_9 = u8x16_le(chunk, nine);
+                let is_digit = v128_and(ge_0, le_9);
+                if u8x16_bitmask(is_digit) != 0xFFFF {
                     return false;
                 }
                 i += 16;
@@ -24266,6 +24399,29 @@ fn simd_is_all_ascii_alnum(bytes: &[u8]) -> bool {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            use std::arch::wasm32::*;
+            let case_bit = u8x16_splat(0x20);
+            let a_lower = u8x16_splat(b'a');
+            let z_lower = u8x16_splat(b'z');
+            let zero = u8x16_splat(b'0');
+            let nine = u8x16_splat(b'9');
+            while i + 16 <= bytes.len() {
+                let chunk = v128_load(bytes.as_ptr().add(i) as *const v128);
+                let lowered = v128_or(chunk, case_bit);
+                let is_alpha = v128_and(u8x16_ge(lowered, a_lower), u8x16_le(lowered, z_lower));
+                let is_digit = v128_and(u8x16_ge(chunk, zero), u8x16_le(chunk, nine));
+                let is_alnum = v128_or(is_alpha, is_digit);
+                if u8x16_bitmask(is_alnum) != 0xFFFF {
+                    return false;
+                }
+                i += 16;
+            }
+        }
+    }
+
     while i < bytes.len() {
         if !bytes[i].is_ascii_alphanumeric() {
             return false;
@@ -24307,6 +24463,23 @@ fn simd_is_all_ascii_printable(bytes: &[u8]) -> bool {
                 let le_hi = _mm_cmpgt_epi8(_mm_set1_epi8(0x7F_u8 as i8), chunk);
                 let is_print = _mm_and_si128(ge_lo, le_hi);
                 if _mm_movemask_epi8(is_print) != 0xFFFF {
+                    return false;
+                }
+                i += 16;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            use std::arch::wasm32::*;
+            let lo = u8x16_splat(0x20);
+            let hi = u8x16_splat(0x7E);
+            while i + 16 <= bytes.len() {
+                let chunk = v128_load(bytes.as_ptr().add(i) as *const v128);
+                let is_print = v128_and(u8x16_ge(chunk, lo), u8x16_le(chunk, hi));
+                if u8x16_bitmask(is_print) != 0xFFFF {
                     return false;
                 }
                 i += 16;
@@ -24362,6 +24535,23 @@ fn simd_has_any_ascii_upper(bytes: &[u8]) -> bool {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            use std::arch::wasm32::*;
+            let a_upper = u8x16_splat(b'A');
+            let z_upper = u8x16_splat(b'Z');
+            while i + 16 <= bytes.len() {
+                let chunk = v128_load(bytes.as_ptr().add(i) as *const v128);
+                let is_upper = v128_and(u8x16_ge(chunk, a_upper), u8x16_le(chunk, z_upper));
+                if u8x16_bitmask(is_upper) != 0 {
+                    return true;
+                }
+                i += 16;
+            }
+        }
+    }
+
     while i < bytes.len() {
         if bytes[i].is_ascii_uppercase() {
             return true;
@@ -24402,6 +24592,23 @@ fn simd_has_any_ascii_lower(bytes: &[u8]) -> bool {
                 let le_z = _mm_cmpgt_epi8(_mm_set1_epi8((b'z' + 1) as i8), chunk);
                 let is_lower = _mm_and_si128(ge_a, le_z);
                 if _mm_movemask_epi8(is_lower) != 0 {
+                    return true;
+                }
+                i += 16;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            use std::arch::wasm32::*;
+            let a_lower = u8x16_splat(b'a');
+            let z_lower = u8x16_splat(b'z');
+            while i + 16 <= bytes.len() {
+                let chunk = v128_load(bytes.as_ptr().add(i) as *const v128);
+                let is_lower = v128_and(u8x16_ge(chunk, a_lower), u8x16_le(chunk, z_lower));
+                if u8x16_bitmask(is_lower) != 0 {
                     return true;
                 }
                 i += 16;
