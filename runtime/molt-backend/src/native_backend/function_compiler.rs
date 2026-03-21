@@ -13,6 +13,9 @@ struct FunctionPreanalysis {
     state_ids: Vec<i64>,
     resume_states: HashSet<i64>,
     function_exception_label_id: Option<i64>,
+    /// Pre-built map from variable name -> constant integer value for O(1) lookups.
+    /// Only the first definition of each name is stored (SSA correctness).
+    const_int_map: BTreeMap<String, i64>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -174,6 +177,8 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
         .rev()
         .find_map(|(_, id)| exception_label_ids.contains(&id).then_some(id));
 
+    let const_int_map = crate::build_const_int_map(&func_ir.ops);
+
     FunctionPreanalysis {
         has_ret,
         stateful,
@@ -186,6 +191,7 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
         state_ids,
         resume_states,
         function_exception_label_id,
+        const_int_map,
     }
 }
 
@@ -214,6 +220,7 @@ impl SimpleBackend {
             state_ids,
             resume_states,
             function_exception_label_id,
+            const_int_map: _const_int_map,
         } = preanalyze_function_ir(&func_ir);
 
         if has_ret {
