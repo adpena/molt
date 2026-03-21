@@ -646,7 +646,28 @@ pub(crate) fn alloc_tuple_with_capacity(
     ptr
 }
 
+/// Cached empty tuple singleton. Allocated once, immortal (never freed).
+/// This avoids a heap allocation + Vec creation for every `()` in Python.
+static EMPTY_TUPLE_PTR: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
 pub(crate) fn alloc_tuple(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
+    // Fast path: return the immortal empty tuple singleton.
+    if elems.is_empty() {
+        let bits = *EMPTY_TUPLE_PTR.get_or_init(|| {
+            let ptr = alloc_tuple_with_capacity(_py, &[], 0);
+            if !ptr.is_null() {
+                // Mark as immortal so inc_ref/dec_ref are no-ops.
+                unsafe {
+                    let header = header_from_obj_ptr(ptr);
+                    (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+                    // Set refcount high to prevent accidental dealloc.
+                    (*header).ref_count.store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            ptr as u64
+        });
+        return bits as *mut u8;
+    }
     let cap = if elems.len() <= MAX_SMALL_LIST {
         MAX_SMALL_LIST
     } else {
