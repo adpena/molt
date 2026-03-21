@@ -21837,6 +21837,50 @@ pub extern "C" fn molt_string_swapcase(hay_bits: u64) -> u64 {
     })
 }
 
+/// Intrinsic for `str.__mul__` / `str * int`.
+/// Avoids the generic `molt_mul` dispatch path (int check, bigint check, float
+/// check, dunder lookup) when the compiler knows the LHS is a string.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_str_repeat(str_bits: u64, count_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let str_obj = obj_from_bits(str_bits);
+        let count_obj = obj_from_bits(count_bits);
+        let Some(ptr) = str_obj.as_ptr() else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "can't multiply sequence by non-int of type 'NoneType'",
+            );
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_STRING {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    &format!(
+                        "can't multiply sequence by non-int of type '{}'",
+                        type_of_bits(_py, str_bits)
+                    ),
+                );
+            }
+        }
+        let Some(count) = to_i64(count_obj) else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                &format!(
+                    "can't multiply sequence by non-int of type '{}'",
+                    type_of_bits(_py, count_bits)
+                ),
+            );
+        };
+        match repeat_sequence(_py, ptr, count) {
+            Some(bits) => bits,
+            None => raise_exception::<_>(_py, "TypeError", "unsupported operand type(s) for *"),
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_capitalize(hay_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
