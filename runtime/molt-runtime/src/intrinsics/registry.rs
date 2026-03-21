@@ -28,10 +28,8 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
     // which overwrote BUILTINS_MODULE_PTR with the *last* module created
     // and left the lazy resolver unreachable from the actual builtins dict
     // that Python-side `_intrinsics.py` looks up via `__builtins__`.
-    unsafe {
-        if !BUILTINS_MODULE_PTR.is_null() {
-            return;
-        }
+    if !BUILTINS_MODULE_PTR.load(Ordering::Relaxed).is_null() {
+        return;
     }
     unsafe {
         if object_type_id(module_ptr) != TYPE_ID_MODULE {

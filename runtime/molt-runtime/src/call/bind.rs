@@ -1,6 +1,7 @@
 use crate::state::tls::FRAME_STACK;
 use crate::{
-    BIND_KIND_CAPI_METHOD, BIND_KIND_OPEN, CALL_BIND_IC_HIT_COUNT, CALL_BIND_IC_MISS_COUNT,
+    ALLOC_BYTES_CALLARGS, BIND_KIND_CAPI_METHOD, BIND_KIND_OPEN, CALL_BIND_IC_HIT_COUNT,
+    CALL_BIND_IC_MISS_COUNT,
     CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT, FUNC_DEFAULT_DICT_POP, FUNC_DEFAULT_DICT_UPDATE,
     FUNC_DEFAULT_IO_RAW, FUNC_DEFAULT_IO_TEXT_WRAPPER, FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NEG_ONE,
     FUNC_DEFAULT_NONE, FUNC_DEFAULT_NONE2, FUNC_DEFAULT_REPLACE_COUNT, FUNC_DEFAULT_ZERO,
@@ -1148,6 +1149,16 @@ pub extern "C" fn molt_callargs_new(pos_capacity_bits: u64, kw_capacity_bits: u6
                 kw_values: Vec::with_capacity(kw_capacity),
                 kw_seen: HashSet::with_capacity(kw_capacity),
             });
+            // Track heap bytes: the CallArgs struct itself plus the capacity
+            // reserved by each inner Vec/HashSet.
+            let callargs_bytes = std::mem::size_of::<CallArgs>()
+                + pos_capacity * std::mem::size_of::<u64>()
+                + kw_capacity * std::mem::size_of::<u64>() * 2
+                + kw_capacity * std::mem::size_of::<String>();
+            ALLOC_BYTES_CALLARGS.fetch_add(
+                callargs_bytes as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             let args_ptr = Box::into_raw(args);
             *(ptr as *mut *mut CallArgs) = args_ptr;
         }
