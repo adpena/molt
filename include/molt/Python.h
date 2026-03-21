@@ -636,7 +636,8 @@ static inline PyTypeObject *_molt_py_typeof(PyObject *obj) {
     if (type_obj == NULL) {
         return NULL;
     }
-    Py_DECREF(type_obj);
+    /* Do NOT Py_DECREF — Py_TYPE returns a borrowed ref per CPython contract.
+     * The type is kept alive by the object's internal reference. */
     return (PyTypeObject *)type_obj;
 }
 
@@ -1425,10 +1426,10 @@ static inline PyObject *_molt_type_get_attached_module_borrowed(
         return NULL;
     }
     /*
-     * Expose borrowed-ref semantics to mirror CPython's type/module APIs.
-     * The strong reference is held by the type attribute itself.
+     * Borrowed-ref semantics to mirror CPython's type/module APIs.
+     * Do NOT Py_DECREF — the strong reference from GetAttrString keeps the
+     * pointer alive; the type attribute itself holds the logical ownership.
      */
-    Py_DECREF(module);
     return module;
 }
 
@@ -2450,6 +2451,11 @@ static inline PyObject *PyLong_FromSsize_t(Py_ssize_t value) {
 }
 
 static inline PyObject *PyLong_FromUnsignedLongLong(unsigned long long value) {
+    if (value > (unsigned long long)INT64_MAX) {
+        PyErr_SetString(PyExc_OverflowError,
+            "Python int too large to convert to molt i64");
+        return NULL;
+    }
     return _molt_pyobject_from_result(molt_int_from_i64((int64_t)value));
 }
 
@@ -2584,21 +2590,33 @@ static inline int PyDict_SetItemString(PyObject *dict, const char *key, PyObject
 
 static inline PyObject *PyDict_GetItem(PyObject *dict, PyObject *key) {
     MoltHandle out = molt_mapping_getitem(_molt_py_handle(dict), _molt_py_handle(key));
-    PyObject *result = _molt_pyobject_from_result(out);
-    if (result == NULL) {
+    if (out == 0 || molt_err_pending() != 0) {
+        molt_err_clear();  /* PyDict_GetItem silently clears errors */
         return NULL;
     }
-    Py_DECREF(result);
-    return result;
+    /* No Py_DECREF — borrowed reference backed by dict */
+    return _molt_pyobject_from_handle(out);
 }
 
 static inline PyObject *PyDict_GetItemString(PyObject *dict, const char *key) {
-    PyObject *result = PyMapping_GetItemString(dict, key);
-    if (result == NULL) {
+    MoltHandle key_bits;
+    MoltHandle out;
+    if (key == NULL) {
         return NULL;
     }
-    Py_DECREF(result);
-    return result;
+    key_bits = _molt_string_from_utf8(key);
+    if (key_bits == 0 || molt_err_pending() != 0) {
+        molt_err_clear();  /* PyDict_GetItemString silently clears errors */
+        return NULL;
+    }
+    out = molt_mapping_getitem(_molt_py_handle(dict), key_bits);
+    molt_handle_decref(key_bits);
+    if (out == 0 || molt_err_pending() != 0) {
+        molt_err_clear();  /* PyDict_GetItemString silently clears errors */
+        return NULL;
+    }
+    /* No Py_DECREF — borrowed reference backed by dict */
+    return _molt_pyobject_from_handle(out);
 }
 
 static inline int PyDict_Contains(PyObject *dict, PyObject *key) {
@@ -2606,7 +2624,13 @@ static inline int PyDict_Contains(PyObject *dict, PyObject *key) {
 }
 
 static inline PyObject *PyDict_GetItemWithError(PyObject *dict, PyObject *key) {
-    return PyDict_GetItem(dict, key);
+    MoltHandle out = molt_mapping_getitem(_molt_py_handle(dict), _molt_py_handle(key));
+    if (out == 0 || molt_err_pending() != 0) {
+        /* Unlike PyDict_GetItem, do NOT clear errors — propagate them. */
+        return NULL;
+    }
+    /* Borrowed reference backed by dict */
+    return _molt_pyobject_from_handle(out);
 }
 
 static inline int PyDict_GetItemStringRef(PyObject *dict, const char *key, PyObject **result) {
@@ -2648,17 +2672,52 @@ static inline int PyDict_Next(
     PyObject **pkey,
     PyObject **pvalue
 ) {
-    (void)dict;
-    if (ppos != NULL) {
-        *ppos = 0;
+    MoltHandle keys_obj;
+    MoltHandle key_handle;
+    MoltHandle key_idx;
+    MoltHandle val_handle;
+    Py_ssize_t pos;
+    int64_t dict_len;
+
+    if (dict == NULL || ppos == NULL) {
+        return 0;
     }
+    pos = *ppos;
+    dict_len = molt_mapping_length(_molt_py_handle(dict));
+    if (pos < 0 || pos >= (Py_ssize_t)dict_len) {
+        return 0;
+    }
+
+    keys_obj = molt_mapping_keys(_molt_py_handle(dict));
+    if (keys_obj == 0 || molt_err_pending() != 0) {
+        molt_err_clear();
+        return 0;
+    }
+
+    key_idx = molt_int_from_i64((int64_t)pos);
+    key_handle = molt_sequence_getitem(keys_obj, key_idx);
+    molt_handle_decref(key_idx);
+    molt_handle_decref(keys_obj);
+    if (key_handle == 0 || molt_err_pending() != 0) {
+        molt_err_clear();
+        return 0;
+    }
+
     if (pkey != NULL) {
-        *pkey = NULL;
+        *pkey = _molt_pyobject_from_handle(key_handle);
     }
     if (pvalue != NULL) {
-        *pvalue = NULL;
+        val_handle = molt_mapping_getitem(_molt_py_handle(dict), key_handle);
+        if (val_handle == 0 || molt_err_pending() != 0) {
+            molt_err_clear();
+            if (pkey != NULL) { *pkey = NULL; }
+            return 0;
+        }
+        *pvalue = _molt_pyobject_from_handle(val_handle);
     }
-    return 0;
+
+    *ppos = pos + 1;
+    return 1;
 }
 
 static inline PyObject *PyUnicode_FromString(const char *value) {
@@ -2686,11 +2745,13 @@ static inline const char *PyUnicode_AsUTF8(PyObject *value) {
 }
 
 static inline Py_ssize_t PyUnicode_GetLength(PyObject *value) {
-    Py_ssize_t len = 0;
-    if (PyUnicode_AsUTF8AndSize(value, &len) == NULL) {
+    /* Return codepoint count, not UTF-8 byte count.
+     * molt_sequence_length on a string returns the number of characters. */
+    int64_t len = molt_sequence_length(_molt_py_handle(value));
+    if (molt_err_pending() != 0) {
         return -1;
     }
-    return len;
+    return (Py_ssize_t)len;
 }
 
 static inline PyObject *PyUnicode_AsUTF8String(PyObject *value) {
@@ -7061,7 +7122,7 @@ static inline Py_ssize_t PyUnicode_Find(PyObject *str, PyObject *substr,
                                           Py_ssize_t start, Py_ssize_t end,
                                           int direction) {
     MoltHandle method;
-    MoltHandle call_args[2];
+    MoltHandle call_args[3];
     MoltHandle args;
     MoltHandle out;
     PyObject *result;
@@ -7073,10 +7134,13 @@ static inline Py_ssize_t PyUnicode_Find(PyObject *str, PyObject *substr,
     if (method == 0 || molt_err_pending() != 0) return -2;
     call_args[0] = _molt_py_handle(substr);
     call_args[1] = molt_int_from_i64((int64_t)start);
-    args = molt_tuple_from_array(call_args, 2);
+    call_args[2] = molt_int_from_i64((int64_t)end);
+    args = molt_tuple_from_array(call_args, 3);
+    /* Decref temporaries before the call — tuple holds its own refs */
+    molt_handle_decref(call_args[2]);
+    molt_handle_decref(call_args[1]);
     out = molt_object_call(method, args, molt_none());
     molt_handle_decref(args);
-    molt_handle_decref(call_args[1]);
     molt_handle_decref(method);
     result = _molt_pyobject_from_result(out);
     if (result == NULL) return -2;
@@ -8996,23 +9060,25 @@ static inline int PyImport_ImportFrozenModuleObject(PyObject *name) {
 #endif
 
 #ifndef Py_tp_getattr
-#define Py_tp_getattr 53
+#define Py_tp_getattr 57
 #endif
 
+/* CPython 3.12 typeslots.h slot IDs — values from Include/typeslots.h */
+
 #ifndef Py_tp_setattr
-#define Py_tp_setattr 54
+#define Py_tp_setattr 68
 #endif
 
 #ifndef Py_tp_hash
-#define Py_tp_hash 62
+#define Py_tp_hash 59
 #endif
 
 #ifndef Py_tp_getattro
-#define Py_tp_getattro 56
+#define Py_tp_getattro 58
 #endif
 
 #ifndef Py_tp_setattro
-#define Py_tp_setattro 67
+#define Py_tp_setattro 69
 #endif
 
 #ifndef Py_tp_traverse
@@ -9020,7 +9086,7 @@ static inline int PyImport_ImportFrozenModuleObject(PyObject *name) {
 #endif
 
 #ifndef Py_tp_clear
-#define Py_tp_clear 48
+#define Py_tp_clear 51
 #endif
 
 #ifndef Py_tp_richcompare
@@ -9032,11 +9098,11 @@ static inline int PyImport_ImportFrozenModuleObject(PyObject *name) {
 #endif
 
 #ifndef Py_tp_alloc
-#define Py_tp_alloc 43
+#define Py_tp_alloc 47
 #endif
 
 #ifndef Py_tp_free
-#define Py_tp_free 55
+#define Py_tp_free 74
 #endif
 
 #ifndef Py_tp_finalize
@@ -9056,23 +9122,23 @@ static inline int PyImport_ImportFrozenModuleObject(PyObject *name) {
 #endif
 
 #ifndef Py_nb_remainder
-#define Py_nb_remainder 18
+#define Py_nb_remainder 34
 #endif
 
 #ifndef Py_nb_divmod
-#define Py_nb_divmod 8
+#define Py_nb_divmod 10
 #endif
 
 #ifndef Py_nb_power
-#define Py_nb_power 17
+#define Py_nb_power 33
 #endif
 
 #ifndef Py_nb_negative
-#define Py_nb_negative 14
+#define Py_nb_negative 30
 #endif
 
 #ifndef Py_nb_positive
-#define Py_nb_positive 15
+#define Py_nb_positive 32
 #endif
 
 #ifndef Py_nb_absolute
@@ -9080,99 +9146,99 @@ static inline int PyImport_ImportFrozenModuleObject(PyObject *name) {
 #endif
 
 #ifndef Py_nb_bool
-#define Py_nb_bool 7
+#define Py_nb_bool 9
 #endif
 
 #ifndef Py_nb_invert
-#define Py_nb_invert 12
+#define Py_nb_invert 27
 #endif
 
 #ifndef Py_nb_lshift
-#define Py_nb_lshift 13
+#define Py_nb_lshift 28
 #endif
 
 #ifndef Py_nb_rshift
-#define Py_nb_rshift 19
+#define Py_nb_rshift 35
 #endif
 
 #ifndef Py_nb_and
-#define Py_nb_and 7
+#define Py_nb_and 8
 #endif
 
 #ifndef Py_nb_xor
-#define Py_nb_xor 27
+#define Py_nb_xor 38
 #endif
 
 #ifndef Py_nb_or
-#define Py_nb_or 15
+#define Py_nb_or 31
 #endif
 
 #ifndef Py_nb_int
-#define Py_nb_int 11
+#define Py_nb_int 26
 #endif
 
 #ifndef Py_nb_float
-#define Py_nb_float 10
+#define Py_nb_float 11
 #endif
 
 #ifndef Py_nb_floor_divide
-#define Py_nb_floor_divide 9
+#define Py_nb_floor_divide 12
 #endif
 
 #ifndef Py_nb_true_divide
-#define Py_nb_true_divide 25
+#define Py_nb_true_divide 37
 #endif
 
 #ifndef Py_nb_index
-#define Py_nb_index 12
+#define Py_nb_index 13
 #endif
 
 #ifndef Py_nb_inplace_add
-#define Py_nb_inplace_add 7
+#define Py_nb_inplace_add 14
 #endif
 
 #ifndef Py_nb_inplace_subtract
-#define Py_nb_inplace_subtract 20
+#define Py_nb_inplace_subtract 23
 #endif
 
 #ifndef Py_nb_inplace_multiply
-#define Py_nb_inplace_multiply 15
+#define Py_nb_inplace_multiply 18
 #endif
 
 #ifndef Py_nb_inplace_remainder
-#define Py_nb_inplace_remainder 14
+#define Py_nb_inplace_remainder 21
 #endif
 
 #ifndef Py_nb_inplace_power
-#define Py_nb_inplace_power 13
+#define Py_nb_inplace_power 20
 #endif
 
 #ifndef Py_nb_inplace_lshift
-#define Py_nb_inplace_lshift 12
+#define Py_nb_inplace_lshift 17
 #endif
 
 #ifndef Py_nb_inplace_rshift
-#define Py_nb_inplace_rshift 16
+#define Py_nb_inplace_rshift 22
 #endif
 
 #ifndef Py_nb_inplace_and
-#define Py_nb_inplace_and 7
+#define Py_nb_inplace_and 15
 #endif
 
 #ifndef Py_nb_inplace_xor
-#define Py_nb_inplace_xor 24
+#define Py_nb_inplace_xor 25
 #endif
 
 #ifndef Py_nb_inplace_or
-#define Py_nb_inplace_or 14
+#define Py_nb_inplace_or 19
 #endif
 
 #ifndef Py_nb_inplace_floor_divide
-#define Py_nb_inplace_floor_divide 9
+#define Py_nb_inplace_floor_divide 16
 #endif
 
 #ifndef Py_nb_inplace_true_divide
-#define Py_nb_inplace_true_divide 21
+#define Py_nb_inplace_true_divide 24
 #endif
 
 #ifndef Py_nb_matrix_multiply
@@ -9184,47 +9250,47 @@ static inline int PyImport_ImportFrozenModuleObject(PyObject *name) {
 #endif
 
 #ifndef Py_sq_length
-#define Py_sq_length 29
+#define Py_sq_length 45
 #endif
 
 #ifndef Py_sq_concat
-#define Py_sq_concat 30
+#define Py_sq_concat 40
 #endif
 
 #ifndef Py_sq_repeat
-#define Py_sq_repeat 31
+#define Py_sq_repeat 46
 #endif
 
 #ifndef Py_sq_item
-#define Py_sq_item 32
+#define Py_sq_item 44
 #endif
 
 #ifndef Py_sq_ass_item
-#define Py_sq_ass_item 33
+#define Py_sq_ass_item 39
 #endif
 
 #ifndef Py_sq_contains
-#define Py_sq_contains 34
+#define Py_sq_contains 41
 #endif
 
 #ifndef Py_sq_inplace_concat
-#define Py_sq_inplace_concat 35
+#define Py_sq_inplace_concat 42
 #endif
 
 #ifndef Py_sq_inplace_repeat
-#define Py_sq_inplace_repeat 36
+#define Py_sq_inplace_repeat 43
 #endif
 
 #ifndef Py_mp_length
-#define Py_mp_length 37
+#define Py_mp_length 4
 #endif
 
 #ifndef Py_mp_subscript
-#define Py_mp_subscript 38
+#define Py_mp_subscript 5
 #endif
 
 #ifndef Py_mp_ass_subscript
-#define Py_mp_ass_subscript 39
+#define Py_mp_ass_subscript 3
 #endif
 
 /* ========================================================================
@@ -9233,7 +9299,10 @@ static inline int PyImport_ImportFrozenModuleObject(PyObject *name) {
 
 static inline unsigned long long PyLong_AsUnsignedLongLong(PyObject *pylong) {
     long long val = PyLong_AsLongLong(pylong);
-    if (val < 0 && !PyErr_Occurred()) {
+    if (PyErr_Occurred()) {
+        return (unsigned long long)-1;
+    }
+    if (val < 0) {
         PyErr_SetString(PyExc_OverflowError,
             "can't convert negative value to unsigned long long");
         return (unsigned long long)-1;
@@ -9316,12 +9385,21 @@ static inline int PyIter_Send(PyObject *iter, PyObject *arg, PyObject **presult)
  * ======================================================================== */
 
 static inline PyObject *PyObject_GenericGetDict(PyObject *obj, void *context) {
+    PyObject *dict;
     (void)context;
     if (obj == NULL) {
         PyErr_SetString(PyExc_SystemError, "NULL object");
         return NULL;
     }
-    return PyDict_New();
+    dict = PyObject_GetAttrString(obj, "__dict__");
+    if (dict == NULL) {
+        /* Object has no __dict__; return a new empty dict as fallback. */
+        if (molt_err_pending() != 0) {
+            molt_err_clear();
+        }
+        return PyDict_New();
+    }
+    return dict;
 }
 
 static inline int PyObject_GenericSetDict(PyObject *obj, PyObject *value, void *context) {
