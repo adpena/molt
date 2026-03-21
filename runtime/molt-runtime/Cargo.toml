@@ -9,7 +9,7 @@ build = "build.rs"
 crate-type = ["staticlib", "rlib", "cdylib"]
 
 [features]
-default = ["wasi_host"]
+default = ["wasi_host", "mod_tls", "mod_compression"]
 molt_debug_gil = []
 molt_tk_native = ["dep:libloading"]
 # Reserved for the freestanding wasm target. Keep this feature independent
@@ -18,6 +18,9 @@ molt_tk_native = ["dep:libloading"]
 wasm_freestanding = []
 vfs_bundle_tar = []
 wasi_host = ["dep:libc", "dep:tempfile", "dep:glob"]
+# Optional heavyweight modules — disable to shrink binary size.
+mod_tls = ["dep:rustls", "dep:rustls-pemfile", "dep:webpki-roots", "dep:tungstenite", "dep:url"]
+mod_compression = ["dep:bzip2", "dep:xz2"]
 
 [dependencies]
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
@@ -39,7 +42,7 @@ unicode-ident = "1.0"
 unicode-casefold = "0.2"
 wtf8 = "0.1"
 unicode_names2 = "2.0"
-bzip2 = { version = "0.5", default-features = false, features = ["libbz2-rs-sys"] }
+bzip2 = { version = "0.5", default-features = false, features = ["libbz2-rs-sys"], optional = true }
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 blake2 = "0.10"
@@ -64,16 +67,16 @@ tempfile = { version = "3", optional = true }
 cc = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-xz2 = "0.1"
+xz2 = { version = "0.1", optional = true }
 simdutf = "0.7"
 getrandom = "0.4"
 mio = { version = "1.1", features = ["os-poll", "net"] }
 socket2 = "0.6"
-rustls = "0.23"
-rustls-pemfile = "2.2"
-webpki-roots = "1.0"
-tungstenite = { version = "0.28", default-features = false, features = ["handshake", "rustls-tls-webpki-roots", "url"] }
-url = "2.5"
+rustls = { version = "0.23", optional = true }
+rustls-pemfile = { version = "2.2", optional = true }
+webpki-roots = { version = "1.0", optional = true }
+tungstenite = { version = "0.28", default-features = false, features = ["handshake", "rustls-tls-webpki-roots", "url"], optional = true }
+url = { version = "2.5", optional = true }
 os_pipe = "1.2"
 libloading = { version = "0.8.9", optional = true }
 
