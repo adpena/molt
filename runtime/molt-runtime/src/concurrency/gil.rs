@@ -6,6 +6,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Mutex, MutexGuard};
 
 #[cfg(not(target_arch = "wasm32"))]
+use super::GIL_THREAD_COUNT;
+
+#[cfg(not(target_arch = "wasm32"))]
 use crate::{GIL_DEPTH, runtime_state_for_gil};
 
 // ---------------------------------------------------------------------------
@@ -278,6 +281,12 @@ impl Drop for GilReleaseGuard {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn gil_held() -> bool {
+    // Single-threaded fast path: when only one GIL-capable thread exists
+    // (the common case), the GIL is logically always held — matching the
+    // zero-cost `GilGuard::new_unchecked()` path used by `with_gil_entry!`.
+    if GIL_THREAD_COUNT.load(AtomicOrdering::Relaxed) == 1 {
+        return true;
+    }
     match GIL_DEPTH.try_with(|depth| depth.get()) {
         Ok(depth) => depth > 0 || fallback_gil_held(),
         Err(_) => fallback_gil_held(),
