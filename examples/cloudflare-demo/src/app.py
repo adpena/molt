@@ -30,9 +30,9 @@ def diamond(size=9):
         lines.append(" " * (size // 2 - d) + "*" * (2 * d + 1))
     return "\n".join(lines)
 
-def mandelbrot_render(width: int = 120, height: int = 50,
+def mandelbrot_render(width: int = 120, height: int = 35,
                       cx: float = -0.5, cy: float = 0.0,
-                      zoom: float = 1.0, max_iter: int = 80) -> str:
+                      zoom: float = 1.0, max_iter: int = 120) -> str:
     chars: str = " .`'\"~:;!>+r}xz&8#@"
     scale: float = 3.0 / (zoom * width)
     x_off: float = cx - scale * width / 2.0
@@ -183,8 +183,8 @@ elif route == "diamond":
 
 elif route == "mandelbrot":
     w = safe_int(params.get("width", ""), 120, 20, 200)
-    h = safe_int(params.get("height", ""), 50, 10, 80)
-    mi = safe_int(params.get("iter", ""), 80, 10, 200)
+    h = safe_int(params.get("height", ""), 35, 10, 60)
+    mi = safe_int(params.get("iter", ""), 120, 10, 300)
     cx = safe_float(params.get("cx", ""), -0.5)
     cy = safe_float(params.get("cy", ""), 0.0)
     zm = safe_float(params.get("zoom", ""), 1.0, 0.1, 1e12)
@@ -193,32 +193,28 @@ elif route == "mandelbrot":
     if preset == 1:
         cx = -0.7435
         cy = 0.1314
-        zm = 50.0
-        mi = 80
+        zm = 100.0
+        mi = 120
     elif preset == 2:
         cx = 0.360284
         cy = -0.641216
-        zm = 80.0
-        mi = 80
+        zm = 150.0
+        mi = 120
     elif preset == 3:
         cx = -0.16
         cy = 1.0405
-        zm = 40.0
-        mi = 80
+        zm = 80.0
+        mi = 120
     elif preset == 4:
         cx = -1.25066
         cy = 0.02012
-        zm = 40.0
-        mi = 60
-        w = 80
-        h = 35
+        zm = 200.0
+        mi = 150
     elif preset == 5:
         cx = -0.745428
         cy = 0.113009
-        zm = 50.0
-        mi = 60
-        w = 80
-        h = 35
+        zm = 300.0
+        mi = 180
 
     print("Mandelbrot Set")
     print("=" * w)
