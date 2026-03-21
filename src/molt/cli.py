@@ -7594,6 +7594,9 @@ def _backend_source_paths(
     return list(_backend_source_paths_cached(os.fspath(project_root), backend_features))
 
 
+_DEFAULT_BACKEND_FEATURES: tuple[str, ...] = ("native-backend",)
+
+
 @functools.lru_cache(maxsize=256)
 def _backend_bin_path_cached(
     project_root_str: str,
@@ -7601,6 +7604,7 @@ def _backend_bin_path_cached(
     cargo_target_override: str | None,
     cwd_str: str,
     os_name: str,
+    backend_features: tuple[str, ...] = _DEFAULT_BACKEND_FEATURES,
 ) -> Path:
     profile_dir = _cargo_profile_dir(cargo_profile)
     target_root = _cargo_target_root_cached(
@@ -7609,16 +7613,26 @@ def _backend_bin_path_cached(
         cwd_str,
     )
     exe_suffix = ".exe" if os_name == "nt" else ""
+    # Disambiguate binary path by feature set to prevent native/wasm/rust
+    # backend builds from overwriting each other's artifacts.
+    if backend_features != _DEFAULT_BACKEND_FEATURES:
+        features_tag = "_".join(sorted(backend_features)).replace("-", "_")
+        return target_root / profile_dir / f"molt-backend.{features_tag}{exe_suffix}"
     return target_root / profile_dir / f"molt-backend{exe_suffix}"
 
 
-def _backend_bin_path(project_root: Path, cargo_profile: str) -> Path:
+def _backend_bin_path(
+    project_root: Path,
+    cargo_profile: str,
+    backend_features: tuple[str, ...] = _DEFAULT_BACKEND_FEATURES,
+) -> Path:
     return _backend_bin_path_cached(
         os.fspath(project_root),
         cargo_profile,
         os.environ.get("CARGO_TARGET_DIR"),
         os.fspath(Path.cwd()),
         os.name,
+        backend_features,
     )
 
 
@@ -13153,7 +13167,7 @@ def _prepare_backend_dispatch(
     if reloc_requested and backend_env is not None:
         backend_env["MOLT_WASM_LINK"] = "1"
 
-    backend_bin = _backend_bin_path(molt_root, backend_cargo_profile)
+    backend_bin = _backend_bin_path(molt_root, backend_cargo_profile, backend_features)
     if not _ensure_backend_binary(
         backend_bin,
         cargo_timeout=cargo_timeout,
@@ -16477,7 +16491,8 @@ def _ensure_backend_binary(
         backend_features=backend_features,
         stored_fingerprint=stored_fingerprint,
     )
-    lock_name = f"backend.{cargo_profile}"
+    features_tag = "_".join(sorted(backend_features)) if backend_features else "default"
+    lock_name = f"backend.{cargo_profile}.{features_tag}"
     with _build_lock(project_root, lock_name):
         if stored_fingerprint is None:
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
@@ -16541,6 +16556,18 @@ def _ensure_backend_binary(
                 if err:
                     print(err, file=sys.stderr)
             return False
+        # Cargo always produces target/<profile>/molt-backend regardless of
+        # features.  When the requested feature set is non-default, copy
+        # the freshly-built binary to the feature-tagged path so that
+        # concurrent or sequential builds with different feature sets
+        # (native vs wasm vs rust) do not overwrite each other.
+        if backend_features != _DEFAULT_BACKEND_FEATURES:
+            cargo_output = backend_bin.parent / backend_bin.name.split(".")[0]
+            exe_suffix = ".exe" if os.name == "nt" else ""
+            if exe_suffix:
+                cargo_output = cargo_output.with_suffix(exe_suffix)
+            if cargo_output.exists() and cargo_output != backend_bin:
+                shutil.copy2(cargo_output, backend_bin)
         if fingerprint is not None:
             try:
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)

@@ -24,6 +24,36 @@ def diamond(size=9):
         lines.append(" " * (size // 2 - d) + "*" * (2 * d + 1))
     return "\n".join(lines)
 
+def mandelbrot_render(width: int = 50, height: int = 22) -> str:
+    chars: str = " .+*#@"
+    mx: float = -2.0
+    dx: float = 3.0 / width
+    my: float = -1.1
+    dy: float = 2.2 / height
+    out: list = []
+    row: int = 0
+    while row < height:
+        y0: float = my + dy * row
+        col: int = 0
+        while col < width:
+            x0: float = mx + dx * col
+            x: float = 0.0
+            y: float = 0.0
+            it: int = 0
+            while it < 5:
+                xx: float = x * x
+                yy: float = y * y
+                if xx + yy > 4.0:
+                    break
+                y = 2.0 * x * y + y0
+                x = xx - yy + x0
+                it = it + 1
+            out.append(chars[it])
+            col = col + 1
+        out.append("\n")
+        row = row + 1
+    return "".join(out)
+
 def sort_data(data_str):
     nums = [int(x.strip()) for x in data_str.split(",") if x.strip()]
     nums.sort()
@@ -66,7 +96,9 @@ elif route == "diamond":
     print(diamond(n))
 
 elif route == "mandelbrot":
-    print(diamond(15))
+    w = int(params.get("width", "60"))
+    h = int(params.get("height", "24"))
+    print(mandelbrot_render(w, h))
 
 elif route == "sort":
     data = params.get("data", "5,3,8,1,9,2,7,4,6")
@@ -95,6 +127,7 @@ else:
     print("")
     print("  curl .../fib/50          Fibonacci numbers")
     print("  curl .../primes/10000    Count primes")
+    print("  curl .../mandelbrot      ASCII Mandelbrot set")
     print("  curl .../diamond/11      ASCII diamond pattern")
     print("  curl .../sort?data=5,3,1 Sort numbers")
     print("  curl .../fizzbuzz/100    FizzBuzz")
