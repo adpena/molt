@@ -71,16 +71,22 @@ _FALLBACK_FEATURE_ROWS = (
 def _load_feature_rows():
     try:
         future_features = _require_intrinsic("molt_future_features")
-    except RuntimeError:
+    except Exception:
         return list(_FALLBACK_FEATURE_ROWS)
-    rows = list(future_features())
-    if not rows:
+    try:
+        result = future_features()
+        if result is None:
+            return list(_FALLBACK_FEATURE_ROWS)
+        rows = list(result)
+        if not rows:
+            return list(_FALLBACK_FEATURE_ROWS)
+        return rows
+    except Exception:
         return list(_FALLBACK_FEATURE_ROWS)
-    return rows
 
 
 _feature_rows = _load_feature_rows()
-all_feature_names = [str(name) for name, *_ in _feature_rows]
+all_feature_names = [str(row[0]) for row in _feature_rows]
 
 __all__ = ["all_feature_names"] + all_feature_names
 
