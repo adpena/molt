@@ -359,6 +359,7 @@ unsafe fn sys_populate_stdio(_py: &PyToken<'_>, sys_ptr: *mut u8) -> Result<(), 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
+    eprintln!("MOLT_MODULE: molt_module_new called");
     crate::with_gil_entry!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
