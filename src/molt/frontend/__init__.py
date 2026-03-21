@@ -25803,6 +25803,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.exact_locals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
                 self.globals[bind_name] = bound_val
+                self.module_chunk_globals.add(bind_name)
             self._emit_module_attr_set(bind_name, bound_val)
             self.imported_modules[bind_name] = module_name
             if self.current_func_name == "molt_main":
@@ -25891,6 +25892,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.exact_locals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
                 self.globals[bind_name] = attr_val
+                self.module_chunk_globals.add(bind_name)
             self._emit_module_attr_set(bind_name, attr_val)
             if self.known_modules:
                 if submodule_name in self.known_modules:
