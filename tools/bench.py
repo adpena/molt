@@ -74,6 +74,8 @@ BENCHMARKS = [
     "tests/benchmarks/bench_set_ops.py",
     "tests/benchmarks/bench_exception_heavy.py",
     "tests/benchmarks/bench_dict_comprehension.py",
+    "tests/benchmarks/bench_procedural_gen.py",
+    "tests/benchmarks/bench_import_time.py",
 ]
 
 SMOKE_BENCHMARKS = [
