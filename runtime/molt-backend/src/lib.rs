@@ -1723,4 +1723,33 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(backend.import_ids.len(), 1);
     }
+
+    #[test]
+    fn native_backend_skips_profile_store_imports_when_function_has_no_store_ops() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![OpIR {
+                    kind: "ret".to_string(),
+                    ..OpIR::default()
+                }],
+                param_types: None,
+            }],
+            profile: None,
+        };
+
+        let bytes = SimpleBackend::new().compile(ir);
+
+        assert!(
+            !bytes
+                .windows(b"molt_profile_struct_field_store".len())
+                .any(|window| window == b"molt_profile_struct_field_store")
+        );
+        assert!(
+            !bytes
+                .windows(b"molt_profile_enabled".len())
+                .any(|window| window == b"molt_profile_enabled")
+        );
+    }
 }
