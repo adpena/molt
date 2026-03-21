@@ -62,6 +62,21 @@ pub(crate) unsafe fn iter_set_index(ptr: *mut u8, idx: usize) {
     }
 }
 
+/// Offset of the cached (value, done) tuple pointer inside a TYPE_ID_ITER object.
+const ITER_CACHED_TUPLE_OFFSET: usize = std::mem::size_of::<u64>() + std::mem::size_of::<usize>();
+
+/// Read the cached 2-tuple pointer from an iter object (may be null).
+pub(crate) unsafe fn iter_cached_tuple(ptr: *mut u8) -> *mut u8 {
+    unsafe { *(ptr.add(ITER_CACHED_TUPLE_OFFSET) as *const *mut u8) }
+}
+
+/// Store a cached 2-tuple pointer in an iter object.
+pub(crate) unsafe fn iter_set_cached_tuple(ptr: *mut u8, tuple_ptr: *mut u8) {
+    unsafe {
+        *(ptr.add(ITER_CACHED_TUPLE_OFFSET) as *mut *mut u8) = tuple_ptr;
+    }
+}
+
 pub(crate) unsafe fn enumerate_target_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr as *const u64) }
 }

@@ -1,5 +1,6 @@
 use crate::object::accessors::object_field_init_ptr_raw;
 use crate::object::layout::{range_start_bits, range_step_bits, range_stop_bits};
+use crate::object::{dec_ref_ptr, inc_ref_ptr};
 use crate::object::utf8_cache::{
     UTF8_CACHE_BLOCK, UTF8_CACHE_MIN_LEN, UTF8_COUNT_CACHE_SHARDS, UTF8_COUNT_PREFIX_MIN_LEN,
     UTF8_COUNT_TLS, Utf8CountCache, Utf8CountCacheEntry, Utf8IndexCache,
@@ -37982,13 +37983,15 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
                     }
                     let total = std::mem::size_of::<MoltHeader>()
                         + std::mem::size_of::<u64>()
-                        + std::mem::size_of::<usize>();
+                        + std::mem::size_of::<usize>()
+                        + std::mem::size_of::<*mut u8>();
                     let iter_ptr = alloc_object(_py, total, TYPE_ID_ITER);
                     if iter_ptr.is_null() {
                         return MoltObject::none().bits();
                     }
                     *(iter_ptr as *mut u64) = target_bits;
                     iter_set_index(iter_ptr, 0);
+                    iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
                     return MoltObject::from_ptr(iter_ptr).bits();
                 }
                 if type_id == TYPE_ID_GENERATOR {
@@ -38027,7 +38030,8 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
                 {
                     let total = std::mem::size_of::<MoltHeader>()
                         + std::mem::size_of::<u64>()
-                        + std::mem::size_of::<usize>();
+                        + std::mem::size_of::<usize>()
+                        + std::mem::size_of::<*mut u8>();
                     let iter_ptr = alloc_object(_py, total, TYPE_ID_ITER);
                     if iter_ptr.is_null() {
                         return MoltObject::none().bits();
@@ -38035,6 +38039,7 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
                     inc_ref_bits(_py, iter_bits);
                     *(iter_ptr as *mut u64) = iter_bits;
                     iter_set_index(iter_ptr, 0);
+                    iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
                     return MoltObject::from_ptr(iter_ptr).bits();
                 }
                 if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__iter__") {
@@ -38066,7 +38071,8 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
                         dec_ref_bits(_py, name_bits);
                         let total = std::mem::size_of::<MoltHeader>()
                             + std::mem::size_of::<u64>()
-                            + std::mem::size_of::<usize>();
+                            + std::mem::size_of::<usize>()
+                            + std::mem::size_of::<*mut u8>();
                         let iter_ptr = alloc_object(_py, total, TYPE_ID_ITER);
                         if iter_ptr.is_null() {
                             return MoltObject::none().bits();
@@ -38074,6 +38080,7 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
                         inc_ref_bits(_py, iter_bits);
                         *(iter_ptr as *mut u64) = iter_bits;
                         iter_set_index(iter_ptr, 0);
+                        iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
                         return MoltObject::from_ptr(iter_ptr).bits();
                     }
                     dec_ref_bits(_py, name_bits);
@@ -38152,6 +38159,85 @@ pub extern "C" fn molt_aiter(obj_bits: u64) -> u64 {
             res
         }
     })
+}
+
+/// Build or reuse a (value, done) 2-tuple from the iterator's cached slot.
+///
+/// When the cached tuple exists and its refcount is exactly 1 (exclusively
+/// owned by the iterator), the elements are mutated in place — zero heap
+/// allocations.  Otherwise a fresh tuple is allocated and cached for next
+/// time.
+///
+/// `iter_ptr` — data pointer of the TYPE_ID_ITER object (past the header).
+/// `val_bits` — the value element to place at index 0.
+/// `done`     — whether the iterator is exhausted.
+/// `owns_val` — if true the caller holds a NEW reference to `val_bits`
+///              that should be consumed (i.e. the helper will dec-ref it
+///              after the tuple inc-refs it).
+///
+/// # Safety
+/// `iter_ptr` must point to valid TYPE_ID_ITER data.
+unsafe fn iter_return_cached(
+    _py: &PyToken<'_>,
+    iter_ptr: *mut u8,
+    val_bits: u64,
+    done: bool,
+    owns_val: bool,
+) -> u64 {
+    unsafe {
+        let done_bits = MoltObject::from_bool(done).bits();
+        let cached = iter_cached_tuple(iter_ptr);
+
+        if !cached.is_null() {
+            let header_ptr =
+                cached.sub(std::mem::size_of::<MoltHeader>()) as *const MoltHeader;
+            let rc = (*header_ptr).ref_count.load(std::sync::atomic::Ordering::Relaxed);
+            if rc == 1 {
+                // Exclusively owned — reuse by mutating elements in place.
+                let vec = seq_vec(cached);
+                // Dec-ref old elements before overwriting.
+                let old0 = vec[0];
+                let old1 = vec[1];
+                // Write new elements and inc-ref them (mirroring alloc_tuple
+                // semantics where elements are inc-ref'd on insertion).
+                vec[0] = val_bits;
+                vec[1] = done_bits;
+                inc_ref_bits(_py, val_bits);
+                inc_ref_bits(_py, done_bits);
+                // Now drop old refs.
+                dec_ref_bits(_py, old0);
+                dec_ref_bits(_py, old1);
+                if owns_val {
+                    dec_ref_bits(_py, val_bits);
+                }
+                // Bump refcount so the caller receives an owning reference
+                // (cache keeps rc=1, caller gets +1 → rc=2).
+                inc_ref_ptr(_py, cached);
+                return MoltObject::from_ptr(cached).bits();
+            }
+            // Someone else holds a reference to the old cached tuple; drop
+            // our cache reference and fall through to allocate a new one.
+            dec_ref_ptr(_py, cached);
+            iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
+        }
+
+        // Allocate a fresh tuple and cache it.
+        let tuple_ptr = alloc_tuple(_py, &[val_bits, done_bits]);
+        if tuple_ptr.is_null() {
+            if owns_val {
+                dec_ref_bits(_py, val_bits);
+            }
+            return MoltObject::none().bits();
+        }
+        if owns_val {
+            dec_ref_bits(_py, val_bits);
+        }
+        // Cache: inc-ref so the tuple stays alive past the caller's dec-ref.
+        inc_ref_ptr(_py, tuple_ptr);
+        iter_set_cached_tuple(iter_ptr, tuple_ptr);
+        // Return with the original refcount=1 as the caller's owning ref.
+        MoltObject::from_ptr(tuple_ptr).bits()
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -38652,23 +38738,18 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         }
                         if slot >= table.len() {
                             iter_set_index(ptr, table.len());
-                            let none_bits = MoltObject::none().bits();
-                            let done_bits = MoltObject::from_bool(true).bits();
-                            let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
-                            if tuple_ptr.is_null() {
-                                return MoltObject::none().bits();
-                            }
-                            return MoltObject::from_ptr(tuple_ptr).bits();
+                            return iter_return_cached(
+                                _py,
+                                ptr,
+                                MoltObject::none().bits(),
+                                true,
+                                false,
+                            );
                         }
                         let entry_idx = table[slot] - 1;
                         let val_bits = order[entry_idx];
                         iter_set_index(ptr, slot + 1);
-                        let done_bits = MoltObject::from_bool(false).bits();
-                        let tuple_ptr = alloc_tuple(_py, &[val_bits, done_bits]);
-                        if tuple_ptr.is_null() {
-                            return MoltObject::none().bits();
-                        }
-                        return MoltObject::from_ptr(tuple_ptr).bits();
+                        return iter_return_cached(_py, ptr, val_bits, false, false);
                     }
                 }
                 if let Some(target_ptr) = target_obj.as_ptr() {
@@ -38679,26 +38760,26 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                             string_len(target_ptr),
                         );
                         if idx >= bytes.len() {
-                            let none_bits = MoltObject::none().bits();
-                            let done_bits = MoltObject::from_bool(true).bits();
-                            let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
-                            if tuple_ptr.is_null() {
-                                return MoltObject::none().bits();
-                            }
-                            return MoltObject::from_ptr(tuple_ptr).bits();
+                            return iter_return_cached(
+                                _py,
+                                ptr,
+                                MoltObject::none().bits(),
+                                true,
+                                false,
+                            );
                         }
                         let tail = &bytes[idx..];
                         let Ok(text) = std::str::from_utf8(tail) else {
                             return MoltObject::none().bits();
                         };
                         let Some(ch) = text.chars().next() else {
-                            let none_bits = MoltObject::none().bits();
-                            let done_bits = MoltObject::from_bool(true).bits();
-                            let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
-                            if tuple_ptr.is_null() {
-                                return MoltObject::none().bits();
-                            }
-                            return MoltObject::from_ptr(tuple_ptr).bits();
+                            return iter_return_cached(
+                                _py,
+                                ptr,
+                                MoltObject::none().bits(),
+                                true,
+                                false,
+                            );
                         };
                         let mut buf = [0u8; 4];
                         let out = ch.encode_utf8(&mut buf);
@@ -38709,14 +38790,7 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         let val_bits = MoltObject::from_ptr(out_ptr).bits();
                         let next_idx = idx + ch.len_utf8();
                         iter_set_index(ptr, next_idx);
-                        let done_bits = MoltObject::from_bool(false).bits();
-                        let tuple_ptr = alloc_tuple(_py, &[val_bits, done_bits]);
-                        if tuple_ptr.is_null() {
-                            dec_ref_bits(_py, val_bits);
-                            return MoltObject::none().bits();
-                        }
-                        dec_ref_bits(_py, val_bits);
-                        return MoltObject::from_ptr(tuple_ptr).bits();
+                        return iter_return_cached(_py, ptr, val_bits, false, true);
                     }
                     if target_type == TYPE_ID_BYTES || target_type == TYPE_ID_BYTEARRAY {
                         let bytes = std::slice::from_raw_parts(
@@ -38724,56 +38798,46 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                             bytes_len(target_ptr),
                         );
                         if idx >= bytes.len() {
-                            let none_bits = MoltObject::none().bits();
-                            let done_bits = MoltObject::from_bool(true).bits();
-                            let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
-                            if tuple_ptr.is_null() {
-                                return MoltObject::none().bits();
-                            }
-                            return MoltObject::from_ptr(tuple_ptr).bits();
+                            return iter_return_cached(
+                                _py,
+                                ptr,
+                                MoltObject::none().bits(),
+                                true,
+                                false,
+                            );
                         }
                         let val_bits = MoltObject::from_int(bytes[idx] as i64).bits();
                         iter_set_index(ptr, idx + 1);
-                        let done_bits = MoltObject::from_bool(false).bits();
-                        let tuple_ptr = alloc_tuple(_py, &[val_bits, done_bits]);
-                        if tuple_ptr.is_null() {
-                            return MoltObject::none().bits();
-                        }
-                        return MoltObject::from_ptr(tuple_ptr).bits();
+                        return iter_return_cached(_py, ptr, val_bits, false, false);
                     }
                     if target_type == TYPE_ID_LIST {
                         let elems = seq_vec_ref(target_ptr);
                         if idx == ITER_EXHAUSTED || idx >= elems.len() {
                             iter_set_index(ptr, ITER_EXHAUSTED);
-                            let none_bits = MoltObject::none().bits();
-                            let done_bits = MoltObject::from_bool(true).bits();
-                            let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
-                            if tuple_ptr.is_null() {
-                                return MoltObject::none().bits();
-                            }
-                            return MoltObject::from_ptr(tuple_ptr).bits();
+                            return iter_return_cached(
+                                _py,
+                                ptr,
+                                MoltObject::none().bits(),
+                                true,
+                                false,
+                            );
                         }
                         let val_bits = elems[idx];
                         iter_set_index(ptr, idx + 1);
-                        let done_bits = MoltObject::from_bool(false).bits();
-                        let tuple_ptr = alloc_tuple(_py, &[val_bits, done_bits]);
-                        if tuple_ptr.is_null() {
-                            return MoltObject::none().bits();
-                        }
-                        return MoltObject::from_ptr(tuple_ptr).bits();
+                        return iter_return_cached(_py, ptr, val_bits, false, false);
                     }
                     if target_type == TYPE_ID_RANGE {
                         if let Some((start_i64, stop_i64, step_i64)) =
                             range_components_i64(target_ptr)
                         {
                             if idx == ITER_EXHAUSTED {
-                                let none_bits = MoltObject::none().bits();
-                                let done_bits = MoltObject::from_bool(true).bits();
-                                let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
-                                if tuple_ptr.is_null() {
-                                    return MoltObject::none().bits();
-                                }
-                                return MoltObject::from_ptr(tuple_ptr).bits();
+                                return iter_return_cached(
+                                    _py,
+                                    ptr,
+                                    MoltObject::none().bits(),
+                                    true,
+                                    false,
+                                );
                             }
                             if let Some(value) =
                                 range_value_at_index_i64(start_i64, stop_i64, step_i64, idx as i128)
@@ -38781,57 +38845,52 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                                 let val_bits = MoltObject::from_int(value).bits();
                                 let next_idx = idx.checked_add(1).unwrap_or(ITER_EXHAUSTED);
                                 iter_set_index(ptr, next_idx);
-                                let done_bits = MoltObject::from_bool(false).bits();
-                                let tuple_ptr = alloc_tuple(_py, &[val_bits, done_bits]);
-                                if tuple_ptr.is_null() {
-                                    return MoltObject::none().bits();
-                                }
-                                return MoltObject::from_ptr(tuple_ptr).bits();
+                                return iter_return_cached(_py, ptr, val_bits, false, false);
                             }
                             let len = range_len_i128(start_i64, stop_i64, step_i64);
                             let len_usize = usize::try_from(len).unwrap_or(ITER_EXHAUSTED);
                             iter_set_index(ptr, len_usize);
-                            let none_bits = MoltObject::none().bits();
-                            let done_bits = MoltObject::from_bool(true).bits();
-                            let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
-                            if tuple_ptr.is_null() {
-                                return MoltObject::none().bits();
-                            }
-                            return MoltObject::from_ptr(tuple_ptr).bits();
+                            return iter_return_cached(
+                                _py,
+                                ptr,
+                                MoltObject::none().bits(),
+                                true,
+                                false,
+                            );
                         }
                         let Some((start, stop, step)) = range_components_bigint(target_ptr) else {
                             return MoltObject::none().bits();
                         };
                         if idx == ITER_EXHAUSTED {
-                            let none_bits = MoltObject::none().bits();
-                            let done_bits = MoltObject::from_bool(true).bits();
-                            let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
-                            if tuple_ptr.is_null() {
-                                return MoltObject::none().bits();
-                            }
-                            return MoltObject::from_ptr(tuple_ptr).bits();
+                            return iter_return_cached(
+                                _py,
+                                ptr,
+                                MoltObject::none().bits(),
+                                true,
+                                false,
+                            );
                         }
                         if step.is_zero() {
-                            let none_bits = MoltObject::none().bits();
-                            let done_bits = MoltObject::from_bool(true).bits();
-                            let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
-                            if tuple_ptr.is_null() {
-                                return MoltObject::none().bits();
-                            }
-                            return MoltObject::from_ptr(tuple_ptr).bits();
+                            return iter_return_cached(
+                                _py,
+                                ptr,
+                                MoltObject::none().bits(),
+                                true,
+                                false,
+                            );
                         }
                         let len = range_len_bigint(&start, &stop, &step);
                         let idx_big = BigInt::from(idx as u64);
                         if idx_big >= len {
                             let len_usize = len.to_usize().unwrap_or(ITER_EXHAUSTED);
                             iter_set_index(ptr, len_usize);
-                            let none_bits = MoltObject::none().bits();
-                            let done_bits = MoltObject::from_bool(true).bits();
-                            let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
-                            if tuple_ptr.is_null() {
-                                return MoltObject::none().bits();
-                            }
-                            return MoltObject::from_ptr(tuple_ptr).bits();
+                            return iter_return_cached(
+                                _py,
+                                ptr,
+                                MoltObject::none().bits(),
+                                true,
+                                false,
+                            );
                         }
                         let val = start + step * idx_big;
                         let val_bits = int_bits_from_bigint(_py, val);
@@ -38840,13 +38899,7 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         }
                         let next_idx = idx.checked_add(1).unwrap_or(ITER_EXHAUSTED);
                         iter_set_index(ptr, next_idx);
-                        let done_bits = MoltObject::from_bool(false).bits();
-                        let tuple_ptr = alloc_tuple(_py, &[val_bits, done_bits]);
-                        if tuple_ptr.is_null() {
-                            return MoltObject::none().bits();
-                        }
-                        dec_ref_bits(_py, val_bits);
-                        return MoltObject::from_ptr(tuple_ptr).bits();
+                        return iter_return_cached(_py, ptr, val_bits, false, true);
                     }
                     if target_type != TYPE_ID_TUPLE
                         && target_type != TYPE_ID_RANGE
@@ -38871,15 +38924,14 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                                 if kind.as_deref() == Some("IndexError") {
                                     molt_exception_clear();
                                     exception_stack_pop(_py);
-                                    let none_bits = MoltObject::none().bits();
-                                    let done_bits = MoltObject::from_bool(true).bits();
-                                    let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
-                                    if tuple_ptr.is_null() {
-                                        dec_ref_bits(_py, exc_bits);
-                                        return MoltObject::none().bits();
-                                    }
                                     dec_ref_bits(_py, exc_bits);
-                                    return MoltObject::from_ptr(tuple_ptr).bits();
+                                    return iter_return_cached(
+                                        _py,
+                                        ptr,
+                                        MoltObject::none().bits(),
+                                        true,
+                                        false,
+                                    );
                                 }
                                 dec_ref_bits(_py, exc_bits);
                                 exception_stack_pop(_py);
@@ -38887,12 +38939,7 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                             }
                             exception_stack_pop(_py);
                             iter_set_index(ptr, idx + 1);
-                            let done_bits = MoltObject::from_bool(false).bits();
-                            let tuple_ptr = alloc_tuple(_py, &[val_bits, done_bits]);
-                            if tuple_ptr.is_null() {
-                                return MoltObject::none().bits();
-                            }
-                            return MoltObject::from_ptr(tuple_ptr).bits();
+                            return iter_return_cached(_py, ptr, val_bits, false, false);
                         }
                         dec_ref_bits(_py, name_bits);
                     }
@@ -38940,26 +38987,18 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
 
                 if let Some(val_bits) = next_val {
                     iter_set_index(ptr, idx + 1);
-                    let done_bits = MoltObject::from_bool(false).bits();
-                    let tuple_ptr = alloc_tuple(_py, &[val_bits, done_bits]);
-                    if tuple_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    if needs_drop {
-                        dec_ref_bits(_py, val_bits);
-                    }
-                    return MoltObject::from_ptr(tuple_ptr).bits();
+                    return iter_return_cached(_py, ptr, val_bits, false, needs_drop);
                 }
                 if idx >= len {
                     iter_set_index(ptr, len);
                 }
-                let none_bits = MoltObject::none().bits();
-                let done_bits = MoltObject::from_bool(true).bits();
-                let tuple_ptr = alloc_tuple(_py, &[none_bits, done_bits]);
-                if tuple_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                return MoltObject::from_ptr(tuple_ptr).bits();
+                return iter_return_cached(
+                    _py,
+                    ptr,
+                    MoltObject::none().bits(),
+                    true,
+                    false,
+                );
             }
         }
         MoltObject::none().bits()
