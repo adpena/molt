@@ -1150,6 +1150,7 @@ impl SimpleBackend {
         data_id
     }
 
+    #[cfg(test)]
     fn import_func_id(
         &mut self,
         name: &'static str,

@@ -24,6 +24,10 @@ pub extern "C" fn molt_capabilities_require(name_bits: u64) -> u64 {
             None => return raise_exception::<_>(_py, "TypeError", "capability name must be str"),
         };
         if !has_capability(_py, &name) {
+            eprintln!(
+                "molt: PermissionError: missing '{name}' capability \
+                 (set MOLT_TRUSTED=1 or MOLT_CAPABILITIES={name})"
+            );
             return raise_exception::<_>(
                 _py,
                 "PermissionError",

@@ -23,18 +23,15 @@ fn import_func_ref(
     params: &[types::Type],
     returns: &[types::Type],
 ) -> FuncRef {
+    let import_cache_disabled = env_setting("MOLT_BACKEND_DISABLE_IMPORT_CACHE")
+        .as_deref()
+        .map(parse_truthy_env)
+        .unwrap_or(false);
     if let Some(func_ref) = local_refs.get(name) {
         return *func_ref;
     }
     let shape = ImportSignatureShape::from_types(params, returns);
-    let func_id = if let Some((func_id, cached_shape)) = import_ids.get(name) {
-        assert_eq!(
-            cached_shape, &shape,
-            "import signature mismatch for {name}: {:?} vs {:?}",
-            cached_shape, shape
-        );
-        *func_id
-    } else {
+    let func_id = if import_cache_disabled {
         let mut sig = module.make_signature();
         for param in params {
             sig.params.push(AbiParam::new(*param));
@@ -42,9 +39,31 @@ fn import_func_ref(
         for ret in returns {
             sig.returns.push(AbiParam::new(*ret));
         }
-        let func_id = module.declare_function(name, Linkage::Import, &sig).unwrap();
-        import_ids.insert(name, (func_id, shape));
-        func_id
+        module
+            .declare_function(name, Linkage::Import, &sig)
+            .unwrap()
+    } else {
+        if let Some((func_id, cached_shape)) = import_ids.get(name) {
+            assert_eq!(
+                cached_shape, &shape,
+                "import signature mismatch for {name}: {:?} vs {:?}",
+                cached_shape, shape
+            );
+            *func_id
+        } else {
+            let mut sig = module.make_signature();
+            for param in params {
+                sig.params.push(AbiParam::new(*param));
+            }
+            for ret in returns {
+                sig.returns.push(AbiParam::new(*ret));
+            }
+            let func_id = module
+                .declare_function(name, Linkage::Import, &sig)
+                .unwrap();
+            import_ids.insert(name, (func_id, shape));
+            func_id
+        }
     };
     let func_ref = module.declare_func_in_func(func_id, builder.func);
     local_refs.insert(name, func_ref);
@@ -258,7 +277,8 @@ impl SimpleBackend {
         builder.switch_to_block(entry_block);
 
         let local_dec_ref = import_func_ref(
-            self,
+            &mut self.module,
+            &mut self.import_ids,
             &mut builder,
             &mut import_refs,
             "molt_dec_ref",
@@ -266,7 +286,8 @@ impl SimpleBackend {
             &[],
         );
         let local_dec_ref_obj = import_func_ref(
-            self,
+            &mut self.module,
+            &mut self.import_ids,
             &mut builder,
             &mut import_refs,
             "molt_dec_ref_obj",
@@ -274,7 +295,8 @@ impl SimpleBackend {
             &[],
         );
         let local_inc_ref_obj = import_func_ref(
-            self,
+            &mut self.module,
+            &mut self.import_ids,
             &mut builder,
             &mut import_refs,
             "molt_inc_ref_obj",
@@ -282,7 +304,8 @@ impl SimpleBackend {
             &[],
         );
         let local_profile_struct = import_func_ref(
-            self,
+            &mut self.module,
+            &mut self.import_ids,
             &mut builder,
             &mut import_refs,
             "molt_profile_struct_field_store",
@@ -290,7 +313,8 @@ impl SimpleBackend {
             &[],
         );
         let local_profile_enabled = import_func_ref(
-            self,
+            &mut self.module,
+            &mut self.import_ids,
             &mut builder,
             &mut import_refs,
             "molt_profile_enabled",
@@ -325,7 +349,8 @@ impl SimpleBackend {
             trace_data = Some((data_id, func_ir.name.len() as i64));
 
             trace_func = Some(import_func_ref(
-                self,
+                &mut self.module,
+                &mut self.import_ids,
                 &mut builder,
                 &mut import_refs,
                 "molt_debug_trace",
@@ -2798,15 +2823,15 @@ impl SimpleBackend {
                 "callargs_new" => {
                     let out_name = op.out.unwrap();
                     let zero = builder.ins().iconst(types::I64, 0);
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_callargs_new", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let local_callee = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_new",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let call = builder.ins().call(local_callee, &[zero, zero]);
                     let res = builder.inst_results(call)[0];
                     def_var_named(&mut builder, &vars, out_name, res);
@@ -2864,15 +2889,15 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Callargs builder not found");
                     let val =
                         var_get(&mut builder, &vars, &args[1]).expect("Callargs value not found");
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_callargs_push_pos", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let local_callee = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_push_pos",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     builder.ins().call(local_callee, &[*builder_ptr, *val]);
                 }
                 "callargs_push_kw" => {
@@ -7705,7 +7730,8 @@ impl SimpleBackend {
                         let func_obj_bits = *var_get(&mut builder, &vars, func_obj_var)
                             .expect("Closure func obj not found for direct call");
                         let extract_local = import_func_ref(
-                            self,
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
                             "molt_function_closure_bits",
@@ -7733,7 +7759,8 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let guard_enter_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_recursion_guard_enter",
@@ -7741,7 +7768,8 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let guard_exit_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_recursion_guard_exit",
@@ -7749,7 +7777,8 @@ impl SimpleBackend {
                         &[],
                     );
                     let trace_enter_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_trace_enter_slot",
@@ -7757,7 +7786,8 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let trace_exit_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_trace_exit",
@@ -7877,7 +7907,8 @@ impl SimpleBackend {
                         let func_obj_bits = *var_get(&mut builder, &vars, func_obj_var)
                             .expect("Closure func obj not found for direct call");
                         let extract_local = import_func_ref(
-                            self,
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
                             "molt_function_closure_bits",
@@ -8021,7 +8052,8 @@ impl SimpleBackend {
                     let expected_addr = builder.ins().func_addr(types::I64, local_callee);
 
                     let is_func_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_is_function_obj",
@@ -8029,7 +8061,8 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let truthy_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_is_truthy",
@@ -8037,7 +8070,8 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let guard_enter_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_recursion_guard_enter",
@@ -8045,7 +8079,8 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let guard_exit_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_recursion_guard_exit",
@@ -8053,7 +8088,8 @@ impl SimpleBackend {
                         &[],
                     );
                     let trace_enter_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_trace_enter",
@@ -8061,7 +8097,8 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let trace_exit_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_trace_exit",
@@ -8075,7 +8112,8 @@ impl SimpleBackend {
                     let is_func_bool = builder.ins().icmp_imm(IntCC::NotEqual, truthy_bits, 0);
 
                     let resolve_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_handle_resolve",
@@ -8093,48 +8131,44 @@ impl SimpleBackend {
 
                     builder.switch_to_block(fallback_block);
                     builder.seal_block(fallback_block);
-                    let mut callargs_sig = self.module.make_signature();
-                    callargs_sig.params.push(AbiParam::new(types::I64));
-                    callargs_sig.params.push(AbiParam::new(types::I64));
-                    callargs_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_new = self
-                        .module
-                        .declare_function("molt_callargs_new", Linkage::Import, &callargs_sig)
-                        .unwrap();
-                    let callargs_new_local =
-                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let callargs_new_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_new",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
                     let kw_capacity = builder.ins().iconst(types::I64, 0);
                     let callargs_call = builder
                         .ins()
                         .call(callargs_new_local, &[pos_capacity, kw_capacity]);
                     let callargs_ptr = builder.inst_results(callargs_call)[0];
-                    let mut push_sig = self.module.make_signature();
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_push_pos = self
-                        .module
-                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                        .unwrap();
-                    let callargs_push_local = self
-                        .module
-                        .declare_func_in_func(callargs_push_pos, builder.func);
+                    let callargs_push_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_push_pos",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     for arg in &args {
                         builder
                             .ins()
                             .call(callargs_push_local, &[callargs_ptr, *arg]);
                     }
-                    let mut bind_sig = self.module.make_signature();
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.returns.push(AbiParam::new(types::I64));
-                    let call_bind = self
-                        .module
-                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                        .unwrap();
-                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
+                    let call_bind_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_call_bind_ic",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let site_bits = builder.ins().iconst(
                         types::I64,
                         box_int(stable_ic_site_id(
@@ -8238,7 +8272,8 @@ impl SimpleBackend {
                     let call_site_prefix = "call_func";
 
                     let resolve_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_handle_resolve",
@@ -8246,7 +8281,8 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let is_bound_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_is_bound_method",
@@ -8254,7 +8290,8 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let is_func_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_is_function_obj",
@@ -8262,7 +8299,8 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let truthy_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_is_truthy",
@@ -8270,7 +8308,8 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let default_kind_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_function_default_kind",
@@ -8278,7 +8317,8 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let closure_bits_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_function_closure_bits",
@@ -8286,7 +8326,8 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let is_generator_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_function_is_generator",
@@ -8294,7 +8335,8 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let is_coroutine_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_function_is_coroutine",
@@ -8302,7 +8344,8 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let missing_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_missing",
@@ -8310,7 +8353,8 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let guard_enter_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_recursion_guard_enter",
@@ -8318,7 +8362,8 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let guard_exit_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_recursion_guard_exit",
@@ -8326,7 +8371,8 @@ impl SimpleBackend {
                         &[],
                     );
                     let trace_enter_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_trace_enter",
@@ -8334,7 +8380,8 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let trace_exit_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_trace_exit",
@@ -8433,7 +8480,8 @@ impl SimpleBackend {
                     builder.switch_to_block(bound_closure_block);
                     builder.seal_block(bound_closure_block);
                     let callargs_new_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_callargs_new",
@@ -8447,7 +8495,8 @@ impl SimpleBackend {
                         .call(callargs_new_local, &[pos_capacity, kw_capacity]);
                     let callargs_ptr = builder.inst_results(callargs_call)[0];
                     let callargs_push_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_callargs_push_pos",
@@ -8460,7 +8509,8 @@ impl SimpleBackend {
                             .call(callargs_push_local, &[callargs_ptr, *arg]);
                     }
                     let call_bind_local = import_func_ref(
-                        self,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         "molt_call_bind_ic",
@@ -8820,48 +8870,44 @@ impl SimpleBackend {
 
                     builder.switch_to_block(bound_error_block);
                     builder.seal_block(bound_error_block);
-                    let mut new_sig = self.module.make_signature();
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_new = self
-                        .module
-                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                        .unwrap();
-                    let callargs_new_local =
-                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let callargs_new_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_new",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
                     let kw_capacity = builder.ins().iconst(types::I64, 0);
                     let callargs_call = builder
                         .ins()
                         .call(callargs_new_local, &[pos_capacity, kw_capacity]);
                     let callargs_ptr = builder.inst_results(callargs_call)[0];
-                    let mut push_sig = self.module.make_signature();
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_push_pos = self
-                        .module
-                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                        .unwrap();
-                    let callargs_push_local = self
-                        .module
-                        .declare_func_in_func(callargs_push_pos, builder.func);
+                    let callargs_push_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_push_pos",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     for arg in &args {
                         builder
                             .ins()
                             .call(callargs_push_local, &[callargs_ptr, *arg]);
                     }
-                    let mut bind_sig = self.module.make_signature();
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.returns.push(AbiParam::new(types::I64));
-                    let call_bind = self
-                        .module
-                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                        .unwrap();
-                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
+                    let call_bind_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_call_bind_ic",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let bound_error_label = format!("{call_site_prefix}_bound_error");
                     let site_bits = builder.ins().iconst(
                         types::I64,
@@ -8890,48 +8936,44 @@ impl SimpleBackend {
 
                     builder.switch_to_block(fallback_block);
                     builder.seal_block(fallback_block);
-                    let mut new_sig = self.module.make_signature();
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_new = self
-                        .module
-                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                        .unwrap();
-                    let callargs_new_local =
-                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let callargs_new_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_new",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
                     let kw_capacity = builder.ins().iconst(types::I64, 0);
                     let callargs_call = builder
                         .ins()
                         .call(callargs_new_local, &[pos_capacity, kw_capacity]);
                     let callargs_ptr = builder.inst_results(callargs_call)[0];
-                    let mut push_sig = self.module.make_signature();
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_push_pos = self
-                        .module
-                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                        .unwrap();
-                    let callargs_push_local = self
-                        .module
-                        .declare_func_in_func(callargs_push_pos, builder.func);
+                    let callargs_push_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_push_pos",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     for arg in &args {
                         builder
                             .ins()
                             .call(callargs_push_local, &[callargs_ptr, *arg]);
                     }
-                    let mut bind_sig = self.module.make_signature();
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.returns.push(AbiParam::new(types::I64));
-                    let call_bind = self
-                        .module
-                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                        .unwrap();
-                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
+                    let call_bind_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_call_bind_ic",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let nonfunc_fallback_label = format!("{call_site_prefix}_nonfunc_fallback");
                     let site_bits = builder.ins().iconst(
                         types::I64,
@@ -9005,48 +9047,44 @@ impl SimpleBackend {
 
                     builder.switch_to_block(func_closure_block);
                     builder.seal_block(func_closure_block);
-                    let mut new_sig = self.module.make_signature();
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_new = self
-                        .module
-                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                        .unwrap();
-                    let callargs_new_local =
-                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let callargs_new_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_new",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
                     let kw_capacity = builder.ins().iconst(types::I64, 0);
                     let callargs_call = builder
                         .ins()
                         .call(callargs_new_local, &[pos_capacity, kw_capacity]);
                     let callargs_ptr = builder.inst_results(callargs_call)[0];
-                    let mut push_sig = self.module.make_signature();
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_push_pos = self
-                        .module
-                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                        .unwrap();
-                    let callargs_push_local = self
-                        .module
-                        .declare_func_in_func(callargs_push_pos, builder.func);
+                    let callargs_push_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_push_pos",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     for arg in &args {
                         builder
                             .ins()
                             .call(callargs_push_local, &[callargs_ptr, *arg]);
                     }
-                    let mut bind_sig = self.module.make_signature();
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.returns.push(AbiParam::new(types::I64));
-                    let call_bind = self
-                        .module
-                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                        .unwrap();
-                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
+                    let call_bind_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_call_bind_ic",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let closure_label = format!("{call_site_prefix}_closure");
                     let site_bits = builder.ins().iconst(
                         types::I64,
@@ -9085,48 +9123,44 @@ impl SimpleBackend {
 
                     builder.switch_to_block(func_bind_block);
                     builder.seal_block(func_bind_block);
-                    let mut new_sig = self.module.make_signature();
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_new = self
-                        .module
-                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                        .unwrap();
-                    let callargs_new_local =
-                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let callargs_new_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_new",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
                     let kw_capacity = builder.ins().iconst(types::I64, 0);
                     let callargs_call = builder
                         .ins()
                         .call(callargs_new_local, &[pos_capacity, kw_capacity]);
                     let callargs_ptr = builder.inst_results(callargs_call)[0];
-                    let mut push_sig = self.module.make_signature();
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_push_pos = self
-                        .module
-                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                        .unwrap();
-                    let callargs_push_local = self
-                        .module
-                        .declare_func_in_func(callargs_push_pos, builder.func);
+                    let callargs_push_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_push_pos",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     for arg in &args {
                         builder
                             .ins()
                             .call(callargs_push_local, &[callargs_ptr, *arg]);
                     }
-                    let mut bind_sig = self.module.make_signature();
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.returns.push(AbiParam::new(types::I64));
-                    let call_bind = self
-                        .module
-                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                        .unwrap();
-                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
+                    let call_bind_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_call_bind_ic",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let bind_label = format!("{call_site_prefix}_bind");
                     let site_bits = builder.ins().iconst(
                         types::I64,
@@ -9194,16 +9228,15 @@ impl SimpleBackend {
                     for name in &args_names[1..] {
                         args.push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
                     }
-                    let mut new_sig = self.module.make_signature();
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_new = self
-                        .module
-                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                        .unwrap();
-                    let callargs_new_local =
-                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let callargs_new_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_new",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
                     let kw_capacity = builder.ins().iconst(types::I64, 0);
                     let callargs_call = builder
@@ -9211,17 +9244,15 @@ impl SimpleBackend {
                         .call(callargs_new_local, &[pos_capacity, kw_capacity]);
                     let callargs_ptr = builder.inst_results(callargs_call)[0];
 
-                    let mut push_sig = self.module.make_signature();
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_push_pos = self
-                        .module
-                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                        .unwrap();
-                    let callargs_push_local = self
-                        .module
-                        .declare_func_in_func(callargs_push_pos, builder.func);
+                    let callargs_push_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_push_pos",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     for arg in &args {
                         builder
                             .ins()
@@ -9280,11 +9311,23 @@ impl SimpleBackend {
                     } else {
                         "molt_call_bind_ic"
                     };
-                    let callee = self
-                        .module
-                        .declare_function(callee_name, Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let local_callee = if op.kind == "call_bind" {
+                        import_func_ref(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            "molt_call_bind_ic",
+                            &[types::I64, types::I64, types::I64],
+                            &[types::I64],
+                        )
+                    } else {
+                        let callee = self
+                            .module
+                            .declare_function(callee_name, Linkage::Import, &sig)
+                            .unwrap();
+                        self.module.declare_func_in_func(callee, builder.func)
+                    };
                     let call_site_label = if op.kind == "call_indirect" {
                         "call_indirect"
                     } else {
@@ -9343,48 +9386,44 @@ impl SimpleBackend {
                         extra_args
                             .push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
                     }
-                    let mut new_sig = self.module.make_signature();
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.params.push(AbiParam::new(types::I64));
-                    new_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_new = self
-                        .module
-                        .declare_function("molt_callargs_new", Linkage::Import, &new_sig)
-                        .unwrap();
-                    let callargs_new_local =
-                        self.module.declare_func_in_func(callargs_new, builder.func);
+                    let callargs_new_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_new",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let pos_capacity = builder.ins().iconst(types::I64, extra_args.len() as i64);
                     let kw_capacity = builder.ins().iconst(types::I64, 0);
                     let callargs_call = builder
                         .ins()
                         .call(callargs_new_local, &[pos_capacity, kw_capacity]);
                     let callargs_ptr = builder.inst_results(callargs_call)[0];
-                    let mut push_sig = self.module.make_signature();
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.params.push(AbiParam::new(types::I64));
-                    push_sig.returns.push(AbiParam::new(types::I64));
-                    let callargs_push_pos = self
-                        .module
-                        .declare_function("molt_callargs_push_pos", Linkage::Import, &push_sig)
-                        .unwrap();
-                    let callargs_push_local = self
-                        .module
-                        .declare_func_in_func(callargs_push_pos, builder.func);
+                    let callargs_push_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_callargs_push_pos",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     for arg in &extra_args {
                         builder
                             .ins()
                             .call(callargs_push_local, &[callargs_ptr, *arg]);
                     }
-                    let mut bind_sig = self.module.make_signature();
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.params.push(AbiParam::new(types::I64));
-                    bind_sig.returns.push(AbiParam::new(types::I64));
-                    let call_bind = self
-                        .module
-                        .declare_function("molt_call_bind_ic", Linkage::Import, &bind_sig)
-                        .unwrap();
-                    let call_bind_local = self.module.declare_func_in_func(call_bind, builder.func);
+                    let call_bind_local = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_call_bind_ic",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let site_bits = builder.ins().iconst(
                         types::I64,
                         box_int(stable_ic_site_id(
