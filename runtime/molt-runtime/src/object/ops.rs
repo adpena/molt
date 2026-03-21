@@ -43939,6 +43939,32 @@ pub extern "C" fn molt_dec_ref_obj(bits: u64) {
     })
 }
 
+/// Batched `inc_ref`: increment the refcount by `count` in a single atomic
+/// operation. Returns the input bits unchanged (convenience for chaining).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_inc_ref_n(bits: u64, count: u32) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+            unsafe { crate::object::inc_ref_n_ptr(_py, ptr, count) };
+        }
+    });
+    bits
+}
+
+/// Batched `dec_ref`: decrement the refcount by calling `dec_ref` `count`
+/// times. (Cannot use a single atomic subtract because each decrement may
+/// trigger deallocation at zero.)
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_dec_ref_n(bits: u64, count: u32) {
+    crate::with_gil_entry!(_py, {
+        if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+            for _ in 0..count {
+                unsafe { molt_dec_ref(ptr) };
+            }
+        }
+    })
+}
+
 unsafe fn dict_subclass_storage_bits(_py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
     unsafe {
         let debug = std::env::var("MOLT_DEBUG_DICT_SUBCLASS").as_deref() == Ok("1");
@@ -46793,4 +46819,108 @@ pub(crate) unsafe fn dict_clear_in_place(_py: &PyToken<'_>, ptr: *mut u8) {
         let table = dict_table(ptr);
         table.clear();
     }
+}
+
+/// Outlined class definition helper.  Replaces the multi-op inline sequence
+/// (`class_new` + `class_set_base` + N x `set_attr_generic_obj` +
+/// `class_apply_set_name` + `__init_subclass__` dispatch +
+/// `class_set_layout_version`) with a single runtime call.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_guarded_class_def(
+    name_bits: u64,
+    bases_ptr: *const u64,
+    nbases: u64,
+    attrs_ptr: *const u64,
+    nattrs: u64,
+    layout_size: i64,
+    layout_version: i64,
+    flags: u64,
+) -> u64 {
+    use crate::builtins::types::{
+        molt_class_apply_set_name, molt_class_new, molt_class_set_base,
+        molt_class_set_layout_version,
+    };
+    use crate::builtins::attributes::molt_set_attr_name;
+    use molt_obj_model::MoltObject;
+
+    let none = MoltObject::none().bits();
+    let class_bits = molt_class_new(name_bits);
+    if class_bits == none {
+        return class_bits;
+    }
+
+    let nb = nbases as usize;
+    if nb > 0 {
+        unsafe {
+            let bases_slice = std::slice::from_raw_parts(bases_ptr, nb);
+            if nb == 1 {
+                molt_class_set_base(class_bits, bases_slice[0]);
+            } else {
+                crate::with_gil_entry!(_py, {
+                    let tuple_ptr = crate::object::builders::alloc_tuple(_py, bases_slice);
+                    if !tuple_ptr.is_null() {
+                        let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
+                        molt_class_set_base(class_bits, tuple_bits);
+                        crate::dec_ref_bits(_py, tuple_bits);
+                    }
+                });
+            }
+        }
+    }
+
+    let na = nattrs as usize;
+    if na > 0 {
+        unsafe {
+            let attrs_slice = std::slice::from_raw_parts(attrs_ptr, na * 2);
+            for pair in attrs_slice.chunks_exact(2) {
+                molt_set_attr_name(class_bits, pair[0], pair[1]);
+            }
+        }
+    }
+
+    crate::with_gil_entry!(_py, {
+        let size_obj = MoltObject::from_int(layout_size).bits();
+        let layout_attr = crate::intern_static_name(
+            _py,
+            &crate::runtime_state(_py).interned.molt_layout_size,
+            b"__molt_layout_size__",
+        );
+        molt_set_attr_name(class_bits, layout_attr, size_obj);
+        crate::dec_ref_bits(_py, size_obj);
+    });
+
+    molt_class_apply_set_name(class_bits);
+
+    if (flags & 1) != 0 && nb > 0 {
+        unsafe {
+            let bases_slice = std::slice::from_raw_parts(bases_ptr, nb);
+            crate::with_gil_entry!(_py, {
+                let init_name = crate::intern_static_name(
+                    _py,
+                    &crate::runtime_state(_py).interned.init_subclass_name,
+                    b"__init_subclass__",
+                );
+                for &base in bases_slice {
+                    let init_attr = crate::builtins::attributes::molt_get_attr_name_default(
+                        base, init_name, none,
+                    );
+                    if init_attr != none {
+                        let _ = crate::call::dispatch::call_callable1(
+                            _py, init_attr, class_bits,
+                        );
+                        crate::dec_ref_bits(_py, init_attr);
+                    }
+                }
+                crate::dec_ref_bits(_py, init_name);
+            });
+        }
+    }
+
+    let version_obj = MoltObject::from_int(layout_version).bits();
+    molt_class_set_layout_version(class_bits, version_obj);
+    crate::with_gil_entry!(_py, {
+        crate::dec_ref_bits(_py, version_obj);
+    });
+
+    class_bits
 }
