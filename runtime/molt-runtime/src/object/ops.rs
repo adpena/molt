@@ -14420,12 +14420,13 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn molt_call_func_dispatch(
     func_bits: u64,
-    args_ptr: *const u64,
+    args_ptr_bits: u64,  // u64 to match WASM all-i64 ABI; cast to *const u64 below
     nargs: u64,
     code_id: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let n = nargs as usize;
+        let args_ptr = args_ptr_bits as usize as *const u64;
 
         // Read arguments from the spilled stack slot.
         let args: Vec<u64> = unsafe {
