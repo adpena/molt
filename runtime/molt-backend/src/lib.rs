@@ -34,7 +34,7 @@ mod json_boundary;
 mod native_backend;
 mod passes;
 pub use crate::ir::{
-    FunctionIR, OpIR, PgoBranchCount, PgoCallCount, PgoLoopCount, PgoProfileIR, SimpleIR,
+    FunctionIR, OpIR, PgoProfileIR, SimpleIR,
     validate_simple_ir,
 };
 #[cfg(feature = "native-backend")]
@@ -1272,7 +1272,6 @@ impl SimpleBackend {
             .as_deref()
             .map(parse_truthy_env)
             .unwrap_or(false);
-        let pgo_profile = ir.profile.as_ref();
         for func_ir in ir.functions {
             self.compile_func(
                 func_ir,
@@ -1281,7 +1280,6 @@ impl SimpleBackend {
                 &ir_analysis.defined_functions,
                 &ir_analysis.closure_functions,
                 emit_traces,
-                pgo_profile,
             );
         }
         let product = self.module.finish();
