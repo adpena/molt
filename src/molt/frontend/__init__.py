@@ -1431,7 +1431,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="LIST_NEW", args=[path_val], result=list_val))
             self._emit_module_attr_set_on(self.module_obj, "__path__", list_val)
             path_list_val = list_val
-        if self.module_name == "importlib.machinery":
+        if (
+            self.module_name == "importlib.machinery"
+            or "importlib.machinery" not in self.known_modules
+        ):
             spec_none = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=spec_none))
             self._emit_module_attr_set_on(self.module_obj, "__spec__", spec_none)
@@ -10424,6 +10427,78 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return True
         return False
 
+    def _can_inline_list_comp(self, node: ast.ListComp) -> bool:
+        """Check whether a list comprehension can be lowered as an inline loop.
+
+        Requirements: single generator, no async, single target name, no
+        nested comprehensions in the element expression.
+        """
+        if len(node.generators) != 1:
+            return False
+        comp = node.generators[0]
+        if comp.is_async:
+            return False
+        if not isinstance(comp.target, ast.Name):
+            return False
+        # Reject element expressions that themselves contain comprehensions
+        # (they would require their own generator and cannot be inlined).
+        for child in ast.walk(node.elt):
+            if isinstance(child, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                return False
+        return True
+
+    def _emit_inline_list_comp(self, node: ast.ListComp) -> MoltValue:
+        """Emit an inline loop for a simple list comprehension.
+
+        Avoids generating a generator task, working around a native-backend
+        Cranelift code-generation issue where generator poll functions with
+        non-trivial element expressions produce corrupted state machines.
+        """
+        comp = node.generators[0]
+        target_name = comp.target.id  # type: ignore[union-attr]
+        iterable_val = self.visit(comp.iter)
+        iter_obj = self._emit_iter_new(iterable_val)
+        res = MoltValue(self.next_var(), type_hint="list")
+        self.emit(MoltOp(kind="LIST_NEW", args=[], result=res))
+        zero = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+        one = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[1], result=one))
+        self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+        pair = self._emit_iter_next_checked(iter_obj)
+        done = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
+        self.emit(
+            MoltOp(kind="LOOP_BREAK_IF_TRUE", args=[done], result=MoltValue("none"))
+        )
+        item = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
+        # Bind the loop variable so the element expression can reference it.
+        old_local = self.locals.get(target_name)
+        self.locals[target_name] = item
+        # Evaluate optional filter conditions.
+        skip_label_needed = bool(comp.ifs)
+        if skip_label_needed:
+            for if_node in comp.ifs:
+                cond_val = self.visit(if_node)
+                not_cond = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="NOT", args=[cond_val], result=not_cond))
+                self.emit(MoltOp(kind="IF", args=[not_cond], result=MoltValue("none")))
+                self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        elt_val = self.visit(node.elt)
+        self.emit(
+            MoltOp(kind="LIST_APPEND", args=[res, elt_val], result=MoltValue("none"))
+        )
+        # Restore the previous binding (if any).
+        if old_local is not None:
+            self.locals[target_name] = old_local
+        else:
+            self.locals.pop(target_name, None)
+        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+        return res
+
     def visit_ListComp(self, node: ast.ListComp) -> Any:
         async_needed = self._comprehension_requires_async(node.generators, [node.elt])
         if async_needed and not self.is_async_context():
@@ -10435,6 +10510,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if simple_range is not None:
                 start, stop, step = simple_range
                 return self._emit_range_list(start, stop, step)
+            if self._can_inline_list_comp(node):
+                return self._emit_inline_list_comp(node)
         genexp = ast.GeneratorExp(elt=node.elt, generators=node.generators)
         gen_val = self.visit(genexp)
         if gen_val is None:
