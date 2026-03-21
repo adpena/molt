@@ -34,6 +34,14 @@ def _lookup_registry(builtins_obj, name):
         value = reg.get(name)
         if _is_intrinsic_value(value):
             return value
+        # Lazy resolution: intrinsics are not eagerly populated at startup.
+        # Call the runtime resolver which builds the function object on demand
+        # and caches it in the registry dict for subsequent lookups.
+        resolver = reg.get("_molt_lazy_resolve")
+        if callable(resolver):
+            resolved = resolver(name)
+            if _is_intrinsic_value(resolved):
+                return resolved
     return None
 
 
@@ -66,6 +74,11 @@ def require_intrinsic(name, namespace=None):
                 hit = value.get(name)
                 if _is_intrinsic_value(hit):
                     return hit
+                resolver = value.get("_molt_lazy_resolve")
+                if callable(resolver):
+                    resolved = resolver(name)
+                    if _is_intrinsic_value(resolved):
+                        return resolved
             caller_builtins = getter("__builtins__")
             value = _lookup_from_builtins_obj(caller_builtins, name)
             if value is not None:
@@ -83,6 +96,11 @@ def require_intrinsic(name, namespace=None):
         value = module_registry.get(name)
         if _is_intrinsic_value(value):
             return value
+        resolver = module_registry.get("_molt_lazy_resolve")
+        if callable(resolver):
+            resolved = resolver(name)
+            if _is_intrinsic_value(resolved):
+                return resolved
 
     module_builtins = globals().get("__builtins__")
     value = _lookup_from_builtins_obj(module_builtins, name)
