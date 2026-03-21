@@ -78,13 +78,20 @@ const INLINE_OP_LIMIT: usize = 30;
 
 /// PGO-guided inline limit for hot functions (called >1000 times).
 /// Hot callees get a larger budget so more of their body can be inlined.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
 const PGO_HOT_INLINE_OP_LIMIT: usize = 80;
 
 /// Call-count threshold above which a function is considered "hot" for
-/// inlining purposes.
-#[allow(dead_code)]
-const PGO_HOT_CALL_THRESHOLD: u64 = 1000;
+/// inlining purposes.  The profiler uses this to populate
+/// `PgoProfileIR::hot_functions`; the constant is kept here for reference.
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
+const _PGO_HOT_CALL_THRESHOLD: u64 = 1000;
 
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
@@ -134,12 +141,23 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
 
     let defined_functions: BTreeSet<&str> = ir.functions.iter().map(|f| f.name.as_str()).collect();
 
+    // Build a set of PGO-hot function names for O(1) lookup.
+    let pgo_hot: BTreeSet<&str> = ir
+        .profile
+        .as_ref()
+        .map(|p| p.hot_functions.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+
     let mut inlineable: BTreeMap<String, (Vec<String>, Vec<OpIR>)> = BTreeMap::new();
     for func in &ir.functions {
         // PGO-guided inlining: if the profile shows this function is called
         // frequently (>1000 times), allow a larger op budget so more of its
         // body can be inlined at call sites.
-        let effective_limit = limit;
+        let effective_limit = if pgo_hot.contains(func.name.as_str()) {
+            limit.max(PGO_HOT_INLINE_OP_LIMIT)
+        } else {
+            limit
+        };
         let func_copy = FunctionIR {
             name: func.name.clone(),
             params: func.params.clone(),
