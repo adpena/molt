@@ -1,6 +1,3 @@
-import sys
-import os
-
 def fibonacci(n):
     a, b = 0, 1
     for _ in range(n):
@@ -20,22 +17,26 @@ def is_prime(n):
 def count_primes(limit):
     return sum(1 for n in range(2, limit + 1) if is_prime(n))
 
-def mandelbrot(width=80, height=40, x_min=-2.0, x_max=1.0, y_min=-1.2, y_max=1.2):
-    chars = " .:-=+*#%@"
-    lines = []
+def mandelbrot(width=60, height=25, x_min=-2.0, x_max=1.0, y_min=-1.0, y_max=1.0):
+    chars = " .-+*#@"
+    out = []
     for row in range(height):
         y0 = y_min + (y_max - y_min) * row / height
-        line = ""
         for col in range(width):
             x0 = x_min + (x_max - x_min) * col / width
-            x, y, iteration = 0.0, 0.0, 0
-            max_iter = len(chars) - 1
-            while x*x + y*y <= 4.0 and iteration < max_iter:
-                x, y = x*x - y*y + x0, 2.0*x*y + y0
-                iteration += 1
-            line += chars[iteration]
-        lines.append(line)
-    return "\n".join(lines)
+            x = 0.0
+            y = 0.0
+            i = 0
+            while i < 6:
+                if x * x + y * y > 4.0:
+                    break
+                x2 = x * x - y * y + x0
+                y = 2.0 * x * y + y0
+                x = x2
+                i += 1
+            out.append(chars[i])
+        out.append("\n")
+    return "".join(out)
 
 def sort_data(data_str):
     nums = [int(x.strip()) for x in data_str.split(",") if x.strip()]
@@ -51,9 +52,9 @@ def fizzbuzz(n):
         else: lines.append(str(i))
     return "\n".join(lines)
 
-# Parse request
+import sys
 path = sys.argv[1] if len(sys.argv) > 1 else "/"
-query = os.environ.get("QUERY_STRING", "")
+query = sys.argv[2] if len(sys.argv) > 2 else ""
 
 # Parse query params
 params = {}
@@ -75,8 +76,8 @@ elif route == "primes":
     print("Primes up to " + str(limit) + ": " + str(count_primes(limit)))
 
 elif route == "mandelbrot":
-    w = int(params.get("width", "80"))
-    h = int(params.get("height", "40"))
+    w = int(params.get("width", "40"))
+    h = int(params.get("height", "20"))
     print(mandelbrot(w, h))
 
 elif route == "sort":
@@ -89,7 +90,7 @@ elif route == "fizzbuzz":
 
 elif route == "pi":
     # Leibniz series for pi
-    n = int(parts[1]) if len(parts) > 1 else 1000000
+    n = int(parts[1]) if len(parts) > 1 else 10000
     total = 0.0
     for i in range(n):
         total += ((-1.0) ** i) / (2.0 * i + 1.0)
