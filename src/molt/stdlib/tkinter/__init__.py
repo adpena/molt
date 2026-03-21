@@ -145,7 +145,24 @@ def _normalize_option_name(name):
 
 
 def _normalize_tk_option_value(owner, value):
+    # Only register actual functions/methods as callbacks, not widget objects.
+    # Widget objects are callable (inherit __call__ from Misc) but should
+    # be converted to their Tk path name string.
     if callable(value):
+        value_type = type(value).__name__
+        # These are the types that should be registered as callbacks
+        if value_type in ("function", "method", "builtin_function_or_method"):
+            if owner is not None and hasattr(owner, "_register"):
+                return owner._register(value)
+            return value
+        # For other callable types (like widget objects), try to get _w
+        try:
+            w = value._w
+            if isinstance(w, str):
+                return w
+        except (AttributeError, TypeError):
+            pass
+        # Fallback: register as callback
         if owner is not None and hasattr(owner, "_register"):
             return owner._register(value)
         return value
