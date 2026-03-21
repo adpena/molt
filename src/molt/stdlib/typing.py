@@ -17,6 +17,21 @@ def _typing_cast(_tp: object, value: object) -> object:
     return value
 
 
+try:
+    _typing_cast = _require_intrinsic("molt_typing_cast")
+except RuntimeError:
+    pass  # fallback to pure-Python identity above
+
+try:
+    _typing_get_origin = _require_intrinsic("molt_typing_get_origin")
+except RuntimeError:
+    _typing_get_origin = None
+
+try:
+    _typing_get_args = _require_intrinsic("molt_typing_get_args")
+except RuntimeError:
+    _typing_get_args = None
+
 _require_intrinsic("molt_stdlib_probe")
 _MOLT_GENERIC_ALIAS_NEW = _require_intrinsic("molt_generic_alias_new")
 _MOLT_TYPING_TYPE_PARAM = _require_intrinsic("molt_typing_type_param")
@@ -801,6 +816,7 @@ _MOLT_PROTOCOL_CHECK = _require_intrinsic("molt_protocol_check")
 _MOLT_PROTOCOL_GET_STRUCTURAL_MEMBERS = _require_intrinsic(
     "molt_protocol_get_structural_members"
 )
+_MOLT_PROTOCOL_REGISTER = _require_intrinsic("molt_protocol_register")
 
 
 class _ProtocolMeta(type):
@@ -850,6 +866,7 @@ def runtime_checkable(cls):
     if not getattr(cls, "_is_protocol", False):
         raise TypeError("@runtime_checkable can only be applied to protocol classes")
     cls._is_runtime_protocol = True
+    _MOLT_PROTOCOL_REGISTER(cls, cls)
     return cls
 
 
@@ -967,7 +984,7 @@ def NewType(name: str, tp: object):
 
 
 def cast(_typ: object, value: object) -> object:
-    return value
+    return _typing_cast(_typ, value)
 
 
 def overload(func):
