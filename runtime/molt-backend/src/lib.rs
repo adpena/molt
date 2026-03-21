@@ -4,8 +4,8 @@ use cranelift_codegen::Context;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 #[cfg(feature = "native-backend")]
 use cranelift_codegen::ir::{
-    AbiParam, AtomicRmwOp, Block, BlockArg, FuncRef, Function, InstBuilder, MemFlags,
-    StackSlotData, StackSlotKind, Value, types,
+    AbiParam, Block, BlockArg, FuncRef, Function, InstBuilder, MemFlags, StackSlotData,
+    StackSlotKind, Value, types,
 };
 #[cfg(feature = "native-backend")]
 use cranelift_codegen::isa;
@@ -22,8 +22,6 @@ use cranelift_native::builder_with_options as native_isa_builder_with_options;
 #[cfg(feature = "native-backend")]
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(feature = "native-backend")]
-use std::collections::HashSet;
 #[cfg(feature = "native-backend")]
 use std::fmt::Write as _;
 #[cfg(feature = "native-backend")]
@@ -43,7 +41,7 @@ pub use crate::ir::{
 use crate::native_backend::TrampolineKey;
 pub(crate) use crate::passes::{
     apply_profile_order, build_const_int_map, elide_dead_struct_allocs, escape_analysis,
-    fold_constants, fold_constants_cross_block, inline_functions, propagate_loop_fast_int,
+    fold_constants, inline_functions,
 };
 
 #[cfg(feature = "luau-backend")]
@@ -73,13 +71,8 @@ mod native_backend_consts {
     pub(super) const TASK_KIND_FUTURE: i64 = 0;
     pub(super) const TASK_KIND_GENERATOR: i64 = 1;
     pub(super) const TASK_KIND_COROUTINE: i64 = 2;
-    // FUNC_DEFAULT_* constants moved to the runtime (molt_call_func_dispatch).
-    // Kept as dead_code in case the WASM backend needs them during outlining.
-    #[allow(dead_code)]
     pub(super) const FUNC_DEFAULT_NONE: i64 = 1;
-    #[allow(dead_code)]
     pub(super) const FUNC_DEFAULT_DICT_POP: i64 = 2;
-    #[allow(dead_code)]
     pub(super) const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
     pub(super) const HEADER_SIZE_BYTES: i32 = 40;
     pub(super) const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
@@ -544,14 +537,11 @@ fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: 
 // dec_ref is left as a function call (needs the free/destructor path).
 // ---------------------------------------------------------------------------
 
-/// Returns `true` if inline RC codegen is enabled.
-///
-/// Re-enabled: the inline RC path now uses atomic_rmw (AtomicRmwOp::Add)
-/// instead of non-atomic load/iadd/store, which is correct for the
-/// AtomicU32 refcount field.
+/// Returns `true` if inline RC codegen is enabled via `MOLT_INLINE_RC=1`.
 #[cfg(feature = "native-backend")]
 fn inline_rc_enabled() -> bool {
-    true
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_INLINE_RC").as_deref() == Ok("1"))
 }
 
 /// Emit an inlined `inc_ref_obj` as Cranelift IR instead of a function call.
@@ -604,16 +594,19 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value) {
         .ins()
         .brif(is_mortal, do_inc_block, &[], merge_block, &[]);
 
-    // 3. Increment refcount atomically using atomic_rmw (Add)
+    // 3. Increment refcount: load u32, add 1, store back
     builder.switch_to_block(do_inc_block);
-    let rc_offset = builder
-        .ins()
-        .iconst(types::I64, HEADER_REFCOUNT_OFFSET as i64);
-    let rc_addr = builder.ins().iadd(raw_ptr, rc_offset);
+    let rc = builder.ins().load(
+        types::I32,
+        MemFlags::trusted(),
+        raw_ptr,
+        HEADER_REFCOUNT_OFFSET,
+    );
     let one_i32 = builder.ins().iconst(types::I32, 1);
+    let new_rc = builder.ins().iadd(rc, one_i32);
     builder
         .ins()
-        .atomic_rmw(types::I32, MemFlags::trusted(), AtomicRmwOp::Add, rc_addr, one_i32);
+        .store(MemFlags::trusted(), new_rc, raw_ptr, HEADER_REFCOUNT_OFFSET);
     builder.ins().jump(merge_block, &[]);
 
     // 4. Merge — continue in the merge block
@@ -961,92 +954,6 @@ fn drain_cleanup_entry_tracked(
     cleanup
 }
 
-// ---------------------------------------------------------------------------
-// RC coalescing: eliminate redundant inc_ref / dec_ref pairs.
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "native-backend")]
-const CONTROL_FLOW_OPS: &[&str] = &[
-    "if", "else", "end_if", "loop_start", "loop_end", "loop_for_start",
-    "loop_for_end", "label", "state_label", "jump", "return", "state_yield",
-    "check_exception", "raise",
-];
-
-#[cfg(feature = "native-backend")]
-pub(crate) fn compute_rc_coalesce_skips(
-    ops: &[OpIR],
-    last_use: &BTreeMap<String, usize>,
-) -> (HashSet<usize>, HashSet<String>) {
-    let cf_set: HashSet<&str> = CONTROL_FLOW_OPS.iter().copied().collect();
-    let mut skip_ops: HashSet<usize> = HashSet::new();
-    let mut skip_dec_ref: HashSet<String> = HashSet::new();
-
-    for i in 0..ops.len() {
-        if skip_ops.contains(&i) { continue; }
-        let a = &ops[i];
-        let a_is_inc = matches!(a.kind.as_str(), "inc_ref" | "borrow");
-        let a_is_dec = matches!(a.kind.as_str(), "dec_ref" | "release");
-        if !a_is_inc && !a_is_dec { continue; }
-        let a_arg = match a.args.as_ref().and_then(|v| v.first()) {
-            Some(name) => name.clone(),
-            None => continue,
-        };
-        for j in (i + 1)..ops.len() {
-            let b = &ops[j];
-            if cf_set.contains(b.kind.as_str()) { break; }
-            let b_kind = b.kind.as_str();
-            let b_arg = b.args.as_ref().and_then(|v| v.first());
-            let is_match = if a_is_inc {
-                matches!(b_kind, "dec_ref" | "release")
-                    && b_arg.map(String::as_str) == Some(&a_arg)
-            } else {
-                matches!(b_kind, "inc_ref" | "borrow")
-                    && b_arg.map(String::as_str) == Some(&a_arg)
-            };
-            if is_match && !skip_ops.contains(&j) {
-                skip_ops.insert(i);
-                skip_ops.insert(j);
-                break;
-            }
-            let uses_var = b.args.as_ref()
-                .map(|args| args.iter().any(|n| n == &a_arg))
-                .unwrap_or(false)
-                || b.var.as_ref().map(|v| v == &a_arg).unwrap_or(false)
-                || b.out.as_ref().map(|o| o == &a_arg).unwrap_or(false);
-            if uses_var { break; }
-        }
-    }
-
-    for (idx, op) in ops.iter().enumerate() {
-        if skip_ops.contains(&idx) { continue; }
-        if !matches!(op.kind.as_str(), "inc_ref" | "borrow") { continue; }
-        let out_name = match op.out.as_deref() {
-            Some(name) if name != "none" => name,
-            _ => continue,
-        };
-        let last = last_use.get(out_name).copied().unwrap_or(idx);
-        if last <= idx {
-            skip_ops.insert(idx);
-            skip_dec_ref.insert(out_name.to_string());
-        }
-    }
-
-    if !skip_ops.is_empty() || !skip_dec_ref.is_empty() {
-        static RC_COALESCE_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let trace = *RC_COALESCE_TRACE.get_or_init(|| {
-            std::env::var("MOLT_RC_COALESCE_TRACE").as_deref() == Ok("1")
-        });
-        if trace {
-            eprintln!(
-                "[rc-coalesce] eliminated {} RC ops, {} dec_ref skips",
-                skip_ops.len(), skip_dec_ref.len()
-            );
-        }
-    }
-
-    (skip_ops, skip_dec_ref)
-}
-
 #[derive(Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
@@ -1350,10 +1257,6 @@ impl SimpleBackend {
         }
         for func_ir in &mut ir.functions {
             fold_constants(&mut func_ir.ops);
-            fold_constants_cross_block(&mut func_ir.ops);
-        }
-        for func_ir in &mut ir.functions {
-            propagate_loop_fast_int(func_ir);
         }
         let mut ir_analysis = analyze_native_backend_ir(&ir);
         if ir_analysis.needs_inlining {
@@ -1369,6 +1272,7 @@ impl SimpleBackend {
             .as_deref()
             .map(parse_truthy_env)
             .unwrap_or(false);
+        let _pgo_profile = ir.profile.as_ref();
         for func_ir in ir.functions {
             self.compile_func(
                 func_ir,
