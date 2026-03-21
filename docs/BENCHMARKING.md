@@ -261,8 +261,8 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
 - Defaults use `MOLT_EXT_ROOT` when set; otherwise the tooling falls back to
   canonical repo-local artifact roots.
 - Throughput bootstrap defaults `CARGO_INCREMENTAL=0` to maximize cacheability/shared throughput under multi-agent contention. Set `CARGO_INCREMENTAL=1` only for local incremental-debug sessions.
-- Prefer `--profile dev` for iteration loops (`molt build/run/compare/diff/test --suite diff`); reserve `--profile release` for release gates and perf publication.
-- `--profile dev` routes to Cargo `dev-fast` by default; override with `MOLT_DEV_CARGO_PROFILE` when profiling alternative dev profiles.
+- Prefer `molt build --build-profile dev` for build-only iteration loops, and `--profile dev` for `molt run/compare/diff/test`; reserve release profiles for release gates and perf publication.
+- `--build-profile dev` routes build mode to Cargo `dev` by default; override with `MOLT_DEV_CARGO_PROFILE` when profiling alternative dev profiles.
 - Keep cache keys deterministic by default (`PYTHONHASHSEED=0` is enforced by CLI). Override via `MOLT_HASH_SEED=<value>` only when explicitly testing hash-seed sensitivity.
 - Enable Rust compile caching:
   - `MOLT_USE_SCCACHE=1` (or leave default `auto` when `sccache` is installed)
@@ -283,7 +283,7 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
 MOLT_CACHE=$PWD/.molt_cache \
 CARGO_TARGET_DIR=$PWD/target \
 MOLT_USE_SCCACHE=1 \
-uv run --python 3.12 python3 -m molt.cli build examples/hello.py --profile dev --cache-report
+uv run --python 3.12 python3 -m molt.cli build examples/hello.py --build-profile dev --cache-report
 ```
 
 ### Throughput Matrix Harness
@@ -333,7 +333,7 @@ payloads automatically.
   - `--diagnostics`
   - `--diagnostics-file <path>`
   - Example:
-    `uv run --python 3.12 python3 -m molt.cli build --profile dev --no-cache --diagnostics --diagnostics-file build_diag.json examples/hello.py`
+    `uv run --python 3.12 python3 -m molt.cli build --build-profile dev --no-cache --diagnostics --diagnostics-file build_diag.json examples/hello.py`
   - Midend payloads include tiering telemetry (`tier_base_summary`,
     `promoted_functions`, `promotion_source_summary`,
     `promotion_hotspots_top`) for PGO-guided tier promotion audits.
