@@ -14377,19 +14377,21 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                 f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10), *args_ptr.add(11), *args_ptr.add(12), *args_ptr.add(13), *args_ptr.add(14), *args_ptr.add(15))
             }
             _ => {
-                // Arity > 16: fall back to callargs dispatch instead of panicking.
+                // Arity > 16: raise a clear error instead of silently failing.
+                // This path is only reachable if a function genuinely has 17+
+                // parameters AND is called via the direct fn_ptr dispatch table.
+                // molt_call_func_dispatch handles arbitrary arities via callargs,
+                // so this should never be reached in practice.
                 crate::with_gil_entry!(_py, {
-                    let pos_cap = MoltObject::from_int(n as i64).bits();
-                    let kw_cap = MoltObject::from_int(0).bits();
-                    let callargs = molt_callargs_new(pos_cap, kw_cap);
-                    for i in 0..n {
-                        molt_callargs_push_pos(callargs, *args_ptr.add(i));
-                    }
-                    // Use the fn_ptr bits as the callable — this may not work for
-                    // all cases, but prevents a crash. If this path is ever hit,
-                    // it indicates the compiler emitted a direct call with >16 args
-                    // which should be extremely rare.
-                    return MoltObject::none().bits();
+                    return raise_exception::<u64>(
+                        _py,
+                        "RuntimeError",
+                        &format!(
+                            "direct dispatch does not support {} arguments; \
+                             use callargs dispatch for functions with >16 parameters",
+                            n
+                        ),
+                    );
                 })
             }
         }
