@@ -419,49 +419,61 @@ def _molt_build_cmd() -> list[str]:
 def prepare_molt_binary(
     script: str, extra_args: list[str] | None = None, env: dict[str, str] | None = None
 ) -> MoltBinary | None:
+    _prune_backend_daemons()
     env = (env or os.environ.copy()).copy()
     env["PYTHONPATH"] = "src"
-    temp_dir = tempfile.TemporaryDirectory(prefix="molt-bench-")
-    out_dir = Path(temp_dir.name)
-    args = [
-        *_molt_build_cmd(),
-        "-m",
-        "molt.cli",
-        "build",
-        "--trusted",
-        "--json",
-        "--out-dir",
-        str(out_dir),
-    ]
-    if extra_args:
-        args.extend(extra_args)
-    args.append(script)
-    start = time.perf_counter()
-    res = subprocess.run(
-        args,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    build_s = time.perf_counter() - start
 
-    if res.returncode != 0:
-        temp_dir.cleanup()
-        return None
+    def _attempt_build() -> MoltBinary | None:
+        temp_dir = tempfile.TemporaryDirectory(prefix="molt-bench-")
+        out_dir = Path(temp_dir.name)
+        args = [
+            *_molt_build_cmd(),
+            "-m",
+            "molt.cli",
+            "build",
+            "--trusted",
+            "--json",
+            "--out-dir",
+            str(out_dir),
+        ]
+        if extra_args:
+            args.extend(extra_args)
+        args.append(script)
+        start = time.perf_counter()
+        res = subprocess.run(
+            args,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        build_s = time.perf_counter() - start
 
-    try:
-        payload = json.loads(res.stdout.strip() or "{}")
-    except json.JSONDecodeError:
-        temp_dir.cleanup()
-        return None
+        if res.returncode != 0:
+            temp_dir.cleanup()
+            return None
 
-    output_path = _resolve_molt_output(payload)
-    if output_path is None:
-        temp_dir.cleanup()
-        return None
+        try:
+            payload = json.loads(res.stdout.strip() or "{}")
+        except json.JSONDecodeError:
+            temp_dir.cleanup()
+            return None
 
-    binary_size = output_path.stat().st_size / 1024
-    return MoltBinary(output_path, temp_dir, build_s, binary_size)
+        output_path = _resolve_molt_output(payload)
+        if output_path is None:
+            temp_dir.cleanup()
+            return None
+
+        binary_size = output_path.stat().st_size / 1024
+        return MoltBinary(output_path, temp_dir, build_s, binary_size)
+
+    result = _attempt_build()
+    if result is not None:
+        return result
+
+    print("Backend build failed; pruning stale daemons and retrying...", file=sys.stderr)
+    _prune_backend_daemons()
+    time.sleep(1)
+    return _attempt_build()
 
 
 def measure_molt_run(

@@ -3,8 +3,11 @@ import datetime as dt
 import json
 import os
 import platform
+import re
 import shlex
 import shutil
+import signal
+import socket
 import statistics
 import subprocess
 import sys
@@ -82,6 +85,104 @@ WS_BENCHMARKS = [
 MOLT_ARGS_BY_BENCH = {
     "tests/benchmarks/bench_sum_list_hints.py": ["--type-hints", "trust"],
 }
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _kill_pid(pid: int, *, grace: float = 0.75) -> None:
+    if pid <= 0:
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    deadline = time.monotonic() + max(0.05, grace)
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return
+        time.sleep(0.05)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        return
+
+
+def _daemon_ping(socket_path: Path, *, timeout: float = 0.75) -> bool:
+    if os.name != "posix" or not socket_path.exists():
+        return False
+    payload = {"version": 1, "ping": True}
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect(str(socket_path))
+            sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+            sock.shutdown(socket.SHUT_WR)
+            chunks: list[bytes] = []
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+    except OSError:
+        return False
+    try:
+        response = json.loads(b"".join(chunks).decode("utf-8", "replace").strip())
+    except json.JSONDecodeError:
+        return False
+    return bool(response.get("ok")) and bool(response.get("pong"))
+
+
+def _prune_backend_daemons() -> None:
+    if os.name != "posix":
+        return
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,command="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return
+    pattern = re.compile(r"^\s*(\d+)\s+(.*)$")
+    socket_pat = re.compile(r"--socket\s+(\S+)")
+    groups: dict[Path, list[int]] = {}
+    for line in result.stdout.splitlines():
+        match = pattern.match(line)
+        if match is None:
+            continue
+        pid = int(match.group(1))
+        cmd = match.group(2)
+        if "molt-backend" not in cmd or "--daemon" not in cmd:
+            continue
+        socket_match = socket_pat.search(cmd)
+        if socket_match is None:
+            continue
+        socket_path = Path(socket_match.group(1)).expanduser()
+        groups.setdefault(socket_path, []).append(pid)
+    for socket_path, pids in groups.items():
+        live = sorted({pid for pid in pids if _pid_alive(pid)})
+        if not live:
+            continue
+        if not socket_path.exists():
+            for pid in live:
+                _kill_pid(pid)
+            continue
+        if len(live) > 1:
+            for pid in live[:-1]:
+                _kill_pid(pid)
+            live = live[-1:]
+        _daemon_ping(socket_path)
 
 
 def _wasm_runtime_root() -> Path:
@@ -1181,6 +1282,7 @@ def prepare_wasm_binary(
     log: TextIO | None,
     keep_temp: bool,
 ) -> WasmBinary | None:
+    _prune_backend_daemons()
     global _LAST_BUILD_FAILURE_DETAIL
     _LAST_BUILD_FAILURE_DETAIL = None
     temp_dir = tempfile.TemporaryDirectory(prefix="molt-wasm-bench-")
@@ -1211,6 +1313,11 @@ def prepare_wasm_binary(
             env["MOLT_WASM_TABLE_BASE"] = str(table_base)
 
     build_s = _build_wasm_output(python_cmd, env, output_path, script, tty=tty, log=log)
+    if build_s is None:
+        print("Backend build failed; pruning stale daemons and retrying...", file=sys.stderr)
+        _prune_backend_daemons()
+        time.sleep(1)
+        build_s = _build_wasm_output(python_cmd, env, output_path, script, tty=tty, log=log)
     if build_s is None:
         if _LAST_BUILD_FAILURE_DETAIL is None:
             _LAST_BUILD_FAILURE_DETAIL = "wasm_build_failed"
