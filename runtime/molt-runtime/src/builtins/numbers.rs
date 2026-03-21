@@ -57,12 +57,13 @@ pub(crate) fn int_subclass_value_bits_raw(obj_bits: u64) -> Option<u64> {
     }
 }
 
+#[inline]
 pub(crate) fn to_i64(obj: MoltObject) -> Option<i64> {
     if obj.is_int() {
-        return obj.as_int();
+        return Some(obj.as_int_unchecked());
     }
     if obj.is_bool() {
-        return Some(if obj.as_bool().unwrap_or(false) { 1 } else { 0 });
+        return Some(if (obj.bits() & 0x1) == 1 { 1 } else { 0 });
     }
     if let Some(bits) = int_subclass_value_bits_raw(obj.bits()) {
         let val_obj = obj_from_bits(bits);
@@ -236,6 +237,7 @@ pub(crate) fn bigint_bits(_py: &PyToken<'_>, value: BigInt) -> u64 {
     MoltObject::from_ptr(ptr).bits()
 }
 
+#[inline]
 pub(crate) fn int_bits_from_i128(_py: &PyToken<'_>, val: i128) -> u64 {
     if let Some(i) = inline_int_from_i128(val) {
         MoltObject::from_int(i).bits()
@@ -367,6 +369,7 @@ pub(crate) fn index_i64_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: &str) ->
     raise_exception::<i64>(_py, "TypeError", err)
 }
 
+#[inline]
 pub(crate) fn float_pair_from_obj(
     _py: &PyToken<'_>,
     lhs: MoltObject,
@@ -490,6 +493,7 @@ pub(crate) fn index_bigint_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: &str)
     None
 }
 
+#[inline]
 pub(crate) fn to_f64(obj: MoltObject) -> Option<f64> {
     if let Some(val) = obj.as_float() {
         return Some(val);
