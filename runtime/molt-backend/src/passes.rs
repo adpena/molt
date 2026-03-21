@@ -1,5 +1,5 @@
 use crate::{FunctionIR, OpIR, SimpleIR};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
@@ -19,7 +19,7 @@ pub(crate) fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
         "object_set_class",
     ];
 
-    let mut uses_by_name: HashMap<&str, Vec<(usize, usize, &str)>> = HashMap::new();
+    let mut uses_by_name: BTreeMap<&str, Vec<(usize, usize, &str)>> = BTreeMap::new();
     for (use_idx, use_op) in func_ir.ops.iter().enumerate() {
         let Some(args) = use_op.args.as_ref() else {
             continue;
@@ -90,7 +90,7 @@ const PGO_HOT_CALL_THRESHOLD: u64 = 1000;
 )]
 fn is_inlineable_with_limit(
     func: &FunctionIR,
-    defined_functions: &HashSet<&str>,
+    defined_functions: &BTreeSet<&str>,
     op_limit: usize,
 ) -> bool {
     if func.ops.len() > op_limit {
@@ -130,9 +130,9 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
         .and_then(|v| v.parse().ok())
         .unwrap_or(INLINE_OP_LIMIT);
 
-    let defined_functions: HashSet<&str> = ir.functions.iter().map(|f| f.name.as_str()).collect();
+    let defined_functions: BTreeSet<&str> = ir.functions.iter().map(|f| f.name.as_str()).collect();
 
-    let mut inlineable: HashMap<String, (Vec<String>, Vec<OpIR>)> = HashMap::new();
+    let mut inlineable: BTreeMap<String, (Vec<String>, Vec<OpIR>)> = BTreeMap::new();
     for func in &ir.functions {
         // PGO-guided inlining: if the profile shows this function is called
         // frequently (>1000 times), allow a larger op budget so more of its
@@ -212,7 +212,7 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
                 target_name.replace(|c: char| !c.is_alphanumeric(), "_")
             );
 
-            let mut rename_map: HashMap<String, String> = HashMap::new();
+            let mut rename_map: BTreeMap<String, String> = BTreeMap::new();
             for (i, param) in callee_params.iter().enumerate() {
                 if i < call_args.len() {
                     rename_map.insert(param.clone(), call_args[i].clone());
@@ -305,11 +305,11 @@ pub(crate) fn apply_profile_order(ir: &mut SimpleIR) {
     if profile.hot_functions.is_empty() {
         return;
     }
-    let mut ranks: HashMap<String, usize> = HashMap::new();
+    let mut ranks: BTreeMap<String, usize> = BTreeMap::new();
     for (idx, name) in profile.hot_functions.iter().enumerate() {
         ranks.entry(name.clone()).or_insert(idx);
     }
-    let mut original: HashMap<String, usize> = HashMap::new();
+    let mut original: BTreeMap<String, usize> = BTreeMap::new();
     for (idx, func) in ir.functions.iter().enumerate() {
         original.entry(func.name.clone()).or_insert(idx);
     }
@@ -343,9 +343,9 @@ pub(crate) fn apply_profile_order(ir: &mut SimpleIR) {
 )]
 pub(crate) fn fold_constants(ops: &mut Vec<OpIR>) {
     // Map from variable name -> known constant integer value (raw, unboxed).
-    let mut const_ints: HashMap<String, i64> = HashMap::new();
+    let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();
     // Map from variable name -> known constant boolean value.
-    let mut const_bools: HashMap<String, bool> = HashMap::new();
+    let mut const_bools: BTreeMap<String, bool> = BTreeMap::new();
 
     for op in ops.iter_mut() {
         match op.kind.as_str() {
@@ -485,11 +485,11 @@ pub(crate) fn fold_constants(ops: &mut Vec<OpIR>) {
 /// Saved constant state at a control-flow split point.
 struct BranchSnapshot {
     /// Constants known at the point just before the `if` op.
-    pre_ints: HashMap<String, i64>,
-    pre_bools: HashMap<String, bool>,
+    pre_ints: BTreeMap<String, i64>,
+    pre_bools: BTreeMap<String, bool>,
     /// Constants accumulated in the *then* arm (captured when we hit `else`).
-    then_ints: Option<HashMap<String, i64>>,
-    then_bools: Option<HashMap<String, bool>>,
+    then_ints: Option<BTreeMap<String, i64>>,
+    then_bools: Option<BTreeMap<String, bool>>,
 }
 
 #[cfg_attr(
@@ -497,8 +497,8 @@ struct BranchSnapshot {
     allow(dead_code)
 )]
 pub(crate) fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
-    let mut const_ints: HashMap<String, i64> = HashMap::new();
-    let mut const_bools: HashMap<String, bool> = HashMap::new();
+    let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();
+    let mut const_bools: BTreeMap<String, bool> = BTreeMap::new();
 
     // Stack of snapshots for nested if/else/end_if.
     let mut branch_stack: Vec<BranchSnapshot> = Vec::new();
@@ -633,7 +633,7 @@ pub(crate) fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
                         let else_ints = const_ints;
                         let else_bools = const_bools;
 
-                        let mut merged_ints = HashMap::new();
+                        let mut merged_ints = BTreeMap::new();
                         for (name, then_val) in &then_ints {
                             if let Some(&else_val) = else_ints.get(name) {
                                 if then_val == &else_val {
@@ -642,7 +642,7 @@ pub(crate) fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
                             }
                         }
 
-                        let mut merged_bools = HashMap::new();
+                        let mut merged_bools = BTreeMap::new();
                         for (name, then_val) in &then_bools {
                             if let Some(&else_val) = else_bools.get(name) {
                                 if then_val == &else_val {
@@ -657,7 +657,7 @@ pub(crate) fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
                         let then_ints = const_ints;
                         let then_bools = const_bools;
 
-                        let mut merged_ints = HashMap::new();
+                        let mut merged_ints = BTreeMap::new();
                         for (name, pre_val) in &snapshot.pre_ints {
                             if let Some(&then_val) = then_ints.get(name) {
                                 if pre_val == &then_val {
@@ -666,7 +666,7 @@ pub(crate) fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
                             }
                         }
 
-                        let mut merged_bools = HashMap::new();
+                        let mut merged_bools = BTreeMap::new();
                         for (name, pre_val) in &snapshot.pre_bools {
                             if let Some(&then_val) = then_bools.get(name) {
                                 if pre_val == &then_val {
@@ -737,7 +737,7 @@ pub(crate) fn escape_analysis(func_ir: &mut FunctionIR) {
 
     // Op kinds where any argument reference is a "safe" (non-escaping) use.
     // The object is consumed locally — read-only or iteration.
-    let safe_use_kinds: HashSet<&str> = [
+    let safe_use_kinds: BTreeSet<&str> = [
         "index",        // subscript / destructure
         "len",          // len() intrinsic
         "type",         // type() intrinsic
@@ -757,7 +757,7 @@ pub(crate) fn escape_analysis(func_ir: &mut FunctionIR) {
     .collect();
 
     // Op kinds that definitely cause escape for any argument.
-    let escaping_ops: HashSet<&str> = [
+    let escaping_ops: BTreeSet<&str> = [
         "ret",
         "call",
         "call_internal",
@@ -789,7 +789,7 @@ pub(crate) fn escape_analysis(func_ir: &mut FunctionIR) {
 
     // Phase 1: Collect all allocation sites.
     // Map from output variable name (owned) → op index.
-    let mut alloc_sites: HashMap<String, usize> = HashMap::new();
+    let mut alloc_sites: BTreeMap<String, usize> = BTreeMap::new();
     for (idx, op) in func_ir.ops.iter().enumerate() {
         if alloc_kinds.contains(&op.kind.as_str()) {
             if let Some(ref out) = op.out {
@@ -804,10 +804,10 @@ pub(crate) fn escape_analysis(func_ir: &mut FunctionIR) {
 
     // Phase 2: Build a use-list for each allocation.
     // Track which alloc vars escape.
-    let mut escaped: HashSet<String> = HashSet::new();
+    let mut escaped: BTreeSet<String> = BTreeSet::new();
     // Track copy aliases: if `copy x -> y`, then y is an alias for x's alloc.
     // Maps alias name → root alloc name.
-    let mut alias_to_alloc: HashMap<String, String> = HashMap::new();
+    let mut alias_to_alloc: BTreeMap<String, String> = BTreeMap::new();
     // Initialize: each alloc name maps to itself.
     for name in alloc_sites.keys() {
         alias_to_alloc.insert(name.clone(), name.clone());
