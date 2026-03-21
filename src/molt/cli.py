@@ -183,6 +183,9 @@ class PgoProfileSummary:
     version: str
     hash: str
     hot_functions: list[str]
+    branch_counts: dict[str, dict[str, int]] | None = None
+    call_counts: dict[str, int] | None = None
+    loop_counts: dict[str, dict[str, float | int]] | None = None
 
 
 @dataclass(frozen=True)
@@ -2844,6 +2847,12 @@ def _prepare_build_config(
             "hash": pgo_profile_summary.hash,
             "hot_functions": pgo_profile_summary.hot_functions,
         }
+        if pgo_profile_summary.branch_counts:
+            pgo_profile_payload["branch_counts"] = pgo_profile_summary.branch_counts
+        if pgo_profile_summary.call_counts:
+            pgo_profile_payload["call_counts"] = pgo_profile_summary.call_counts
+        if pgo_profile_summary.loop_counts:
+            pgo_profile_payload["loop_counts"] = pgo_profile_summary.loop_counts
     runtime_feedback_payload: dict[str, Any] | None = None
     if runtime_feedback_summary is not None and runtime_feedback_path is not None:
         runtime_feedback_payload = {
@@ -11007,11 +11016,18 @@ def _finalize_backend_ir(
 ) -> dict[str, Any]:
     ir: dict[str, Any] = {"functions": list(functions)}
     if pgo_profile_summary is not None:
-        ir["profile"] = {
+        profile_data: dict[str, Any] = {
             "version": pgo_profile_summary.version,
             "hash": pgo_profile_summary.hash,
             "hot_functions": pgo_profile_summary.hot_functions,
         }
+        if pgo_profile_summary.branch_counts:
+            profile_data["branch_counts"] = pgo_profile_summary.branch_counts
+        if pgo_profile_summary.call_counts:
+            profile_data["call_counts"] = pgo_profile_summary.call_counts
+        if pgo_profile_summary.loop_counts:
+            profile_data["loop_counts"] = pgo_profile_summary.loop_counts
+        ir["profile"] = profile_data
     if runtime_feedback_summary is not None:
         ir["runtime_feedback"] = {
             "schema_version": runtime_feedback_summary.schema_version,
@@ -17876,9 +17892,49 @@ def _load_pgo_profile(
             ),
         )
     hot_functions = _extract_hot_functions(payload, warnings)
+    # Extract branch-level PGO counters (optional).
+    branch_counts: dict[str, dict[str, int]] | None = None
+    raw_branch_counts = payload.get("branch_counts")
+    if isinstance(raw_branch_counts, dict):
+        branch_counts = {}
+        for key, entry in raw_branch_counts.items():
+            if isinstance(entry, dict):
+                taken = entry.get("taken", 0)
+                not_taken = entry.get("not_taken", 0)
+                if isinstance(taken, int) and isinstance(not_taken, int):
+                    branch_counts[key] = {"taken": taken, "not_taken": not_taken}
+    # Extract call-count PGO data (optional).
+    call_counts: dict[str, int] | None = None
+    raw_call_counts = payload.get("call_counts")
+    if isinstance(raw_call_counts, dict):
+        call_counts = {}
+        for key, val in raw_call_counts.items():
+            if isinstance(val, int):
+                call_counts[key] = val
+            elif isinstance(val, dict) and isinstance(val.get("calls"), int):
+                call_counts[key] = val["calls"]
+    # Extract loop iteration counts (optional).
+    loop_counts: dict[str, dict[str, float | int]] | None = None
+    raw_loop_counts = payload.get("loop_counts")
+    if isinstance(raw_loop_counts, dict):
+        loop_counts = {}
+        for key, entry in raw_loop_counts.items():
+            if isinstance(entry, dict):
+                avg = entry.get("avg_iterations", 0.0)
+                mx = entry.get("max_iterations", 0)
+                if isinstance(avg, (int, float)) and isinstance(mx, int):
+                    loop_counts[key] = {
+                        "avg_iterations": float(avg),
+                        "max_iterations": mx,
+                    }
     digest = hashlib.sha256(raw).hexdigest()
     summary = PgoProfileSummary(
-        version=version, hash=digest, hot_functions=hot_functions
+        version=version,
+        hash=digest,
+        hot_functions=hot_functions,
+        branch_counts=branch_counts if branch_counts else None,
+        call_counts=call_counts if call_counts else None,
+        loop_counts=loop_counts if loop_counts else None,
     )
     return summary, path, None
 
@@ -23167,6 +23223,23 @@ def main() -> int:
     build_parser.add_argument(
         "--pgo-profile",
         help="Path to a Molt profile artifact (molt_profile.json) for PGO hints.",
+    )
+    build_parser.add_argument(
+        "--pgo-collect",
+        action="store_true",
+        default=False,
+        help=(
+            "Instrument the compiled binary to collect PGO counters at runtime. "
+            "The instrumented binary writes branch counts, call counts, and loop "
+            "iteration counts to a profile JSON file on exit."
+        ),
+    )
+    build_parser.add_argument(
+        "--pgo-collect-output",
+        help=(
+            "Output path for the PGO collection profile (default: "
+            "molt_pgo_collected.json in the project root). Only used with --pgo-collect."
+        ),
     )
     build_parser.add_argument(
         "--runtime-feedback",
