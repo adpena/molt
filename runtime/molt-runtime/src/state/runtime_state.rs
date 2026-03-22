@@ -420,7 +420,6 @@ pub(crate) fn runtime_state(_py: &PyToken<'_>) -> &'static RuntimeState {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_init() -> u64 {
-    eprintln!("MOLT_INIT: start");
     #[cfg(target_arch = "wasm32")]
     ensure_wasm_ctors();
     touch_tls_guard();
@@ -430,7 +429,6 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     if !RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst).is_null() {
         return 1;
     }
-    eprintln!("MOLT_INIT: creating state");
     let state = Box::new(RuntimeState::new());
     let ptr = Box::into_raw(state);
     RUNTIME_STATE_PTR.store(ptr, AtomicOrdering::SeqCst);
@@ -438,12 +436,9 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     let gil = GilGuard::new();
     {
         let py = gil.token();
-        eprintln!("MOLT_INIT: calling runtime_reset_for_init");
         runtime_reset_for_init(&py, state_ref);
-        eprintln!("MOLT_INIT: runtime_reset_for_init done");
     }
     hold_runtime_gil(gil);
-    eprintln!("MOLT_INIT: complete");
     1
 }
 
