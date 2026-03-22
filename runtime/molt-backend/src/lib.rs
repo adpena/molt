@@ -1306,6 +1306,83 @@ impl SimpleBackend {
         }
     }
 
+    /// Retry compiling a function at `opt_level=none` after the optimizing
+    /// pipeline panicked.  Builds a throwaway ISA that matches the module's
+    /// target but disables all optimization passes (which avoids the
+    /// `remove_constant_phis` assertion and similar upstream Cranelift bugs).
+    /// The compiled bytes are installed via `define_function_bytes` so the
+    /// module's own ISA is never consulted for code generation.
+    fn retry_define_at_opt_none(
+        module: &mut ObjectModule,
+        func_id: cranelift_module::FuncId,
+        func: cranelift_codegen::ir::Function,
+        func_name: &str,
+    ) -> Result<(), String> {
+        use cranelift_codegen::control::ControlPlane;
+
+        // Build a fallback ISA with opt_level=none — identical flags to the
+        // primary ISA except the optimization level.
+        let mut fb = settings::builder();
+        fb.set("opt_level", "none").unwrap();
+        fb.set("is_pic", "true").unwrap();
+        // Carry forward the same safety-critical settings used by
+        // new_with_target so the emitted code is ABI-compatible.
+        fb.set("use_colocated_libcalls", "true").unwrap();
+        fb.set("enable_alias_analysis", "false").unwrap();
+        let targeting_aarch64 = cfg!(target_arch = "aarch64");
+        fb.set(
+            "preserve_frame_pointers",
+            if cfg!(debug_assertions) || targeting_aarch64 {
+                "true"
+            } else {
+                "false"
+            },
+        )
+        .unwrap();
+        fb.set("enable_heap_access_spectre_mitigation", "false")
+            .unwrap();
+        fb.set("enable_table_access_spectre_mitigation", "false")
+            .unwrap();
+        fb.set(
+            "probestack_strategy",
+            if targeting_aarch64 {
+                "outline"
+            } else {
+                "inline"
+            },
+        )
+        .unwrap();
+        let fallback_isa = native_isa_builder_with_options(true)
+            .map_err(|e| format!("ISA builder: {e}"))?
+            .finish(settings::Flags::new(fb))
+            .map_err(|e| format!("ISA finish: {e}"))?;
+
+        let mut retry_ctx = Context::for_function(func);
+        let mut ctrl = ControlPlane::default();
+        retry_ctx
+            .compile(&*fallback_isa, &mut ctrl)
+            .map_err(|e| format!("compile at O0: {e:?}"))?;
+        let compiled = retry_ctx.compiled_code().unwrap();
+        let alignment = compiled.buffer.alignment as u64;
+        let code = compiled.buffer.data().to_vec();
+        let relocs: Vec<cranelift_module::ModuleReloc> = compiled
+            .buffer
+            .relocs()
+            .iter()
+            .map(|r| {
+                cranelift_module::ModuleReloc::from_mach_reloc(
+                    r,
+                    &retry_ctx.func,
+                    func_id,
+                )
+            })
+            .collect();
+        module
+            .define_function_bytes(func_id, alignment, &code, &relocs)
+            .map_err(|e| format!("define_function_bytes for {func_name}: {e}"))?;
+        Ok(())
+    }
+
     fn intern_data_segment(
         module: &mut ObjectModule,
         data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
