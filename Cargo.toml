@@ -255,7 +255,7 @@ strip = true
 # increases but runtime wasm artifacts are cached and infrequently rebuilt.
 [profile.wasm-release]
 inherits = "release"
-opt-level = 3
+opt-level = "z"  # minimize binary size for Cloudflare Workers 3MB limit
 lto = true
 codegen-units = 1
 panic = "abort"
