@@ -93,6 +93,8 @@ def _read_varuint(data: bytes, offset: int) -> tuple[int, int]:
     while True:
         if offset >= len(data):
             raise ValueError("Unexpected EOF while reading varuint")
+        if shift >= 70:  # 10 * 7 = 70 bits, covers u64
+            raise ValueError("varuint overflow: more than 10 bytes")
         byte = data[offset]
         offset += 1
         result |= (byte & 0x7F) << shift
@@ -1080,7 +1082,15 @@ def _rewrite_memory_min(data: bytes, required_min: int) -> bytes | None:
 
 def _rewrite_output_imports(
     output: Path, runtime_exports: set[str]
-) -> tuple[Path, tempfile.TemporaryDirectory] | None:
+) -> tuple[Path, tempfile.TemporaryDirectory, list[str]] | None:
+    """Rewrite output imports to add the ``molt_`` prefix where needed.
+
+    Returns ``(rewritten_path, temp_dir, force_exports)`` on success.
+    *force_exports* lists prefixed names that were rewritten but are not
+    present in *runtime_exports* — the caller should pass these as
+    ``--export-if-defined`` flags to wasm-ld so the linker retains the
+    symbols from a relocatable runtime input.
+    """
     data = output.read_bytes()
     try:
         sections = _parse_sections(data)
@@ -1088,7 +1098,7 @@ def _rewrite_output_imports(
         print(f"Failed to parse wasm: {exc}", file=sys.stderr)
         return None
 
-    missing: list[str] = []
+    force_exports: list[str] = []
     needs_rewrite = False
     new_sections: list[tuple[int, bytes]] = []
     for section_id, payload in sections:
@@ -1117,7 +1127,14 @@ def _rewrite_output_imports(
                     new_name = prefixed
                     needs_rewrite = True
                 elif name not in runtime_exports:
-                    missing.append(name)
+                    # The prefixed symbol is not in the runtime's export
+                    # section — likely inlined away by LTO during the
+                    # cdylib build.  Still rewrite to the prefixed name
+                    # so wasm-ld can resolve it from a relocatable
+                    # runtime that retains the symbol.
+                    new_name = prefixed
+                    needs_rewrite = True
+                    force_exports.append(prefixed)
 
             rebuilt.extend(_write_string(module))
             rebuilt.extend(_write_string(new_name))
@@ -1125,21 +1142,171 @@ def _rewrite_output_imports(
             rebuilt.extend(desc)
         new_sections.append((section_id, bytes(rebuilt)))
 
-    if missing:
-        missing_list = ", ".join(sorted(set(missing)))
+    if force_exports:
         print(
-            f"Output imports missing in runtime exports: {missing_list}",
+            f"Wasm link: {len(force_exports)} import(s) rewritten but missing "
+            f"from runtime exports (will resolve via relocatable runtime): "
+            f"{', '.join(sorted(set(force_exports)))}",
             file=sys.stderr,
         )
-        return None
 
     if not needs_rewrite:
-        return output, tempfile.TemporaryDirectory(prefix="molt-wasm-link-")
+        return output, tempfile.TemporaryDirectory(prefix="molt-wasm-link-"), []
 
     temp_dir = tempfile.TemporaryDirectory(prefix="molt-wasm-link-")
     wasm_path = Path(temp_dir.name) / "output_rewrite.wasm"
     wasm_path.write_bytes(_build_sections(new_sections))
-    return wasm_path, temp_dir
+    return wasm_path, temp_dir, force_exports
+
+
+def _build_runtime_stub(runtime_data: bytes) -> bytes:
+    """Generate a minimal WASM module that exports the same function signatures
+    as the real runtime but with ``unreachable; end`` bodies.  This allows
+    wasm-ld ``--gc-sections`` to run against it for dead code elimination.
+
+    The stub preserves the runtime's type section verbatim so that wasm-ld can
+    match function types by index.  Every exported function gets a trivial body
+    (0 locals, ``unreachable``, ``end``).  A ``linking`` custom section with
+    version=2 and no subsections is appended so that wasm-ld accepts the
+    module as relocatable input.
+
+    Memory, table, data, and element sections are intentionally omitted.
+    """
+    sections = _parse_sections(runtime_data)
+
+    # -- 1. Locate the type, function, and export sections -------------------
+    type_payload: bytes | None = None
+    func_type_indices: list[int] = []
+    exported_funcs: list[tuple[str, int]] = []  # (name, func_index)
+
+    for section_id, payload in sections:
+        if section_id == 1:
+            # Type section — keep verbatim.
+            type_payload = payload
+        elif section_id == 3:
+            # Function section — list of type indices for each defined function.
+            offset = 0
+            count, offset = _read_varuint(payload, offset)
+            for _ in range(count):
+                type_idx, offset = _read_varuint(payload, offset)
+                func_type_indices.append(type_idx)
+        elif section_id == 7:
+            # Export section — collect function exports.
+            offset = 0
+            count, offset = _read_varuint(payload, offset)
+            for _ in range(count):
+                name, offset = _read_string(payload, offset)
+                if offset >= len(payload):
+                    raise ValueError(
+                        "Unexpected EOF while reading export kind in runtime"
+                    )
+                kind = payload[offset]
+                offset += 1
+                index, offset = _read_varuint(payload, offset)
+                if kind == 0:  # function export
+                    exported_funcs.append((name, index))
+
+    if type_payload is None:
+        raise ValueError("Runtime module has no type section")
+    if not exported_funcs:
+        raise ValueError("Runtime module has no function exports")
+
+    # -- 2. Count imported functions to compute the local function offset ----
+    #    In WASM, function indices start with imports. The function section
+    #    defines local functions starting at index = num_imports.
+    num_imported_funcs = 0
+    for section_id, payload in sections:
+        if section_id == 2:  # import section
+            offset = 0
+            count, offset = _read_varuint(payload, offset)
+            for _ in range(count):
+                _module, offset = _read_string(payload, offset)
+                _name, offset = _read_string(payload, offset)
+                if offset >= len(payload):
+                    raise ValueError(
+                        "Unexpected EOF while reading import kind in runtime"
+                    )
+                kind = payload[offset]
+                offset += 1
+                # Skip the import descriptor.
+                if kind == 0:  # function
+                    _, offset = _read_varuint(payload, offset)
+                    num_imported_funcs += 1
+                elif kind == 1:  # table
+                    offset += 1  # elemtype
+                    flags, offset = _read_varuint(payload, offset)
+                    _, offset = _read_varuint(payload, offset)  # initial
+                    if flags & 0x1:
+                        _, offset = _read_varuint(payload, offset)  # maximum
+                elif kind == 2:  # memory
+                    flags, offset = _read_varuint(payload, offset)
+                    _, offset = _read_varuint(payload, offset)  # initial
+                    if flags & 0x1:
+                        _, offset = _read_varuint(payload, offset)  # maximum
+                elif kind == 3:  # global
+                    offset += 1  # valtype
+                    offset += 1  # mutability
+                else:
+                    raise ValueError(
+                        f"Unknown import kind {kind} in runtime"
+                    )
+
+    # -- 3. Map each exported function to its type index ---------------------
+    stub_type_indices: list[int] = []
+    stub_export_names: list[str] = []
+
+    for name, func_index in exported_funcs:
+        local_index = func_index - num_imported_funcs
+        if local_index < 0 or local_index >= len(func_type_indices):
+            raise ValueError(
+                f"Exported function {name!r} (index={func_index}) maps to "
+                f"local index {local_index} which is out of range "
+                f"(num_imported={num_imported_funcs}, "
+                f"num_local={len(func_type_indices)})"
+            )
+        stub_type_indices.append(func_type_indices[local_index])
+        stub_export_names.append(name)
+
+    num_stub_funcs = len(stub_type_indices)
+
+    # -- 4. Build the stub module sections -----------------------------------
+    # Function section: one entry per stub function with its type index.
+    func_payload = bytearray()
+    func_payload.extend(_write_varuint(num_stub_funcs))
+    for type_idx in stub_type_indices:
+        func_payload.extend(_write_varuint(type_idx))
+
+    # Export section: same names, mapped to sequential indices 0..N-1.
+    export_payload = bytearray()
+    export_payload.extend(_write_varuint(num_stub_funcs))
+    for i, name in enumerate(stub_export_names):
+        export_payload.extend(_write_string(name))
+        export_payload.append(0)  # kind = function
+        export_payload.extend(_write_varuint(i))
+
+    # Code section: each body is [size=3, 0 locals, unreachable, end].
+    #   body_size (varuint) = 3
+    #   local_decl_count (varuint) = 0
+    #   unreachable = 0x00
+    #   end = 0x0b
+    stub_body = b"\x03\x00\x00\x0b"
+    code_payload = bytearray()
+    code_payload.extend(_write_varuint(num_stub_funcs))
+    for _ in range(num_stub_funcs):
+        code_payload.extend(stub_body)
+
+    # Linking custom section: version=2, no subsections.
+    linking_payload = _build_custom_section("linking", b"\x02")
+
+    stub_sections: list[tuple[int, bytes]] = [
+        (1, type_payload),                  # type section
+        (3, bytes(func_payload)),           # function section
+        (7, bytes(export_payload)),         # export section
+        (10, bytes(code_payload)),          # code section
+        (0, linking_payload),               # custom "linking" section
+    ]
+
+    return _build_sections(stub_sections)
 
 
 def _strip_debug_sections(data: bytes) -> bytes | None:
@@ -1297,21 +1464,48 @@ def _collect_element_func_indices(sections: list[tuple[int, bytes]]) -> set[int]
         for _ in range(count):
             flags = payload[offset]
             offset += 1
-            if flags != 0:
-                # Non-trivial segment (passive, declarative, etc.) -- skip rest
+            if flags == 0:
+                # Active segment for table 0: i32.const <offset> end <count> <idx>*
+                if payload[offset] != 0x41:
+                    break
+                offset += 1
+                _, offset = _read_varuint(payload, offset)  # table offset
+                if payload[offset] != 0x0B:
+                    break
+                offset += 1  # end
+                n, offset = _read_varuint(payload, offset)
+                for _ in range(n):
+                    idx, offset = _read_varuint(payload, offset)
+                    indices.add(idx)
+            elif flags == 1:
+                # Passive funcref: element kind + count + indices
+                offset += 1  # element kind byte
+                n, offset = _read_varuint(payload, offset)
+                for _ in range(n):
+                    idx, offset = _read_varuint(payload, offset)
+                    indices.add(idx)
+            elif flags == 2:
+                # Active with explicit table index: table idx + init expr + kind + count + indices
+                _, offset = _read_varuint(payload, offset)  # table index
+                # Skip init expr (expect i32.const <val> end)
+                while offset < len(payload) and payload[offset] != 0x0B:
+                    offset += 1
+                offset += 1  # skip 0x0B end
+                offset += 1  # element kind byte
+                n, offset = _read_varuint(payload, offset)
+                for _ in range(n):
+                    idx, offset = _read_varuint(payload, offset)
+                    indices.add(idx)
+            elif flags == 3:
+                # Declarative: element kind + count + indices
+                offset += 1  # element kind byte
+                n, offset = _read_varuint(payload, offset)
+                for _ in range(n):
+                    idx, offset = _read_varuint(payload, offset)
+                    indices.add(idx)
+            else:
+                # Flags 4-7 use expression-based elements; skip for safety
                 break
-            # Active segment for table 0: i32.const <offset> end <count> <idx>*
-            if payload[offset] != 0x41:
-                break
-            offset += 1
-            _, offset = _read_varuint(payload, offset)  # table offset
-            if payload[offset] != 0x0B:
-                break
-            offset += 1  # end
-            n, offset = _read_varuint(payload, offset)
-            for _ in range(n):
-                idx, offset = _read_varuint(payload, offset)
-                indices.add(idx)
     return indices
 
 
@@ -1573,12 +1767,32 @@ def _build_call_graph(
                 elif 92 <= simd <= 93:
                     _, pos = _read_varuint(code_payload, pos)
                     _, pos = _read_varuint(code_payload, pos)
+            # try_table (exception handling)
+            elif op == 0x1F:
+                # Block type
+                bt = code_payload[pos]
+                if bt == 0x40 or (bt >= 0x7C and bt <= 0x7F):  # void or valtype
+                    pos += 1
+                else:
+                    _, pos = _read_varsint(code_payload, pos)  # type index (signed LEB128)
+                # Catch vector
+                n_catches, pos = _read_varuint(code_payload, pos)
+                for _ in range(n_catches):
+                    catch_kind = code_payload[pos]
+                    pos += 1
+                    if catch_kind in (0x00, 0x01):  # catch / catch_ref: tag_index + label
+                        _, pos = _read_varuint(code_payload, pos)
+                        _, pos = _read_varuint(code_payload, pos)
+                    elif catch_kind in (0x02, 0x03):  # catch_all / catch_all_ref: label only
+                        _, pos = _read_varuint(code_payload, pos)
             # Atomics prefix
             elif op == 0xFE:
                 atom, pos = _read_varuint(code_payload, pos)
-                if atom >= 0x10 or atom in (0x00, 0x01, 0x02):
-                    _, pos = _read_varuint(code_payload, pos)
-                    _, pos = _read_varuint(code_payload, pos)
+                if atom == 0x03:  # atomic.fence — 1-byte reserved immediate
+                    pos += 1
+                elif atom >= 0x10 or atom in (0x00, 0x01, 0x02):
+                    _, pos = _read_varuint(code_payload, pos)  # alignment
+                    _, pos = _read_varuint(code_payload, pos)  # offset
             else:
                 # Unknown opcode -- stop decoding this function body
                 break
@@ -1647,19 +1861,47 @@ def _stub_dead_functions(data: bytes) -> bytes | None:
             for _ in range(count):
                 flags = payload[offset]
                 offset += 1
-                if flags != 0:
+                if flags == 0:
+                    # Active segment for table 0
+                    if payload[offset] != 0x41:
+                        break
+                    offset += 1
+                    _, offset = _read_varuint(payload, offset)
+                    if payload[offset] != 0x0B:
+                        break
+                    offset += 1
+                    n, offset = _read_varuint(payload, offset)
+                    for _ in range(n):
+                        idx, offset = _read_varuint(payload, offset)
+                        roots.add(idx)
+                elif flags == 1:
+                    # Passive funcref: element kind + count + indices
+                    offset += 1  # element kind byte
+                    n, offset = _read_varuint(payload, offset)
+                    for _ in range(n):
+                        idx, offset = _read_varuint(payload, offset)
+                        roots.add(idx)
+                elif flags == 2:
+                    # Active with explicit table index
+                    _, offset = _read_varuint(payload, offset)  # table index
+                    while offset < len(payload) and payload[offset] != 0x0B:
+                        offset += 1
+                    offset += 1  # skip 0x0B end
+                    offset += 1  # element kind byte
+                    n, offset = _read_varuint(payload, offset)
+                    for _ in range(n):
+                        idx, offset = _read_varuint(payload, offset)
+                        roots.add(idx)
+                elif flags == 3:
+                    # Declarative: element kind + count + indices
+                    offset += 1  # element kind byte
+                    n, offset = _read_varuint(payload, offset)
+                    for _ in range(n):
+                        idx, offset = _read_varuint(payload, offset)
+                        roots.add(idx)
+                else:
+                    # Flags 4-7 use expression-based elements; skip for safety
                     break
-                if payload[offset] != 0x41:
-                    break
-                offset += 1
-                _, offset = _read_varuint(payload, offset)
-                if payload[offset] != 0x0B:
-                    break
-                offset += 1
-                n, offset = _read_varuint(payload, offset)
-                for _ in range(n):
-                    idx, offset = _read_varuint(payload, offset)
-                    roots.add(idx)
 
     # Compute transitive reachability
     reachable: set[int] = set()
@@ -1714,19 +1956,15 @@ def _stub_dead_functions(data: bytes) -> bytes | None:
 
 
 def _dedup_data_segments(data: bytes) -> bytes | None:
-    """Deduplicate identical data segments in the linked artifact.
+    """Strip embedded file paths from data segments to reduce binary size.
 
-    The output module and runtime module often share identical constant
-    strings (error messages, type names, format strings).  After wasm-ld
-    merges them, the data section can contain many duplicates.  This pass
-    identifies identical segment payloads and merges them, rewriting the
-    constant offsets in the code section.
+    After wasm-ld merges modules, the data section contains Rust panic
+    location paths (/rustc/..., /Users/...) that leak build info and
+    waste space.  This pass rewrites those path bytes in-place with a
+    short placeholder, preserving segment layout so no relocation is
+    needed.
 
-    For safety, this only deduplicates passive segments and active segments
-    whose contents are byte-identical.  It does NOT attempt to rewrite
-    code references (which would require full relocation awareness).  Instead
-    it coalesces adjacent identical active segments that share the same
-    memory offset pattern.
+    Also reports duplicate-segment statistics for diagnostics.
     """
     try:
         sections = _parse_sections(data)
@@ -1744,12 +1982,11 @@ def _dedup_data_segments(data: bytes) -> bytes | None:
     if data_payload is None:
         return None
 
-    # Parse segments to find duplicates
+    # Parse segments to find duplicates and collect data payloads
     offset = 0
     seg_count, offset = _read_varuint(data_payload, offset)
-    segments: list[tuple[int, bytes]] = []  # (header_end, raw_bytes_from_start)
-    seg_starts: list[int] = []
-    seg_raw: list[bytes] = []
+    seg_headers: list[bytes] = []  # raw header bytes (flags + init_expr)
+    seg_raw: list[bytes] = []  # data payload bytes
 
     parse_offset = offset
     for _ in range(seg_count):
@@ -1757,39 +1994,30 @@ def _dedup_data_segments(data: bytes) -> bytes | None:
         flags_byte = data_payload[parse_offset]
         parse_offset += 1
         if flags_byte == 0:
-            # active, table 0, init expr
-            parse_offset_after_expr = parse_offset
-            while parse_offset_after_expr < len(data_payload):
-                if data_payload[parse_offset_after_expr] == 0x0B:
-                    parse_offset_after_expr += 1
-                    break
-                parse_offset_after_expr += 1
-            parse_offset = parse_offset_after_expr
+            # active, memory 0, init expr (i32.const <signed LEB128> end)
+            parse_offset = _skip_init_expr(data_payload, parse_offset)
         elif flags_byte == 1:
             # passive
             pass
         elif flags_byte == 2:
-            # active with table index
+            # active with explicit memory index, init expr
             _, parse_offset = _read_varuint(data_payload, parse_offset)
-            while parse_offset < len(data_payload):
-                if data_payload[parse_offset] == 0x0B:
-                    parse_offset += 1
-                    break
-                parse_offset += 1
+            parse_offset = _skip_init_expr(data_payload, parse_offset)
         else:
             # Unknown flags, bail
             return None
+        header_end = parse_offset
         # Read the data bytes
         data_len, parse_offset = _read_varuint(data_payload, parse_offset)
         seg_data = data_payload[parse_offset : parse_offset + data_len]
         parse_offset += data_len
+        seg_headers.append(data_payload[seg_start:header_end])
         seg_raw.append(seg_data)
-        seg_starts.append(seg_start)
 
     if len(seg_raw) < 2:
         return None
 
-    # Find duplicate data payloads (only count savings, don't rewrite references)
+    # --- Pass 1: report duplicate segment statistics ---
     seen: dict[bytes, int] = {}
     dup_bytes = 0
     for raw in seg_raw:
@@ -1798,19 +2026,55 @@ def _dedup_data_segments(data: bytes) -> bytes | None:
         else:
             seen[raw] = len(raw)
 
-    # If less than 1KB of duplicates, not worth the risk of rewriting
-    if dup_bytes < 1024:
+    if dup_bytes >= 1024:
+        print(
+            f"Data section has ~{dup_bytes:,} bytes of duplicate segments "
+            f"({dup_bytes / 1024:.1f} KB).",
+            file=sys.stderr,
+        )
+
+    # --- Pass 2: scrub embedded file paths ---
+    # Replace /rustc/<hash>/... and /Users/<path>/... with a short tag,
+    # padded with null bytes to keep the same byte length (no relocation).
+    _PATH_RE = re.compile(
+        rb"(?:/rustc/[0-9a-f]{20,}/[^\x00]{4,}|/Users/[^\x00]{10,})"
+    )
+    saved_path_bytes = 0
+    new_seg_raw: list[bytes] = []
+    for raw in seg_raw:
+        buf = bytearray(raw)
+        for m in reversed(list(_PATH_RE.finditer(buf))):
+            span_len = m.end() - m.start()
+            tag = b"<stripped>"
+            replacement = tag + b"\x00" * (span_len - len(tag))
+            buf[m.start() : m.end()] = replacement
+            saved_path_bytes += span_len - len(tag)
+        new_seg_raw.append(bytes(buf))
+
+    if saved_path_bytes == 0:
         return None
 
-    # For now, report savings potential but don't rewrite (code references
-    # would need relocation).  The real win is from strip_debug_sections
-    # and strip_internal_exports above.
+    # Rebuild the data section payload
+    new_data = bytearray(_write_varuint(seg_count))
+    for hdr, raw in zip(seg_headers, new_seg_raw):
+        new_data.extend(hdr)
+        new_data.extend(_write_varuint(len(raw)))
+        new_data.extend(raw)
+
+    # Replace the data section in the module
+    new_sections: list[tuple[int, bytes]] = []
+    for sid, payload in sections:
+        if sid == 11:
+            new_sections.append((sid, bytes(new_data)))
+        else:
+            new_sections.append((sid, payload))
+
     print(
-        f"Data section has ~{dup_bytes:,} bytes of duplicate segments "
-        f"({dup_bytes / 1024:.1f} KB). Consider wasm-opt --merge-data.",
+        f"Scrubbed {saved_path_bytes:,} bytes of embedded file paths "
+        f"from data section (null-padded, no size change)",
         file=sys.stderr,
     )
-    return None
+    return _build_sections(new_sections)
 
 
 def _post_link_optimize(data: bytes) -> bytes:
@@ -1833,7 +2097,9 @@ def _post_link_optimize(data: bytes) -> bytes:
     if updated is not None:
         data = updated
 
-    _dedup_data_segments(data)
+    updated = _dedup_data_segments(data)
+    if updated is not None:
+        data = updated
 
     return data
 
@@ -2089,6 +2355,8 @@ def _run_wasm_ld(
     optimize: bool = False,
     optimize_level: str = "Oz",
     freestanding: bool = False,
+    split_runtime: bool = False,
+    split_output_dir: Path | None = None,
 ) -> int:
     try:
         runtime_exports = _collect_exports(runtime.read_bytes())
@@ -2114,7 +2382,7 @@ def _run_wasm_ld(
     rewritten = _rewrite_output_imports(output, runtime_exports)
     if rewritten is None:
         return 1
-    rewritten_path, temp_dir = rewritten
+    rewritten_path, temp_dir, force_exports = rewritten
     rewritten_path = _inject_call_indirect_alias(rewritten_path, runtime, temp_dir)
     rewritten_path = _inject_output_export_aliases(rewritten_path, temp_dir)
     if allowlist_override is not None:
@@ -2124,6 +2392,64 @@ def _run_wasm_ld(
     if not allowlist.exists():
         print(f"Allowlist not found: {allowlist}", file=sys.stderr)
         return 1
+
+    # When imports were rewritten to prefixed names that are missing from
+    # the non-relocatable runtime's export section (e.g. inlined away by
+    # LTO), check whether the actual link runtime is a relocatable object
+    # that retains the symbols in its linking section.  If so, wasm-ld
+    # will resolve them — no extra action needed.  If the link runtime is
+    # the non-relocatable module itself, we need the relocatable variant.
+    if force_exports:
+        is_reloc_runtime = runtime.name.endswith("_reloc.wasm")
+        if is_reloc_runtime:
+            # The relocatable runtime retains all symbols — the pre-check
+            # against the non-reloc export list was overly conservative.
+            pass
+        else:
+            # Non-reloc runtime is missing these exports; try the reloc.
+            reloc_candidate = runtime.with_name(
+                runtime.name.replace(".wasm", "_reloc.wasm")
+            )
+            if reloc_candidate.exists():
+                print(
+                    f"Wasm link: switching to relocatable runtime "
+                    f"{reloc_candidate.name} to resolve "
+                    f"{len(force_exports)} missing export(s)",
+                    file=sys.stderr,
+                )
+                runtime = reloc_candidate
+            else:
+                missing_list = ", ".join(sorted(set(force_exports)))
+                print(
+                    f"Wasm link failed: {len(force_exports)} import(s) "
+                    f"missing from runtime exports and no relocatable "
+                    f"runtime available: {missing_list}",
+                    file=sys.stderr,
+                )
+                return 1
+
+    # When split_runtime is enabled, generate a stub runtime that has the
+    # same exported function signatures but trivial (unreachable) bodies.
+    # wasm-ld links against the stub so --gc-sections can eliminate dead
+    # code, producing a genuinely small app.wasm.
+    link_runtime_path = runtime
+    if split_runtime:
+        try:
+            stub_data = _build_runtime_stub(runtime.read_bytes())
+        except ValueError as exc:
+            print(
+                f"Failed to build runtime stub: {exc}", file=sys.stderr
+            )
+            return 1
+        stub_path = Path(temp_dir.name) / "molt_runtime_stub.wasm"
+        stub_path.write_bytes(stub_data)
+        link_runtime_path = stub_path
+        print(
+            f"Split-runtime: stub {len(stub_data):,} bytes "
+            f"(real runtime {runtime.stat().st_size:,} bytes)",
+            file=sys.stderr,
+        )
+
     cmd = [
         wasm_ld,
         "--no-entry",
@@ -2136,10 +2462,17 @@ def _run_wasm_ld(
         "--export-if-defined=molt_table",
         "--export-if-defined=__indirect_function_table",
         "--export-if-defined=molt_set_wasm_table_base",
+    ]
+    # Force-export symbols that were rewritten but missing from the
+    # non-relocatable runtime — they exist in the relocatable runtime
+    # and wasm-ld needs to know to keep them in the linked output.
+    for sym in force_exports:
+        cmd.append(f"--export-if-defined={sym}")
+    cmd += [
         "-o",
         str(linked),
         str(rewritten_path),
-        str(runtime),
+        str(link_runtime_path),
     ]
     res = subprocess.run(cmd, capture_output=True, text=True)
     try:
@@ -2261,6 +2594,29 @@ def _run_wasm_ld(
                 return 1
         if not _validate_linked(linked):
             return 1
+
+        # -- Split-runtime: emit app.wasm + molt_runtime.wasm ---------------
+        if split_runtime:
+            out_dir = split_output_dir or linked.parent
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            app_wasm = out_dir / "app.wasm"
+            rt_wasm = out_dir / "molt_runtime.wasm"
+
+            # The linked output is the app module (linked against stub).
+            shutil.copy2(str(linked), str(app_wasm))
+            # Copy the real runtime alongside it.
+            shutil.copy2(str(runtime), str(rt_wasm))
+
+            app_size = app_wasm.stat().st_size
+            rt_size = rt_wasm.stat().st_size
+            print(
+                f"Split-runtime output: "
+                f"{app_wasm.name} ({app_size:,} bytes, {app_size // 1024}KB) + "
+                f"{rt_wasm.name} ({rt_size:,} bytes, {rt_size // 1024}KB)",
+                file=sys.stderr,
+            )
+
         return 0
     finally:
         temp_dir.cleanup()
@@ -2284,6 +2640,14 @@ def main() -> int:
     parser.add_argument(
         "--optimize-level", default="Oz",
         help="wasm-opt optimization level (O1/O2/O3/O4/Os/Oz, default: Oz)",
+    )
+    parser.add_argument(
+        "--split-runtime", action="store_true", default=False,
+        help="Generate app.wasm + molt_runtime.wasm instead of a single linked binary",
+    )
+    parser.add_argument(
+        "--split-output-dir", type=Path, default=None,
+        help="Directory for split-runtime output files (default: same as --output parent)",
     )
     args = parser.parse_args()
 
@@ -2317,6 +2681,8 @@ def main() -> int:
         optimize=args.optimize,
         optimize_level=args.optimize_level,
         freestanding=args.freestanding,
+        split_runtime=args.split_runtime,
+        split_output_dir=args.split_output_dir,
     )
 
 

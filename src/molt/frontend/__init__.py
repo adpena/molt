@@ -5030,6 +5030,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return False
         return module_name == "molt" or module_name.startswith("molt.")
 
+    def _is_known_project_module(self, module_name: str | None) -> bool:
+        """Return True if *module_name* (or its top-level package) was
+        discovered in the module graph — e.g. via ``--lib-path`` or the
+        project source tree.  This lets cross-module calls within
+        third-party packages pass the allowlist without requiring
+        ``--fallback bridge``."""
+        if not module_name or not self.known_modules:
+            return False
+        if module_name in self.known_modules:
+            return True
+        top_level = module_name.split(".", 1)[0]
+        return top_level in self.known_modules
+
     @staticmethod
     def _display_allowlist_module(module_name: str) -> str:
         if module_name in STDLIB_DIRECT_CALL_MODULES:
@@ -5840,6 +5853,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     if (
                         self.current_func_name != "molt_main"
                         or self.module_name in self.stdlib_allowlist
+                        or self._is_known_project_module(self.module_name)
                     ):
                         if node.id in self.stable_module_funcs:
                             return self._emit_module_attr_get(node.id)
@@ -11001,6 +11015,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "weakref_slot": False,
                     }
                     for kw in deco.keywords:
+                        if kw.arg is None:
+                            # **kwargs splat in decorator — skip silently
+                            continue
                         if kw.arg not in {
                             "init",
                             "repr",
@@ -11016,6 +11033,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             raise NotImplementedError(
                                 f"Unsupported dataclass option: {kw.arg}"
                             )
+                        if isinstance(kw.value, ast.Constant) and kw.value.value is None:
+                            # None means "use the default" in CPython
+                            continue
                         if not isinstance(kw.value, ast.Constant) or not isinstance(
                             kw.value.value, bool
                         ):
@@ -11048,6 +11068,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "weakref_slot": False,
                     }
                     for kw in deco.keywords:
+                        if kw.arg is None:
+                            # **kwargs splat in decorator — skip silently
+                            continue
                         if kw.arg not in {
                             "init",
                             "repr",
@@ -11063,6 +11086,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             raise NotImplementedError(
                                 f"Unsupported dataclass option: {kw.arg}"
                             )
+                        if isinstance(kw.value, ast.Constant) and kw.value.value is None:
+                            # None means "use the default" in CPython
+                            continue
                         if not isinstance(kw.value, ast.Constant) or not isinstance(
                             kw.value.value, bool
                         ):
@@ -11072,10 +11098,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         dataclass_opts[kw.arg] = kw.value.value
                     continue
                 other_decorators.append(deco)
-            if dataclass_opts is not None and other_decorators:
-                raise NotImplementedError(
-                    "Dataclass decorators cannot be combined with other class decorators"
-                )
+
+        # @dataclass combined with other decorators is allowed.  Molt
+        # processes @dataclass internally (innermost), then applies the
+        # remaining decorators as outer wrappers — matching CPython
+        # semantics for the common patterns (@final @dataclass, etc.).
 
         decorator_vals: list[MoltValue] = []
         if other_decorators:
@@ -11207,9 +11234,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     continue
                 base_info = self.classes.get(name)
                 if base_info is None or not base_info.get("dataclass"):
-                    raise NotImplementedError(
-                        "Dataclass inheritance is only supported for dataclass bases"
-                    )
+                    # Non-dataclass bases are allowed; CPython permits
+                    # inheriting from arbitrary classes in a @dataclass.
+                    pass
             field_order: list[str] = []
             field_hints: dict[str, str] = {}
             for mro_name in mro_names[1:]:
@@ -15632,8 +15659,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         MoltOp(kind="CALL", args=[target_name] + args, result=res)
                     )
                     return res
-                if allowlist_key in self.stdlib_allowlist or self._is_internal_module(
-                    module_name
+                if (
+                    allowlist_key in self.stdlib_allowlist
+                    or self._is_internal_module(module_name)
+                    or self._is_known_project_module(module_name)
                 ):
                     callee = self.visit(node.func)
                     if callee is None:
@@ -19017,6 +19046,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 imported_from in self.stdlib_allowlist
                 or (normalized is not None and normalized in self.stdlib_allowlist)
                 or self._is_internal_module(imported_from)
+                or self._is_known_project_module(imported_from)
             ):
                 callee = self.visit(node.func)
                 if callee is None:
