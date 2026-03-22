@@ -1913,7 +1913,26 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 } else if has_vararg {
                     extra_pos.push(val);
                 } else {
-                    return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
+                    let func_name_bits = function_attr_bits(
+                        _py,
+                        func_ptr,
+                        intern_static_name(
+                            _py,
+                            &runtime_state(_py).interned.name_name,
+                            b"__name__",
+                        ),
+                    );
+                    let fname = func_name_bits
+                        .and_then(|b| string_obj_to_owned(obj_from_bits(b)))
+                        .unwrap_or_else(|| "?".to_string());
+                    let arg_names_strs: Vec<String> = arg_names.iter().map(|&b| {
+                        string_obj_to_owned(obj_from_bits(b)).unwrap_or_else(|| format!("<raw:{:x}>", b))
+                    }).collect();
+                    let msg = format!(
+                        "too many positional arguments for {}(): got {} positional, expected {} (arg_names={:?}, kwonly={}, vararg={}, varkw={})",
+                        fname, args.pos.len(), total_pos, arg_names_strs, kwonly_names.len(), has_vararg, has_varkw,
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
                 }
             }
 
