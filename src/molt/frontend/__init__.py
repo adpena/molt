@@ -11016,8 +11016,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                     for kw in deco.keywords:
                         if kw.arg is None:
-                            # **kwargs splat in decorator — skip silently
-                            continue
+                            raise NotImplementedError(
+                                "dataclass does not support **kwargs spread"
+                            )
                         if kw.arg not in {
                             "init",
                             "repr",
@@ -11069,8 +11070,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                     for kw in deco.keywords:
                         if kw.arg is None:
-                            # **kwargs splat in decorator — skip silently
-                            continue
+                            raise NotImplementedError(
+                                "dataclass does not support **kwargs spread"
+                            )
                         if kw.arg not in {
                             "init",
                             "repr",
