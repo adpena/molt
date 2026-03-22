@@ -4524,7 +4524,9 @@ def _build_module_lowering_metadata(
         logical_source_path_by_module[module_name] = generated_module_source_paths.get(
             module_name, str(module_path)
         )
-        entry_override_by_module[module_name] = entry_module
+        entry_override_by_module[module_name] = (
+            None if module_name == entry_module else entry_module
+        )
         module_is_namespace_by_module[module_name] = module_name in namespace_modules
         module_is_package_by_module[module_name] = module_path.name == "__init__.py"
     return (
@@ -13403,14 +13405,20 @@ def _prepare_backend_dispatch(
             if memory_min is not None:
                 data_base_candidates.append((memory_min + 7) & ~7)
             if data_base_candidates:
-                # Add a 16 MB safety margin above the runtime's memory floor.
-                # The runtime's heap allocator (dlmalloc) starts at __heap_base
-                # (near data_end) and grows upward.  In the non-linked path
-                # the output module's data segments share linear memory with
-                # the runtime, so they must be placed well above the heap's
-                # growth region to avoid corruption.  16 MB gives the runtime
-                # ample heap room before colliding with output data.
-                _HEAP_SAFETY_MARGIN = 16 * 1024 * 1024  # 16 MB
+                # Place output data well above the runtime's heap growth
+                # region.  In the non-linked (split-runtime) path both
+                # modules share linear memory: the runtime's dlmalloc heap
+                # starts at __heap_base (near data_end) and grows upward.
+                # If the heap reaches the output module's data segments the
+                # allocator will hand out pointers inside the data region
+                # and subsequent writes corrupt string constants and other
+                # read-only data — manifesting as null-byte function
+                # metadata on large modules (see MOL-heap-corruption).
+                #
+                # 64 MB gives ample room; the previous 16 MB was too tight
+                # for apps with 1000+ functions where module-init alone can
+                # allocate tens of MB of runtime objects.
+                _HEAP_SAFETY_MARGIN = 64 * 1024 * 1024  # 64 MB
                 raw_base = max(data_base_candidates)
                 safe_base = (raw_base + _HEAP_SAFETY_MARGIN + 7) & ~7
                 backend_env["MOLT_WASM_DATA_BASE"] = str(safe_base)
