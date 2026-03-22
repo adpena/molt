@@ -1487,10 +1487,7 @@ def _collect_element_func_indices(sections: list[tuple[int, bytes]]) -> set[int]
             elif flags == 2:
                 # Active with explicit table index: table idx + init expr + kind + count + indices
                 _, offset = _read_varuint(payload, offset)  # table index
-                # Skip init expr (expect i32.const <val> end)
-                while offset < len(payload) and payload[offset] != 0x0B:
-                    offset += 1
-                offset += 1  # skip 0x0B end
+                offset = _skip_init_expr(payload, offset)  # proper LEB128-aware skip
                 offset += 1  # element kind byte
                 n, offset = _read_varuint(payload, offset)
                 for _ in range(n):
@@ -1884,9 +1881,7 @@ def _stub_dead_functions(data: bytes) -> bytes | None:
                 elif flags == 2:
                     # Active with explicit table index
                     _, offset = _read_varuint(payload, offset)  # table index
-                    while offset < len(payload) and payload[offset] != 0x0B:
-                        offset += 1
-                    offset += 1  # skip 0x0B end
+                    offset = _skip_init_expr(payload, offset)  # proper LEB128-aware skip
                     offset += 1  # element kind byte
                     n, offset = _read_varuint(payload, offset)
                     for _ in range(n):
