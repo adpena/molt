@@ -455,7 +455,8 @@ impl SimpleBackend {
                     continue;
                 }
                 match op.kind.as_str() {
-                    "label" | "state_label" | "else" | "end_if" | "loop_end" => {}
+                    "label" | "state_label" | "else" | "end_if" | "loop_start"
+                    | "loop_index_start" | "loop_end" => {}
                     _ => continue,
                 }
             }
@@ -11234,15 +11235,15 @@ impl SimpleBackend {
                     loop_depth += 1;
                 }
                 "loop_index_start" => {
-                    let args = op.args.as_ref().unwrap();
-                    let start =
-                        var_get(&mut builder, &vars, &args[0]).expect("Loop index start not found");
                     let out_name = op.out.unwrap();
                     let loop_block = builder.create_block();
                     let body_block = builder.create_block();
                     let after_block = builder.create_block();
                     let idx_param = builder.append_block_param(loop_block, types::I64);
                     if !is_block_filled {
+                        let args = op.args.as_ref().unwrap();
+                        let start = var_get(&mut builder, &vars, &args[0])
+                            .expect("Loop index start not found");
                         ensure_block_in_layout(&mut builder, loop_block);
                         reachable_blocks.insert(loop_block);
                         jump_block(&mut builder, loop_block, &[*start]);

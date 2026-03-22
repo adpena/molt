@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "mode": "split-runtime",
+  "modules": {
+    "runtime": {
+      "path": "molt_runtime.wasm",
+      "size": 8764432
+    },
+    "app": {
+      "path": "app.wasm",
+      "size": 1825489
+    }
+  },
+  "instantiation_order": [
+    "runtime",
+    "app"
+  ],
+  "entry": {
+    "module": "app",
+    "function": "molt_main"
+  }
+}

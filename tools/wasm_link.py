@@ -2429,8 +2429,19 @@ def _run_wasm_ld(
     # code, producing a genuinely small app.wasm.
     link_runtime_path = runtime
     if split_runtime:
+        # The stub builder needs the non-relocatable runtime because it reads
+        # the standard WASM export section (section 7) to discover function
+        # signatures.  Relocatable modules store symbols in the linking custom
+        # section instead and have no export section.
+        stub_source = runtime
+        if stub_source.name.endswith("_reloc.wasm"):
+            non_reloc = stub_source.with_name(
+                stub_source.name.replace("_reloc.wasm", ".wasm")
+            )
+            if non_reloc.exists():
+                stub_source = non_reloc
         try:
-            stub_data = _build_runtime_stub(runtime.read_bytes())
+            stub_data = _build_runtime_stub(stub_source.read_bytes())
         except ValueError as exc:
             print(
                 f"Failed to build runtime stub: {exc}", file=sys.stderr
@@ -2600,8 +2611,17 @@ def _run_wasm_ld(
 
             # The linked output is the app module (linked against stub).
             shutil.copy2(str(linked), str(app_wasm))
-            # Copy the real runtime alongside it.
-            shutil.copy2(str(runtime), str(rt_wasm))
+            # Copy the real (non-relocatable) runtime alongside it.
+            # The reloc variant is only needed during linking; for deployment
+            # we want the final module with a proper export section.
+            deploy_runtime = runtime
+            if deploy_runtime.name.endswith("_reloc.wasm"):
+                non_reloc = deploy_runtime.with_name(
+                    deploy_runtime.name.replace("_reloc.wasm", ".wasm")
+                )
+                if non_reloc.exists():
+                    deploy_runtime = non_reloc
+            shutil.copy2(str(deploy_runtime), str(rt_wasm))
 
             app_size = app_wasm.stat().st_size
             rt_size = rt_wasm.stat().st_size
