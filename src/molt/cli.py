@@ -13391,7 +13391,17 @@ def _prepare_backend_dispatch(
             if memory_min is not None:
                 data_base_candidates.append((memory_min + 7) & ~7)
             if data_base_candidates:
-                backend_env["MOLT_WASM_DATA_BASE"] = str(max(data_base_candidates))
+                # Add a 16 MB safety margin above the runtime's memory floor.
+                # The runtime's heap allocator (dlmalloc) starts at __heap_base
+                # (near data_end) and grows upward.  In the non-linked path
+                # the output module's data segments share linear memory with
+                # the runtime, so they must be placed well above the heap's
+                # growth region to avoid corruption.  16 MB gives the runtime
+                # ample heap room before colliding with output data.
+                _HEAP_SAFETY_MARGIN = 16 * 1024 * 1024  # 16 MB
+                raw_base = max(data_base_candidates)
+                safe_base = (raw_base + _HEAP_SAFETY_MARGIN + 7) & ~7
+                backend_env["MOLT_WASM_DATA_BASE"] = str(safe_base)
             else:
                 warnings.append(
                     "Failed to read runtime memory layout; using default data base."
