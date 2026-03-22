@@ -12935,6 +12935,12 @@ impl SimpleBackend {
             .module
             .declare_function(&func_ir.name, Linkage::Export, &self.ctx.func.signature)
             .unwrap();
+        // Clone the function *before* handing it to the optimizer — if an
+        // optimization pass panics (e.g. Cranelift remove_constant_phis
+        // assertion at cranelift-codegen 0.128) the in-place IR may be
+        // partially mutated and unusable.  The clone lets us retry with a
+        // lower optimization level on the pristine IR.
+        let func_snapshot = self.ctx.func.clone();
         let define_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.module
                 .define_function(id, &mut self.ctx)
@@ -12983,13 +12989,48 @@ impl SimpleBackend {
                 panic!("Backend compilation failed");
             }
             Err(payload) => {
-                eprintln!("Backend panic while defining function {}", func_ir.name);
+                // ── Optimizer panic resilience ──────────────────────────
+                // An optimization pass (typically `remove_constant_phis`)
+                // hit an internal assertion.  Instead of crashing the
+                // entire compilation, retry the function at opt_level=none
+                // which skips the problematic pass.  This is the same
+                // resilience pattern used by LLVM and GCC when an
+                // optimizer pass faults — fall back, warn, keep going.
+                eprintln!(
+                    "WARNING: Cranelift optimizer panic in function `{}`; \
+                     retrying at opt_level=none",
+                    func_ir.name
+                );
                 if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF")
                     && (filter == "1" || filter == func_ir.name || func_ir.name.contains(&filter))
                 {
-                    eprintln!("CLIF {}:\n{}", func_ir.name, self.ctx.func.display());
+                    eprintln!("CLIF (pre-opt) {}:\n{}", func_ir.name, func_snapshot.display());
                 }
-                std::panic::resume_unwind(payload);
+                // Build a fallback ISA identical to the primary one but
+                // with opt_level=none to skip the crashing pass.
+                match Self::retry_define_at_opt_none(
+                    &mut self.module,
+                    id,
+                    func_snapshot,
+                    &func_ir.name,
+                ) {
+                    Ok(()) => {
+                        eprintln!(
+                            "  -> {} compiled successfully at opt_level=none",
+                            func_ir.name
+                        );
+                    }
+                    Err(retry_err) => {
+                        eprintln!(
+                            "  -> retry also failed for {}: {}",
+                            func_ir.name, retry_err
+                        );
+                        // The retry itself failed — propagate the
+                        // *original* panic so the caller sees the root
+                        // cause, not a confusing secondary error.
+                        std::panic::resume_unwind(payload);
+                    }
+                }
             }
         }
         self.module.clear_context(&mut self.ctx);
