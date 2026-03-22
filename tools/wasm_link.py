@@ -2462,6 +2462,15 @@ def _run_wasm_ld(
         "--gc-sections",
         f"--allow-undefined-file={str(allowlist)}",
         "--import-table",
+        # Place the stack before data segments in linear memory so that the
+        # stack (which grows downward from __stack_pointer) cannot overwrite
+        # data segments.  Without this flag wasm-ld may place data segments
+        # in the address range reserved for the stack, causing corruption
+        # when function calls push frames that overlap string constants and
+        # other read-only data (manifests as NameError / AttributeError with
+        # null-byte names).
+        "--stack-first",
+        "-z", "stack-size=1048576",
         "--export=molt_main",
         "--export-if-defined=molt_memory",
         "--export-if-defined=memory",
