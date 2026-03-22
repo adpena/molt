@@ -1094,6 +1094,10 @@ pub struct SimpleBackend {
     // different number of actual arguments, e.g. kwargs expansion) can
     // construct a matching Cranelift signature for `declare_function`.
     declared_func_arities: BTreeMap<String, usize>,
+    /// Track which functions have been given a body (defined), so we can
+    /// emit trap stubs for declared-but-undefined `__ov` variants after
+    /// all functions are compiled.
+    defined_func_names: std::collections::BTreeSet<String>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -1303,6 +1307,7 @@ impl SimpleBackend {
             data_pool: BTreeMap::new(),
             next_data_id: 0,
             declared_func_arities: BTreeMap::new(),
+            defined_func_names: std::collections::BTreeSet::new(),
         }
     }
 
@@ -1380,6 +1385,81 @@ impl SimpleBackend {
         module
             .define_function_bytes(func_id, alignment, &code, &relocs)
             .map_err(|e| format!("define_function_bytes for {func_name}: {e}"))?;
+        Ok(())
+    }
+
+    /// Emit a minimal function body that immediately traps.  Used as a
+    /// fallback when a function is too large for Cranelift to compile
+    /// (even at opt_level=none).  The stub lets the rest of the object
+    /// file link successfully; if the function is called at runtime,
+    /// it will abort.
+    fn emit_trap_stub(
+        module: &mut ObjectModule,
+        func_id: cranelift_module::FuncId,
+        sig: &cranelift_codegen::ir::Signature,
+        func_name: &str,
+    ) -> Result<(), String> {
+        use cranelift_codegen::control::ControlPlane;
+        use cranelift_codegen::ir::{Function, TrapCode};
+        use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+
+        let mut func = Function::with_name_signature(
+            cranelift_codegen::ir::UserFuncName::default(),
+            sig.clone(),
+        );
+        let mut fbc = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut func, &mut fbc);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_all_blocks();
+        builder.ins().trap(TrapCode::user(1).unwrap());
+        builder.finalize();
+
+        // Build a minimal ISA for compilation
+        let mut fb = settings::builder();
+        fb.set("opt_level", "none").unwrap();
+        fb.set("is_pic", "true").unwrap();
+        fb.set("use_colocated_libcalls", "true").unwrap();
+        fb.set("enable_alias_analysis", "false").unwrap();
+        let targeting_aarch64 = cfg!(target_arch = "aarch64");
+        fb.set(
+            "preserve_frame_pointers",
+            if cfg!(debug_assertions) || targeting_aarch64 { "true" } else { "false" },
+        ).unwrap();
+        fb.set("enable_heap_access_spectre_mitigation", "false").unwrap();
+        fb.set("enable_table_access_spectre_mitigation", "false").unwrap();
+        fb.set(
+            "probestack_strategy",
+            if targeting_aarch64 { "outline" } else { "inline" },
+        ).unwrap();
+        let fallback_isa = native_isa_builder_with_options(true)
+            .map_err(|e| format!("ISA builder: {e}"))?
+            .finish(settings::Flags::new(fb))
+            .map_err(|e| format!("ISA finish: {e}"))?;
+
+        let mut ctx = Context::for_function(func);
+        let mut ctrl = ControlPlane::default();
+        ctx.compile(&*fallback_isa, &mut ctrl)
+            .map_err(|e| format!("compile trap stub: {e:?}"))?;
+        let compiled = ctx.compiled_code().unwrap();
+        let alignment = compiled.buffer.alignment as u64;
+        let code = compiled.buffer.data().to_vec();
+        let relocs: Vec<cranelift_module::ModuleReloc> = compiled
+            .buffer
+            .relocs()
+            .iter()
+            .map(|r| {
+                cranelift_module::ModuleReloc::from_mach_reloc(
+                    r,
+                    &ctx.func,
+                    func_id,
+                )
+            })
+            .collect();
+        module
+            .define_function_bytes(func_id, alignment, &code, &relocs)
+            .map_err(|e| format!("define_function_bytes trap stub for {func_name}: {e}"))?;
         Ok(())
     }
 
@@ -1496,6 +1576,40 @@ impl SimpleBackend {
                 emit_traces,
             );
         }
+        // ── Post-compilation: define trap stubs for declared-but-undefined
+        // functions.  This covers `__ov{N}` variants created when a function
+        // is referenced with different arities, and functions that were skipped
+        // due to signature mismatches or compilation failures.
+        let mut stubs_emitted = 0u32;
+        let declared: Vec<(cranelift_module::FuncId, String, cranelift_codegen::ir::Signature)> =
+            self.module
+                .declarations()
+                .get_functions()
+                .filter_map(|(fid, decl)| {
+                    let name = decl.name.clone()?;
+                    if decl.linkage == cranelift_module::Linkage::Export
+                        && !self.defined_func_names.contains(&name)
+                    {
+                        Some((fid, name, decl.signature.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        for (fid, name, sig) in declared {
+            if let Err(e) = Self::emit_trap_stub(&mut self.module, fid, &sig, &name) {
+                eprintln!("WARNING: failed to emit trap stub for `{}`: {}", name, e);
+            } else {
+                stubs_emitted += 1;
+            }
+        }
+        if stubs_emitted > 0 {
+            eprintln!(
+                "WARNING: emitted {} trap stub(s) for declared-but-undefined functions",
+                stubs_emitted
+            );
+        }
+
         let product = self.module.finish();
         product.emit().unwrap()
     }
