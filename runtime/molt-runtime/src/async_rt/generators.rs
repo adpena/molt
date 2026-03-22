@@ -381,7 +381,6 @@ unsafe fn generator_method_result(_py: &PyToken<'_>, res_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits: u64) -> u64 {
-    eprintln!("MOLT_DEBUG: task_new called poll_fn=0x{poll_fn_addr:x} closure_size={closure_size} kind={kind_bits}");
     crate::with_gil_entry!(_py, {
         let (type_id, is_coroutine) = match kind_bits {
             TASK_KIND_FUTURE => (TYPE_ID_OBJECT, false),
@@ -392,13 +391,11 @@ pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits:
             }
         };
         if type_id == TYPE_ID_GENERATOR && (closure_size as usize) < GEN_CONTROL_SIZE {
-            eprintln!("MOLT_DEBUG: task_new generator closure too small: closure_size={closure_size} gen_control_size={GEN_CONTROL_SIZE}");
             return raise_exception::<_>(_py, "TypeError", "generator task closure too small");
         }
         let total_size = std::mem::size_of::<MoltHeader>() + closure_size as usize;
         let ptr = alloc_object(_py, total_size, type_id);
         if ptr.is_null() {
-            eprintln!("MOLT_DEBUG: task_new alloc_object returned null: total_size={total_size} type_id={type_id} kind_bits={kind_bits}");
             return MoltObject::none().bits();
         }
         unsafe {
