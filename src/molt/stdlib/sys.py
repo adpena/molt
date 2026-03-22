@@ -233,21 +233,21 @@ _MOLT_SYS_PATH_NEW = _load_intrinsic("molt_sys_path")
 if callable(_MOLT_SYS_ARGV_NEW):
     _raw_argv_new = _MOLT_SYS_ARGV_NEW()
     if isinstance(_raw_argv_new, (list, tuple)):
-        argv = list(cast("Iterable[object]", _raw_argv_new))
+        argv = list(_raw_argv_new)
     else:
         raw_argv = _MOLT_GETARGV()
         if raw_argv is None:
             raise RuntimeError("molt_getargv returned None")
         if not isinstance(raw_argv, (list, tuple)):
             raise RuntimeError(f"molt_getargv returned {type(raw_argv)!r}")
-        argv = list(cast("Iterable[object]", raw_argv))
+        argv = list(raw_argv)
 else:
     raw_argv = _MOLT_GETARGV()
     if raw_argv is None:
         raise RuntimeError("molt_getargv returned None")
     if not isinstance(raw_argv, (list, tuple)):
         raise RuntimeError(f"molt_getargv returned {type(raw_argv)!r}")
-    argv = list(cast("Iterable[object]", raw_argv))
+    argv = list(raw_argv)
 
 _exe_val = _MOLT_SYS_EXECUTABLE()
 if not isinstance(_exe_val, str):
@@ -322,7 +322,7 @@ def _expect_version_info_tuple(
     if not _MOLT_IS_STRING_OBJ(releaselevel_obj):
         raise RuntimeError(f"{intrinsic_name} returned invalid value for {field}[3]")
     serial = _expect_int(value[4], intrinsic_name, f"{field}[4]")
-    return major, minor, micro, cast(str, releaselevel_obj), serial
+    return major, minor, micro, (releaselevel_obj), serial
 
 
 class _ImplementationNamespace:
@@ -362,8 +362,8 @@ def _resolve_implementation(payload: object) -> _ImplementationNamespace:
         raise RuntimeError(f"{intrinsic_name} returned invalid value for name")
     if not _MOLT_IS_STRING_OBJ(cache_tag_obj):
         raise RuntimeError(f"{intrinsic_name} returned invalid value for cache_tag")
-    name = cast(str, name_obj)
-    cache_tag = cast(str, cache_tag_obj)
+    name = (name_obj)
+    cache_tag = (cache_tag_obj)
     if not name:
         raise RuntimeError(f"{intrinsic_name} returned invalid value for name")
     if not cache_tag:
@@ -605,7 +605,7 @@ platform = _resolve_platform()
 version_obj = _MOLT_SYS_VERSION()
 if not _MOLT_IS_STRING_OBJ(version_obj):
     raise RuntimeError("molt_sys_version returned invalid value")
-version = cast(str, version_obj)
+version = version_obj
 _version_info_type = version_info
 version_info = _version_info_type(
     _expect_version_info_tuple(
@@ -620,7 +620,7 @@ api_version = _expect_int(
 abiflags_obj = _MOLT_SYS_ABIFLAGS()
 if not _MOLT_IS_STRING_OBJ(abiflags_obj):
     raise RuntimeError("molt_sys_abiflags returned invalid value")
-abiflags = cast(str, abiflags_obj)
+abiflags = (abiflags_obj)
 implementation = _resolve_implementation(_MOLT_SYS_IMPLEMENTATION_PAYLOAD())
 if implementation.hexversion != hexversion:
     raise RuntimeError(
@@ -645,27 +645,27 @@ maxunicode = _MOLT_SYS_MAXUNICODE()
 _byteorder_val = _MOLT_SYS_BYTEORDER()
 if not _MOLT_IS_STRING_OBJ(_byteorder_val):
     raise RuntimeError("molt_sys_byteorder returned invalid value")
-byteorder = cast(str, _byteorder_val)
+byteorder = (_byteorder_val)
 _prefix_val = _MOLT_SYS_PREFIX()
 if not _MOLT_IS_STRING_OBJ(_prefix_val):
     raise RuntimeError("molt_sys_prefix returned invalid value")
-prefix = cast(str, _prefix_val)
+prefix = (_prefix_val)
 _exec_prefix_val = _MOLT_SYS_EXEC_PREFIX()
 if not _MOLT_IS_STRING_OBJ(_exec_prefix_val):
     raise RuntimeError("molt_sys_exec_prefix returned invalid value")
-exec_prefix = cast(str, _exec_prefix_val)
+exec_prefix = (_exec_prefix_val)
 _base_prefix_val = _MOLT_SYS_BASE_PREFIX()
 if not _MOLT_IS_STRING_OBJ(_base_prefix_val):
     raise RuntimeError("molt_sys_base_prefix returned invalid value")
-base_prefix = cast(str, _base_prefix_val)
+base_prefix = (_base_prefix_val)
 _base_exec_prefix_val = _MOLT_SYS_BASE_EXEC_PREFIX()
 if not _MOLT_IS_STRING_OBJ(_base_exec_prefix_val):
     raise RuntimeError("molt_sys_base_exec_prefix returned invalid value")
-base_exec_prefix = cast(str, _base_exec_prefix_val)
+base_exec_prefix = (_base_exec_prefix_val)
 _platlibdir_val = _MOLT_SYS_PLATLIBDIR()
 if not _MOLT_IS_STRING_OBJ(_platlibdir_val):
     raise RuntimeError("molt_sys_platlibdir returned invalid value")
-platlibdir = cast(str, _platlibdir_val)
+platlibdir = (_platlibdir_val)
 _float_info_type = float_info
 float_info = _float_info_type(_MOLT_SYS_FLOAT_INFO())
 del _float_info_type
@@ -682,7 +682,7 @@ orig_argv = _MOLT_SYS_ORIG_ARGV()
 _copyright_val = _MOLT_SYS_COPYRIGHT()
 if not _MOLT_IS_STRING_OBJ(_copyright_val):
     raise RuntimeError("molt_sys_copyright returned invalid value")
-copyright = cast(str, _copyright_val)
+copyright = (_copyright_val)
 stdlib_module_names = frozenset(_MOLT_SYS_STDLIB_MODULE_NAMES())
 builtin_module_names = _MOLT_SYS_BUILTIN_MODULE_NAMES()
 
@@ -753,7 +753,7 @@ if not isinstance(_bootstrap_payload_value, dict):
 if callable(_MOLT_SYS_PATH_NEW):
     _sys_path_raw = _MOLT_SYS_PATH_NEW()
     if isinstance(_sys_path_raw, (list, tuple)):
-        path = list(cast("Iterable[object]", _sys_path_raw))
+        path = list(_sys_path_raw)
     else:
         path = _bootstrap_str_list(
             _bootstrap_payload_value, "path", "molt_sys_bootstrap_payload"
@@ -833,7 +833,7 @@ class asyncgen_hooks(tuple):
 
 
 def getrecursionlimit() -> int:
-    return int(cast(int, _MOLT_GETRECURSIONLIMIT()))
+    return int((_MOLT_GETRECURSIONLIMIT()))
 
 
 def setrecursionlimit(limit: int) -> None:
@@ -855,11 +855,11 @@ def _getframe(depth: int = 0) -> object | None:
 
 
 def getdefaultencoding() -> str:
-    return cast(str, _MOLT_SYS_GETDEFAULTENCODING())
+    return (_MOLT_SYS_GETDEFAULTENCODING())
 
 
 def getfilesystemencoding() -> str:
-    return cast(str, _MOLT_SYS_GETFILESYSTEMENCODING())
+    return (_MOLT_SYS_GETFILESYSTEMENCODING())
 
 
 def getfilesystemencodeerrors() -> str:
@@ -884,13 +884,13 @@ def set_asyncgen_hooks(
 def intern(s: object) -> str:
     if not isinstance(s, str):
         raise TypeError(f"intern() argument 1 must be str, not {type(s).__name__}")
-    return cast(str, _MOLT_SYS_INTERN(s))
+    return (_MOLT_SYS_INTERN(s))
 
 
 def getsizeof(obj: object, default: object = ...) -> int:
     if default is ...:
-        return cast(int, _MOLT_SYS_GETSIZEOF(obj, None))
-    return cast(int, _MOLT_SYS_GETSIZEOF(obj, default))
+        return (_MOLT_SYS_GETSIZEOF(obj, None))
+    return (_MOLT_SYS_GETSIZEOF(obj, default))
 
 
 def displayhook(value: object) -> None:
@@ -992,7 +992,7 @@ _xoptions: dict[str, object] = {}
 
 def get_int_max_str_digits() -> int:
     """Return the current integer string conversion length limit."""
-    return int(cast(int, _MOLT_SYS_GET_INT_MAX_STR_DIGITS()))
+    return int((_MOLT_SYS_GET_INT_MAX_STR_DIGITS()))
 
 
 def set_int_max_str_digits(maxdigits: int) -> None:
@@ -1026,7 +1026,7 @@ def getrefcount(obj: object) -> int:
 
 def getswitchinterval() -> float:
     """Return the interpreter's thread switch interval in seconds."""
-    return float(cast(float, _MOLT_SYS_GETSWITCHINTERVAL()))
+    return float((_MOLT_SYS_GETSWITCHINTERVAL()))
 
 
 def setswitchinterval(interval: float) -> None:
