@@ -4098,35 +4098,54 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
         let debug_attr = std::env::var("MOLT_DEBUG_MODULE_GET_ATTR").as_deref() == Ok("1");
         let module_obj = obj_from_bits(module_bits);
         let Some(module_ptr) = module_obj.as_ptr() else {
+            // When the native backend continues past a RAISE (exception pending
+            // but no control-flow exit), the next MODULE_GET_ATTR receives None.
+            // Propagate the already-pending exception instead of overwriting it
+            // with a confusing TypeError about "expects module".
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
+                .unwrap_or_else(|| "<attr>".to_string());
             if debug_attr {
-                let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
-                    .unwrap_or_else(|| "<attr>".to_string());
                 eprintln!(
                     "molt module_get_attr invalid module (bits=0x{:x}) for attr={}",
                     module_bits, attr_name
                 );
             }
+            let is_none = module_obj.is_none();
+            let msg = format!(
+                "module attribute access expects module, got non-pointer (bits=0x{:x}, is_none={}) for attr '{}'",
+                module_bits, is_none, attr_name
+            );
             return raise_exception::<_>(
                 _py,
                 "TypeError",
-                "module attribute access expects module",
+                &msg,
             );
         };
         unsafe {
             if object_type_id(module_ptr) != TYPE_ID_MODULE {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
+                    .unwrap_or_else(|| "<attr>".to_string());
+                let type_id = object_type_id(module_ptr);
                 if debug_attr {
-                    let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
-                        .unwrap_or_else(|| "<attr>".to_string());
-                    let type_id = object_type_id(module_ptr);
                     eprintln!(
                         "molt module_get_attr non-module (bits=0x{:x}, type_id={}) for attr={}",
                         module_bits, type_id, attr_name
                     );
                 }
+                let msg = format!(
+                    "module attribute access expects module, got type_id={} (bits=0x{:x}) for attr '{}'",
+                    type_id, module_bits, attr_name
+                );
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
-                    "module attribute access expects module",
+                    &msg,
                 );
             }
             let dict_bits = module_dict_bits(module_ptr);
@@ -4172,18 +4191,39 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
         let trace = trace_name_error();
         let module_obj = obj_from_bits(module_bits);
         let Some(module_ptr) = module_obj.as_ptr() else {
+            // Propagate already-pending exception (see molt_module_get_attr comment).
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            let name = string_obj_to_owned(obj_from_bits(name_bits))
+                .unwrap_or_else(|| "<name>".to_string());
+            let is_none = module_obj.is_none();
+            let msg = format!(
+                "module get_global expects module, got non-pointer (bits=0x{:x}, is_none={}) for name '{}'",
+                module_bits, is_none, name
+            );
             return raise_exception::<_>(
                 _py,
                 "TypeError",
-                "module attribute access expects module",
+                &msg,
             );
         };
         unsafe {
             if object_type_id(module_ptr) != TYPE_ID_MODULE {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                let name = string_obj_to_owned(obj_from_bits(name_bits))
+                    .unwrap_or_else(|| "<name>".to_string());
+                let type_id = object_type_id(module_ptr);
+                let msg = format!(
+                    "module get_global expects module, got type_id={} (bits=0x{:x}) for name '{}'",
+                    type_id, module_bits, name
+                );
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
-                    "module attribute access expects module",
+                    &msg,
                 );
             }
             let dict_bits = module_dict_bits(module_ptr);
@@ -4252,6 +4292,9 @@ pub extern "C" fn molt_module_del_global(module_bits: u64, name_bits: u64) -> u6
         let trace = trace_name_error();
         let module_obj = obj_from_bits(module_bits);
         let Some(module_ptr) = module_obj.as_ptr() else {
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
             return raise_exception::<_>(
                 _py,
                 "TypeError",
@@ -4260,6 +4303,9 @@ pub extern "C" fn molt_module_del_global(module_bits: u64, name_bits: u64) -> u6
         };
         unsafe {
             if object_type_id(module_ptr) != TYPE_ID_MODULE {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
@@ -4306,10 +4352,16 @@ pub extern "C" fn molt_module_set_attr(module_bits: u64, attr_bits: u64, val_bit
         let trace_attrs = trace_module_attrs();
         let module_obj = obj_from_bits(module_bits);
         let Some(module_ptr) = module_obj.as_ptr() else {
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
             return raise_exception::<_>(_py, "TypeError", "module attribute set expects module");
         };
         unsafe {
             if object_type_id(module_ptr) != TYPE_ID_MODULE {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(
                     _py,
                     "TypeError",

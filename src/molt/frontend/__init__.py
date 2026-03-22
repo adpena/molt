@@ -5544,6 +5544,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "ImportError", f"No module named '{module_name}'"
         )
         self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
+        # On the native backend, RAISE sets a pending exception but does not
+        # alter control flow — execution falls through to END_IF and continues.
+        # Without an explicit exit here, the caller proceeds to use the None
+        # module_val in MODULE_GET_ATTR / MODULE_SET_ATTR, triggering a
+        # "module attribute access expects module" TypeError that masks the
+        # real ImportError.  Emit _emit_raise_exit() to jump to the nearest
+        # exception handler (or return) so the ImportError propagates cleanly.
+        self._emit_raise_exit()
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
     def _emit_exception_class(self, name: str) -> MoltValue:
@@ -24385,6 +24393,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             func_symbol = self._function_symbol(func_name)
             if not self._has_typing_overload_decorator(node):
                 self._record_func_default_specs(func_symbol, node.args)
+            else:
+                return None
             poll_func_name = f"{func_symbol}_poll"
             prev_func = self.current_func_name
             has_return = self._function_contains_return(node)
@@ -24718,6 +24728,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         func_symbol = self._function_symbol(func_name)
         if not self._has_typing_overload_decorator(node):
             self._record_func_default_specs(func_symbol, node.args)
+        else:
+            return None
         poll_func_name = f"{func_symbol}_poll"
         prev_func = self.current_func_name
         has_return = self._function_contains_return(node)
@@ -24987,6 +24999,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             func_symbol = self._function_symbol(func_name)
             if not self._has_typing_overload_decorator(node):
                 self._record_func_default_specs(func_symbol, node.args)
+            else:
+                return None
             poll_func_name = f"{func_symbol}_poll"
             prev_func = self.current_func_name
             posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(
@@ -25261,6 +25275,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         func_symbol = self._function_symbol(func_name)
         if not self._has_typing_overload_decorator(node):
             self._record_func_default_specs(func_symbol, node.args)
+        else:
+            # Overload stubs are purely for type-checking; the real implementation
+            # that follows will compile the body and emit FUNC_NEW.  Skip stub
+            # compilation entirely so the backend never sees duplicate function
+            # declarations with incompatible signatures.
+            return None
         prev_func = self.current_func_name
         posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(node.args)
         posonly_names = [arg.arg for arg in posonly]
@@ -25939,9 +25959,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if module_name == "asyncio" and attr_name in {"run", "sleep"}:
                 module_prefix = f"{self._sanitize_module_name(module_name)}__"
                 attr_val.type_hint = f"Func:{module_prefix}{attr_name}"
-            self.imported_names[bind_name] = module_name
-            if self.current_func_name == "molt_main":
-                self.global_imported_names[bind_name] = module_name
+            # Only update the import-origin binding when the source module is
+            # resolvable (in known_modules, stdlib_allowlist, or at least
+            # importable at runtime).  This prevents a try/except ImportError
+            # fallback branch from overwriting a valid binding with an
+            # unresolvable module (e.g. ``from _dummy_thread import get_ident``
+            # clobbering the ``_thread`` binding established in the try body).
+            _mod_resolvable = (
+                not self.known_modules
+                or module_name in self.known_modules
+                or module_name in self.stdlib_allowlist
+                or self._should_attempt_runtime_module_import(module_name)
+                or bind_name not in self.imported_names
+            )
+            if _mod_resolvable:
+                self.imported_names[bind_name] = module_name
+                if self.current_func_name == "molt_main":
+                    self.global_imported_names[bind_name] = module_name
             self.locals[bind_name] = attr_val
             self.exact_locals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
