@@ -40,7 +40,7 @@ pub extern "C" fn molt_deflate_raw(_input: u64, _level: u64) -> u64 {
 
 #[cfg(not(feature = "stdlib_compression"))]
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_inflate_raw(_input: u64, _wbits: u64) -> u64 {
+pub extern "C" fn molt_inflate_raw(_input: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         crate::raise_exception::<u64>(_py, "NotImplementedError", "inflate requires stdlib_compression feature")
     })

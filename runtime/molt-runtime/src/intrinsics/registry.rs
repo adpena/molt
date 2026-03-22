@@ -98,18 +98,14 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
             let Some(func_bits) = build_intrinsic_func(_py, fn_ptr, spec.arity) else {
                 continue;
             };
-            let mut registered = false;
-            if set_intrinsic_entry(_py, registry_ptr, spec.name, func_bits) {
-                registered = true;
+            // dict_set_in_place inc-refs on each successful insert.
+            // We must dec-ref once for the build_intrinsic_func allocation,
+            // and the dict holds its own references independently.
+            set_intrinsic_entry(_py, registry_ptr, spec.name, func_bits);
+            if let Some(alias) = alias_name(spec.name) {
+                set_intrinsic_entry(_py, registry_ptr, &alias, func_bits);
             }
-            if let Some(alias) = alias_name(spec.name)
-                && set_intrinsic_entry(_py, registry_ptr, &alias, func_bits)
-            {
-                registered = true;
-            }
-            if registered {
-                dec_ref_bits(_py, func_bits);
-            }
+            dec_ref_bits(_py, func_bits);
             count += 1;
         }
         eprintln!("MOLT_INTRINSICS: wasm32 eager registration done ({count} resolved)");
