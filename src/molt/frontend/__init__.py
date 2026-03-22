@@ -2926,16 +2926,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         """Collect module-level assignments of the form NAME = {"key": value, ...}
         where all keys are string literals and all values are constants (bool, int,
         str, None).  Used to resolve compile-time **kwargs spreads like
-        @dataclass(**SLOTS) where SLOTS = {"slots": True}."""
+        @dataclass(**SLOTS) where SLOTS = {"slots": True}.
+
+        Also scans inside top-level if/else blocks (e.g., version-gated
+        constants like `if sys.version_info >= (3, 10): SLOTS = {"slots": True}`)."""
         result: dict[str, dict[str, Any]] = {}
-        for stmt in node.body:
+
+        def _scan_assign(stmt: ast.AST) -> None:
             if not isinstance(stmt, ast.Assign):
-                continue
+                return
             if len(stmt.targets) != 1 or not isinstance(stmt.targets[0], ast.Name):
-                continue
+                return
             name = stmt.targets[0].id
             if not isinstance(stmt.value, ast.Dict):
-                continue
+                return
             d = stmt.value
             entries: dict[str, Any] = {}
             valid = True
@@ -2949,6 +2953,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 entries[k.value] = v.value
             if valid:
                 result[name] = entries
+
+        for stmt in node.body:
+            _scan_assign(stmt)
+            # Also scan inside top-level if/else blocks for version-gated constants
+            if isinstance(stmt, ast.If):
+                for sub in stmt.body:
+                    _scan_assign(sub)
+                for sub in stmt.orelse:
+                    _scan_assign(sub)
+
         return result
 
     def _record_instance_attr_mutation(self, class_name: str, attr: str) -> None:
