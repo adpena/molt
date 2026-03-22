@@ -14398,7 +14398,8 @@ def _prepare_non_native_build_result(
             success_messages.append(f"Precompiled {cwasm_path}")
 
         # --split-runtime: emit app.wasm + molt_runtime.wasm + manifest.json
-        if split_runtime and output_wasm.exists() and runtime_reloc_wasm is not None:
+        _split_runtime = split_runtime or os.environ.get("MOLT_SPLIT_RUNTIME") == "1"
+        if _split_runtime and output_wasm.exists() and runtime_reloc_wasm is not None:
             split_dir = output_wasm.parent
             import json as _json
             import shutil as _shutil
@@ -18989,6 +18990,9 @@ def build(
     # --portable: force baseline ISA for cross-machine reproducible codegen.
     if portable:
         os.environ["MOLT_PORTABLE"] = "1"
+    # --split-runtime: signal to the non-native build result handler.
+    if split_runtime:
+        os.environ["MOLT_SPLIT_RUNTIME"] = "1"
     # --wasm-profile: pass to backend via environment variable.
     if wasm_profile and wasm_profile != "full":
         os.environ["MOLT_WASM_PROFILE"] = wasm_profile
