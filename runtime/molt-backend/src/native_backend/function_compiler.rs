@@ -10520,6 +10520,10 @@ impl SimpleBackend {
                                 )
                             });
                             builder.ins().call(local_dec_ref_obj, &[*val]);
+                            // Remove from entry_vars so the exception handler's
+                            // cleanup path does not dec-ref this variable again
+                            // (it was already freed here).
+                            entry_vars.remove(&name);
                         }
                     }
                     if !carry_ptr.is_empty() {
@@ -10533,6 +10537,10 @@ impl SimpleBackend {
                                 )
                             });
                             builder.ins().call(local_dec_ref, &[*val]);
+                            // Remove from entry_vars so the exception handler's
+                            // cleanup path does not dec-ref this variable again
+                            // (it was already freed here).
+                            entry_vars.remove(&name);
                         }
                     }
                     let mut sig = self.module.make_signature();
@@ -12766,7 +12774,7 @@ impl SimpleBackend {
             if !is_block_filled && loop_depth == 0 && builder.current_block() == Some(entry_block) {
                 let cleanup = drain_cleanup_entry_tracked(
                     &mut tracked_obj_vars,
-                    &entry_vars,
+                    &mut entry_vars,
                     &last_use,
                     op_idx,
                 );
@@ -12774,7 +12782,7 @@ impl SimpleBackend {
                     builder.ins().call(local_dec_ref_obj, &[val]);
                 }
                 let cleanup =
-                    drain_cleanup_entry_tracked(&mut tracked_vars, &entry_vars, &last_use, op_idx);
+                    drain_cleanup_entry_tracked(&mut tracked_vars, &mut entry_vars, &last_use, op_idx);
                 for val in cleanup {
                     builder.ins().call(local_dec_ref, &[val]);
                 }
