@@ -2246,6 +2246,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             exprs.append(returns)
         return any(self._expr_contains_yield(expr) for expr in exprs)
 
+    @staticmethod
+    def _has_typing_overload_decorator(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> bool:
+        """Return True if the function has a @typing.overload or @overload decorator."""
+        for deco in node.decorator_list:
+            if isinstance(deco, ast.Attribute):
+                if (
+                    isinstance(deco.value, ast.Name)
+                    and deco.value.id == "typing"
+                    and deco.attr == "overload"
+                ):
+                    return True
+            elif isinstance(deco, ast.Name) and deco.id == "overload":
+                return True
+        return False
+
     def _function_symbol(self, name: str) -> str:
         reserved = self.reserved_func_symbols.get(name)
         if reserved is not None and self.current_func_name == "molt_main":
@@ -2358,6 +2375,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 params=params or [],
                 ops=self._new_tracked_ops(count_function=True),
             )
+        else:
+            # A re-definition of the same symbol (e.g. @typing.overload stubs
+            # followed by the real implementation all share one reserved symbol
+            # at module level).  Update the params and discard the old body so
+            # the backend sees the real implementation's signature.
+            new_params = params or []
+            if self.funcs_map[name]["params"] != new_params:
+                self.funcs_map[name]["params"] = new_params
+                self.funcs_map[name]["ops"].clear()
+            else:
+                self.funcs_map[name]["ops"].clear()
         self.current_func_name = name
         self.current_ops = self.funcs_map[name]["ops"]
         self.locals = {}
@@ -2785,6 +2813,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
     def _record_func_default_specs(self, func_symbol: str, args: ast.arguments) -> None:
         if args.vararg or args.kwarg:
+            # Clear any stale entry from a prior @typing.overload stub that
+            # recorded a narrower signature for the same symbol.
+            self.func_default_specs.pop(func_symbol, None)
             return
         params = self._function_param_names(args)
         default_specs = self._default_specs_from_args(args)
@@ -10911,7 +10942,36 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         items: list[ast.expr] = []
         for key, value in zip(node.keys, node.values):
             if key is None:
-                raise NotImplementedError("Dict unpacking is not supported")
+                # Fallback: re-enter the unpacking path (should not normally
+                # reach here because the ``any(key is None ...)`` guard above
+                # catches it, but handle defensively).
+                res = MoltValue(self.next_var(), type_hint="dict")
+                self.emit(MoltOp(kind="DICT_NEW", args=[], result=res))
+                for k2, v2 in zip(node.keys, node.values):
+                    if k2 is None:
+                        mapping = self.visit(v2)
+                        if mapping is None:
+                            raise NotImplementedError("Unsupported dict unpacking value")
+                        self.emit(
+                            MoltOp(
+                                kind="DICT_UPDATE",
+                                args=[res, mapping],
+                                result=MoltValue("none"),
+                            )
+                        )
+                    else:
+                        key_val = self.visit(k2)
+                        val_val = self.visit(v2)
+                        if key_val is None or val_val is None:
+                            raise NotImplementedError("Unsupported dict entry")
+                        self.emit(
+                            MoltOp(
+                                kind="STORE_INDEX",
+                                args=[res, key_val, val_val],
+                                result=MoltValue("none"),
+                            )
+                        )
+                return res
             items.append(key)
             items.append(value)
         values = self._emit_expr_list(items)
@@ -18420,6 +18480,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res = MoltValue(self.next_var(), type_hint="dict")
                 if not node.args:
                     self.emit(MoltOp(kind="DICT_NEW", args=[], result=res))
+                elif isinstance(node.args[0], ast.Starred):
+                    # dict(*args, **kwargs) — create empty dict, then update
+                    self.emit(MoltOp(kind="DICT_NEW", args=[], result=res))
+                    starred_val = self.visit(node.args[0].value)
+                    if starred_val is None:
+                        raise NotImplementedError("Unsupported dict * input")
+                    self.emit(
+                        MoltOp(
+                            kind="DICT_UPDATE",
+                            args=[res, starred_val],
+                            result=MoltValue("none"),
+                        )
+                    )
                 else:
                     iterable = self.visit(node.args[0])
                     if iterable is None:
@@ -24314,7 +24387,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             func_name = node.name
             qualname = self._qualname_for_def(func_name)
             func_symbol = self._function_symbol(func_name)
-            self._record_func_default_specs(func_symbol, node.args)
+            if not self._has_typing_overload_decorator(node):
+                self._record_func_default_specs(func_symbol, node.args)
             poll_func_name = f"{func_symbol}_poll"
             prev_func = self.current_func_name
             has_return = self._function_contains_return(node)
@@ -24646,7 +24720,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         func_name = node.name
         qualname = self._qualname_for_def(func_name)
         func_symbol = self._function_symbol(func_name)
-        self._record_func_default_specs(func_symbol, node.args)
+        if not self._has_typing_overload_decorator(node):
+            self._record_func_default_specs(func_symbol, node.args)
         poll_func_name = f"{func_symbol}_poll"
         prev_func = self.current_func_name
         has_return = self._function_contains_return(node)
@@ -24914,7 +24989,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         qualname = self._qualname_for_def(func_name)
         if is_generator:
             func_symbol = self._function_symbol(func_name)
-            self._record_func_default_specs(func_symbol, node.args)
+            if not self._has_typing_overload_decorator(node):
+                self._record_func_default_specs(func_symbol, node.args)
             poll_func_name = f"{func_symbol}_poll"
             prev_func = self.current_func_name
             posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(
@@ -25187,7 +25263,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         func_name = node.name
         func_symbol = self._function_symbol(func_name)
-        self._record_func_default_specs(func_symbol, node.args)
+        if not self._has_typing_overload_decorator(node):
+            self._record_func_default_specs(func_symbol, node.args)
         prev_func = self.current_func_name
         posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(node.args)
         posonly_names = [arg.arg for arg in posonly]
