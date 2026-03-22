@@ -239,6 +239,7 @@ opt-level = 2
 lto = "off"
 codegen-units = 128
 strip = false
+panic = "unwind"
 
 # Size-optimized release profile for micro stdlib builds.
 # Uses opt-level "z" (minimize binary size) with full LTO.
