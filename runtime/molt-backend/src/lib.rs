@@ -1203,12 +1203,24 @@ impl SimpleBackend {
         // in the same link unit — colocated calls skip GOT/PLT indirection and
         // use direct PC-relative calls instead.
         flag_builder.set("use_colocated_libcalls", "true").unwrap();
-        // Frame pointers: keep for debug builds (profilers, debuggers need them),
-        // omit for release builds to free up a register (rbp/x29).
+        // Detect whether we are targeting aarch64 — either because we are
+        // compiling natively on aarch64, or because an explicit cross-compile
+        // target triple was supplied that contains "aarch64".
+        let targeting_aarch64 = match target {
+            Some(t) => t.contains("aarch64"),
+            None => cfg!(target_arch = "aarch64"),
+        };
+        // Frame pointers: always preserve on aarch64 to ensure correct stack
+        // frame layout for large functions (>16KB frames).  Cranelift 0.128 can
+        // generate incorrect SP-relative accesses on aarch64 when frame pointers
+        // are omitted and the frame exceeds the immediate offset range, leading
+        // to SIGTRAP (exit 133) in generated code.  On x86_64 the cost is one
+        // register (rbp); on aarch64 x29 is conventionally reserved anyway.
+        // Debug builds always preserve for profiler/debugger support.
         flag_builder
             .set(
                 "preserve_frame_pointers",
-                if cfg!(debug_assertions) {
+                if cfg!(debug_assertions) || targeting_aarch64 {
                     "true"
                 } else {
                     "false"
@@ -1223,9 +1235,20 @@ impl SimpleBackend {
         flag_builder
             .set("enable_table_access_spectre_mitigation", "false")
             .unwrap();
-        // Inline stack probing: avoids a function call for stack probes, instead
-        // inlining touch instructions — faster for deep recursion.
-        flag_builder.set("probestack_strategy", "inline").unwrap();
+        // Stack probing strategy: use outline (call-based) probes on aarch64
+        // to avoid a Cranelift 0.128 bug where inline probe loops generate
+        // incorrect touch sequences for frames >16KB, causing SIGTRAP.
+        // On x86_64, inline probes are safe and faster for deep recursion.
+        flag_builder
+            .set(
+                "probestack_strategy",
+                if targeting_aarch64 {
+                    "outline"
+                } else {
+                    "inline"
+                },
+            )
+            .unwrap();
         // MOLT_PORTABLE=1 forces baseline ISA (no host-specific features like AVX2).
         // This ensures reproducible codegen across different machines at the cost of
         // ~5-15% runtime performance on modern CPUs with advanced features.
