@@ -196,7 +196,7 @@ _MOLT_SYS_GETFILESYSTEMENCODEERRORS = _safe_intrinsic(
     "molt_sys_getfilesystemencodeerrors", lambda: "surrogateescape"
 )
 _MOLT_SYS_BOOTSTRAP_PAYLOAD = _safe_intrinsic("molt_sys_bootstrap_payload")
-_MOLT_SYS_MAXSIZE = _safe_intrinsic("molt_sys_maxsize", lambda: 2**31 - 1)
+_MOLT_SYS_MAXSIZE = _safe_intrinsic("molt_sys_maxsize", lambda: 2**63 - 1)
 _MOLT_SYS_MAXUNICODE = _safe_intrinsic("molt_sys_maxunicode", lambda: 0x10FFFF)
 _MOLT_SYS_BYTEORDER = _safe_intrinsic("molt_sys_byteorder", lambda: "little")
 _MOLT_SYS_PREFIX = _safe_intrinsic("molt_sys_prefix", lambda: "")
@@ -836,9 +836,9 @@ def setrecursionlimit(limit: int) -> None:
 
 
 def exc_info() -> tuple[object, object, object]:
+    # CPython 3.12: only return the exception currently being handled
+    # in an active except block, never a stale exception from a previous block.
     exc = _MOLT_EXCEPTION_ACTIVE()
-    if exc is None:
-        exc = _MOLT_EXCEPTION_LAST()
     if exc is None:
         return None, None, None
     return type(exc), exc, getattr(exc, "__traceback__", None)

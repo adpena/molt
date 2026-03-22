@@ -6583,6 +6583,85 @@ def _runtime_cargo_features(target_triple: str | None) -> tuple[str, ...]:
     )
 
 
+# ---------------------------------------------------------------------------
+# Builtin feature detection for function-level tree shaking
+# ---------------------------------------------------------------------------
+
+_BUILTIN_FEATURE_MODULE_MAP: dict[str, str] = {
+    "contextvars": "builtin_contextvars",
+    "_contextvars": "builtin_contextvars",
+    "fcntl": "builtin_fcntl",
+    "cmath": "builtin_complex",
+}
+
+_SET_IMPLYING_MODULES = frozenset({
+    "email",
+    "urllib",
+    "ast",
+    "tokenize",
+    "json",
+    "typing",
+    "collections.abc",
+})
+
+_MEMORYVIEW_IMPLYING_MODULES = frozenset({
+    "struct",
+    "array",
+    "io",
+    "_io",
+    "mmap",
+})
+
+# All builtin features that can be individually toggled.
+_ALL_BUILTIN_FEATURES: tuple[str, ...] = (
+    "builtin_set",
+    "builtin_memoryview",
+    "builtin_complex",
+    "builtin_contextvars",
+    "builtin_fcntl",
+)
+
+
+def _builtin_features_from_import_graph(
+    resolved_modules: set[str] | None,
+    stdlib_profile: str | None,
+) -> list[str]:
+    """Return the ``builtin_*`` cargo features required for *resolved_modules*.
+
+    For ``stdlib_full`` (or *None*) profiles every builtin feature is enabled
+    unconditionally.  For ``micro`` profiles the import graph is inspected so
+    that only the builtins actually reachable from user code are compiled in.
+    """
+    # Full / default profile: enable everything.
+    if stdlib_profile != "micro":
+        return list(_ALL_BUILTIN_FEATURES)
+
+    # No module information available: be safe and enable everything.
+    if resolved_modules is None:
+        return list(_ALL_BUILTIN_FEATURES)
+
+    features: list[str] = []
+
+    # Direct module -> feature mapping (contextvars, fcntl, cmath).
+    for module_name, feature in _BUILTIN_FEATURE_MODULE_MAP.items():
+        if module_name in resolved_modules and feature not in features:
+            features.append(feature)
+
+    # set: included if any set-implying module (or submodule) is present.
+    for m in _SET_IMPLYING_MODULES:
+        if m in resolved_modules or any(
+            r.startswith(m + ".") for r in resolved_modules
+        ):
+            features.append("builtin_set")
+            break
+
+    # memoryview: included if struct/array/io/_io/mmap is present.
+    if _MEMORYVIEW_IMPLYING_MODULES & resolved_modules:
+        features.append("builtin_memoryview")
+
+    return features
+
+
 def _read_runtime_fingerprint(path: Path) -> dict[str, Any] | None:
     payload = _read_cached_json_object(path)
     if payload is not None:
@@ -10466,6 +10545,8 @@ def _lower_module_serial_with_context(
         raise _ModuleLowerError(str(exc), timed_out=True) from exc
     except CompatibilityError as exc:
         raise _ModuleLowerError(str(exc)) from exc
+    except NotImplementedError as exc:
+        raise _ModuleLowerError(f"NotImplementedError in {module_name}: {exc}") from exc
     total_s = time.perf_counter() - module_frontend_start
     payload = _module_frontend_payload(
         gen,
@@ -14302,6 +14383,7 @@ def _prepare_non_native_build_result(
     if is_wasm:
         output_wasm = output_artifact
         resolved_linked_output = linked_output_path
+        _split_runtime = split_runtime or os.environ.get("MOLT_SPLIT_RUNTIME") == "1"
         if linked:
             if not ensure_runtime_wasm_reloc():
                 return None, _fail(
@@ -14330,6 +14412,12 @@ def _prepare_non_native_build_result(
                 "--output",
                 str(resolved_linked_output),
             ]
+            if _split_runtime:
+                split_dir = output_wasm.parent
+                link_cmd.extend([
+                    "--split-runtime",
+                    "--split-output-dir", str(split_dir),
+                ])
             if is_wasm_freestanding:
                 link_cmd.append("--freestanding")
             if wasm_opt_enabled:
@@ -14397,19 +14485,26 @@ def _prepare_non_native_build_result(
         if cwasm_path is not None:
             success_messages.append(f"Precompiled {cwasm_path}")
 
-        # --split-runtime: emit app.wasm + molt_runtime.wasm + manifest.json
-        _split_runtime = split_runtime or os.environ.get("MOLT_SPLIT_RUNTIME") == "1"
-        if _split_runtime and output_wasm.exists() and runtime_reloc_wasm is not None:
+        # --split-runtime: wasm_link.py produces app.wasm + molt_runtime.wasm;
+        # generate manifest.json and worker.js shim here.
+        if _split_runtime and runtime_reloc_wasm is not None:
             split_dir = output_wasm.parent
             import json as _json
-            import shutil as _shutil
 
             app_wasm = split_dir / "app.wasm"
             rt_wasm = split_dir / "molt_runtime.wasm"
             manifest = split_dir / "manifest.json"
 
-            _shutil.copy2(output_wasm, app_wasm)
-            _shutil.copy2(runtime_reloc_wasm, rt_wasm)
+            if not app_wasm.exists() or not rt_wasm.exists():
+                return None, _fail(
+                    "Split-runtime link did not produce expected artifacts "
+                    f"(app.wasm={app_wasm.exists()}, molt_runtime.wasm={rt_wasm.exists()})",
+                    json_output,
+                    command="build",
+                )
+
+            app_size = app_wasm.stat().st_size
+            rt_size = rt_wasm.stat().st_size
 
             manifest_data = {
                 "version": 1,
@@ -14417,11 +14512,11 @@ def _prepare_non_native_build_result(
                 "modules": {
                     "runtime": {
                         "path": "molt_runtime.wasm",
-                        "size": rt_wasm.stat().st_size,
+                        "size": rt_size,
                     },
                     "app": {
                         "path": "app.wasm",
-                        "size": app_wasm.stat().st_size,
+                        "size": app_size,
                     },
                 },
                 "instantiation_order": ["runtime", "app"],
@@ -14451,8 +14546,8 @@ def _prepare_non_native_build_result(
             )
 
             success_messages.append(
-                f"Split runtime: {app_wasm.name} ({app_wasm.stat().st_size // 1024}KB) "
-                f"+ {rt_wasm.name} ({rt_wasm.stat().st_size // 1024}KB)"
+                f"Split runtime: {app_wasm.name} ({app_size // 1024}KB) "
+                f"+ {rt_wasm.name} ({rt_size // 1024}KB)"
             )
 
         return _PreparedNonNativeResult(
@@ -15363,6 +15458,7 @@ def _ensure_runtime_lib_ready(
     molt_root: Path,
     cargo_timeout: float | None,
     stdlib_profile: str | None = None,
+    resolved_modules: set[str] | None = None,
 ) -> bool:
     runtime_lib = runtime_state.runtime_lib
     if runtime_lib is None:
@@ -15375,6 +15471,7 @@ def _ensure_runtime_lib_ready(
         molt_root,
         cargo_timeout,
         stdlib_profile=stdlib_profile,
+        resolved_modules=resolved_modules,
     )
 
 
@@ -16927,14 +17024,18 @@ def _ensure_runtime_lib(
     project_root: Path,
     cargo_timeout: float | None,
     stdlib_profile: str | None = None,
+    resolved_modules: set[str] | None = None,
 ) -> bool:
     rustflags = os.environ.get("RUSTFLAGS", "")
     runtime_features = _runtime_cargo_features(target_triple)
+    builtin_features = _builtin_features_from_import_graph(resolved_modules, stdlib_profile)
     # When stdlib_profile is micro, include the marker in the fingerprint
     # so full and micro builds are kept distinct in the cache.
     fingerprint_features: tuple[str, ...] = runtime_features
     if stdlib_profile == "micro":
-        fingerprint_features = tuple(list(runtime_features) + ["stdlib_micro", "no-default-features"])
+        fingerprint_features = tuple(
+            list(runtime_features) + sorted(builtin_features) + ["stdlib_micro", "no-default-features"]
+        )
     fingerprint_path = _runtime_fingerprint_path(
         project_root, runtime_lib, cargo_profile, target_triple
     )
@@ -16986,8 +17087,9 @@ def _ensure_runtime_lib(
         cmd = ["cargo", "build", "-p", "molt-runtime", "--profile", cargo_profile]
         if stdlib_profile == "micro":
             cmd.append("--no-default-features")
-            # Re-enable only the micro marker and any explicit runtime features.
-            micro_features = list(runtime_features) + ["stdlib_micro"]
+            # Re-enable only the micro marker, builtin features from import
+            # graph analysis, and any explicit runtime features.
+            micro_features = list(runtime_features) + builtin_features + ["stdlib_micro"]
             cmd.extend(["--features", ",".join(micro_features)])
         elif runtime_features:
             cmd.extend(["--features", ",".join(runtime_features)])
@@ -24787,7 +24889,7 @@ def main() -> int:
             wasm_profile=wasm_profile,
             snapshot=getattr(args, "snapshot", False),
             stdlib_profile=stdlib_profile,
-            lib_paths=getattr(args, "lib_paths", None),
+            lib_paths=lib_paths or None,
             split_runtime=getattr(args, "split_runtime", False),
         )
     if args.command == "extension":

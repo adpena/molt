@@ -1082,6 +1082,11 @@ pub struct SimpleBackend {
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     data_pool: BTreeMap<Vec<u8>, cranelift_module::DataId>,
     next_data_id: u64,
+    // Track the arity each user-defined function was declared with so that
+    // call sites that reference the same function (potentially with a
+    // different number of actual arguments, e.g. kwargs expansion) can
+    // construct a matching Cranelift signature for `declare_function`.
+    declared_func_arities: BTreeMap<String, usize>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -1267,6 +1272,7 @@ impl SimpleBackend {
             import_ids: BTreeMap::new(),
             data_pool: BTreeMap::new(),
             next_data_id: 0,
+            declared_func_arities: BTreeMap::new(),
         }
     }
 
