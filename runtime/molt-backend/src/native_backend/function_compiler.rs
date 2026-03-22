@@ -13015,10 +13015,48 @@ impl SimpleBackend {
             eprintln!("CLIF {}:\n{}", func_ir.name, self.ctx.func.display());
         }
 
-        let id = self
+        let id = match self
             .module
             .declare_function(&func_ir.name, Linkage::Export, &self.ctx.func.signature)
-            .unwrap();
+        {
+            Ok(id) => id,
+            Err(e) => {
+                let err_str = format!("{e}");
+                if err_str.contains("IncompatibleSignature") || err_str.contains("incompatible with previous declaration") {
+                    eprintln!(
+                        "WARNING: signature mismatch for `{}`; emitting trap stub",
+                        func_ir.name
+                    );
+                    // The function was already forward-declared with a different
+                    // signature.  Look up the existing declaration and emit a
+                    // trap stub so the linker finds a definition.
+                    if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) =
+                        self.module.get_name(&func_ir.name)
+                    {
+                        let existing_sig = self
+                            .module
+                            .declarations()
+                            .get_function_decl(existing_id)
+                            .signature
+                            .clone();
+                        if let Err(stub_err) = Self::emit_trap_stub(
+                            &mut self.module,
+                            existing_id,
+                            &existing_sig,
+                            &func_ir.name,
+                        ) {
+                            eprintln!(
+                                "  -> trap stub failed for {}: {}",
+                                func_ir.name, stub_err
+                            );
+                        }
+                    }
+                    self.module.clear_context(&mut self.ctx);
+                    return;
+                }
+                panic!("declare_function failed for {}: {}", func_ir.name, e);
+            }
+        };
         // Clone the function *before* handing it to the optimizer — if an
         // optimization pass panics (e.g. Cranelift remove_constant_phis
         // assertion at cranelift-codegen 0.128) the in-place IR may be
@@ -13030,9 +13068,10 @@ impl SimpleBackend {
                 .define_function(id, &mut self.ctx)
                 .map_err(Box::new)
         }));
-        eprintln!("DEBUG catch_unwind returned for {}: is_ok={}", func_ir.name, define_result.is_ok());
         match define_result {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => {
+                self.defined_func_names.insert(func_ir.name.clone());
+            }
             Ok(Err(err)) => {
                 let err_text = format!("{err:?}");
                 eprintln!(
@@ -13100,6 +13139,7 @@ impl SimpleBackend {
                     &func_ir.name,
                 ) {
                     Ok(()) => {
+                        self.defined_func_names.insert(func_ir.name.clone());
                         eprintln!(
                             "  -> {} compiled successfully at opt_level=none",
                             func_ir.name
@@ -13110,10 +13150,30 @@ impl SimpleBackend {
                             "  -> retry also failed for {}: {}",
                             func_ir.name, retry_err
                         );
-                        // The retry itself failed — propagate the
-                        // *original* panic so the caller sees the root
-                        // cause, not a confusing secondary error.
-                        std::panic::resume_unwind(payload);
+                        // The retry itself failed — emit a trap stub so
+                        // compilation can continue for the remaining
+                        // functions.  If this function is actually called
+                        // at runtime, the process will abort with a clear
+                        // message instead of silently misbehaving.
+                        eprintln!(
+                            "  -> emitting trap stub for {} (function too large for Cranelift)",
+                            func_ir.name
+                        );
+                        match Self::emit_trap_stub(
+                            &mut self.module,
+                            id,
+                            &self.ctx.func.signature,
+                            &func_ir.name,
+                        ) {
+                            Ok(()) => {}
+                            Err(stub_err) => {
+                                eprintln!(
+                                    "  -> trap stub also failed for {}: {}",
+                                    func_ir.name, stub_err
+                                );
+                                std::panic::resume_unwind(payload);
+                            }
+                        }
                     }
                 }
             }
