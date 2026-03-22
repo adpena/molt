@@ -5316,50 +5316,24 @@ static inline PyObject *PyType_GetDict(PyTypeObject *type) {
     return PyObject_GetAttrString((PyObject *)type, "__dict__");
 }
 
-/* WARNING: This returns a PyObject* (Python callable) cast to void*, NOT a raw
- * C function pointer as CPython does. C extensions that cast the return value
- * to initproc/reprfunc/etc. and call it directly WILL crash. Extensions should
- * use PyObject_Call on the returned value instead. This semantic gap will be
- * resolved when proper C-to-Python trampolines are implemented. */
+/* PyType_GetSlot: NOT YET IMPLEMENTED.
+ *
+ * CPython returns a raw C function pointer (initproc, reprfunc, etc.).
+ * Molt's handle-based object model cannot produce C function pointers from
+ * Python callables without a trampoline layer. Returning a PyObject* cast
+ * to void* would be silently wrong — extensions that call the result as a
+ * C function pointer would crash or corrupt memory.
+ *
+ * Returns NULL for all slots. Extensions that check for NULL gracefully
+ * degrade; extensions that assume non-NULL will get a clear failure rather
+ * than silent memory corruption.
+ *
+ * TODO: implement proper C-to-Python trampolines per slot type.
+ */
 static inline void *PyType_GetSlot(PyTypeObject *type, int slot) {
-    PyObject *func;
-    const char *attr_name;
-    if (type == NULL) {
-        PyErr_SetString(PyExc_TypeError, "type must not be NULL");
-        return NULL;
-    }
-    /* Map slot IDs to dunder names and retrieve the callable.
-     * Uses numeric literals for slots not yet #define'd at this point. */
-    switch (slot) {
-    case 60:  /* Py_tp_init */      attr_name = "__init__";    break;
-    case Py_tp_new:                  attr_name = "__new__";     break;
-    case 52:  /* Py_tp_dealloc */   attr_name = "__del__";     break;
-    case Py_tp_repr:                 attr_name = "__repr__";    break;
-    case Py_tp_str:                  attr_name = "__str__";     break;
-    case 59:  /* Py_tp_hash */      attr_name = "__hash__";    break;
-    case Py_tp_call:                 attr_name = "__call__";    break;
-    case Py_tp_iter:                 attr_name = "__iter__";    break;
-    case Py_tp_iternext:             attr_name = "__next__";    break;
-    case 67:  /* Py_tp_richcompare — cannot be emulated by a single dunder;
-                  richcmpfunc takes (obj, obj, op) for all 6 comparisons.
-                  Return NULL until a proper trampoline is implemented. */
-              return NULL;
-    case 58:  /* Py_tp_getattro */  attr_name = "__getattr__"; break;
-    case 69:  /* Py_tp_setattro */  attr_name = "__setattr__"; break;
-    case Py_tp_doc:                  attr_name = "__doc__";     break;
-    case Py_nb_add:                  attr_name = "__add__";     break;
-    case Py_nb_subtract:             attr_name = "__sub__";     break;
-    case Py_nb_multiply:             attr_name = "__mul__";     break;
-    case Py_sq_concat:               attr_name = "__add__";     break;
-    default:
-        return NULL;
-    }
-    func = PyObject_GetAttrString((PyObject *)type, attr_name);
-    if (func == NULL) {
-        PyErr_Clear();
-        return NULL;
-    }
-    return (void *)func;
+    (void)type;
+    (void)slot;
+    return NULL;
 }
 
 static inline PyObject *PyType_GetName(PyTypeObject *type) {
