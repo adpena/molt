@@ -10167,7 +10167,18 @@ pub extern "C" fn molt_setrecursionlimit(limit_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_getargv() -> u64 {
     crate::with_gil_entry!(_py, {
-        let args = runtime_state(_py).argv.lock().unwrap();
+        let args_guard = runtime_state(_py).argv.lock().unwrap();
+        // On WASM, molt_set_argv may not have been called (no C main stub).
+        // Fall back to std::env::args() so WASI args are still visible.
+        let env_args_storage;
+        let args: &Vec<Vec<u8>> = if args_guard.is_empty() {
+            env_args_storage = std::env::args()
+                .map(|s| s.into_bytes())
+                .collect::<Vec<_>>();
+            &env_args_storage
+        } else {
+            &args_guard
+        };
         let mut elems = Vec::with_capacity(args.len());
         for arg in args.iter() {
             let ptr = alloc_string(_py, arg);
