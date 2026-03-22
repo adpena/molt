@@ -54,6 +54,7 @@ MoltHandle molt_builtin_class_lookup(MoltHandle name_bits);
 MoltHandle molt_object_getattr(MoltHandle obj_bits, MoltHandle name_bits);
 MoltHandle molt_object_getattr_bytes(MoltHandle obj_bits,
                                      const uint8_t *name_ptr, uint64_t name_len);
+MoltHandle molt_object_delattr(MoltHandle obj_bits, MoltHandle name_bits);
 MoltHandle molt_object_setattr(MoltHandle obj_bits, MoltHandle name_bits,
                                MoltHandle val_bits);
 int32_t molt_object_setattr_bytes(MoltHandle obj_bits, const uint8_t *name_ptr,

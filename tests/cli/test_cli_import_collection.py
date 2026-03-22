@@ -5220,6 +5220,9 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
 
     def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
         if cmd and str(cmd[0]) == str(backend_bin):
+            # Backend cache probe: stdin-based call with no --target/--output
+            if "--target" not in cmd and "--output" not in cmd:
+                return subprocess.CompletedProcess(cmd, 0, b"", b"")
             backend_cmds.append(list(cmd))
             assert cmd[1:3] == ["--target", "rust"]
             assert "--output" in cmd
@@ -5329,6 +5332,9 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
 
     def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
         if cmd and str(cmd[0]) == str(backend_bin):
+            # Backend cache probe: stdin-based call with no --output
+            if "--output" not in cmd:
+                return subprocess.CompletedProcess(cmd, 0, b"", b"")
             output = Path(cmd[cmd.index("--output") + 1])
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text("fn main() {}\n")
