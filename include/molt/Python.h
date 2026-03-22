@@ -970,13 +970,28 @@ static inline PyObject *PyObject_GetAttrString(PyObject *obj, const char *name) 
 }
 
 static inline int PyObject_SetAttr(PyObject *obj, PyObject *name, PyObject *value) {
+    if (obj == NULL || name == NULL) {
+        PyErr_SetString(PyExc_SystemError, "NULL argument to PyObject_SetAttr");
+        return -1;
+    }
+    if (value == NULL) {
+        /* CPython contract: SetAttr with NULL value means delete attribute. */
+        return molt_object_delattr(_molt_py_handle(obj), _molt_py_handle(name));
+    }
     return molt_object_setattr(_molt_py_handle(obj), _molt_py_handle(name), _molt_py_handle(value));
 }
 
 static inline int PyObject_SetAttrString(PyObject *obj, const char *name, PyObject *value) {
-    if (name == NULL) {
-        PyErr_SetString(PyExc_TypeError, "attribute name must not be NULL");
+    if (obj == NULL || name == NULL) {
+        PyErr_SetString(PyExc_SystemError, "NULL argument to PyObject_SetAttrString");
         return -1;
+    }
+    if (value == NULL) {
+        /* CPython contract: SetAttr with NULL value means delete attribute. */
+        MoltHandle name_handle = molt_string_from_utf8((const uint8_t *)name, (uint64_t)strlen(name));
+        int rc = molt_object_delattr(_molt_py_handle(obj), name_handle);
+        molt_handle_decref(name_handle);
+        return rc;
     }
     return molt_object_setattr_bytes(
         _molt_py_handle(obj), (const uint8_t *)name, (uint64_t)strlen(name), _molt_py_handle(value));
@@ -2698,12 +2713,13 @@ static inline int PyDict_Contains(PyObject *dict, PyObject *key) {
 }
 
 static inline PyObject *PyDict_GetItemWithError(PyObject *dict, PyObject *key) {
-    MoltHandle out = molt_mapping_getitem(_molt_py_handle(dict), _molt_py_handle(key));
-    if (out == 0 || molt_err_pending() != 0) {
-        /* Unlike PyDict_GetItem, do NOT clear errors — propagate them. */
+    /* Use borrowed lookup — callers expect a borrowed reference per CPython contract. */
+    MoltHandle out = molt_dict_getitem_borrowed(_molt_py_handle(dict), _molt_py_handle(key));
+    if (out == 0) {
+        /* Key not found. If an error is pending, propagate it; otherwise return NULL
+           without setting an exception (KeyError is NOT raised — that's the contract). */
         return NULL;
     }
-    /* Borrowed reference backed by dict */
     return _molt_pyobject_from_handle(out);
 }
 
@@ -8040,19 +8056,19 @@ static inline void PyUnicode_InternInPlace(PyObject **p) {
  * ======================================================================== */
 
 static inline PyObject *PyObject_CallNoArgs(PyObject *callable) {
-    MoltHandle args = molt_tuple_from_array(NULL, 0);
-    MoltHandle out;
+    MoltHandle args, out;
     if (callable == NULL) { PyErr_SetString(PyExc_TypeError, "NULL callable"); return NULL; }
+    args = molt_tuple_from_array(NULL, 0);
     out = molt_object_call(_molt_py_handle(callable), args, molt_none());
     molt_handle_decref(args);
     return _molt_pyobject_from_result(out);
 }
 
 static inline PyObject *PyObject_CallOneArg(PyObject *callable, PyObject *arg) {
-    MoltHandle a = _molt_py_handle(arg);
-    MoltHandle args = molt_tuple_from_array(&a, 1);
-    MoltHandle out;
+    MoltHandle a, args, out;
     if (callable == NULL) { PyErr_SetString(PyExc_TypeError, "NULL callable"); return NULL; }
+    a = _molt_py_handle(arg);
+    args = molt_tuple_from_array(&a, 1);
     out = molt_object_call(_molt_py_handle(callable), args, molt_none());
     molt_handle_decref(args);
     return _molt_pyobject_from_result(out);
@@ -8370,7 +8386,11 @@ static inline PyObject *PyCell_New(PyObject *ob) {
     if (cell == NULL) return NULL;
     if (ob != NULL) {
         Py_INCREF(ob);
-        PyTuple_SetItem(cell, 0, ob);
+        if (PyTuple_SetItem(cell, 0, ob) != 0) {
+            Py_DECREF(ob);  /* SetItem failed — undo our incref */
+            Py_DECREF(cell);
+            return NULL;
+        }
     }
     return cell;
 }
