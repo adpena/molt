@@ -2378,14 +2378,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             # A re-definition of the same symbol (e.g. @typing.overload stubs
             # followed by the real implementation all share one reserved symbol
-            # at module level).  Update the params and discard the old body so
-            # the backend sees the real implementation's signature.
-            new_params = params or []
-            if self.funcs_map[name]["params"] != new_params:
-                self.funcs_map[name]["params"] = new_params
-                self.funcs_map[name]["ops"].clear()
-            else:
-                self.funcs_map[name]["ops"].clear()
+            # at module level).  Update the params and discard the stale body
+            # so the backend sees the real implementation's signature/code.
+            self.funcs_map[name]["params"] = params or []
+            self.funcs_map[name]["ops"].clear()
         self.current_func_name = name
         self.current_ops = self.funcs_map[name]["ops"]
         self.locals = {}
