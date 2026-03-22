@@ -45,8 +45,8 @@ impl Drop for ThreadLocalGuard {
 }
 
 pub(crate) fn touch_tls_guard() {
-    GIL_DEPTH.with(|_| {});
-    TLS_GUARD.with(|_| {});
+    let _ = GIL_DEPTH.try_with(|_| {});
+    let _ = TLS_GUARD.try_with(|_| {});
 }
 
 pub(crate) fn runtime_teardown(_py: &PyToken<'_>, state: &RuntimeState) {
