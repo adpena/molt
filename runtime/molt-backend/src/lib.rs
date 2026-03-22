@@ -944,21 +944,28 @@ fn extend_unique_tracked(dst: &mut Vec<String>, src: Vec<String>) {
 #[cfg(feature = "native-backend")]
 fn drain_cleanup_entry_tracked(
     names: &mut Vec<String>,
-    entry_vars: &BTreeMap<String, Value>,
+    entry_vars: &mut BTreeMap<String, Value>,
     last_use: &BTreeMap<String, usize>,
     op_idx: usize,
 ) -> Vec<Value> {
     let mut cleanup = Vec::new();
+    let mut to_remove = Vec::new();
     names.retain(|name| {
         let last = last_use.get(name).copied().unwrap_or(op_idx);
         if last <= op_idx {
             if let Some(val) = entry_vars.get(name) {
                 cleanup.push(*val);
             }
+            // Mark for removal from entry_vars so no other cleanup path
+            // (exception handler, finalize block) can double dec-ref.
+            to_remove.push(name.clone());
             return false;
         }
         true
     });
+    for name in to_remove {
+        entry_vars.remove(&name);
+    }
     cleanup
 }
 
