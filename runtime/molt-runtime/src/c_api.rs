@@ -907,6 +907,32 @@ pub unsafe extern "C" fn molt_object_getattr_bytes(
     })
 }
 
+/// Returns a **borrowed** handle for an attribute on `obj_bits`.
+///
+/// Identical to `molt_object_getattr_bytes` except the returned handle does
+/// NOT carry an extra refcount.  The handle is valid as long as the parent
+/// object (module, type, etc.) continues to hold the attribute.
+///
+/// This is the runtime counterpart of CPython's internal borrowed-reference
+/// getattr used by `PyImport_GetModuleDict`, `PyEval_GetBuiltins`, etc.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_object_getattr_borrowed(
+    obj_bits: MoltHandle,
+    name_ptr: *const u8,
+    name_len: u64,
+) -> MoltHandle {
+    crate::with_gil_entry!(_py, {
+        let result = unsafe { molt_object_getattr_bytes(obj_bits, name_ptr, name_len) };
+        if result != 0 && !exception_pending(_py) {
+            // Convert new reference → borrowed reference.
+            // Safe because the parent object holds its own strong reference
+            // to the attribute value (e.g. in its __dict__).
+            dec_ref_bits(_py, result);
+        }
+        result
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_object_setattr_bytes(
     obj_bits: MoltHandle,

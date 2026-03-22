@@ -62,6 +62,7 @@ extern uint64_t molt_type_of_borrowed(uint64_t);
 extern uint64_t molt_dict_getitem_borrowed(uint64_t, uint64_t);
 extern uint64_t molt_list_getitem_borrowed(uint64_t, uint64_t);
 extern uint64_t molt_tuple_getitem_borrowed(uint64_t, uint64_t);
+extern uint64_t molt_object_getattr_borrowed(uint64_t obj, const uint8_t *name, uint64_t name_len);
 
 typedef intptr_t Py_ssize_t;
 typedef Py_ssize_t Py_hash_t;
@@ -6004,22 +6005,33 @@ static inline PyObject *PyImport_GetModule(PyObject *name) {
 }
 
 static inline PyObject *PyImport_AddModule(const char *name) {
+    PyObject *modules_dict;
     PyObject *module;
     MoltHandle name_bits;
     MoltHandle module_bits;
+    MoltHandle key_bits;
+    MoltHandle existing;
     if (name == NULL || name[0] == '\0') {
         PyErr_SetString(PyExc_ValueError, "module name must not be empty");
         return NULL;
     }
-    module = PyImport_ImportModule(name);
-    if (module != NULL) {
-        /* Note: PyImport_ImportModule returns a new reference that we intentionally
-           do NOT decref here. This is a deliberate refcount leak to avoid returning
-           a dangling pointer. The module is immortal (lives in sys.modules) so the
-           extra refcount is harmless. CPython avoids this by accessing the internal
-           dict directly, which we cannot do through the public API. */
-        return module;
+    /* Look up the module via sys.modules dict with a borrowed reference,
+       avoiding the refcount leak that PyImport_ImportModule would cause. */
+    modules_dict = PyImport_GetModuleDict();
+    if (modules_dict == NULL) {
+        return NULL;
     }
+    key_bits = _molt_string_from_utf8(name);
+    if (key_bits == 0 || molt_err_pending() != 0) {
+        return NULL;
+    }
+    existing = molt_dict_getitem_borrowed(_molt_py_handle(modules_dict), key_bits);
+    molt_handle_decref(key_bits);
+    if (existing != 0) {
+        /* Module already in sys.modules — return borrowed reference. */
+        return _molt_pyobject_from_handle(existing);
+    }
+    /* Module not found — create a new one. */
     PyErr_Clear();
     name_bits = _molt_string_from_utf8(name);
     if (name_bits == 0 || molt_err_pending() != 0) {
@@ -6037,17 +6049,17 @@ static inline PyObject *PyImport_AddModule(const char *name) {
 
 static inline PyObject *PyImport_GetModuleDict(void) {
     PyObject *sys_mod = PyImport_ImportModule("sys");
-    PyObject *modules;
+    MoltHandle modules;
     if (sys_mod == NULL) {
         return NULL;
     }
-    modules = PyObject_GetAttrString(sys_mod, "modules");
+    modules = molt_object_getattr_borrowed(
+        _molt_py_handle(sys_mod), (const uint8_t *)"modules", 7);
     Py_DECREF(sys_mod);
-    if (modules == NULL) {
+    if (modules == 0) {
         return NULL;
     }
-    /* Return borrowed reference — modules dict stays alive on sys. */
-    return modules;
+    return _molt_pyobject_from_handle(modules);
 }
 
 static inline int PyImport_ImportFrozenModule(const char *name) {
@@ -6114,17 +6126,17 @@ static inline PyThreadState *PyThreadState_Next(PyThreadState *tstate) {
 
 static inline PyObject *PyEval_GetBuiltins(void) {
     PyObject *builtins_mod = PyImport_ImportModule("builtins");
-    PyObject *builtins_dict;
+    MoltHandle dict;
     if (builtins_mod == NULL) {
         return NULL;
     }
-    builtins_dict = PyObject_GetAttrString(builtins_mod, "__dict__");
+    dict = molt_object_getattr_borrowed(
+        _molt_py_handle(builtins_mod), (const uint8_t *)"__dict__", 8);
     Py_DECREF(builtins_mod);
-    if (builtins_dict == NULL) {
+    if (dict == 0) {
         return NULL;
     }
-    /* Return borrowed reference — builtins dict stays alive on the module. */
-    return builtins_dict;
+    return _molt_pyobject_from_handle(dict);
 }
 
 static inline PyObject *PyEval_GetGlobals(void) {
@@ -6176,17 +6188,17 @@ static inline PyObject *PyEval_CallObjectWithKeywords(
 
 static inline PyObject *PySys_GetObject(const char *name) {
     PyObject *sys_mod = PyImport_ImportModule("sys");
-    PyObject *obj;
+    MoltHandle obj;
     if (sys_mod == NULL) {
         return NULL;
     }
-    obj = PyObject_GetAttrString(sys_mod, name);
+    obj = molt_object_getattr_borrowed(
+        _molt_py_handle(sys_mod), (const uint8_t *)name, (uint64_t)strlen(name));
     Py_DECREF(sys_mod);
-    if (obj == NULL) {
+    if (obj == 0) {
         return NULL;
     }
-    /* Return borrowed reference — object stays alive as sys attribute. */
-    return obj;
+    return _molt_pyobject_from_handle(obj);
 }
 
 static inline int PySys_SetObject(const char *name, PyObject *v) {
