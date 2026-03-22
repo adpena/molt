@@ -1121,6 +1121,517 @@ def generate(num_samples):
         sample_i = sample_i + 1
     return results
 
+# --- SQL database and engine ---
+
+_SQL_DB = {
+    "cities": {
+        "columns": ["name", "country", "population_m", "gdp_b"],
+        "rows": [
+            ["Tokyo", "Japan", 13.96, 1065.4],
+            ["Delhi", "India", 32.94, 293.6],
+            ["Shanghai", "China", 24.87, 726.0],
+            ["Sao Paulo", "Brazil", 22.43, 429.3],
+            ["Mexico City", "Mexico", 21.67, 463.7],
+            ["Cairo", "Egypt", 21.32, 101.4],
+            ["Mumbai", "India", 20.67, 209.0],
+            ["Beijing", "China", 21.33, 522.2],
+            ["Osaka", "Japan", 19.11, 654.8],
+            ["London", "UK", 8.98, 850.1],
+        ]
+    },
+    "languages": {
+        "columns": ["name", "year", "paradigm", "typing"],
+        "rows": [
+            ["Python", 1991, "multi", "dynamic"],
+            ["Rust", 2010, "multi", "static"],
+            ["Go", 2009, "imperative", "static"],
+            ["JavaScript", 1995, "multi", "dynamic"],
+            ["TypeScript", 2012, "multi", "static"],
+            ["Lua", 1993, "multi", "dynamic"],
+            ["Swift", 2014, "multi", "static"],
+            ["Kotlin", 2011, "multi", "static"],
+        ]
+    }
+}
+
+def _sql_tokenize(sql):
+    tokens = []
+    i = 0
+    while i < len(sql):
+        ch = sql[i]
+        if ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r':
+            i = i + 1
+        elif ch == ',' or ch == '(' or ch == ')' or ch == '*':
+            tokens.append(ch)
+            i = i + 1
+        elif ch == '>' or ch == '<' or ch == '!' or ch == '=':
+            if i + 1 < len(sql) and sql[i + 1] == '=':
+                tokens.append(ch + '=')
+                i = i + 2
+            else:
+                tokens.append(ch)
+                i = i + 1
+        elif ch == "'":
+            j = i + 1
+            while j < len(sql) and sql[j] != "'":
+                j = j + 1
+            tokens.append(sql[i:j + 1])
+            i = j + 1
+        else:
+            j = i
+            while j < len(sql) and sql[j] != ' ' and sql[j] != '\t' and sql[j] != ',' and sql[j] != '(' and sql[j] != ')' and sql[j] != '>' and sql[j] != '<' and sql[j] != '=' and sql[j] != '!' and sql[j] != '\n' and sql[j] != '\r':
+                j = j + 1
+            tokens.append(sql[i:j])
+            i = j
+    # merge aggregate function tokens: NAME ( expr ) -> NAME(expr)
+    merged = []
+    ti = 0
+    while ti < len(tokens):
+        tok_up = tokens[ti].upper()
+        if (tok_up == "COUNT" or tok_up == "SUM" or tok_up == "AVG" or tok_up == "MIN" or tok_up == "MAX") and ti + 3 < len(tokens) and tokens[ti + 1] == "(":
+            combined = tokens[ti] + "(" + tokens[ti + 2] + ")"
+            merged.append(combined)
+            ti = ti + 4
+        else:
+            merged.append(tokens[ti])
+            ti = ti + 1
+    return merged
+
+def _sql_parse_value(tok):
+    if len(tok) >= 2 and tok[0] == "'" and tok[len(tok) - 1] == "'":
+        return tok[1:len(tok) - 1]
+    dot_count = 0
+    digit_start = 0
+    if len(tok) > 0 and tok[0] == '-':
+        digit_start = 1
+    all_num = True
+    ci = digit_start
+    while ci < len(tok):
+        if tok[ci] == '.':
+            dot_count = dot_count + 1
+        elif tok[ci] < '0' or tok[ci] > '9':
+            all_num = False
+        ci = ci + 1
+    if all_num and len(tok) > digit_start:
+        if dot_count == 1:
+            return float(tok)
+        elif dot_count == 0:
+            return int(tok)
+    return tok
+
+def _sql_parse_condition(tokens, pos):
+    left = tokens[pos]
+    pos = pos + 1
+    op = tokens[pos]
+    pos = pos + 1
+    if op == "LIKE" or op == "like":
+        op = "LIKE"
+    right_raw = tokens[pos]
+    pos = pos + 1
+    right = _sql_parse_value(right_raw)
+    return (left, op, right), pos
+
+def _sql_eval_condition(cond, row_dict):
+    col_name = cond[0]
+    op = cond[1]
+    target = cond[2]
+    val = row_dict.get(col_name, None)
+    if val is None:
+        return False
+    if op == "=":
+        return val == target
+    elif op == "!=":
+        return val != target
+    elif op == ">":
+        return val > target
+    elif op == "<":
+        return val < target
+    elif op == ">=":
+        return val >= target
+    elif op == "<=":
+        return val <= target
+    elif op == "LIKE":
+        pattern = str(target)
+        value = str(val)
+        if len(pattern) >= 2 and pattern[0] == '%' and pattern[len(pattern) - 1] == '%':
+            return pattern[1:len(pattern) - 1].lower() in value.lower()
+        elif len(pattern) >= 1 and pattern[0] == '%':
+            return value.lower().endswith(pattern[1:].lower())
+        elif len(pattern) >= 1 and pattern[len(pattern) - 1] == '%':
+            return value.lower().startswith(pattern[:len(pattern) - 1].lower())
+        else:
+            return value.lower() == pattern.lower()
+    return False
+
+def _sql_parse_where(tokens, pos):
+    conditions = []
+    connectors = []
+    cond, pos = _sql_parse_condition(tokens, pos)
+    conditions.append(cond)
+    while pos < len(tokens):
+        tok_upper = tokens[pos].upper()
+        if tok_upper == "AND" or tok_upper == "OR":
+            connectors.append(tok_upper)
+            pos = pos + 1
+            cond, pos = _sql_parse_condition(tokens, pos)
+            conditions.append(cond)
+        else:
+            break
+    return conditions, connectors, pos
+
+def _sql_eval_where(conditions, connectors, row_dict):
+    result = _sql_eval_condition(conditions[0], row_dict)
+    ci = 0
+    while ci < len(connectors):
+        next_val = _sql_eval_condition(conditions[ci + 1], row_dict)
+        if connectors[ci] == "AND":
+            result = result and next_val
+        else:
+            result = result or next_val
+        ci = ci + 1
+    return result
+
+def _sql_is_agg(col_expr):
+    upper = col_expr.upper()
+    if upper.startswith("COUNT(") or upper.startswith("SUM(") or upper.startswith("AVG(") or upper.startswith("MIN(") or upper.startswith("MAX("):
+        return True
+    return False
+
+def _sql_parse_agg(expr):
+    paren = expr.index("(")
+    func_name = expr[:paren].upper()
+    inner = expr[paren + 1:len(expr) - 1]
+    return func_name, inner
+
+def _sql_compute_agg(func_name, col_name, rows, columns):
+    if func_name == "COUNT":
+        return len(rows)
+    col_idx = -1
+    ci = 0
+    while ci < len(columns):
+        if columns[ci] == col_name:
+            col_idx = ci
+        ci = ci + 1
+    if col_idx == -1:
+        return 0
+    vals = []
+    ri = 0
+    while ri < len(rows):
+        vals.append(rows[ri][col_idx])
+        ri = ri + 1
+    if func_name == "SUM":
+        total = 0
+        vi = 0
+        while vi < len(vals):
+            total = total + vals[vi]
+            vi = vi + 1
+        return total
+    elif func_name == "AVG":
+        if len(vals) == 0:
+            return 0
+        total = 0
+        vi = 0
+        while vi < len(vals):
+            total = total + vals[vi]
+            vi = vi + 1
+        raw = total / len(vals)
+        return int(raw * 100) / 100.0
+    elif func_name == "MIN":
+        m = vals[0]
+        vi = 1
+        while vi < len(vals):
+            if vals[vi] < m:
+                m = vals[vi]
+            vi = vi + 1
+        return m
+    elif func_name == "MAX":
+        m = vals[0]
+        vi = 1
+        while vi < len(vals):
+            if vals[vi] > m:
+                m = vals[vi]
+            vi = vi + 1
+        return m
+    return 0
+
+def _sql_execute(sql):
+    tokens = _sql_tokenize(sql)
+    if len(tokens) == 0:
+        return [], []
+    if tokens[0].upper() != "SELECT":
+        return ["error"], [["Only SELECT queries are supported"]]
+    pos = 1
+    select_cols = []
+    while pos < len(tokens) and tokens[pos].upper() != "FROM":
+        tok = tokens[pos]
+        if tok != ",":
+            select_cols.append(tok)
+        pos = pos + 1
+    if pos >= len(tokens) or tokens[pos].upper() != "FROM":
+        return ["error"], [["Missing FROM clause"]]
+    pos = pos + 1
+    table_name = tokens[pos].lower()
+    pos = pos + 1
+    if table_name not in _SQL_DB:
+        return ["error"], [["Unknown table: " + table_name]]
+    table = _SQL_DB[table_name]
+    columns = table["columns"]
+    raw_rows = table["rows"]
+    # copy rows
+    rows = []
+    ri = 0
+    while ri < len(raw_rows):
+        row_copy = []
+        ci = 0
+        while ci < len(raw_rows[ri]):
+            row_copy.append(raw_rows[ri][ci])
+            ci = ci + 1
+        rows.append(row_copy)
+        ri = ri + 1
+    # WHERE
+    where_conds = None
+    where_conns = None
+    if pos < len(tokens) and tokens[pos].upper() == "WHERE":
+        pos = pos + 1
+        where_conds, where_conns, pos = _sql_parse_where(tokens, pos)
+    if where_conds is not None:
+        filtered = []
+        ri = 0
+        while ri < len(rows):
+            row_dict = {}
+            ci = 0
+            while ci < len(columns):
+                row_dict[columns[ci]] = rows[ri][ci]
+                ci = ci + 1
+            if _sql_eval_where(where_conds, where_conns, row_dict):
+                filtered.append(rows[ri])
+            ri = ri + 1
+        rows = filtered
+    # GROUP BY
+    group_col = None
+    if pos < len(tokens) and tokens[pos].upper() == "GROUP":
+        pos = pos + 1  # skip BY
+        pos = pos + 1
+        group_col = tokens[pos]
+        pos = pos + 1
+    if group_col is not None:
+        group_idx = -1
+        ci = 0
+        while ci < len(columns):
+            if columns[ci] == group_col:
+                group_idx = ci
+            ci = ci + 1
+        if group_idx == -1:
+            return ["error"], [["Unknown column: " + group_col]]
+        groups = {}
+        group_keys = []
+        ri = 0
+        while ri < len(rows):
+            key = rows[ri][group_idx]
+            str_key = str(key)
+            if str_key not in groups:
+                groups[str_key] = []
+                group_keys.append(key)
+            groups[str_key].append(rows[ri])
+            ri = ri + 1
+        result_cols = []
+        result_rows = []
+        si = 0
+        while si < len(select_cols):
+            sc = select_cols[si]
+            if _sql_is_agg(sc):
+                result_cols.append(sc)
+            else:
+                result_cols.append(sc)
+            si = si + 1
+        ki = 0
+        while ki < len(group_keys):
+            gkey = group_keys[ki]
+            group_rows = groups[str(gkey)]
+            row = []
+            si = 0
+            while si < len(select_cols):
+                sc = select_cols[si]
+                if _sql_is_agg(sc):
+                    func_name, inner = _sql_parse_agg(sc)
+                    row.append(_sql_compute_agg(func_name, inner, group_rows, columns))
+                else:
+                    row.append(gkey)
+                si = si + 1
+            result_rows.append(row)
+            ki = ki + 1
+        return result_cols, result_rows
+    # ORDER BY
+    if pos < len(tokens) and tokens[pos].upper() == "ORDER":
+        pos = pos + 1  # skip BY
+        pos = pos + 1
+        order_col = tokens[pos]
+        pos = pos + 1
+        desc = False
+        if pos < len(tokens) and tokens[pos].upper() == "DESC":
+            desc = True
+            pos = pos + 1
+        elif pos < len(tokens) and tokens[pos].upper() == "ASC":
+            pos = pos + 1
+        order_idx = -1
+        ci = 0
+        while ci < len(columns):
+            if columns[ci] == order_col:
+                order_idx = ci
+            ci = ci + 1
+        if order_idx >= 0:
+            # simple bubble sort
+            changed = True
+            while changed:
+                changed = False
+                si = 0
+                while si < len(rows) - 1:
+                    swap = False
+                    if desc:
+                        if rows[si][order_idx] < rows[si + 1][order_idx]:
+                            swap = True
+                    else:
+                        if rows[si][order_idx] > rows[si + 1][order_idx]:
+                            swap = True
+                    if swap:
+                        tmp = rows[si]
+                        rows[si] = rows[si + 1]
+                        rows[si + 1] = tmp
+                        changed = True
+                    si = si + 1
+    # LIMIT
+    limit_n = -1
+    if pos < len(tokens) and tokens[pos].upper() == "LIMIT":
+        pos = pos + 1
+        limit_n = int(tokens[pos])
+        pos = pos + 1
+    if limit_n >= 0:
+        rows = rows[:limit_n]
+    # SELECT columns
+    has_agg = False
+    si = 0
+    while si < len(select_cols):
+        if _sql_is_agg(select_cols[si]):
+            has_agg = True
+        si = si + 1
+    if has_agg and group_col is None:
+        result_cols = []
+        result_row = []
+        si = 0
+        while si < len(select_cols):
+            sc = select_cols[si]
+            result_cols.append(sc)
+            if _sql_is_agg(sc):
+                func_name, inner = _sql_parse_agg(sc)
+                result_row.append(_sql_compute_agg(func_name, inner, rows, columns))
+            si = si + 1
+        return result_cols, [result_row]
+    if len(select_cols) == 1 and select_cols[0] == "*":
+        return columns[:], rows
+    col_indices = []
+    out_cols = []
+    si = 0
+    while si < len(select_cols):
+        sc = select_cols[si]
+        ci = 0
+        while ci < len(columns):
+            if columns[ci] == sc:
+                col_indices.append(ci)
+                out_cols.append(sc)
+            ci = ci + 1
+        si = si + 1
+    out_rows = []
+    ri = 0
+    while ri < len(rows):
+        row = []
+        ci = 0
+        while ci < len(col_indices):
+            row.append(rows[ri][col_indices[ci]])
+            ci = ci + 1
+        out_rows.append(row)
+        ri = ri + 1
+    return out_cols, out_rows
+
+def _sql_format_text(result_cols, result_rows):
+    if len(result_cols) == 0:
+        return "No results."
+    widths = []
+    ci = 0
+    while ci < len(result_cols):
+        widths.append(len(str(result_cols[ci])))
+        ci = ci + 1
+    ri = 0
+    while ri < len(result_rows):
+        ci = 0
+        while ci < len(result_rows[ri]):
+            w = len(str(result_rows[ri][ci]))
+            if ci < len(widths) and w > widths[ci]:
+                widths[ci] = w
+            ci = ci + 1
+        ri = ri + 1
+    lines = []
+    header = ""
+    ci = 0
+    while ci < len(result_cols):
+        cell = str(result_cols[ci])
+        while len(cell) < widths[ci]:
+            cell = cell + " "
+        if ci > 0:
+            header = header + "  "
+        header = header + cell
+        ci = ci + 1
+    lines.append(header)
+    sep = ""
+    ci = 0
+    while ci < len(widths):
+        if ci > 0:
+            sep = sep + "  "
+        sep = sep + "-" * widths[ci]
+        ci = ci + 1
+    lines.append(sep)
+    ri = 0
+    while ri < len(result_rows):
+        line = ""
+        ci = 0
+        while ci < len(result_rows[ri]):
+            cell = str(result_rows[ri][ci])
+            while len(cell) < widths[ci]:
+                cell = cell + " "
+            if ci > 0:
+                line = line + "  "
+            line = line + cell
+            ci = ci + 1
+        lines.append(line)
+        ri = ri + 1
+    lines.append("")
+    lines.append(str(len(result_rows)) + " row(s)")
+    return "\n".join(lines)
+
+def _sql_urldecode(s):
+    result = ""
+    i = 0
+    while i < len(s):
+        if s[i] == '+':
+            result = result + ' '
+            i = i + 1
+        elif s[i] == '%' and i + 2 < len(s):
+            hex_str = s[i + 1:i + 3]
+            code = 0
+            hi = 0
+            while hi < len(hex_str):
+                c = hex_str[hi].lower()
+                if c >= '0' and c <= '9':
+                    code = code * 16 + (ord(c) - ord('0'))
+                elif c >= 'a' and c <= 'f':
+                    code = code * 16 + 10 + (ord(c) - ord('a'))
+                hi = hi + 1
+            result = result + chr(code)
+            i = i + 3
+        else:
+            result = result + s[i]
+            i = i + 1
+    return result
+
 # --- Request parsing ---
 import sys
 path = sys.argv[1] if len(sys.argv) > 1 else "/"
@@ -1396,11 +1907,113 @@ elif route == "demo":
     print("<a class='ep' href='/pi/100000'><code>/pi/N</code><span>Approximate pi (Leibniz series)</span></a>")
     print("<a class='ep' href='/generate/5'><code>/generate/N</code><span>Generate N names with microGPT</span></a>")
     print("<a class='ep' href='/bench'><code>/bench</code><span>Run benchmark suite</span></a>")
+    print("<a class='ep' href='/sql'><code>/sql</code><span>SQL playground — query cities &amp; languages</span></a>")
     print("</div>")
     print("<footer>")
     print("<a href='https://github.com/adpena/molt'>github.com/adpena/molt</a>")
     print("</footer>")
     print("</body></html>")
+
+elif route == "sql":
+    q = params.get("q", "")
+    if q:
+        q = _sql_urldecode(q)
+        result_cols, result_rows = _sql_execute(q)
+        print(_sql_format_text(result_cols, result_rows))
+    else:
+        print("<!DOCTYPE html>")
+        print("<html><head>")
+        print("<meta charset='utf-8'>")
+        print("<meta name='viewport' content='width=device-width, initial-scale=1'>")
+        print("<title>SQL Playground — Moltlang</title>")
+        print("<style>")
+        print("*{margin:0;padding:0;box-sizing:border-box}")
+        print("body{background:#0d1117;color:#c9d1d9;font-family:'SF Mono','Cascadia Code','Fira Code',monospace;line-height:1.6;padding:2rem;max-width:860px;margin:0 auto}")
+        print("a{color:#58a6ff;text-decoration:none}")
+        print("a:hover{text-decoration:underline}")
+        print("h1{font-size:1.4rem;color:#f0f6fc;margin-bottom:0.25rem}")
+        print(".subtitle{color:#8b949e;font-size:0.9rem;margin-bottom:1.5rem}")
+        print(".editor{margin-bottom:1.5rem}")
+        print("textarea{width:100%;height:80px;background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:0.75rem;font-family:inherit;font-size:0.9rem;resize:vertical}")
+        print("textarea:focus{outline:none;border-color:#58a6ff}")
+        print(".btn{display:inline-block;background:#238636;color:#fff;border:none;padding:0.5rem 1.25rem;border-radius:6px;font-family:inherit;font-size:0.85rem;cursor:pointer;margin-top:0.5rem}")
+        print(".btn:hover{background:#2ea043}")
+        print(".examples{margin-bottom:1.5rem}")
+        print(".examples h2{font-size:0.95rem;color:#f0f6fc;margin-bottom:0.5rem;border-bottom:1px solid #30363d;padding-bottom:0.4rem}")
+        print(".eq{display:block;padding:0.35rem 0.5rem;margin-bottom:0.15rem;border-radius:4px;color:#7ee787;font-size:0.8rem;cursor:pointer;transition:background 0.15s}")
+        print(".eq:hover{background:#161b22;text-decoration:none}")
+        print(".tables{margin-bottom:1.5rem}")
+        print(".tables h2{font-size:0.95rem;color:#f0f6fc;margin-bottom:0.5rem;border-bottom:1px solid #30363d;padding-bottom:0.4rem}")
+        print(".tinfo{color:#8b949e;font-size:0.8rem;margin-bottom:0.25rem}")
+        print(".result{margin-top:1rem}")
+        print("table{border-collapse:collapse;width:100%;margin-top:0.5rem}")
+        print("th{background:#161b22;color:#f0f6fc;text-align:left;padding:0.5rem 0.75rem;border:1px solid #30363d;font-size:0.8rem;font-weight:600}")
+        print("td{padding:0.4rem 0.75rem;border:1px solid #30363d;font-size:0.8rem}")
+        print("tr:hover td{background:#161b22}")
+        print(".row-count{color:#8b949e;font-size:0.8rem;margin-top:0.5rem}")
+        print(".error-box{color:#f85149;background:#1c0c0c;border:1px solid #f8514933;padding:0.75rem;border-radius:6px;font-size:0.85rem;margin-top:0.5rem}")
+        print("footer{border-top:1px solid #30363d;padding-top:1rem;margin-top:2rem;color:#8b949e;font-size:0.8rem}")
+        print("footer a{color:#58a6ff}")
+        print("@media(max-width:480px){body{padding:1rem}}")
+        print("</style>")
+        print("</head><body>")
+        print("<h1>SQL Playground</h1>")
+        print("<p class='subtitle'>Pure Python SQL engine compiled to WASM. Query the pre-loaded datasets.</p>")
+        print("<div class='tables'>")
+        print("<h2>Available Tables</h2>")
+        print("<p class='tinfo'><strong>cities</strong> — name, country, population_m, gdp_b (10 rows)</p>")
+        print("<p class='tinfo'><strong>languages</strong> — name, year, paradigm, typing (8 rows)</p>")
+        print("</div>")
+        print("<div class='editor'>")
+        print("<textarea id='sql' placeholder='Enter SQL query...'>SELECT * FROM cities ORDER BY population_m DESC</textarea>")
+        print("<button class='btn' onclick='runQuery()'>Run Query</button>")
+        print("</div>")
+        print("<div class='examples'>")
+        print("<h2>Example Queries</h2>")
+        print("<a class='eq' onclick='setQuery(this.textContent)'>SELECT * FROM cities ORDER BY population_m DESC</a>")
+        print("<a class='eq' onclick='setQuery(this.textContent)'>SELECT country, COUNT(*) FROM cities GROUP BY country</a>")
+        print("<a class='eq' onclick='setQuery(this.textContent)'>SELECT name, gdp_b FROM cities WHERE gdp_b > 500 ORDER BY gdp_b DESC</a>")
+        print("<a class='eq' onclick='setQuery(this.textContent)'>SELECT * FROM languages WHERE typing = &apos;static&apos; ORDER BY year</a>")
+        print("<a class='eq' onclick='setQuery(this.textContent)'>SELECT paradigm, COUNT(*) FROM languages GROUP BY paradigm</a>")
+        print("</div>")
+        print("<div id='result' class='result'></div>")
+        print("<footer>")
+        print("<a href='/demo'>Back to demo</a> &middot; <a href='https://github.com/adpena/molt'>github.com/adpena/molt</a>")
+        print("</footer>")
+        print("<script>")
+        print("function setQuery(q){document.getElementById('sql').value=q;runQuery()}")
+        print("function runQuery(){")
+        print("  var q=document.getElementById('sql').value.trim();")
+        print("  if(!q)return;")
+        print("  fetch('/sql?q='+encodeURIComponent(q))")
+        print("    .then(function(r){return r.text()})")
+        print("    .then(function(text){")
+        print("      var lines=text.split('\\n');")
+        print("      if(lines.length<2){document.getElementById('result').textContent=text;return}")
+        print("      var headers=[];var h=lines[0];var positions=[];")
+        print("      var sep=lines[1];var si=0;")
+        print("      while(si<sep.length){if(sep[si]==='-'){var ps=si;while(si<sep.length&&sep[si]==='-')si++;positions.push([ps,si])}else{si++}}")
+        print("      var pi=0;while(pi<positions.length){headers.push(h.substring(positions[pi][0],positions[pi][1]).trim());pi++}")
+        print("      var tbl=document.createElement('table');var thead=document.createElement('tr');")
+        print("      var hi=0;while(hi<headers.length){var th=document.createElement('th');th.textContent=headers[hi];thead.appendChild(th);hi++}")
+        print("      tbl.appendChild(thead);")
+        print("      var ri=2;while(ri<lines.length){")
+        print("        var line=lines[ri];if(line.indexOf('row(s)')>=0){break}if(!line){ri++;continue}")
+        print("        var tr=document.createElement('tr');var ci=0;")
+        print("        while(ci<positions.length){var td=document.createElement('td');var cell='';")
+        print("          if(positions[ci][0]<line.length){cell=line.substring(positions[ci][0],Math.min(positions[ci][1]+2,line.length)).trim()}")
+        print("          td.textContent=cell;tr.appendChild(td);ci++}")
+        print("        tbl.appendChild(tr);ri++}")
+        print("      var rowLine=lines[lines.length-1]||lines[lines.length-2]||'';")
+        print("      var countDiv=document.createElement('div');countDiv.className='row-count';countDiv.textContent=rowLine;")
+        print("      var container=document.getElementById('result');")
+        print("      while(container.firstChild)container.removeChild(container.firstChild);")
+        print("      container.appendChild(tbl);container.appendChild(countDiv)")
+        print("    })")
+        print("    .catch(function(e){var el=document.getElementById('result');el.textContent='Error: '+e})")
+        print("}")
+        print("</script>")
+        print("</body></html>")
 
 else:
     if route:
@@ -1428,6 +2041,7 @@ else:
     print("    /pi/N               Approximate pi (Leibniz series)")
     print("    /generate/N         Generate N names with microGPT")
     print("    /bench              Run benchmark suite")
+    print("    /sql                SQL playground")
     print("    /demo               HTML landing page")
     print("")
     print("  Try:")
