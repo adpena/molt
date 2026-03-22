@@ -79,6 +79,13 @@ STDLIB_NESTED_IMPORT_SCAN_MODULES = {
     # EmailMessage lazily imports email.policy inside __init__.
     "email.message",
 }
+# Submodule prefixes excluded from the module graph because they target
+# platforms that Molt does not support (e.g. Emscripten/Pyodide).  The import
+# scanner still discovers them but the graph walker skips any candidate whose
+# dotted name starts with one of these prefixes.
+PLATFORM_EXCLUDED_SUBMODULES = (
+    "urllib3.contrib.emscripten",
+)
 ENTRY_OVERRIDE_ENV = "MOLT_ENTRY_MODULE"
 ENTRY_OVERRIDE_SPAWN = "multiprocessing.spawn"
 IMPORTER_MODULE_NAME = "_molt_importer"
@@ -6191,6 +6198,11 @@ def _discover_module_graph_from_paths(
                 if candidate in stub_parents:
                     continue
                 if candidate.split(".", 1)[0] in skip_modules:
+                    continue
+                if any(
+                    candidate == prefix or candidate.startswith(prefix + ".")
+                    for prefix in PLATFORM_EXCLUDED_SUBMODULES
+                ):
                     continue
                 resolved = resolve_candidate(candidate)
                 if resolved is not None and resolved not in queued_paths:
