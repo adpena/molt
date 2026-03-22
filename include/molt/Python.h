@@ -66,7 +66,10 @@ extern uint64_t molt_tuple_getitem_borrowed(uint64_t, uint64_t);
 typedef intptr_t Py_ssize_t;
 typedef Py_ssize_t Py_hash_t;
 struct _molt_pyobject {
-    MoltHandle _handle;
+    /* Intentionally minimal. The Molt handle lives in the POINTER value
+       (via cast), not in this struct. Keep this as small as possible to
+       minimize sizeof(PyObject) for embedded ob_base fields. */
+    char _opaque;
 };
 typedef struct _molt_pyobject PyObject;
 typedef PyObject PyTypeObject;
@@ -2882,8 +2885,9 @@ static inline int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) 
         PyErr_SetString(PyExc_TypeError, "buffer view must not be NULL");
         return -1;
     }
+    int rc;
     memset(view, 0, sizeof(*view));
-    int rc = molt_buffer_acquire(_molt_py_handle(obj), &view->_molt_view);
+    rc = molt_buffer_acquire(_molt_py_handle(obj), &view->_molt_view);
     if (rc == 0) {
         view->buf = view->_molt_view.data;
         view->len = (Py_ssize_t)view->_molt_view.len;
