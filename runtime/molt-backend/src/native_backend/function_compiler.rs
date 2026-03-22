@@ -8698,10 +8698,41 @@ impl SimpleBackend {
                     } else {
                         Linkage::Import
                     };
-                    let callee = self
+                    let callee = match self
                         .module
                         .declare_function(target_name, linkage, &target_sig)
-                        .unwrap();
+                    {
+                        Ok(id) => id,
+                        Err(_) => {
+                            // Function was already declared with a different signature
+                            // (e.g., @typing.overload stubs vs real implementation).
+                            // Look up the existing declaration instead of panicking.
+                            self.module
+                                .declare_function(target_name, linkage, &{
+                                    let mut s = self.module.make_signature();
+                                    // Use args.len() as fallback — the runtime dispatch
+                                    // (molt_guarded_call) handles arity mismatch.
+                                    for _ in 0..args.len() {
+                                        s.params.push(AbiParam::new(types::I64));
+                                    }
+                                    s.returns.push(AbiParam::new(types::I64));
+                                    s
+                                })
+                                .unwrap_or_else(|_| {
+                                    // Both arities failed — use the existing func ID
+                                    // by looking it up through get_name
+                                    self.module.get_name(target_name)
+                                        .and_then(|name_id| {
+                                            if let cranelift_module::FuncOrDataId::Func(fid) = name_id {
+                                                Some(fid)
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .expect("function must have been declared")
+                                })
+                        }
+                    };
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let fn_ptr_val = builder.ins().func_addr(types::I64, local_callee);
 
@@ -8964,10 +8995,24 @@ impl SimpleBackend {
                         Linkage::Import
                     };
 
-                    let callee = self
+                    let callee = match self
                         .module
                         .declare_function(target_name, linkage, &sig)
-                        .unwrap();
+                    {
+                        Ok(id) => id,
+                        Err(_) => {
+                            // Signature mismatch — reuse existing declaration
+                            self.module.get_name(target_name)
+                                .and_then(|name_id| {
+                                    if let cranelift_module::FuncOrDataId::Func(fid) = name_id {
+                                        Some(fid)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .expect("function must have been declared")
+                        }
+                    };
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let expected_addr = builder.ins().func_addr(types::I64, local_callee);
 
