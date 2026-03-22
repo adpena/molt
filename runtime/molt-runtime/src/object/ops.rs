@@ -1220,9 +1220,10 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                             if object_type_id(r_ptr) == TYPE_ID_STRING {
                                 let l_len = string_len(ptr);
                                 let r_len = string_len(r_ptr);
+                                if let Some(content_len) = l_len.checked_add(r_len) {
                                 let needed = std::mem::size_of::<MoltHeader>()
                                     + std::mem::size_of::<usize>()
-                                    + l_len + r_len;
+                                    + content_len;
                                 if header.size >= needed {
                                     // Fast: spare capacity — append in place, zero alloc
                                     let l_data = string_bytes(ptr) as *mut u8;
@@ -1245,6 +1246,7 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                                     *(new_ptr as *mut usize) = l_len + r_len;
                                     return MoltObject::from_ptr(new_ptr).bits();
                                 }
+                                } // if let Some(content_len) — overflow falls through
                             }
                         }
                     }
@@ -1832,7 +1834,14 @@ pub extern "C" fn molt_floordiv(a: u64, b: u64) -> u64 {
                     "integer division or modulo by zero",
                 );
             }
-            return MoltObject::from_int(li.div_euclid(ri)).bits();
+            if li == i64::MIN && ri == -1 {
+                // overflow — fall through to bigint
+            } else {
+                let q = li / ri;
+                let r = li % ri;
+                let res = if r != 0 && (r < 0) != (ri < 0) { q - 1 } else { q };
+                return MoltObject::from_int(res).bits();
+            }
         }
         if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
             if r_big.is_zero() {
@@ -2884,7 +2893,7 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
         }
         if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
             if ri == 0 {
-                return raise_exception::<_>(_py, "ZeroDivisionError", "integer modulo by zero");
+                return raise_exception::<_>(_py, "ZeroDivisionError", "integer division or modulo by zero");
             }
             let mut rem = li % ri;
             if rem != 0 && (rem > 0) != (ri > 0) {
@@ -2894,7 +2903,7 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
         }
         if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
             if r_big.is_zero() {
-                return raise_exception::<_>(_py, "ZeroDivisionError", "integer modulo by zero");
+                return raise_exception::<_>(_py, "ZeroDivisionError", "integer division or modulo by zero");
             }
             let res = l_big.mod_floor(&r_big);
             if let Some(i) = bigint_to_inline(&res) {
