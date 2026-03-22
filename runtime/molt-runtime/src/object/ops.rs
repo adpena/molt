@@ -14591,6 +14591,42 @@ pub extern "C" fn molt_call_func_dispatch(
                     );
                 }
             }
+
+            // Generic fallback: consult __defaults__ tuple on the function.
+            // This handles user-defined functions with keyword default
+            // arguments (e.g. `def f(a, b, lo=0, hi=100)`) that the compact
+            // default_kind encoding cannot represent.
+            unsafe {
+                let defaults_bits = function_attr_bits(
+                    _py,
+                    func_ptr,
+                    intern_static_name(
+                        _py,
+                        &runtime_state(_py).interned.defaults_name,
+                        b"__defaults__",
+                    ),
+                );
+                if let Some(dbits) = defaults_bits {
+                    if !obj_from_bits(dbits).is_none() {
+                        if let Some(def_ptr) = obj_from_bits(dbits).as_ptr() {
+                            if object_type_id(def_ptr) == TYPE_ID_TUPLE {
+                                let defaults = seq_vec_ref(def_ptr);
+                                let n_defaults = defaults.len();
+                                if missing <= n_defaults {
+                                    let mut padded = effective_args.clone();
+                                    let start = n_defaults - missing;
+                                    for i in start..n_defaults {
+                                        padded.push(defaults[i]);
+                                    }
+                                    return molt_call_func_direct(
+                                        _py, fn_ptr_val, &padded, code_id, func_bits,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Arity mismatch we can't handle inline — fallback.
