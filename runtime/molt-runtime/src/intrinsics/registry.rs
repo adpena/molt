@@ -20,18 +20,12 @@ const RUNTIME_FLAG: &str = "_molt_runtime";
 static BUILTINS_MODULE_PTR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 
 pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
-    eprintln!("MOLT_INTRINSICS: install_into_builtins called");
     if module_ptr.is_null() {
-        eprintln!("MOLT_INTRINSICS: module_ptr is null, returning");
         return;
     }
-    // Allow subsequent modules to update BUILTINS_MODULE_PTR so that it
-    // always points at the most-recently-created module.  The old "first
-    // module only" guard caused BUILTINS_MODULE_PTR to be locked to the
-    // __main__ module, but it must point at whichever module the runtime
-    // considers "builtins" for lazy intrinsic resolution to work.
-    // The `registry_installed` check below still prevents the intrinsics
-    // dict from being installed more than once per module.
+    // Install an __intrinsics__ registry dict into the module so the lazy
+    // resolver can cache intrinsic function objects.  The `registry_installed`
+    // check prevents double-installation on re-entry.
     unsafe {
         if object_type_id(module_ptr) != TYPE_ID_MODULE {
             return;
@@ -61,11 +55,22 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
 
     // Store builtins module pointer for the lazy resolver (native only).
     // AtomicPtr ensures thread safety on native multi-threaded targets.
-    // Dec-ref the previous pointer (if any) to avoid leaking a ref.
-    let prev = BUILTINS_MODULE_PTR.swap(module_ptr, Ordering::AcqRel);
-    inc_ref_bits(_py, MoltObject::from_ptr(module_ptr).bits());
-    if !prev.is_null() {
-        dec_ref_bits(_py, MoltObject::from_ptr(prev).bits());
+    //
+    // Only set BUILTINS_MODULE_PTR once.  Previous code swapped it on every
+    // molt_module_new, which dec-ref'd the prior module.  On native builds the
+    // dec-ref cascaded into a use-after-free: the "builtins" module was freed
+    // when the next module (e.g. _sitebuiltins) overwrote the pointer, but
+    // the module cache still held (now-dangling) bits for "builtins", causing
+    // "module attribute access expects module, got type_id=..." on every
+    // subsequent MODULE_GET_ATTR.
+    //
+    // The lazy resolver only needs *some* module's __intrinsics__ registry
+    // dict to cache resolved intrinsics; it does not matter which module.
+    // Locking to the first one avoids the refcount imbalance entirely.
+    let prev = BUILTINS_MODULE_PTR.load(Ordering::Acquire);
+    if prev.is_null() {
+        BUILTINS_MODULE_PTR.store(module_ptr, Ordering::Release);
+        inc_ref_bits(_py, MoltObject::from_ptr(module_ptr).bits());
     }
 
     // On wasm32, `call_indirect` with lazily-resolved function pointers
@@ -112,7 +117,6 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
     }
 
     dec_ref_bits(_py, registry_bits);
-    eprintln!("MOLT_INTRINSICS: install_into_builtins done");
 }
 
 /// Lazily resolve a single intrinsic by name, build the function object,

@@ -852,6 +852,19 @@ pub(crate) fn alloc_module_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = dict_bits;
         inc_ref_bits(_py, name_bits);
         inc_ref_bits(_py, dict_bits);
+        // Mark module objects as immortal.  The native backend's Cranelift
+        // code generation emits dec_ref_obj calls for every SSA value whose
+        // last-use point is reached (Perceus-style reference counting).
+        // Module objects are returned by MODULE_CACHE_GET which inc_refs,
+        // and then dec_ref'd when the local goes dead.  However, modules
+        // are also stored in the module cache (with their own inc_ref) and
+        // in sys.modules, and multiple overlapping load sequences can cause
+        // the compiled code's dec_refs to out-pace the inc_refs, freeing
+        // the module while the cache still holds dangling bits.  Modules
+        // are process-lifetime singletons in Molt, so marking them immortal
+        // is both correct and avoids the refcount imbalance entirely.
+        let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
+        (*header_ptr).flags |= crate::object::HEADER_FLAG_IMMORTAL;
     }
     ptr
 }
