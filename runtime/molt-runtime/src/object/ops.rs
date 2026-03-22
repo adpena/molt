@@ -43617,8 +43617,7 @@ fn format_string_repr_bytes(bytes: &[u8]) -> String {
             0x0A => out.push_str("\\n"),
             0x0D => out.push_str("\\r"),
             0x09 => out.push_str("\\t"),
-            0x2028 => out.push_str("\\u2028"),
-            0x2029 => out.push_str("\\u2029"),
+            // U+2028/U+2029 are printable in CPython 3.12 repr — no escaping
             _ if code == quote as u32 => {
                 out.push('\\');
                 out.push(quote);
@@ -43652,8 +43651,7 @@ fn format_string_repr(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            '\u{2028}' => out.push_str("\\u2028"),
-            '\u{2029}' => out.push_str("\\u2029"),
+            // U+2028/U+2029 are printable in CPython 3.12 repr — no escaping
             c if c == quote => {
                 out.push('\\');
                 out.push(c);
