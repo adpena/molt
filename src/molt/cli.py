@@ -14288,6 +14288,7 @@ def _prepare_non_native_build_result(
     runtime_reloc_wasm: Path | None,
     ensure_runtime_wasm_reloc: Callable[[], bool],
     molt_root: Path,
+    split_runtime: bool = False,
     precompile: bool = False,
 ) -> tuple[_PreparedNonNativeResult | None, dict[str, Any] | None]:
     if is_rust_transpile:
@@ -14395,6 +14396,64 @@ def _prepare_non_native_build_result(
             success_messages.append(f"Successfully linked {resolved_linked_output}")
         if cwasm_path is not None:
             success_messages.append(f"Precompiled {cwasm_path}")
+
+        # --split-runtime: emit app.wasm + molt_runtime.wasm + manifest.json
+        if split_runtime and output_wasm.exists() and runtime_reloc_wasm is not None:
+            split_dir = output_wasm.parent
+            import json as _json
+            import shutil as _shutil
+
+            app_wasm = split_dir / "app.wasm"
+            rt_wasm = split_dir / "molt_runtime.wasm"
+            manifest = split_dir / "manifest.json"
+
+            _shutil.copy2(output_wasm, app_wasm)
+            _shutil.copy2(runtime_reloc_wasm, rt_wasm)
+
+            manifest_data = {
+                "version": 1,
+                "mode": "split-runtime",
+                "modules": {
+                    "runtime": {
+                        "path": "molt_runtime.wasm",
+                        "size": rt_wasm.stat().st_size,
+                    },
+                    "app": {
+                        "path": "app.wasm",
+                        "size": app_wasm.stat().st_size,
+                    },
+                },
+                "instantiation_order": ["runtime", "app"],
+                "entry": {"module": "app", "function": "molt_main"},
+            }
+            manifest.write_text(_json.dumps(manifest_data, indent=2) + "\n")
+
+            # Generate Cloudflare Workers shim
+            worker_js = split_dir / "worker.js"
+            worker_js.write_text(
+                '// Auto-generated split-runtime Cloudflare Workers shim\n'
+                'import runtimeModule from "./molt_runtime.wasm";\n'
+                'import appModule from "./app.wasm";\n\n'
+                'export default {\n'
+                '  async fetch(request) {\n'
+                '    // Instantiate runtime first, then app with runtime exports\n'
+                '    const rtInstance = await WebAssembly.instantiate(runtimeModule, {});\n'
+                '    const appInstance = await WebAssembly.instantiate(appModule, {\n'
+                '      molt_runtime: rtInstance.exports,\n'
+                '    });\n'
+                '    if (appInstance.exports.molt_table_init) {\n'
+                '      appInstance.exports.molt_table_init();\n'
+                '    }\n'
+                '    appInstance.exports.molt_main();\n'
+                '  }\n'
+                '};\n'
+            )
+
+            success_messages.append(
+                f"Split runtime: {app_wasm.name} ({app_wasm.stat().st_size // 1024}KB) "
+                f"+ {rt_wasm.name} ({rt_wasm.stat().st_size // 1024}KB)"
+            )
+
         return _PreparedNonNativeResult(
             primary_output=primary_output,
             linked_output_path=resolved_linked_output,
