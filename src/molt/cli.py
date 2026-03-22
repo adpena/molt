@@ -10542,11 +10542,18 @@ def _lower_module_serial_with_context(
     lower_s = 0.0
     try:
         visit_start = time.perf_counter()
+        # Increase recursion limit for deeply nested ASTs (e.g., networkx large
+        # dict/list literals).  Restore the original limit afterward to maintain
+        # safety guarantees for the rest of the pipeline.
+        _prev_recursion_limit = sys.getrecursionlimit()
+        if _prev_recursion_limit < 8000:
+            sys.setrecursionlimit(8000)
         with _phase_timeout(
             lowering_context.frontend_phase_timeout,
             phase_name=f"frontend visit ({module_name})",
         ):
             gen.visit(tree)
+        sys.setrecursionlimit(_prev_recursion_limit)
         visit_s = time.perf_counter() - visit_start
         lower_start = time.perf_counter()
         with _phase_timeout(
