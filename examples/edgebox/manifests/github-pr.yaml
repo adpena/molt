@@ -1,0 +1,75 @@
+# github-pr.yaml -- Edgebox manifest for the GitHub PR box
+#
+# Declares the box identity, runtime, storage, ingress, tools,
+# alarms, and resource limits.
+
+identity:
+  name: github-pr
+  version: "0.1.0"
+  description: >
+    Tracks GitHub pull-request lifecycle events and exposes MCP tools
+    for AI agents to query timelines, post review comments, and
+    detect stale PRs.
+
+runtime:
+  engine: molt
+  entrypoint: boxes/github_pr/box.py
+  python_version: "3.12"
+
+storage:
+  type: sqlite
+  path: github_pr.db
+  schema: boxes/github_pr/schema.sql
+
+ingress:
+  - path: /webhook
+    method: POST
+    auth: webhook_secret
+    source: github
+  - path: /mcp
+    method: POST
+    auth: bearer_token
+    source: agent
+  - path: /health
+    method: GET
+    auth: none
+
+tools:
+  - name: get_timeline
+    description: Get the event timeline for a pull request
+    input:
+      pr_id: { type: integer, required: true }
+      limit: { type: integer, default: 50 }
+
+  - name: add_review_comment
+    description: Post a review comment on a file in the PR
+    input:
+      pr_id: { type: integer, required: true }
+      path: { type: string, required: true }
+      line: { type: integer, required: true }
+      body: { type: string, required: true }
+      author: { type: string, default: "edgebox" }
+
+  - name: get_diff_summary
+    description: Get a summary of files changed in the PR
+    input:
+      pr_id: { type: integer, required: true }
+
+  - name: query_timeline
+    description: Run a filtered query against the event timeline
+    input:
+      pr_id: { type: integer, required: true }
+      event_type: { type: string, default: "" }
+      actor: { type: string, default: "" }
+      limit: { type: integer, default: 20 }
+
+alarms:
+  - name: stale_check
+    schedule: "0 9 * * *"  # daily at 09:00 UTC
+    description: Flag PRs with no activity in the last 7 days
+
+limits:
+  max_memory_mb: 128
+  max_cpu_ms: 5000
+  max_db_size_mb: 64
+  max_request_body_kb: 512
