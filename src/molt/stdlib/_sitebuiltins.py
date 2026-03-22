@@ -79,6 +79,6 @@ except Exception:  # noqa: BLE001
 quit = Quitter("quit")
 exit = Quitter("exit")
 
-del _MOLT_SITE_HELP0
-del _MOLT_SITE_HELP1
-del _MOLT_SITE_QUITTER_CALL
+# del _MOLT_SITE_HELP0  # TODO: restore once WASM del-global codegen is fixed
+# del _MOLT_SITE_HELP1
+# del _MOLT_SITE_QUITTER_CALL
