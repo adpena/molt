@@ -6464,6 +6464,24 @@ const bindBuiltinCall = (funcBits, func, args) => {
     out.push(missingSentinel());
     return callFunctionBits(funcBits, out);
   }
+  // Generic fallback: consult __defaults__ tuple on the function.
+  if (func && func.attrs) {
+    const defaultsBits = func.attrs.get('__defaults__');
+    if (defaultsBits !== undefined && !isNone(defaultsBits)) {
+      const defaultsTuple = getTuple(defaultsBits);
+      if (defaultsTuple) {
+        const defaults = [...defaultsTuple.items];
+        const nDefaults = defaults.length;
+        if (missing <= nDefaults) {
+          const start = nDefaults - missing;
+          for (let i = start; i < nDefaults; i++) {
+            out.push(defaults[i]);
+          }
+          return callFunctionBits(funcBits, out);
+        }
+      }
+    }
+  }
   return baseImports.call_arity_error(BigInt(arity), BigInt(out.length));
 };
 """

@@ -2581,6 +2581,40 @@ unsafe fn bind_builtin_call(
             out.push(MoltObject::from_bool(false).bits());
             return Some(out);
         }
+
+        // Generic fallback: consult __defaults__ tuple stored on the function.
+        // This handles user-defined functions with keyword default arguments
+        // that end up in the builtin bind path (e.g. on WASM when
+        // __molt_arg_names__ is not found on the function object).
+        let defaults_bits = function_attr_bits(
+            _py,
+            func_ptr,
+            intern_static_name(
+                _py,
+                &runtime_state(_py).interned.defaults_name,
+                b"__defaults__",
+            ),
+        );
+        if let Some(dbits) = defaults_bits {
+            if !obj_from_bits(dbits).is_none() {
+                if let Some(def_ptr) = obj_from_bits(dbits).as_ptr() {
+                    if object_type_id(def_ptr) == TYPE_ID_TUPLE {
+                        let defaults = seq_vec_ref(def_ptr);
+                        let n_defaults = defaults.len();
+                        if missing <= n_defaults {
+                            // The defaults tuple covers the last n_defaults
+                            // parameters.  We need the last `missing` entries.
+                            let start = n_defaults - missing;
+                            for i in start..n_defaults {
+                                out.push(defaults[i]);
+                            }
+                            return Some(out);
+                        }
+                    }
+                }
+            }
+        }
+
         raise_exception::<_>(_py, "TypeError", "missing required arguments")
     }
 }
