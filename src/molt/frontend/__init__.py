@@ -1327,6 +1327,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # Avoids emitting redundant MODULE_CACHE_GET ops for the same module within
         # a single function scope.  Reset at start_function().
         self._module_cache_values: dict[str, MoltValue] = {}
+        # Module-level constant dicts: name → {str_key: constant_value}
+        # Populated during visit_Module to support compile-time **kwargs resolution
+        # (e.g. @dataclass(**SLOTS) where SLOTS = {"slots": True}).
+        self.module_const_dicts: dict[str, dict[str, Any]] = {}
         self._register_code_symbol("molt_main")
         if self.module_name:
             name_val = MoltValue(self.next_var(), type_hint="str")
@@ -2917,6 +2921,36 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             collector.visit(stmt)
         return mutated
 
+    @staticmethod
+    def _collect_module_const_dicts(node: ast.Module) -> dict[str, dict[str, Any]]:
+        """Collect module-level assignments of the form NAME = {"key": value, ...}
+        where all keys are string literals and all values are constants (bool, int,
+        str, None).  Used to resolve compile-time **kwargs spreads like
+        @dataclass(**SLOTS) where SLOTS = {"slots": True}."""
+        result: dict[str, dict[str, Any]] = {}
+        for stmt in node.body:
+            if not isinstance(stmt, ast.Assign):
+                continue
+            if len(stmt.targets) != 1 or not isinstance(stmt.targets[0], ast.Name):
+                continue
+            name = stmt.targets[0].id
+            if not isinstance(stmt.value, ast.Dict):
+                continue
+            d = stmt.value
+            entries: dict[str, Any] = {}
+            valid = True
+            for k, v in zip(d.keys, d.values):
+                if not isinstance(k, ast.Constant) or not isinstance(k.value, str):
+                    valid = False
+                    break
+                if not isinstance(v, ast.Constant):
+                    valid = False
+                    break
+                entries[k.value] = v.value
+            if valid:
+                result[name] = entries
+        return result
+
     def _record_instance_attr_mutation(self, class_name: str, attr: str) -> None:
         if class_name not in self.classes:
             return
@@ -3073,6 +3107,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         prev_pending_classes = self.class_definition_pending
         self.stable_module_funcs = self._module_stable_funcs(node)
         self.mutated_classes = self._collect_module_class_mutations(node)
+        self.module_const_dicts = self._collect_module_const_dicts(node)
         self.module_declared_funcs = self._collect_module_func_kinds(node)
         self.module_declared_classes = self._collect_module_class_names(node)
         self.class_definition_pending = set(self.module_declared_classes)
@@ -5524,7 +5559,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self, module_name: str, node: ast.Call
     ) -> MoltValue:
         if any(kw.arg is None for kw in node.keywords):
-            raise NotImplementedError("field does not support **kwargs")
+            # Try to resolve **kwargs spreads from module-level constant dicts
+            expanded: list[ast.keyword] = []
+            for kw in node.keywords:
+                if kw.arg is None and isinstance(kw.value, ast.Name) and kw.value.id in self.module_const_dicts:
+                    for dk, dv in self.module_const_dicts[kw.value.id].items():
+                        expanded.append(ast.keyword(arg=dk, value=ast.Constant(value=dv)))
+                elif kw.arg is None:
+                    raise NotImplementedError("field does not support **kwargs")
+                else:
+                    expanded.append(kw)
+            node.keywords = expanded
         if node.args:
             raise NotImplementedError("field does not support positional arguments")
         func_val = self._emit_module_attr_get_on(module_name, "field")
@@ -6543,11 +6588,28 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         local_names = target_names | assigned
         used: set[str] = set()
+        # Capture the method's first param name so we can detect implicit
+        # super() references inside comprehensions.
+        _method_first_param = self.current_method_first_param
+        _current_class = self.current_class
 
         class Collector(ast.NodeVisitor):
             def visit_Name(self, node: ast.Name) -> Any:
                 if isinstance(node.ctx, ast.Load):
                     used.add(node.id)
+
+            def visit_Call(self, node_: ast.Call) -> None:
+                # Detect super() calls — they implicitly reference the
+                # enclosing method's first parameter (self/cls).
+                if (
+                    isinstance(node_.func, ast.Name)
+                    and node_.func.id == "super"
+                    and not node_.args
+                    and _method_first_param is not None
+                    and _current_class is not None
+                ):
+                    used.add(_method_first_param)
+                self.generic_visit(node_)
 
             def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
                 return
@@ -11091,23 +11153,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "slots": False,
                         "weakref_slot": False,
                     }
+                    _DATACLASS_VALID_OPTS = {
+                        "init", "repr", "eq", "order", "unsafe_hash",
+                        "frozen", "match_args", "kw_only", "slots",
+                        "weakref_slot",
+                    }
                     for kw in deco.keywords:
                         if kw.arg is None:
+                            # **kwargs spread — resolve if it's a module-level constant dict
+                            if isinstance(kw.value, ast.Name) and kw.value.id in self.module_const_dicts:
+                                for dk, dv in self.module_const_dicts[kw.value.id].items():
+                                    if dk in _DATACLASS_VALID_OPTS and isinstance(dv, bool):
+                                        dataclass_opts[dk] = dv
+                                continue
                             raise NotImplementedError(
                                 "dataclass does not support **kwargs spread"
                             )
-                        if kw.arg not in {
-                            "init",
-                            "repr",
-                            "eq",
-                            "order",
-                            "unsafe_hash",
-                            "frozen",
-                            "match_args",
-                            "kw_only",
-                            "slots",
-                            "weakref_slot",
-                        }:
+                        if kw.arg not in _DATACLASS_VALID_OPTS:
                             raise NotImplementedError(
                                 f"Unsupported dataclass option: {kw.arg}"
                             )
@@ -11145,23 +11207,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "slots": False,
                         "weakref_slot": False,
                     }
+                    _DATACLASS_VALID_OPTS2 = {
+                        "init", "repr", "eq", "order", "unsafe_hash",
+                        "frozen", "match_args", "kw_only", "slots",
+                        "weakref_slot",
+                    }
                     for kw in deco.keywords:
                         if kw.arg is None:
+                            if isinstance(kw.value, ast.Name) and kw.value.id in self.module_const_dicts:
+                                for dk, dv in self.module_const_dicts[kw.value.id].items():
+                                    if dk in _DATACLASS_VALID_OPTS2 and isinstance(dv, bool):
+                                        dataclass_opts[dk] = dv
+                                continue
                             raise NotImplementedError(
                                 "dataclass does not support **kwargs spread"
                             )
-                        if kw.arg not in {
-                            "init",
-                            "repr",
-                            "eq",
-                            "order",
-                            "unsafe_hash",
-                            "frozen",
-                            "match_args",
-                            "kw_only",
-                            "slots",
-                            "weakref_slot",
-                        }:
+                        if kw.arg not in _DATACLASS_VALID_OPTS2:
                             raise NotImplementedError(
                                 f"Unsupported dataclass option: {kw.arg}"
                             )
@@ -14499,7 +14560,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "intersection",
                 "difference",
                 "symmetric_difference",
-            } and receiver.type_hint in {"set", "frozenset"}:
+            } and receiver.type_hint in {"set", "frozenset"} and not any(
+                isinstance(a, ast.Starred) for a in node.args
+            ):
                 if method == "symmetric_difference":
                     if len(node.args) != 1:
                         raise NotImplementedError(
@@ -14561,6 +14624,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "symmetric_difference_update",
                 }
                 and receiver.type_hint == "set"
+                and not any(isinstance(a, ast.Starred) for a in node.args)
             ):
                 receiver, recv_slot = self._maybe_spill_receiver(receiver, node.args)
                 if method == "symmetric_difference_update":
@@ -16237,6 +16301,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     ):
                         class_ref = self._emit_module_attr_get(self.current_class)
                         obj = self._load_local_value(self.current_method_first_param)
+                        if obj is None and self.current_method_first_param in self.free_vars:
+                            obj = self._emit_free_var_load(self.current_method_first_param)
                         if obj is None:
                             raise NotImplementedError("super() missing method receiver")
                         super_hint = f"super:{self.current_class}"
