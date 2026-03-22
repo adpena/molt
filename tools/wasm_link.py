@@ -381,7 +381,8 @@ def _scan_code_ref_funcs(data: bytes) -> set[int]:
     """Scan all code bodies for ref.func (0xD2) instructions.
 
     Returns the set of function indices referenced by ref.func instructions.
-    Uses a robust scanning approach that handles the full WASM instruction set.
+    Uses the same full instruction decoder as ``_build_call_graph`` to avoid
+    desynchronisation on opcodes with multi-byte immediates.
     """
     ref_funcs: set[int] = set()
     for section_id, payload in _parse_sections(data):
@@ -398,91 +399,148 @@ def _scan_code_ref_funcs(data: bytes) -> set[int]:
             for _ld in range(num_local_decls):
                 _, pos = _read_varuint(payload, pos)  # count
                 pos += 1  # type
-            # Scan instructions
+            # Scan instructions — mirrors _build_call_graph's decoder
             while pos < body_end:
-                opcode = payload[pos]
+                op = payload[pos]
                 pos += 1
-                if opcode == 0xD2:  # ref.func
+                if pos > body_end:
+                    break
+                # ref.func — the instruction we are looking for
+                if op == 0xD2:
                     func_idx, pos = _read_varuint(payload, pos)
                     ref_funcs.add(func_idx)
-                elif opcode == 0x10:  # call
-                    _, pos = _read_varuint(payload, pos)
-                elif opcode == 0x11:  # call_indirect
-                    _, pos = _read_varuint(payload, pos)
-                    _, pos = _read_varuint(payload, pos)
-                elif opcode in (0x02, 0x03, 0x04):  # block/loop/if
+                # No-immediate opcodes
+                elif op in (
+                    0x00, 0x01, 0x05, 0x0B, 0x0F, 0x1A, 0x1B,
+                    0xD1,  # ref.is_null
+                    0xD3,  # ref.as_non_null
+                ):
+                    pass
+                # Block-type opcodes (block / loop / if)
+                elif op in (0x02, 0x03, 0x04):
                     bt = payload[pos]
-                    pos += 1
-                    if bt not in (
-                        0x40, 0x7F, 0x7E, 0x7D, 0x7C, 0x7B, 0x70, 0x6F,
-                    ):
-                        # Signed LEB128 type index; we already consumed one
-                        # byte so back up and re-read.
-                        pos -= 1
+                    if bt in (0x40, 0x7F, 0x7E, 0x7D, 0x7C, 0x70, 0x6F, 0x7B):
+                        pos += 1
+                    else:
+                        # Signed LEB128 type index
                         _, pos = _read_varsint(payload, pos)
-                elif opcode in (0x0C, 0x0D):  # br, br_if
+                # Single-varuint opcodes
+                elif op in (
+                    0x0C, 0x0D,  # br, br_if
+                    0x20, 0x21, 0x22, 0x23, 0x24,  # local/global ops
+                    0x25, 0x26,  # table.get, table.set
+                    0xD0,  # ref.null (heaptype)
+                    0xD4, 0xD5,  # br_on_null, br_on_non_null
+                ):
                     _, pos = _read_varuint(payload, pos)
-                elif opcode == 0x0E:  # br_table
+                # br_table
+                elif op == 0x0E:
                     cnt, pos = _read_varuint(payload, pos)
                     for _bt in range(cnt + 1):
                         _, pos = _read_varuint(payload, pos)
-                elif opcode in (0x20, 0x21, 0x22, 0x23, 0x24):  # local/global
+                # call / return_call
+                elif op in (0x10, 0x12):
                     _, pos = _read_varuint(payload, pos)
-                elif opcode == 0x41:  # i32.const
-                    _, pos = _read_varsint(payload, pos)
-                elif opcode == 0x42:  # i64.const
-                    _, pos = _read_varsint(payload, pos)
-                elif opcode == 0x43:  # f32.const
-                    pos += 4
-                elif opcode == 0x44:  # f64.const
-                    pos += 8
-                elif opcode == 0xD0:  # ref.null
-                    pos += 1
-                elif 0x28 <= opcode <= 0x3E:  # memory load/store
+                # call_indirect / return_call_indirect
+                elif op in (0x11, 0x13):
+                    _, pos = _read_varuint(payload, pos)
+                    _, pos = _read_varuint(payload, pos)
+                # call_ref / return_call_ref (type index immediate)
+                elif op in (0x14, 0x15):
+                    _, pos = _read_varuint(payload, pos)
+                # select with types
+                elif op == 0x1C:
+                    n, pos = _read_varuint(payload, pos)
+                    pos += n
+                # Memory load/store (2 varuints: align + offset)
+                elif 0x28 <= op <= 0x3E:
                     _, pos = _read_varuint(payload, pos)  # align
                     _, pos = _read_varuint(payload, pos)  # offset
-                elif opcode in (0x3F, 0x40):  # memory.size/grow
-                    pos += 1  # memory index
-                elif opcode == 0xFC:  # multi-byte prefix
-                    sub, pos = _read_varuint(payload, pos)
-                    if sub < 8:  # trunc_sat
+                # memory.size / memory.grow
+                elif op in (0x3F, 0x40):
+                    _, pos = _read_varuint(payload, pos)  # memory index
+                # Constants
+                elif op == 0x41:  # i32.const
+                    _, pos = _read_varsint(payload, pos)
+                elif op == 0x42:  # i64.const
+                    _, pos = _read_varsint(payload, pos)
+                elif op == 0x43:  # f32.const
+                    pos += 4
+                elif op == 0x44:  # f64.const
+                    pos += 8
+                # Numeric ops (no immediates)
+                elif 0x45 <= op <= 0xC4:
+                    pass
+                # try_table (exception handling)
+                elif op == 0x1F:
+                    bt = payload[pos]
+                    if bt == 0x40 or (bt >= 0x7C and bt <= 0x7F):
+                        pos += 1
+                    else:
+                        _, pos = _read_varsint(payload, pos)
+                    n_catches, pos = _read_varuint(payload, pos)
+                    for _ in range(n_catches):
+                        catch_kind = payload[pos]
+                        pos += 1
+                        if catch_kind in (0x00, 0x01):
+                            _, pos = _read_varuint(payload, pos)
+                            _, pos = _read_varuint(payload, pos)
+                        elif catch_kind in (0x02, 0x03):
+                            _, pos = _read_varuint(payload, pos)
+                # Extended opcodes (0xFC prefix)
+                elif op == 0xFC:
+                    ext, pos = _read_varuint(payload, pos)
+                    if ext <= 7:  # trunc_sat
                         pass
-                    elif sub == 8:  # memory.init
-                        _, pos = _read_varuint(payload, pos)
-                        pos += 1
-                    elif sub == 9:  # data.drop
-                        _, pos = _read_varuint(payload, pos)
-                    elif sub == 10:  # memory.copy
-                        pos += 2
-                    elif sub == 11:  # memory.fill
-                        pos += 1
-                    elif sub == 12:  # table.init
+                    elif ext == 8:  # memory.init
                         _, pos = _read_varuint(payload, pos)
                         _, pos = _read_varuint(payload, pos)
-                    elif sub == 13:  # elem.drop
+                    elif ext == 9:  # data.drop
                         _, pos = _read_varuint(payload, pos)
-                    elif sub == 14:  # table.copy
+                    elif ext == 10:  # memory.copy
                         _, pos = _read_varuint(payload, pos)
                         _, pos = _read_varuint(payload, pos)
-                    elif sub in (15, 16, 17):  # table.grow/size/fill
+                    elif ext == 11:  # memory.fill
                         _, pos = _read_varuint(payload, pos)
-                elif opcode == 0xFD:  # SIMD prefix
-                    sub, pos = _read_varuint(payload, pos)
-                    if sub < 12:  # v128.load variants
+                    elif ext == 12:  # table.init
+                        _, pos = _read_varuint(payload, pos)
+                        _, pos = _read_varuint(payload, pos)
+                    elif ext == 13:  # elem.drop
+                        _, pos = _read_varuint(payload, pos)
+                    elif ext == 14:  # table.copy
+                        _, pos = _read_varuint(payload, pos)
+                        _, pos = _read_varuint(payload, pos)
+                    elif ext in (15, 16, 17):  # table.grow/size/fill
+                        _, pos = _read_varuint(payload, pos)
+                # SIMD prefix (0xFD)
+                elif op == 0xFD:
+                    simd, pos = _read_varuint(payload, pos)
+                    if simd <= 11:  # v128.load variants
                         _, pos = _read_varuint(payload, pos)  # align
                         _, pos = _read_varuint(payload, pos)  # offset
-                    elif sub == 12:  # v128.const
+                    elif simd in (12, 13):  # v128.const / i8x16.shuffle
                         pos += 16
-                    elif sub == 13:  # i8x16.shuffle
-                        pos += 16
-                    elif 84 <= sub <= 91:  # v128.load_lane/store_lane
+                    elif 84 <= simd <= 91:  # v128.load_lane/store_lane
                         _, pos = _read_varuint(payload, pos)
                         _, pos = _read_varuint(payload, pos)
                         pos += 1  # lane index
+                    elif 21 <= simd <= 34:  # extract_lane/replace_lane
+                        pos += 1  # lane index
+                    elif 92 <= simd <= 93:  # v128.load32_zero/load64_zero
+                        _, pos = _read_varuint(payload, pos)
+                        _, pos = _read_varuint(payload, pos)
                     # Other SIMD ops have no immediates
+                # Atomics prefix (0xFE)
+                elif op == 0xFE:
+                    atom, pos = _read_varuint(payload, pos)
+                    if atom == 0x03:  # atomic.fence
+                        pos += 1
+                    elif atom >= 0x10 or atom in (0x00, 0x01, 0x02):
+                        _, pos = _read_varuint(payload, pos)  # alignment
+                        _, pos = _read_varuint(payload, pos)  # offset
                 # All other single-byte opcodes (nop, unreachable, end,
-                # return, drop, select, numeric ops, etc.) need no
-                # immediate parsing.
+                # return, drop, numeric ops, etc.) need no immediate
+                # parsing.
             offset = body_end
         break
     return ref_funcs
