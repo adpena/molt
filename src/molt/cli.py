@@ -17091,8 +17091,22 @@ def _ensure_runtime_lib(
             # graph analysis, and any explicit runtime features.
             micro_features = list(runtime_features) + builtin_features + ["stdlib_micro"]
             cmd.extend(["--features", ",".join(micro_features)])
-        elif runtime_features:
-            cmd.extend(["--features", ",".join(runtime_features)])
+        else:
+            # For WASM targets, exclude stdlib_ast (rustpython-parser, ~2MB) and
+            # stdlib_unicode_names (unicode_names2, ~1MB) — not useful on WASM
+            # and they inflate the binary well past the 3MB Cloudflare free tier.
+            is_wasm = target_triple and "wasm" in target_triple
+            if is_wasm:
+                cmd.append("--no-default-features")
+                wasm_features = list(runtime_features) + [
+                    "stdlib_crypto", "stdlib_compression", "stdlib_serialization",
+                    "stdlib_archive", "stdlib_fs_extra",
+                    "builtin_set", "builtin_complex", "builtin_memoryview",
+                    "builtin_contextvars", "builtin_fcntl",
+                ]
+                cmd.extend(["--features", ",".join(wasm_features)])
+            elif runtime_features:
+                cmd.extend(["--features", ",".join(runtime_features)])
         if target_triple:
             cmd.extend(["--target", target_triple])
         build_env = os.environ.copy()
