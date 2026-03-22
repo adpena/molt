@@ -129,7 +129,7 @@ def test_backend_fingerprint_reuses_stored_hash_when_inputs_unchanged(
     source = tmp_path / "backend_source.rs"
     source.write_text("pub fn marker() {}\n")
     monkeypatch.setattr(
-        cli, "_backend_source_paths", lambda _project_root: [source], raising=True
+        cli, "_backend_source_paths", lambda _project_root, _features=(): [source], raising=True
     )
     monkeypatch.setattr(cli, "_rustc_version", lambda: "rustc-test", raising=True)
 
@@ -137,6 +137,7 @@ def test_backend_fingerprint_reuses_stored_hash_when_inputs_unchanged(
         tmp_path,
         cargo_profile="dev-fast",
         rustflags="",
+        backend_features=(),
     )
     assert baseline is not None
 
@@ -153,6 +154,7 @@ def test_backend_fingerprint_reuses_stored_hash_when_inputs_unchanged(
         tmp_path,
         cargo_profile="dev-fast",
         rustflags="",
+        backend_features=(),
         stored_fingerprint=baseline,
     )
     assert reused == baseline

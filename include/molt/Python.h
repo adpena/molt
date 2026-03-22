@@ -240,6 +240,7 @@ static inline PyObject *PyIter_Next(PyObject *obj);
 static inline double PyOS_string_to_double(
     const char *text, char **endptr, PyObject *overflow_exception);
 static inline PyObject *PyImport_ImportModule(const char *name);
+static inline PyObject *PyImport_GetModuleDict(void);
 static inline void *PyCapsule_Import(const char *name, int no_block);
 static inline PyObject *PyObject_GetAttrString(PyObject *obj, const char *name);
 static inline int PyObject_SetAttrString(PyObject *obj, const char *name, PyObject *value);
@@ -977,9 +978,9 @@ static inline int PyObject_SetAttr(PyObject *obj, PyObject *name, PyObject *valu
     }
     if (value == NULL) {
         /* CPython contract: SetAttr with NULL value means delete attribute. */
-        return molt_object_delattr(_molt_py_handle(obj), _molt_py_handle(name));
+        return (int)molt_object_delattr(_molt_py_handle(obj), _molt_py_handle(name));
     }
-    return molt_object_setattr(_molt_py_handle(obj), _molt_py_handle(name), _molt_py_handle(value));
+    return (int)molt_object_setattr(_molt_py_handle(obj), _molt_py_handle(name), _molt_py_handle(value));
 }
 
 static inline int PyObject_SetAttrString(PyObject *obj, const char *name, PyObject *value) {
@@ -989,8 +990,8 @@ static inline int PyObject_SetAttrString(PyObject *obj, const char *name, PyObje
     }
     if (value == NULL) {
         /* CPython contract: SetAttr with NULL value means delete attribute. */
-        MoltHandle name_handle = molt_string_from_utf8((const uint8_t *)name, (uint64_t)strlen(name));
-        int rc = molt_object_delattr(_molt_py_handle(obj), name_handle);
+        MoltHandle name_handle = molt_string_from((const uint8_t *)name, (uint64_t)strlen(name));
+        int rc = (int)molt_object_delattr(_molt_py_handle(obj), name_handle);
         molt_handle_decref(name_handle);
         return rc;
     }
@@ -7678,7 +7679,6 @@ static inline int PyDict_Merge(PyObject *a, PyObject *b, int override) {
         MoltHandle items_method = molt_object_getattr_bytes(_molt_py_handle(b),
             (const uint8_t *)"items", 5);
         MoltHandle items_result;
-        MoltHandle iter;
         if (items_method == 0 || molt_err_pending() != 0) return -1;
         items_result = molt_object_call(items_method, molt_tuple_from_array(NULL, 0), molt_none());
         molt_handle_decref(items_method);

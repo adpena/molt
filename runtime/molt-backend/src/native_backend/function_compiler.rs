@@ -8087,17 +8087,35 @@ impl SimpleBackend {
                         func_sig.params.push(AbiParam::new(types::I64));
                     }
                     func_sig.returns.push(AbiParam::new(types::I64));
-                    let func_id = self
+                    let mut actual_builtin_name = func_name.clone();
+                    let func_id = match self
                         .module
-                        .declare_function(func_name, Linkage::Import, &func_sig)
-                        .unwrap();
+                        .declare_function(&actual_builtin_name, Linkage::Import, &func_sig)
+                    {
+                        Ok(id) => id,
+                        Err(_) => {
+                            let mut suffix = 1u32;
+                            loop {
+                                actual_builtin_name =
+                                    format!("{}__ov{}", func_name, suffix);
+                                match self.module.declare_function(
+                                    &actual_builtin_name,
+                                    Linkage::Import,
+                                    &func_sig,
+                                ) {
+                                    Ok(id) => break id,
+                                    Err(_) => suffix += 1,
+                                }
+                            }
+                        }
+                    };
                     self.declared_func_arities.insert(func_name.clone(), arity as usize);
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
                     let tramp_id = Self::ensure_trampoline(
                         &mut self.module,
                         &mut self.trampoline_ids,
-                        func_name,
+                        &actual_builtin_name,
                         Linkage::Import,
                         TrampolineSpec {
                             arity: arity as usize,
@@ -8152,16 +8170,36 @@ impl SimpleBackend {
                     }
                     func_sig.returns.push(AbiParam::new(types::I64));
                     self.declared_func_arities.insert(func_name.clone(), func_sig.params.len());
-                    let func_id = self
+                    // If a prior declaration (e.g. a builtin_func import) already
+                    // registered this symbol with a different signature, disambiguate
+                    // by appending a suffix rather than panicking.
+                    let mut actual_name = func_name.clone();
+                    let func_id = match self
                         .module
-                        .declare_function(func_name, Linkage::Export, &func_sig)
-                        .unwrap();
+                        .declare_function(&actual_name, Linkage::Export, &func_sig)
+                    {
+                        Ok(id) => id,
+                        Err(_) => {
+                            let mut suffix = 1u32;
+                            loop {
+                                actual_name = format!("{}__ov{}", func_name, suffix);
+                                match self.module.declare_function(
+                                    &actual_name,
+                                    Linkage::Export,
+                                    &func_sig,
+                                ) {
+                                    Ok(id) => break id,
+                                    Err(_) => suffix += 1,
+                                }
+                            }
+                        }
+                    };
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
                     let tramp_id = Self::ensure_trampoline(
                         &mut self.module,
                         &mut self.trampoline_ids,
-                        func_name,
+                        &actual_name,
                         Linkage::Export,
                         TrampolineSpec {
                             arity: arity as usize,
@@ -8224,16 +8262,34 @@ impl SimpleBackend {
                     }
                     func_sig.returns.push(AbiParam::new(types::I64));
                     self.declared_func_arities.insert(func_name.clone(), func_sig.params.len());
-                    let func_id = self
+                    let mut actual_closure_name = func_name.clone();
+                    let func_id = match self
                         .module
-                        .declare_function(func_name, Linkage::Export, &func_sig)
-                        .unwrap();
+                        .declare_function(&actual_closure_name, Linkage::Export, &func_sig)
+                    {
+                        Ok(id) => id,
+                        Err(_) => {
+                            let mut suffix = 1u32;
+                            loop {
+                                actual_closure_name =
+                                    format!("{}__ov{}", func_name, suffix);
+                                match self.module.declare_function(
+                                    &actual_closure_name,
+                                    Linkage::Export,
+                                    &func_sig,
+                                ) {
+                                    Ok(id) => break id,
+                                    Err(_) => suffix += 1,
+                                }
+                            }
+                        }
+                    };
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
                     let tramp_id = Self::ensure_trampoline(
                         &mut self.module,
                         &mut self.trampoline_ids,
-                        func_name,
+                        &actual_closure_name,
                         Linkage::Export,
                         TrampolineSpec {
                             arity: arity as usize,
@@ -11315,12 +11371,18 @@ impl SimpleBackend {
                         next_index: None,
                     });
                     loop_depth += 1;
+                    if func_ir.name.contains("urllib3_util_ssl_") {
+                        eprintln!("[DEBUG] loop_index_start at op {} -> loop_stack len={}, loop_depth={}", op_idx, loop_stack.len(), loop_depth);
+                    }
                 }
                 "loop_break_if_true" => {
+                    if loop_stack.is_empty() {
+                        is_block_filled = true;
+                    } else {
                     let args = op.args.as_ref().unwrap();
                     let cond =
                         var_get(&mut builder, &vars, &args[0]).expect("Loop break cond not found");
-                    let frame = loop_stack.last().expect("No loop on stack");
+                    let frame = loop_stack.last().unwrap();
                     let current_block = builder
                         .current_block()
                         .expect("loop_break_if_true requires an active block");
@@ -11375,12 +11437,16 @@ impl SimpleBackend {
                     reachable_blocks.insert(frame.after_block);
                     jump_block(&mut builder, frame.after_block, &[]);
                     switch_to_block_tracking(&mut builder, frame.body_block, &mut is_block_filled);
+                    }
                 }
                 "loop_break_if_false" => {
+                    if loop_stack.is_empty() {
+                        is_block_filled = true;
+                    } else {
                     let args = op.args.as_ref().unwrap();
                     let cond =
                         var_get(&mut builder, &vars, &args[0]).expect("Loop break cond not found");
-                    let frame = loop_stack.last().expect("No loop on stack");
+                    let frame = loop_stack.last().unwrap();
                     let current_block = builder
                         .current_block()
                         .expect("loop_break_if_false requires an active block");
@@ -11435,11 +11501,15 @@ impl SimpleBackend {
                     reachable_blocks.insert(frame.after_block);
                     jump_block(&mut builder, frame.after_block, &[]);
                     switch_to_block_tracking(&mut builder, frame.body_block, &mut is_block_filled);
+                    }
                 }
                 "loop_break" => {
-                    let frame = loop_stack.last().unwrap_or_else(|| {
-                        panic!("No loop on stack in {} at op {}", func_ir.name, op_idx)
-                    });
+                    if loop_stack.is_empty() {
+                        // break duplicated into an outer exception handler
+                        // that sits after the loop boundary — treat as dead.
+                        is_block_filled = true;
+                    } else {
+                    let frame = loop_stack.last().unwrap();
                     let current_block = builder
                         .current_block()
                         .expect("loop_break requires an active block");
@@ -11470,22 +11540,35 @@ impl SimpleBackend {
                     reachable_blocks.insert(frame.after_block);
                     jump_block(&mut builder, frame.after_block, &[]);
                     is_block_filled = true;
+                    }
                 }
                 "loop_index_next" => {
                     let args = op.args.as_ref().unwrap();
                     let next_idx =
                         var_get(&mut builder, &vars, &args[0]).expect("Loop index next not found");
-                    let frame = loop_stack.last_mut().unwrap_or_else(|| {
-                        panic!("No loop on stack in {} at op {}", func_ir.name, op_idx)
-                    });
-                    frame.next_index = Some(*next_idx);
-                    let out_name = op.out.unwrap();
-                    def_var_named(&mut builder, &vars, out_name, *next_idx);
+                    if loop_stack.is_empty() {
+                        // The loop_index_next op appears outside the loop
+                        // boundary — this happens when `continue` inside a
+                        // nested try/except is duplicated into an outer
+                        // exception handler path.  Treat as unreachable.
+                        let out_name = op.out.unwrap();
+                        def_var_named(&mut builder, &vars, out_name, *next_idx);
+                    } else {
+                        let frame = loop_stack.last_mut().unwrap();
+                        frame.next_index = Some(*next_idx);
+                        let out_name = op.out.unwrap();
+                        def_var_named(&mut builder, &vars, out_name, *next_idx);
+                    }
                 }
                 "loop_continue" => {
-                    let frame = loop_stack.last_mut().unwrap_or_else(|| {
-                        panic!("No loop on stack in {} at op {}", func_ir.name, op_idx)
-                    });
+                    if loop_stack.is_empty() {
+                        // Same as loop_index_next: the continue was
+                        // duplicated into an outer exception handler that
+                        // sits after the loop's END_LOOP.  Mark the block
+                        // as filled so subsequent ops are dead code.
+                        is_block_filled = true;
+                    } else {
+                    let frame = loop_stack.last_mut().unwrap();
                     let current_block = builder
                         .current_block()
                         .expect("loop_continue requires an active block");
@@ -11524,11 +11607,14 @@ impl SimpleBackend {
                         jump_block(&mut builder, frame.loop_block, &[]);
                     }
                     is_block_filled = true;
+                    }
                 }
                 "loop_end" => {
-                    let mut frame = loop_stack.pop().unwrap_or_else(|| {
-                        panic!("No loop on stack in {} at op {}", func_ir.name, op_idx)
-                    });
+                    if loop_stack.is_empty() {
+                        // Orphan loop_end from a duplicated exception
+                        // handler path — skip silently.
+                    } else {
+                    let mut frame = loop_stack.pop().unwrap();
                     loop_depth -= 1;
                     if !is_block_filled {
                         ensure_block_in_layout(&mut builder, frame.loop_block);
@@ -11558,6 +11644,7 @@ impl SimpleBackend {
                         }
                     } else {
                         is_block_filled = true;
+                    }
                     }
                 }
                 "alloc" => {

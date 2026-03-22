@@ -4,11 +4,11 @@
   "modules": {
     "runtime": {
       "path": "molt_runtime.wasm",
-      "size": 8764432
+      "size": 6819377
     },
     "app": {
       "path": "app.wasm",
-      "size": 1825489
+      "size": 1827845
     }
   },
   "instantiation_order": [
