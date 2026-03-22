@@ -11371,9 +11371,6 @@ impl SimpleBackend {
                         next_index: None,
                     });
                     loop_depth += 1;
-                    if func_ir.name.contains("urllib3_util_ssl_") {
-                        eprintln!("[DEBUG] loop_index_start at op {} -> loop_stack len={}, loop_depth={}", op_idx, loop_stack.len(), loop_depth);
-                    }
                 }
                 "loop_break_if_true" => {
                     if loop_stack.is_empty() {
@@ -13033,6 +13030,7 @@ impl SimpleBackend {
                 .define_function(id, &mut self.ctx)
                 .map_err(Box::new)
         }));
+        eprintln!("DEBUG catch_unwind returned for {}: is_ok={}", func_ir.name, define_result.is_ok());
         match define_result {
             Ok(Ok(())) => {}
             Ok(Err(err)) => {
