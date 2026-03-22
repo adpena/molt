@@ -187,6 +187,8 @@ struct CompileFuncContext<'a> {
     multi_return_candidates: &'a BTreeMap<String, usize>,
     /// Linear-memory offset of a scratch buffer used to spill `call_func` args.
     call_func_spill_offset: u32,
+    /// Data segment ref for the 8-byte scratch slot used by `const_str` ops.
+    const_str_scratch_segment: DataSegmentRef,
 }
 
 trait TypeSectionExt {
@@ -1048,8 +1050,28 @@ impl WasmBackend {
     }
 
     fn add_data_segment(&mut self, reloc_enabled: bool, bytes: &[u8]) -> DataSegmentRef {
-        if let Some(existing) = self.data_segment_cache.get(bytes) {
-            return *existing;
+        self.add_data_segment_inner(reloc_enabled, bytes, true)
+    }
+
+    /// Like [`add_data_segment`] but skips the dedup cache.  Use this for
+    /// segments that are **written to at runtime** (e.g. the call-func spill
+    /// buffer) — caching them would allow a read-only segment with identical
+    /// content to alias the mutable region, corrupting data when the spill
+    /// buffer is written.
+    fn add_data_segment_mutable(&mut self, reloc_enabled: bool, bytes: &[u8]) -> DataSegmentRef {
+        self.add_data_segment_inner(reloc_enabled, bytes, false)
+    }
+
+    fn add_data_segment_inner(
+        &mut self,
+        reloc_enabled: bool,
+        bytes: &[u8],
+        cacheable: bool,
+    ) -> DataSegmentRef {
+        if cacheable {
+            if let Some(existing) = self.data_segment_cache.get(bytes) {
+                return *existing;
+            }
         }
         let offset = self.data_offset;
         let index = self.data_segments.len() as u32;
@@ -1065,7 +1087,9 @@ impl WasmBackend {
         };
         self.data_segments.push(info);
         let data_ref = DataSegmentRef { offset, index };
-        self.data_segment_cache.insert(bytes.to_vec(), data_ref);
+        if cacheable {
+            self.data_segment_cache.insert(bytes.to_vec(), data_ref);
+        }
         data_ref
     }
 
@@ -1084,6 +1108,25 @@ impl WasmBackend {
         });
         emit_i32_const(func, reloc_enabled, data.offset as i32);
         func.instruction(&Instruction::I64ExtendI32U);
+    }
+
+    /// Like [`emit_data_ptr`] but pushes an **i32** value (no i64 extension).
+    /// Useful when the address is consumed by an instruction that expects i32,
+    /// e.g. `string_from_bytes`'s `out` parameter or `I64Load`'s address.
+    fn emit_data_ptr_i32(
+        &mut self,
+        reloc_enabled: bool,
+        func_index: u32,
+        func: &mut Function,
+        data: DataSegmentRef,
+    ) {
+        let imm_offset = func.byte_len() as u32 + 1;
+        self.data_relocs.push(DataRelocSite {
+            func_index,
+            offset_in_func: imm_offset,
+            segment_index: data.index,
+        });
+        emit_i32_const(func, reloc_enabled, data.offset as i32);
     }
 
     // ------------------------------------------------------------------
@@ -2552,8 +2595,21 @@ impl WasmBackend {
         // stale data in this buffer.
         let spill_slots = max_call_arity.max(1);
         let spill_bytes = vec![0u8; spill_slots * 8];
-        let spill_segment = self.add_data_segment(reloc_enabled, &spill_bytes);
+        let spill_segment = self.add_data_segment_mutable(reloc_enabled, &spill_bytes);
         let call_func_spill_offset = spill_segment.offset;
+
+        // Allocate an 8-byte scratch buffer in linear memory for const_str
+        // operations.  Previously each const_str allocated a fresh 8-byte
+        // heap object via `alloc(8)` to serve as the `out` parameter for
+        // `string_from_bytes`, then leaked it (never dec-refed).  For large
+        // modules with hundreds of string constants this wasted significant
+        // heap space, bringing the heap closer to the output data region in
+        // the split-runtime layout and contributing to heap-into-data
+        // corruption.  Using a fixed scratch slot eliminates both the leak
+        // and the per-string alloc call overhead.
+        let const_str_scratch_bytes = vec![0u8; 8];
+        let const_str_scratch_segment =
+            self.add_data_segment_mutable(reloc_enabled, &const_str_scratch_bytes);
 
         let mut user_type_map: BTreeMap<usize, u32> = BTreeMap::new();
         // Types 0-34 are defined above (0-30 single-return, 31-34 multi-value);
@@ -3833,6 +3889,7 @@ impl WasmBackend {
             table_base,
             multi_return_candidates: &multi_return_candidates,
             call_func_spill_offset,
+            const_str_scratch_segment,
         };
         for func_ir in &ir.functions {
             let type_idx = if func_ir.name.ends_with("_poll") {
@@ -5162,21 +5219,27 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         func.instruction(&Instruction::LocalSet(len_local));
 
-                        func.instruction(&Instruction::I64Const(8));
-                        emit_call(func, reloc_enabled, import_ids["alloc"]);
-                        let out_local = locals[out_name];
-                        func.instruction(&Instruction::LocalSet(out_local));
+                        // Use the fixed scratch slot in linear memory instead
+                        // of heap-allocating an 8-byte buffer per const_str.
+                        // This eliminates the per-string alloc(8) call, the
+                        // handle_resolve round-trip, and the leaked
+                        // intermediate object — saving ~48 bytes of heap per
+                        // string constant and reducing heap pressure that can
+                        // push the allocator into the output data region in
+                        // the split-runtime layout.
+                        let scratch_seg = ctx.const_str_scratch_segment;
 
+                        // string_from_bytes(data_ptr: i32, len: i64, out: i32) -> i32
                         func.instruction(&Instruction::LocalGet(ptr_local));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::LocalGet(len_local));
-                        func.instruction(&Instruction::LocalGet(out_local));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                        self.emit_data_ptr_i32(reloc_enabled, func_index, func, scratch_seg);
                         emit_call(func, reloc_enabled, import_ids["string_from_bytes"]);
                         func.instruction(&Instruction::Drop);
 
-                        func.instruction(&Instruction::LocalGet(out_local));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                        // Load the string handle written by string_from_bytes.
+                        let out_local = locals[out_name];
+                        self.emit_data_ptr_i32(reloc_enabled, func_index, func, scratch_seg);
                         func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
                             align: 3,
                             offset: 0,
@@ -5216,21 +5279,18 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         func.instruction(&Instruction::LocalSet(len_local));
 
-                        func.instruction(&Instruction::I64Const(8));
-                        emit_call(func, reloc_enabled, import_ids["alloc"]);
-                        let out_local = locals[out_name];
-                        func.instruction(&Instruction::LocalSet(out_local));
+                        // Use fixed scratch slot (same as const_str).
+                        let scratch_seg = ctx.const_str_scratch_segment;
 
                         func.instruction(&Instruction::LocalGet(ptr_local));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::LocalGet(len_local));
-                        func.instruction(&Instruction::LocalGet(out_local));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                        self.emit_data_ptr_i32(reloc_enabled, func_index, func, scratch_seg);
                         emit_call(func, reloc_enabled, import_ids["bytes_from_bytes"]);
                         func.instruction(&Instruction::Drop);
 
-                        func.instruction(&Instruction::LocalGet(out_local));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                        let out_local = locals[out_name];
+                        self.emit_data_ptr_i32(reloc_enabled, func_index, func, scratch_seg);
                         func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
                             align: 3,
                             offset: 0,
