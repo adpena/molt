@@ -1067,14 +1067,19 @@ fn is_number_for_concat(obj: MoltObject) -> bool {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
+        // Note: exception_pending check removed — backends guarantee molt_add
+        // is only called on non-exception paths, so the TLS + atomic overhead
+        // of checking every arithmetic op is unnecessary.
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
             let res = li as i128 + ri as i128;
             return int_bits_from_i128(_py, res);
+        }
+        // Float fast path — second most common after int, moved before
+        // as_ptr / bigint checks to avoid unnecessary pointer dereferences.
+        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
+            return MoltObject::from_float(lf + rf).bits();
         }
         if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
             unsafe {
@@ -1147,9 +1152,6 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
                 return MoltObject::from_int(i).bits();
             }
             return bigint_bits(_py, res);
-        }
-        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
-            return MoltObject::from_float(lf + rf).bits();
         }
         if complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some() {
             match (
@@ -1293,15 +1295,16 @@ pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
             let res = li as i128 - ri as i128;
             return int_bits_from_i128(_py, res);
         }
+        // Float fast path — moved before bigint/as_ptr checks.
+        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
+            return MoltObject::from_float(lf - rf).bits();
+        }
         if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
             let res = l_big - r_big;
             if let Some(i) = bigint_to_inline(&res) {
                 return MoltObject::from_int(i).bits();
             }
             return bigint_bits(_py, res);
-        }
-        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
-            return MoltObject::from_float(lf - rf).bits();
         }
         if complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some() {
             match (
@@ -1692,6 +1695,10 @@ pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
             let res = li as i128 * ri as i128;
             return int_bits_from_i128(_py, res);
         }
+        // Float fast path — moved before repeat_sequence/bigint checks.
+        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
+            return MoltObject::from_float(lf * rf).bits();
+        }
         if let Some(count) = to_i64(lhs)
             && let Some(ptr) = rhs.as_ptr()
             && let Some(bits) = repeat_sequence(_py, ptr, count)
@@ -1710,9 +1717,6 @@ pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
                 return MoltObject::from_int(i).bits();
             }
             return bigint_bits(_py, res);
-        }
-        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
-            return MoltObject::from_float(lf * rf).bits();
         }
         if complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some() {
             match (
@@ -2876,6 +2880,18 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
+        // Int fast path first — much more common than string % formatting.
+        if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            if ri == 0 {
+                return raise_exception::<_>(_py, "ZeroDivisionError", "integer division or modulo by zero");
+            }
+            let mut rem = li % ri;
+            if rem != 0 && (rem > 0) != (ri > 0) {
+                rem += ri;
+            }
+            return MoltObject::from_int(rem).bits();
+        }
+        // String % formatting — moved after int fast path.
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_STRING {
@@ -2890,16 +2906,6 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
                     return MoltObject::from_ptr(out_ptr).bits();
                 }
             }
-        }
-        if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
-            if ri == 0 {
-                return raise_exception::<_>(_py, "ZeroDivisionError", "integer division or modulo by zero");
-            }
-            let mut rem = li % ri;
-            if rem != 0 && (rem > 0) != (ri > 0) {
-                rem += ri;
-            }
-            return MoltObject::from_int(rem).bits();
         }
         if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
             if r_big.is_zero() {
@@ -14489,26 +14495,44 @@ pub extern "C" fn molt_call_func_dispatch(
         let n = nargs as usize;
         let args_ptr = args_ptr_bits as usize as *const u64;
 
-        // Read arguments from the spilled stack slot.
-        let args: Vec<u64> = unsafe {
-            (0..n).map(|i| *args_ptr.add(i)).collect()
+        // Read arguments into an inline stack buffer to avoid heap allocation
+        // on every function call.  Falls back to Vec only for >8 args (rare).
+        let mut inline_buf = [0u64; 8];
+        let heap_args: Vec<u64>;
+        let args_slice: &[u64] = if n <= 8 {
+            for i in 0..n { unsafe { inline_buf[i] = *args_ptr.add(i); } }
+            &inline_buf[..n]
+        } else {
+            heap_args = unsafe { (0..n).map(|i| *args_ptr.add(i)).collect() };
+            &heap_args
         };
 
         // --- Step 1: Bound method unwrap ---
-        let (effective_func, effective_args) = unsafe {
+        // Use a [u64; 9] inline buffer for bound methods (self + up to 8 args).
+        let mut bound_buf = [0u64; 9];
+        let heap_bound: Vec<u64>;
+        let (effective_func, effective_args): (u64, &[u64]) = unsafe {
             if let Some(ptr) = maybe_ptr_from_bits(func_bits) {
                 if object_type_id(ptr) == TYPE_ID_BOUND_METHOD {
                     let inner = bound_method_func_bits(ptr);
                     let self_bits = bound_method_self_bits(ptr);
-                    let mut combined = Vec::with_capacity(n + 1);
-                    combined.push(self_bits);
-                    combined.extend_from_slice(&args);
-                    (inner, combined)
+                    let combined_len = n + 1;
+                    if combined_len <= 9 {
+                        bound_buf[0] = self_bits;
+                        for i in 0..n { bound_buf[i + 1] = args_slice[i]; }
+                        (inner, &bound_buf[..combined_len])
+                    } else {
+                        let mut v = Vec::with_capacity(combined_len);
+                        v.push(self_bits);
+                        v.extend_from_slice(args_slice);
+                        heap_bound = v;
+                        (inner, &heap_bound)
+                    }
                 } else {
-                    (func_bits, args)
+                    (func_bits, args_slice)
                 }
             } else {
-                (func_bits, args)
+                (func_bits, args_slice)
             }
         };
 
@@ -14517,7 +14541,7 @@ pub extern "C" fn molt_call_func_dispatch(
             Some(ptr) if unsafe { object_type_id(ptr) == TYPE_ID_FUNCTION } => ptr,
             _ => {
                 // Not a function — use the generic callargs dispatch.
-                return molt_call_func_via_callargs(func_bits, &effective_args);
+                return molt_call_func_via_callargs(func_bits, effective_args);
             }
         };
 
@@ -14525,7 +14549,7 @@ pub extern "C" fn molt_call_func_dispatch(
         // Closures need the full callargs path for env capture setup.
         let has_closure = unsafe { function_closure_bits(func_ptr) } != 0;
         if has_closure {
-            return molt_call_func_via_callargs(func_bits, &effective_args);
+            return molt_call_func_via_callargs(func_bits, effective_args);
         }
 
         // --- Step 4: Direct call fast path ---
@@ -14536,50 +14560,61 @@ pub extern "C" fn molt_call_func_dispatch(
         if func_arity == eff_nargs {
             // Exact arity match — fast path.
             return molt_call_func_direct(
-                _py, fn_ptr_val, &effective_args, code_id, func_bits,
+                _py, fn_ptr_val, effective_args, code_id, func_bits,
             );
         }
 
         // --- Step 5: Handle missing args with defaults ---
+        // Use an inline [u64; 11] buffer for padded args (9 effective + 2 defaults max).
         if eff_nargs < func_arity {
             let missing = func_arity - eff_nargs;
             if missing <= 2 {
                 let default_kind = molt_function_default_kind(effective_func);
-                let mut padded = effective_args.clone();
+                let mut padded_buf = [0u64; 11];
+                padded_buf[..eff_nargs].copy_from_slice(effective_args);
+                let mut padded_len = eff_nargs;
 
                 let filled = match (missing, default_kind) {
                     (1, FUNC_DEFAULT_NONE) => {
-                        padded.push(MoltObject::none().bits());
+                        padded_buf[padded_len] = MoltObject::none().bits();
+                        padded_len += 1;
                         true
                     }
                     (1, FUNC_DEFAULT_DICT_POP) => {
-                        padded.push(MoltObject::from_int(1).bits());
+                        padded_buf[padded_len] = MoltObject::from_int(1).bits();
+                        padded_len += 1;
                         true
                     }
                     (1, FUNC_DEFAULT_DICT_UPDATE) => {
-                        padded.push(missing_bits(_py));
+                        padded_buf[padded_len] = missing_bits(_py);
+                        padded_len += 1;
                         true
                     }
                     (1, FUNC_DEFAULT_ZERO) => {
-                        padded.push(MoltObject::from_int(0).bits());
+                        padded_buf[padded_len] = MoltObject::from_int(0).bits();
+                        padded_len += 1;
                         true
                     }
                     (1, FUNC_DEFAULT_NEG_ONE) => {
-                        padded.push(MoltObject::from_int(-1).bits());
+                        padded_buf[padded_len] = MoltObject::from_int(-1).bits();
+                        padded_len += 1;
                         true
                     }
                     (1, FUNC_DEFAULT_MISSING) => {
-                        padded.push(missing_bits(_py));
+                        padded_buf[padded_len] = missing_bits(_py);
+                        padded_len += 1;
                         true
                     }
                     (2, FUNC_DEFAULT_NONE2) => {
-                        padded.push(MoltObject::none().bits());
-                        padded.push(MoltObject::none().bits());
+                        padded_buf[padded_len] = MoltObject::none().bits();
+                        padded_buf[padded_len + 1] = MoltObject::none().bits();
+                        padded_len += 2;
                         true
                     }
                     (2, FUNC_DEFAULT_DICT_POP) => {
-                        padded.push(MoltObject::none().bits());
-                        padded.push(MoltObject::from_int(0).bits());
+                        padded_buf[padded_len] = MoltObject::none().bits();
+                        padded_buf[padded_len + 1] = MoltObject::from_int(0).bits();
+                        padded_len += 2;
                         true
                     }
                     _ => false,
@@ -14587,7 +14622,7 @@ pub extern "C" fn molt_call_func_dispatch(
 
                 if filled {
                     return molt_call_func_direct(
-                        _py, fn_ptr_val, &padded, code_id, func_bits,
+                        _py, fn_ptr_val, &padded_buf[..padded_len], code_id, func_bits,
                     );
                 }
             }
@@ -14613,7 +14648,8 @@ pub extern "C" fn molt_call_func_dispatch(
                                 let defaults = seq_vec_ref(def_ptr);
                                 let n_defaults = defaults.len();
                                 if missing <= n_defaults {
-                                    let mut padded = effective_args.clone();
+                                    let mut padded = Vec::with_capacity(eff_nargs + missing);
+                                    padded.extend_from_slice(effective_args);
                                     let start = n_defaults - missing;
                                     for i in start..n_defaults {
                                         padded.push(defaults[i]);
@@ -14630,7 +14666,7 @@ pub extern "C" fn molt_call_func_dispatch(
         }
 
         // Arity mismatch we can't handle inline — fallback.
-        molt_call_func_via_callargs(func_bits, &effective_args)
+        molt_call_func_via_callargs(func_bits, effective_args)
     })
 }
 
