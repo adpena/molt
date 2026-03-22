@@ -8090,6 +8090,7 @@ impl SimpleBackend {
                         .module
                         .declare_function(func_name, Linkage::Import, &func_sig)
                         .unwrap();
+                    self.declared_func_arities.insert(func_name.clone(), arity as usize);
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
                     let tramp_id = Self::ensure_trampoline(
@@ -8149,6 +8150,7 @@ impl SimpleBackend {
                         }
                     }
                     func_sig.returns.push(AbiParam::new(types::I64));
+                    self.declared_func_arities.insert(func_name.clone(), func_sig.params.len());
                     let func_id = self
                         .module
                         .declare_function(func_name, Linkage::Export, &func_sig)
@@ -8220,6 +8222,7 @@ impl SimpleBackend {
                         }
                     }
                     func_sig.returns.push(AbiParam::new(types::I64));
+                    self.declared_func_arities.insert(func_name.clone(), func_sig.params.len());
                     let func_id = self
                         .module
                         .declare_function(func_name, Linkage::Export, &func_sig)
@@ -8675,8 +8678,17 @@ impl SimpleBackend {
                     // args_ptr, nargs, code_id).
 
                     // Declare the target function to take its address.
+                    // Use the previously-declared arity if available, so the
+                    // Cranelift signature matches the definition even when the
+                    // call site passes a different number of arguments (e.g.
+                    // expanded keyword arguments).
+                    let sig_arity = self
+                        .declared_func_arities
+                        .get(target_name.as_str())
+                        .copied()
+                        .unwrap_or(args.len());
                     let mut target_sig = self.module.make_signature();
-                    for _ in 0..args.len() {
+                    for _ in 0..sig_arity {
                         target_sig.params.push(AbiParam::new(types::I64));
                     }
                     target_sig.returns.push(AbiParam::new(types::I64));
@@ -8932,8 +8944,16 @@ impl SimpleBackend {
                         let env_bits = builder.inst_results(extract_call)[0];
                         args.insert(0, env_bits);
                     }
+                    // Use the previously-declared arity if available so the
+                    // Cranelift signature matches the definition even when the
+                    // call site passes a different number of arguments.
+                    let sig_arity = self
+                        .declared_func_arities
+                        .get(target_name.as_str())
+                        .copied()
+                        .unwrap_or(args.len());
                     let mut sig = self.module.make_signature();
-                    for _ in 0..args.len() {
+                    for _ in 0..sig_arity {
                         sig.params.push(AbiParam::new(types::I64));
                     }
                     sig.returns.push(AbiParam::new(types::I64));

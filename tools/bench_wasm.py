@@ -863,9 +863,24 @@ def build_runtime_wasm(
             " -C relocation-model=pic"
         )
     else:
+        # Explicitly export set/frozenset mutation functions that LTO
+        # may inline away and remove from the export section.  The WASM
+        # compiler backend emits imports for these without the ``molt_``
+        # prefix; the linker rewrites them to the prefixed form, so the
+        # runtime cdylib must export the prefixed names.
+        _set_exports = (
+            " -C link-arg=--export=molt_frozenset_add"
+            " -C link-arg=--export=molt_set_remove"
+            " -C link-arg=--export=molt_set_pop"
+            " -C link-arg=--export=molt_set_update"
+            " -C link-arg=--export=molt_set_intersection_update"
+            " -C link-arg=--export=molt_set_difference_update"
+            " -C link-arg=--export=molt_set_symdiff_update"
+        )
         base_flags = (
             "-C link-arg=--import-memory -C link-arg=--import-table"
             " -C link-arg=--growable-table"
+            + _set_exports
         )
     _append_rustflags(env, base_flags)
     build_cmd = [

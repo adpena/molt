@@ -87,3 +87,40 @@ print(asdict(s))
 print(astuple(s))
 print(is_dataclass(s), is_dataclass(Sample), is_dataclass(3))
 print(replace(s, a=10, k=8, e=4).c)
+
+
+# --- Combined decorators (dataclass + other decorators) ---
+
+from typing import final
+
+
+def add_tag(cls):
+    cls.tag = "tagged"
+    return cls
+
+
+@add_tag
+@dataclass(frozen=True)
+class TaggedPoint:
+    x: int
+    y: int
+
+
+tp = TaggedPoint(3, 4)
+print(tp)
+print(tp.tag)
+print(is_dataclass(tp))
+
+
+@dataclass
+@add_tag
+class TaggedColor:
+    r: int
+    g: int
+    b: int
+
+
+tc = TaggedColor(255, 0, 128)
+print(tc)
+print(tc.tag)
+print(is_dataclass(tc))
