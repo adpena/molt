@@ -794,14 +794,21 @@ fn ensure_locale_env(envs: &mut Vec<(String, String)>) {
     }
 }
 
-fn build_wasi_ctx(extra_envs: &[(String, String)]) -> Result<WasiP1Ctx> {
+fn build_wasi_ctx(extra_envs: &[(String, String)], guest_args: &[String]) -> Result<WasiP1Ctx> {
     let mut envs = env::vars().collect::<Vec<_>>();
     ensure_locale_env(&mut envs);
     envs.extend(extra_envs.iter().cloned());
     let mut builder = WasiCtxBuilder::new();
     builder.inherit_stdio();
     builder.envs(&envs);
-    builder.inherit_args();
+    if guest_args.is_empty() {
+        builder.inherit_args();
+    } else {
+        // Pass only the guest-facing args: ["app", route, query, ...]
+        let mut wasi_args: Vec<String> = vec!["app".to_string()];
+        wasi_args.extend(guest_args.iter().cloned());
+        builder.args(&wasi_args);
+    }
     builder.preopened_dir(".", ".", DirPerms::all(), FilePerms::all())?;
     Ok(builder.build_p1())
 }
@@ -4502,6 +4509,8 @@ fn main() -> Result<()> {
         }
     }
     let arg = positional;
+    // Collect remaining positional args as guest argv (route, query, etc.)
+    let guest_args: Vec<String> = args.collect();
 
     // Build extra env vars for VFS configuration.
     let mut vfs_envs: Vec<(String, String)> = Vec::new();
@@ -4597,7 +4606,7 @@ fn main() -> Result<()> {
     let mut store = Store::new(
         &engine,
         HostState {
-            wasi: build_wasi_ctx(&vfs_envs)?,
+            wasi: build_wasi_ctx(&vfs_envs, &guest_args)?,
             memory: None,
             call_indirect: Arc::new(Mutex::new(HashMap::new())),
             db_worker: None,
