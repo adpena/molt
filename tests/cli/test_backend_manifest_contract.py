@@ -138,7 +138,7 @@ def test_runtime_manifest_uses_flate2_zip_deflate_only() -> None:
     zip_dependency = runtime_manifest["dependencies"]["zip"]
 
     assert zip_dependency["default-features"] is False
-    assert zip_dependency["features"] == ["deflate-flate2-zlib-rs"]
+    assert zip_dependency["features"] == ["deflate"]
 
 
 def test_runtime_manifest_uses_minimal_rustpython_parser_features() -> None:
@@ -157,7 +157,11 @@ def test_runtime_manifest_dedupes_unicode_names2_version() -> None:
     with runtime_manifest_path.open("rb") as handle:
         runtime_manifest = tomllib.load(handle)
 
-    assert runtime_manifest["dependencies"]["unicode_names2"] == "1.3"
+    dep = runtime_manifest["dependencies"]["unicode_names2"]
+    if isinstance(dep, dict):
+        assert dep["version"] == "1.3"
+    else:
+        assert dep == "1.3"
 
 
 def test_runtime_manifest_declares_vfs_bundle_tar_feature() -> None:

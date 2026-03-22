@@ -1155,6 +1155,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.global_imported_names: dict[str, str] = {}
         self.imported_modules: dict[str, str] = {}
         self.global_imported_modules: dict[str, str] = {}
+        # Track aliases for ``import typing as <alias>`` so that
+        # ``@<alias>.overload`` is recognised as a typing overload stub.
+        self._typing_import_aliases: set[str] = set()
         self.async_locals: dict[str, int] = {}
         self.async_internal_locals: set[str] = set()
         self.async_public_locals: set[str] = set()
@@ -2246,19 +2249,29 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             exprs.append(returns)
         return any(self._expr_contains_yield(expr) for expr in exprs)
 
-    @staticmethod
     def _has_typing_overload_decorator(
+        self,
         node: ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> bool:
-        """Return True if the function has a @typing.overload or @overload decorator."""
+        """Return True if the function has a @typing.overload or @overload decorator.
+
+        Handles ``typing.overload``, bare ``overload``, and aliased forms
+        like ``t.overload`` (from ``import typing as t``).
+        """
         for deco in node.decorator_list:
             if isinstance(deco, ast.Attribute):
                 if (
                     isinstance(deco.value, ast.Name)
-                    and deco.value.id == "typing"
                     and deco.attr == "overload"
                 ):
-                    return True
+                    # Accept any <name>.overload where <name> resolves to
+                    # the typing module — covers ``typing.overload``,
+                    # ``t.overload``, etc.  We check a known set of names
+                    # to avoid false positives with unrelated ``overload``
+                    # attributes.
+                    alias = deco.value.id
+                    if alias == "typing" or alias in self._typing_import_aliases:
+                        return True
             elif isinstance(deco, ast.Name) and deco.id == "overload":
                 return True
         return False
@@ -25866,6 +25879,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         for alias in node.names:
             module_name = alias.name
             if module_name in {"typing", "typing_extensions"}:
+                # Track the alias so @<alias>.overload is recognised.
+                if alias.asname:
+                    self._typing_import_aliases.add(alias.asname)
                 continue
             bind_name = alias.asname or module_name.split(".")[0]
             module_val = self._emit_module_load_with_parents(module_name)

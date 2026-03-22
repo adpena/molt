@@ -72,6 +72,7 @@ def _write_extension_scan_project(project_root: Path) -> None:
                 "    (void)PyIter_Next;",
                 "    (void)PyOS_string_to_double;",
                 "    (void)PyObject_Vectorcall;",
+                "    (void)PyCode_NewWithPosOnlyArgs;",
                 "    return value;",
                 "}",
                 "",
@@ -231,7 +232,7 @@ def test_extension_scan_reports_missing_symbols_without_gate(
     assert "PyIter_Check" in data["supported_symbols"]
     assert "PyIter_Next" in data["supported_symbols"]
     assert "PyOS_string_to_double" in data["supported_symbols"]
-    assert "PyObject_Vectorcall" in data["missing_symbols"]
+    assert "PyObject_Vectorcall" in data["supported_symbols"]
     assert "PyLong_FromLong" in data["supported_symbols"]
 
 
@@ -249,7 +250,7 @@ def test_extension_scan_fail_on_missing_returns_error(tmp_path: Path, capsys) ->
     assert rc == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "error"
-    assert "PyObject_Vectorcall" in payload["data"]["missing_symbols"]
+    assert "PyCode_NewWithPosOnlyArgs" in payload["data"]["missing_symbols"]
 
 
 def test_extension_scan_numpy_surface_symbols_supported(tmp_path: Path, capsys) -> None:
