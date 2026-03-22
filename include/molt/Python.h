@@ -5316,6 +5316,11 @@ static inline PyObject *PyType_GetDict(PyTypeObject *type) {
     return PyObject_GetAttrString((PyObject *)type, "__dict__");
 }
 
+/* WARNING: This returns a PyObject* (Python callable) cast to void*, NOT a raw
+ * C function pointer as CPython does. C extensions that cast the return value
+ * to initproc/reprfunc/etc. and call it directly WILL crash. Extensions should
+ * use PyObject_Call on the returned value instead. This semantic gap will be
+ * resolved when proper C-to-Python trampolines are implemented. */
 static inline void *PyType_GetSlot(PyTypeObject *type, int slot) {
     PyObject *func;
     const char *attr_name;
