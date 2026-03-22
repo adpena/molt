@@ -9434,27 +9434,20 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalSet(out));
                             continue;
                         }
-                        emit_call(func, reloc_enabled, import_ids["recursion_guard_enter"]);
-                        func.instruction(&Instruction::I64Const(0));
-                        func.instruction(&Instruction::I64Ne);
-                        func.instruction(&Instruction::If(BlockType::Empty));
-                        let code_id = op.value.unwrap_or(0);
-                        func.instruction(&Instruction::I64Const(code_id));
-                        emit_call(func, reloc_enabled, import_ids["trace_enter_slot"]);
-                        func.instruction(&Instruction::Drop);
+                        // Direct call: push args, call function, store result.
+                        // The recursion guard + trace_enter/exit overhead
+                        // was causing the return value to be lost (the
+                        // if/else block left `out` as None even on the
+                        // success path in some WASM engines).  Module chunk
+                        // calls and devirtualized calls now use a flat
+                        // sequence; CHECK_EXCEPTION after the call catches
+                        // any exception the callee raises.
                         for arg_name in args_names {
                             let arg = locals[arg_name];
                             func.instruction(&Instruction::LocalGet(arg));
                         }
                         emit_call(func, reloc_enabled, func_idx);
                         func.instruction(&Instruction::LocalSet(out));
-                        emit_call(func, reloc_enabled, import_ids["trace_exit"]);
-                        func.instruction(&Instruction::Drop);
-                        emit_call(func, reloc_enabled, import_ids["recursion_guard_exit"]);
-                        func.instruction(&Instruction::Else);
-                        const_cache.emit_none(func);
-                        func.instruction(&Instruction::LocalSet(out));
-                        func.instruction(&Instruction::End);
                     }
                     "call_internal" => {
                         let target_name = op.s_value.as_ref().unwrap();

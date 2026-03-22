@@ -13815,46 +13815,33 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return res
             func_name = self.func_symbol_names.get(func_symbol)
             if func_name and func_name in self.globals:
+                # Devirtualized call: check if callee is the expected function,
+                # then call directly by symbol.  Falls back to INVOKE_FFI if
+                # the identity check fails (e.g. function was rebound).
+                #
+                # Both branches write to the same output variable (`res`)
+                # so the result is available after END_IF without an
+                # intermediate list cell.  The old res_cell + STORE_INDEX
+                # pattern broke in WASM because CHECK_EXCEPTION between
+                # CALL and STORE_INDEX could skip the store, leaving None.
                 expected = self._emit_module_attr_get(func_name)
                 matches = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(MoltOp(kind="IS", args=[callee, expected], result=matches))
-                zero = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-                init = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=init))
-                res_cell = MoltValue(self.next_var(), type_hint="list")
-                self.emit(MoltOp(kind="LIST_NEW", args=[init], result=res_cell))
+                res = MoltValue(self.next_var(), type_hint=res_hint)
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 self.emit(MoltOp(kind="IF", args=[matches], result=MoltValue("none")))
-                direct_res = MoltValue(self.next_var(), type_hint=res_hint)
                 self.emit(
-                    MoltOp(kind="CALL", args=[func_symbol] + args, result=direct_res)
-                )
-                self.emit(
-                    MoltOp(
-                        kind="STORE_INDEX",
-                        args=[res_cell, zero, direct_res],
-                        result=MoltValue("none"),
-                    )
+                    MoltOp(kind="CALL", args=[func_symbol] + args, result=res)
                 )
                 self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                fallback_res = MoltValue(self.next_var(), type_hint=res_hint)
                 self.emit(
                     MoltOp(
                         kind="INVOKE_FFI",
                         args=[callee] + args,
-                        result=fallback_res,
-                    )
-                )
-                self.emit(
-                    MoltOp(
-                        kind="STORE_INDEX",
-                        args=[res_cell, zero, fallback_res],
-                        result=MoltValue("none"),
+                        result=res,
                     )
                 )
                 self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                res = MoltValue(self.next_var(), type_hint=res_hint)
-                self.emit(MoltOp(kind="INDEX", args=[res_cell, zero], result=res))
                 return res
             res = MoltValue(self.next_var(), type_hint=res_hint)
             self.emit(MoltOp(kind="CALL", args=[func_symbol] + args, result=res))
