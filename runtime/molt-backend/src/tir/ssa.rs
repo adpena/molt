@@ -11,7 +11,7 @@
 //!    per-variable definition stack.
 //! 5. Thread renamed values through terminator branch arguments.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::ir::OpIR;
 
@@ -53,10 +53,10 @@ pub fn convert_to_ssa(cfg: &CFG, ops: &[OpIR]) -> SsaOutput {
 /// Per-block bookkeeping used during construction.
 struct BlockInfo {
     /// Variables that are defined (assigned to) in this CFG block.
-    defs: BTreeSet<String>,
+    defs: HashSet<String>,
     /// Variables that are used (read) in this CFG block (retained for future liveness analysis).
     #[allow(dead_code)]
-    uses: BTreeSet<String>,
+    uses: HashSet<String>,
     /// Ordered list of ops (index into the original `ops` slice).
     op_indices: Vec<usize>,
 }
@@ -69,9 +69,9 @@ struct SsaContext<'a> {
     /// Per-block info.
     block_info: Vec<BlockInfo>,
     /// All variable names observed.
-    all_vars: BTreeSet<String>,
+    all_vars: HashSet<String>,
     /// Dominance frontier sets, indexed by block id.
-    dom_frontier: Vec<BTreeSet<usize>>,
+    dom_frontier: Vec<HashSet<usize>>,
     /// For each block, the ordered list of variable names that are block
     /// arguments (inserted during the phi-placement phase).
     block_arg_vars: Vec<Vec<String>>,
@@ -89,8 +89,8 @@ impl<'a> SsaContext<'a> {
             ops,
             next_value: 0,
             block_info: Vec::with_capacity(n),
-            all_vars: BTreeSet::new(),
-            dom_frontier: vec![BTreeSet::new(); n],
+            all_vars: HashSet::new(),
+            dom_frontier: vec![HashSet::new(); n],
             block_arg_vars: vec![Vec::new(); n],
             tir_blocks: Vec::new(),
             value_types: HashMap::new(),
@@ -123,8 +123,8 @@ impl<'a> SsaContext<'a> {
 
     fn gather_defs_uses(&mut self) {
         for bb in &self.cfg.blocks {
-            let mut defs = BTreeSet::new();
-            let mut uses = BTreeSet::new();
+            let mut defs = HashSet::new();
+            let mut uses = HashSet::new();
             let mut op_indices = Vec::new();
 
             for idx in bb.start_op..bb.end_op {
@@ -227,7 +227,7 @@ impl<'a> SsaContext<'a> {
         let n = self.cfg.blocks.len();
 
         for var in self.all_vars.clone() {
-            let mut def_blocks: BTreeSet<usize> = BTreeSet::new();
+            let mut def_blocks: HashSet<usize> = HashSet::new();
             for bid in 0..n {
                 if self.block_info[bid].defs.contains(&var) {
                     def_blocks.insert(bid);
@@ -235,9 +235,9 @@ impl<'a> SsaContext<'a> {
             }
 
             // Iterated dominance frontier.
-            let mut phi_blocks: BTreeSet<usize> = BTreeSet::new();
+            let mut phi_blocks: HashSet<usize> = HashSet::new();
             let mut worklist: VecDeque<usize> = def_blocks.iter().copied().collect();
-            let mut ever_on_worklist: BTreeSet<usize> = def_blocks.clone();
+            let mut ever_on_worklist: HashSet<usize> = def_blocks.clone();
 
             while let Some(bid) = worklist.pop_front() {
                 for &df_block in &self.dom_frontier[bid] {
@@ -273,7 +273,7 @@ impl<'a> SsaContext<'a> {
         }
 
         // Per-variable definition stacks.
-        let mut var_stacks: BTreeMap<String, Vec<ValueId>> = BTreeMap::new();
+        let mut var_stacks: HashMap<String, Vec<ValueId>> = HashMap::new();
 
         // Pre-allocate TIR blocks with empty terminators. We fill them in during
         // the rename walk.
@@ -393,7 +393,7 @@ impl<'a> SsaContext<'a> {
     /// Resolve a variable name to its current SSA ValueId.
     fn resolve_var(
         var: &str,
-        var_stacks: &BTreeMap<String, Vec<ValueId>>,
+        var_stacks: &HashMap<String, Vec<ValueId>>,
     ) -> Option<ValueId> {
         var_stacks.get(var).and_then(|s| s.last().copied())
     }
@@ -402,7 +402,7 @@ impl<'a> SsaContext<'a> {
     fn translate_op(
         &mut self,
         op: &OpIR,
-        var_stacks: &BTreeMap<String, Vec<ValueId>>,
+        var_stacks: &HashMap<String, Vec<ValueId>>,
     ) -> TirOp {
         // Resolve operands from args.
         let mut operands = Vec::new();
@@ -479,7 +479,7 @@ impl<'a> SsaContext<'a> {
     fn build_terminator(
         &self,
         bid: usize,
-        var_stacks: &BTreeMap<String, Vec<ValueId>>,
+        var_stacks: &HashMap<String, Vec<ValueId>>,
     ) -> Terminator {
         let bb = &self.cfg.blocks[bid];
         let last_op_idx = bb.end_op.saturating_sub(1);
@@ -598,7 +598,7 @@ impl<'a> SsaContext<'a> {
     fn collect_branch_args(
         &self,
         target_bid: usize,
-        var_stacks: &BTreeMap<String, Vec<ValueId>>,
+        var_stacks: &HashMap<String, Vec<ValueId>>,
     ) -> Vec<ValueId> {
         self.block_arg_vars[target_bid]
             .iter()
