@@ -356,6 +356,7 @@ pub use crate::object::ops::*;
 pub use crate::object::ops_bytes::*;
 pub use crate::object::ops_dict::*;
 pub use crate::object::ops_heapq::*;
+pub use crate::object::ops_iter::*;
 pub use crate::object::ops_set::*;
 pub use crate::object::ops_string::*;
 #[allow(unused_imports)]
