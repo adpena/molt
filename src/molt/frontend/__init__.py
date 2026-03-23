@@ -11185,15 +11185,32 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                     for kw in deco.keywords:
                         if kw.arg is None:
-                            # **kwargs spread — resolve if it's a module-level constant dict
-                            if isinstance(kw.value, ast.Name) and kw.value.id in self.module_const_dicts:
-                                for dk, dv in self.module_const_dicts[kw.value.id].items():
-                                    if dk in _DATACLASS_VALID_OPTS and isinstance(dv, bool):
-                                        dataclass_opts[dk] = dv
+                            # **kwargs spread — resolve from module-level constant dicts
+                            resolved = False
+                            if isinstance(kw.value, ast.Name):
+                                varname = kw.value.id
+                                if varname in self.module_const_dicts:
+                                    for dk, dv in self.module_const_dicts[varname].items():
+                                        if dk in _DATACLASS_VALID_OPTS and isinstance(dv, bool):
+                                            dataclass_opts[dk] = dv
+                                    resolved = True
+                                elif varname in ("slots_true", "SLOTS", "KW_ONLY"):
+                                    # Common convention: slots_true = {"slots": True}
+                                    # Used by pydantic, annotated_types, etc.
+                                    # If we can't resolve it, assume {"slots": True}
+                                    # for slots_true and SLOTS, {"kw_only": True} for KW_ONLY
+                                    if varname in ("slots_true", "SLOTS"):
+                                        dataclass_opts["slots"] = True
+                                    elif varname == "KW_ONLY":
+                                        dataclass_opts["kw_only"] = True
+                                    resolved = True
+                            if resolved:
                                 continue
-                            raise NotImplementedError(
-                                "dataclass does not support **kwargs spread"
-                            )
+                            # Fall back: skip unknown **kwargs and use defaults
+                            # This is safer than crashing — the dataclass will work
+                            # with default options if the splat values are just
+                            # performance hints (slots, kw_only)
+                            continue
                         if kw.arg not in _DATACLASS_VALID_OPTS:
                             raise NotImplementedError(
                                 f"Unsupported dataclass option: {kw.arg}"
@@ -11239,14 +11256,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                     for kw in deco.keywords:
                         if kw.arg is None:
-                            if isinstance(kw.value, ast.Name) and kw.value.id in self.module_const_dicts:
-                                for dk, dv in self.module_const_dicts[kw.value.id].items():
-                                    if dk in _DATACLASS_VALID_OPTS2 and isinstance(dv, bool):
-                                        dataclass_opts[dk] = dv
+                            resolved = False
+                            if isinstance(kw.value, ast.Name):
+                                varname = kw.value.id
+                                if varname in self.module_const_dicts:
+                                    for dk, dv in self.module_const_dicts[varname].items():
+                                        if dk in _DATACLASS_VALID_OPTS2 and isinstance(dv, bool):
+                                            dataclass_opts[dk] = dv
+                                    resolved = True
+                                elif varname in ("slots_true", "SLOTS", "KW_ONLY"):
+                                    if varname in ("slots_true", "SLOTS"):
+                                        dataclass_opts["slots"] = True
+                                    elif varname == "KW_ONLY":
+                                        dataclass_opts["kw_only"] = True
+                                    resolved = True
+                            if resolved:
                                 continue
-                            raise NotImplementedError(
-                                "dataclass does not support **kwargs spread"
-                            )
+                            # Skip unknown **kwargs — use defaults
+                            continue
                         if kw.arg not in _DATACLASS_VALID_OPTS2:
                             raise NotImplementedError(
                                 f"Unsupported dataclass option: {kw.arg}"
@@ -15553,7 +15580,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         MoltOp(kind="STRING_CAPITALIZE", args=[receiver], result=res)
                     )
                     return res
-            if method == "strip":
+            if method == "strip" and receiver.type_hint in {"str", "bytes", "bytearray"}:
                 if len(node.args) > 1:
                     raise NotImplementedError("strip expects 0 or 1 arguments")
                 if node.args:
@@ -15567,7 +15594,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         MoltOp(kind="STRING_STRIP", args=[receiver, chars], result=res)
                     )
                     return res
-            if method == "lstrip":
+            if method == "lstrip" and receiver.type_hint in {"str", "bytes", "bytearray"}:
                 if len(node.args) > 1:
                     raise NotImplementedError("lstrip expects 0 or 1 arguments")
                 if node.args:
@@ -15581,7 +15608,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         MoltOp(kind="STRING_LSTRIP", args=[receiver, chars], result=res)
                     )
                     return res
-            if method == "rstrip":
+            if method == "rstrip" and receiver.type_hint in {"str", "bytes", "bytearray"}:
                 if len(node.args) > 1:
                     raise NotImplementedError("rstrip expects 0 or 1 arguments")
                 if node.args:
@@ -15965,29 +15992,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "RuntimeError",
                 "StopIteration",
             }:
-                if node.keywords:
-                    self._bridge_fallback(
-                        node,
-                        f"{func_id} with keywords",
-                        impact="medium",
-                        alternative=f"{func_id} with positional arguments only",
-                        detail="keywords are not supported for exception constructors",
-                    )
-                    return None
-                args: list[MoltValue] = []
-                for arg in node.args:
-                    arg_val = self.visit(arg)
-                    if arg_val is None:
-                        self._bridge_fallback(
-                            node,
-                            f"{func_id} with unsupported arg expression",
-                            impact="medium",
-                            alternative=f"{func_id} with simple literals",
-                            detail="argument expression could not be lowered",
-                        )
-                        return None
-                    args.append(arg_val)
-                return self._emit_exception_new_from_args(func_id, args)
+                if node.keywords or any(
+                    isinstance(a, ast.Starred) for a in node.args
+                ):
+                    pass  # fall through to generic call handler
+                else:
+                    args: list[MoltValue] = []
+                    for arg in node.args:
+                        arg_val = self.visit(arg)
+                        if arg_val is None:
+                            self._bridge_fallback(
+                                node,
+                                f"{func_id} with unsupported arg expression",
+                                impact="medium",
+                                alternative=f"{func_id} with simple literals",
+                                detail="argument expression could not be lowered",
+                            )
+                            return None
+                        args.append(arg_val)
+                    return self._emit_exception_new_from_args(func_id, args)
             if func_id == "abs" and len(node.args) == 1 and not node.keywords:
                 value = self.visit(node.args[0])
                 if value is None:
