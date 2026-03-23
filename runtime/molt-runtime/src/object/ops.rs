@@ -16370,6 +16370,33 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
             {
                 return crate::molt_bound_method_new(func_bits, obj_bits);
             }
+            if obj.is_float()
+                && let Some(func_bits) = crate::builtins::methods::float_method_bits(_py, &attr_name)
+            {
+                return crate::molt_bound_method_new(func_bits, obj_bits);
+            }
+            // Inline int/float/bool: fall back to class-based resolution
+            // so that inherited methods (e.g. object.__init__) are found.
+            {
+                let builtins = builtin_classes(_py);
+                let class_bits = if obj.is_float() {
+                    builtins.float
+                } else if obj.is_bool() {
+                    builtins.bool
+                } else if obj.is_int() {
+                    builtins.int
+                } else {
+                    0
+                };
+                if class_bits != 0 {
+                    if let Some(func_bits) = crate::builtins::methods::builtin_class_method_bits(_py, class_bits, &attr_name) {
+                        return crate::molt_bound_method_new(func_bits, obj_bits);
+                    }
+                    if let Some(func_bits) = crate::builtins::methods::builtin_class_method_bits(_py, builtins.object, &attr_name) {
+                        return crate::molt_bound_method_new(func_bits, obj_bits);
+                    }
+                }
+            }
             attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits) as u64
         }
     })
