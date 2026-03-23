@@ -848,6 +848,25 @@ fn run_daemon(_socket_path: &str) -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
+    // Hard memory guard: set rlimit on virtual memory to prevent OOM
+    // from crashing the entire machine.  Default 8GB, override with
+    // MOLT_BACKEND_MAX_RSS_GB env var.
+    #[cfg(unix)]
+    {
+        let max_gb: u64 = std::env::var("MOLT_BACKEND_MAX_RSS_GB")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        let max_bytes = max_gb * 1024 * 1024 * 1024;
+        unsafe {
+            let rlim = libc::rlimit {
+                rlim_cur: max_bytes,
+                rlim_max: max_bytes,
+            };
+            libc::setrlimit(libc::RLIMIT_AS, &rlim);
+        }
+    }
+
     let args: Vec<String> = env::args().collect();
     if args.iter().any(|arg| arg == "--daemon") {
         let socket_path = args
@@ -974,10 +993,89 @@ fn main() -> io::Result<()> {
     } else {
         #[cfg(feature = "native-backend")]
         {
-            let backend = SimpleBackend::new_with_target(target_triple);
-            let obj_bytes = backend.compile(ir);
-            file.write_all(&obj_bytes)?;
-            println!("Successfully compiled to output.o");
+            let func_count = ir.functions.len();
+            let batch_size: usize = std::env::var("MOLT_BACKEND_BATCH_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(256);
+
+            if func_count <= batch_size || batch_size == 0 {
+                // Small IR: compile everything in one shot
+                let backend = SimpleBackend::new_with_target(target_triple);
+                let obj_bytes = backend.compile(ir);
+                file.write_all(&obj_bytes)?;
+                eprintln!(
+                    "Successfully compiled to output.o ({func_count} functions)"
+                );
+            } else {
+                // Large IR: split into batches, compile each independently,
+                // then merge with ld -r (partial link).  This prevents OOM
+                // when compiling 1000+ stdlib functions into one ObjectModule.
+                let mut all_functions = ir.functions;
+                let profile = ir.profile;
+                let total_batches = (all_functions.len() + batch_size - 1) / batch_size;
+                let mut batch_paths: Vec<std::path::PathBuf> = Vec::new();
+                let tmp_dir = std::env::temp_dir().join(format!("molt_batch_{}", std::process::id()));
+                let _ = std::fs::create_dir_all(&tmp_dir);
+
+                let mut batch_idx = 0usize;
+                while !all_functions.is_empty() {
+                    let remaining = all_functions.len();
+                    let take = remaining.min(batch_size);
+                    // drain from the front to keep order
+                    let batch_funcs: Vec<_> = all_functions.drain(..take).collect();
+                    eprintln!(
+                        "MOLT_BACKEND: batch {}/{total_batches} ({} functions)",
+                        batch_idx + 1,
+                        batch_funcs.len()
+                    );
+                    let batch_ir = SimpleIR {
+                        functions: batch_funcs,
+                        profile: profile.clone(),
+                    };
+                    let backend = SimpleBackend::new_with_target(target_triple);
+                    let obj_bytes = backend.compile(batch_ir);
+
+                    let batch_path = tmp_dir.join(format!("batch_{batch_idx}.o"));
+                    std::fs::write(&batch_path, &obj_bytes)?;
+                    batch_paths.push(batch_path);
+                    batch_idx += 1;
+                }
+
+                // Merge batch objects with ld -r (relocatable partial link)
+                drop(file); // close the output file handle
+                if batch_paths.len() == 1 {
+                    std::fs::copy(&batch_paths[0], output_file)?;
+                } else {
+                    let mut cmd = std::process::Command::new("ld");
+                    cmd.arg("-r").arg("-o").arg(output_file);
+                    for p in &batch_paths {
+                        cmd.arg(p);
+                    }
+                    let ld_result = cmd.output().map_err(|e| {
+                        io::Error::new(
+                            io::ErrorKind::Other,
+                            format!("failed to run ld -r for batch merge: {e}"),
+                        )
+                    })?;
+                    if !ld_result.status.success() {
+                        let stderr = String::from_utf8_lossy(&ld_result.stderr);
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            format!("ld -r failed: {stderr}"),
+                        ));
+                    }
+                }
+
+                // Cleanup
+                for p in &batch_paths {
+                    let _ = std::fs::remove_file(p);
+                }
+                let _ = std::fs::remove_dir(&tmp_dir);
+                eprintln!(
+                    "Successfully compiled to output.o ({func_count} functions, {total_batches} batches)"
+                );
+            }
         }
         #[cfg(not(feature = "native-backend"))]
         {
