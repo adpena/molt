@@ -19903,11 +19903,23 @@ def _deploy(
         if verbose:
             print(f"Build command: {shlex.join(build_cmd)}", file=sys.stderr)
 
-    build_res = subprocess.run(build_cmd, env=env, cwd=project_root)
+    build_res = subprocess.run(
+        build_cmd, env=env, cwd=project_root,
+        capture_output=json_output,
+    )
     if build_res.returncode != 0:
+        detail = f"Build for {platform} failed (exit code {build_res.returncode})."
+        if json_output:
+            stderr_text = (build_res.stderr or b"").decode(errors="replace").strip()
+            if stderr_text:
+                stderr_lines = stderr_text.splitlines()
+                if len(stderr_lines) > 15:
+                    stderr_text = "\n".join(["...(truncated)"] + stderr_lines[-15:])
+                detail += f"\n{stderr_text}"
+        else:
+            detail += "\nRun with --verbose for details."
         return _fail(
-            f"Build for {platform} failed (exit code {build_res.returncode}).\n"
-            "Run with --verbose for details.",
+            detail,
             json_output,
             code=build_res.returncode,
             command="deploy",
@@ -24881,7 +24893,7 @@ def main() -> int:
     )
 
     compare_parser = subparsers.add_parser(
-        "compare", help="Compare CPython vs Molt outputs and timing"
+        "compare", help="Compare CPython vs Molt output"
     )
     compare_parser.add_argument("file", nargs="?", help="Path to Python source")
     compare_parser.add_argument(
@@ -25256,7 +25268,7 @@ def main() -> int:
     )
 
     verify_parser = subparsers.add_parser(
-        "verify", help="Verify a Molt package manifest and checksum"
+        "verify", help="Verify a package manifest and checksum"
     )
     verify_parser.add_argument(
         "--package",
@@ -25342,7 +25354,7 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
     vendor_parser = subparsers.add_parser(
-        "vendor", help="Vendor pure Python dependencies"
+        "vendor", help="Vendor pure-Python dependencies"
     )
     vendor_parser.add_argument(
         "--include-dev", action="store_true", help="Include dev dependencies"
@@ -25386,7 +25398,7 @@ def main() -> int:
     )
 
     clean_parser = subparsers.add_parser(
-        "clean", help="Remove Molt caches, build artifacts, and repo outputs"
+        "clean", help="Remove build artifacts and caches"
     )
     clean_parser.add_argument(
         "--all",
@@ -25436,7 +25448,7 @@ def main() -> int:
     )
 
     config_parser = subparsers.add_parser(
-        "config", help="Show Molt configuration defaults"
+        "config", help="Show/set configuration"
     )
     config_parser.add_argument(
         "--file",
@@ -25450,7 +25462,7 @@ def main() -> int:
     )
 
     completion_parser = subparsers.add_parser(
-        "completion", help="Generate shell completion scripts"
+        "completion", help="Generate shell completions"
     )
     completion_parser.add_argument(
         "--shell",
@@ -25571,7 +25583,8 @@ def main() -> int:
             or build_cfg.get("runtime-feedback")
         )
         build_profile = (
-            args.build_profile
+            ("release" if getattr(args, "release", False) else None)
+            or args.build_profile
             or build_cfg.get("profile")
             or build_cfg.get("build_profile")
             or "release"
@@ -25873,7 +25886,8 @@ def main() -> int:
             build_args.append("--no-cache")
         run_target = getattr(args, "target", None) or run_cfg.get("target") or "native"
         run_profile = (
-            args.profile
+            ("release" if getattr(args, "release", False) else None)
+            or args.profile
             or run_cfg.get("profile")
             or run_cfg.get("build_profile")
             or build_cfg.get("profile")
@@ -26228,11 +26242,14 @@ def main() -> int:
         return completion(args.shell, args.json, args.verbose)
 
     if args.command == "deploy":
+        deploy_build_profile = args.build_profile
+        if getattr(args, "release", False) and not deploy_build_profile:
+            deploy_build_profile = "release"
         return _deploy(
             platform=args.platform,
             file_path=args.file,
             module=args.module,
-            build_profile=args.build_profile,
+            build_profile=deploy_build_profile,
             output=args.output,
             out_dir=args.out_dir,
             roblox_project=getattr(args, "roblox_project", None),
