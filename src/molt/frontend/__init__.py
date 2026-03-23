@@ -15557,29 +15557,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             )
                         )
                     return res
-            if method == "lower":
+            if method == "lower" and receiver.type_hint == "str":
                 if node.args:
                     raise NotImplementedError("lower expects 0 arguments")
                 res = MoltValue(self.next_var(), type_hint="str")
-                if receiver.type_hint == "str":
-                    self.emit(MoltOp(kind="STRING_LOWER", args=[receiver], result=res))
-                    return res
-            if method == "upper":
+                self.emit(MoltOp(kind="STRING_LOWER", args=[receiver], result=res))
+                return res
+            if method == "upper" and receiver.type_hint == "str":
                 if node.args:
                     raise NotImplementedError("upper expects 0 arguments")
                 res = MoltValue(self.next_var(), type_hint="str")
-                if receiver.type_hint == "str":
-                    self.emit(MoltOp(kind="STRING_UPPER", args=[receiver], result=res))
-                    return res
-            if method == "capitalize":
+                self.emit(MoltOp(kind="STRING_UPPER", args=[receiver], result=res))
+                return res
+            if method == "capitalize" and receiver.type_hint == "str":
                 if node.args:
                     raise NotImplementedError("capitalize expects 0 arguments")
                 res = MoltValue(self.next_var(), type_hint="str")
-                if receiver.type_hint == "str":
-                    self.emit(
-                        MoltOp(kind="STRING_CAPITALIZE", args=[receiver], result=res)
-                    )
-                    return res
+                self.emit(
+                    MoltOp(kind="STRING_CAPITALIZE", args=[receiver], result=res)
+                )
+                return res
             if method == "strip" and receiver.type_hint in {"str", "bytes", "bytearray"}:
                 if len(node.args) > 1:
                     raise NotImplementedError("strip expects 0 or 1 arguments")
@@ -26990,10 +26987,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     {"kind": "const_bool", "value": value, "out": op.result.name}
                 )
             elif op.kind == "CONST_FLOAT":
+                _fval = op.args[0]
+                # Encode non-finite floats as strings for JSON compliance;
+                # bare Infinity/NaN tokens are not valid JSON.
+                if isinstance(_fval, float) and (
+                    _fval != _fval  # NaN
+                    or _fval == float("inf")
+                    or _fval == float("-inf")
+                ):
+                    if _fval != _fval:
+                        _fval = "NaN"
+                    elif _fval > 0:
+                        _fval = "Infinity"
+                    else:
+                        _fval = "-Infinity"
                 json_ops.append(
                     {
                         "kind": "const_float",
-                        "f_value": op.args[0],
+                        "f_value": _fval,
                         "out": op.result.name,
                     }
                 )
