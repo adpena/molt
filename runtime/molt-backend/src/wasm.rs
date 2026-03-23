@@ -1002,7 +1002,15 @@ impl Default for WasmCompileOptions {
                 let raw = std::env::var("MOLT_WASM_DATA_BASE")
                     .ok()
                     .and_then(|val| val.parse::<u64>().ok())
-                    .unwrap_or(1_048_576);
+                    // Default: 64 MiB.  The split-runtime layout shares
+                    // linear memory between the Rust runtime WASM module
+                    // (whose data segments start at ~1 MiB and whose
+                    // dlmalloc heap grows upward from there) and the
+                    // output module.  A 1 MiB default would collide with
+                    // the runtime's data region and cause string-pointer
+                    // corruption on large module graphs.  64 MiB leaves
+                    // ample headroom for the runtime heap.
+                    .unwrap_or(64 * 1024 * 1024);
                 let aligned = (raw + 7) & !7;
                 aligned.min(u64::from(u32::MAX)) as u32
             },
@@ -1105,6 +1113,10 @@ impl WasmBackend {
             }
         }
         let offset = self.data_offset;
+        let byte_len: u32 = bytes
+            .len()
+            .try_into()
+            .expect("data segment too large for WASM (>4 GiB)");
         let index = self.data_segments.len() as u32;
         let const_expr = if reloc_enabled {
             const_expr_i32_const_padded(offset as i32)
@@ -1112,9 +1124,16 @@ impl WasmBackend {
             ConstExpr::i32_const(offset as i32)
         };
         self.data.active(0, &const_expr, bytes.iter().copied());
-        self.data_offset = (self.data_offset + bytes.len() as u32 + 7) & !7;
+        // Checked arithmetic: detect overflow instead of silently wrapping,
+        // which would place subsequent segments at wrong offsets and corrupt
+        // data in shared linear memory.
+        self.data_offset = offset
+            .checked_add(byte_len)
+            .and_then(|v| v.checked_add(7))
+            .map(|v| v & !7)
+            .expect("WASM data segment offset overflow (>4 GiB total data)");
         let info = DataSegmentInfo {
-            size: bytes.len() as u32,
+            size: byte_len,
         };
         self.data_segments.push(info);
         let data_ref = DataSegmentRef { offset, index };
