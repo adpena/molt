@@ -1298,6 +1298,7 @@ impl WasmBackend {
         for name in [
             // Runtime lifecycle
             "runtime_init", "runtime_shutdown", "sys_set_version_info",
+            "set_intrinsic_manifest",
             // Output
             "print_obj", "print_newline",
             // Memory / allocation
