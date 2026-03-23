@@ -4019,7 +4019,18 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
     let mut try_stack: Vec<(u32, i32)> = Vec::new();
     let mut depth: i32 = 0;
     let mut pcall_ranges: Vec<(usize, usize, u32)> = Vec::new();
+    // After pcall_wrap_end, suppress jump ops until the next label.
+    // These jumps target exception handler labels that pcall absorbs.
+    let mut suppress_jumps = false;
     for op in ops {
+        if suppress_jumps {
+            if op.kind == "jump" {
+                continue;
+            }
+            if op.kind == "label" {
+                suppress_jumps = false;
+            }
+        }
         match op.kind.as_str() {
             "try_start" => {
                 let n = counter;
@@ -4045,6 +4056,7 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
                             value: Some(n as i64),
                             ..OpIR::default()
                         });
+                        suppress_jumps = true;
                         if let Some(range) =
                             pcall_ranges.iter_mut().rev().find(|r| r.2 == n)
                         {
@@ -7127,12 +7139,46 @@ fn strip_dead_gotos_and_labels(source: &mut String) {
         }
     }
 
-    // Remove orphaned labels (no goto points to them).
+    // Remove goto-to-immediately-next-label (dead jump pattern).
+    // Pattern: `goto label_N` followed by `::label_N::` on the next non-empty line.
+    for i in 0..lines.len().saturating_sub(1) {
+        let t = lines[i].trim();
+        if t.starts_with("goto ") {
+            let target = &t[5..];
+            // Find next non-empty line
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].trim().is_empty() {
+                j += 1;
+            }
+            if j < lines.len() {
+                let next = lines[j].trim();
+                if next == format!("::{target}::") {
+                    remove.insert(i);
+                }
+            }
+        }
+    }
+
+    // Rebuild goto_targets excluding removed gotos, then remove orphaned labels.
+    let mut live_goto_targets: BTreeSet<String> = BTreeSet::new();
+    for (i, line) in lines.iter().enumerate() {
+        if remove.contains(&i) { continue; }
+        let t = line.trim();
+        if t.starts_with("goto ") {
+            live_goto_targets.insert(t[5..].to_string());
+        }
+        if let Some(pos) = t.find("then goto ") {
+            let after = &t[pos + 10..];
+            if let Some(end_pos) = after.find(' ') {
+                live_goto_targets.insert(after[..end_pos].to_string());
+            }
+        }
+    }
     for (i, line) in lines.iter().enumerate() {
         let t = line.trim();
         if t.starts_with("::") && t.ends_with("::") && t.len() > 4 {
             let label = &t[2..t.len()-2];
-            if !goto_targets.contains(label) {
+            if !live_goto_targets.contains(label) {
                 remove.insert(i);
             }
         }
