@@ -1638,7 +1638,7 @@ pub(crate) unsafe fn object_attr_lookup_raw(
                 _py,
                 obj_from_bits(attr_bits),
                 obj_from_bits(await_name_bits),
-            ) && (*header_from_obj_ptr(obj_ptr)).poll_fn != 0
+            ) && crate::object::object_poll_fn(obj_ptr) != 0
             {
                 let self_bits = MoltObject::from_ptr(obj_ptr).bits();
                 let func_bits = awaitable_await_func_bits(_py);

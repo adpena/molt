@@ -843,7 +843,7 @@ unsafe fn object_class_bits_from_state(state: i64) -> u64 {
 
 pub(crate) unsafe fn object_class_bits(ptr: *mut u8) -> u64 {
     let state = object_state(ptr);
-    object_class_bits_from_state(state)
+    unsafe { object_class_bits_from_state(state) }
 }
 
 pub(crate) unsafe fn object_set_class_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
@@ -1689,7 +1689,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     }
                 }
                 TYPE_ID_OBJECT => {
-                    let poll_fn = header.poll_fn;
+                    let poll_fn = object_poll_fn(ptr);
                     if poll_fn == asyncio_wait_for_poll_fn_addr() {
                         asyncio_wait_for_task_drop(py, ptr);
                     } else if poll_fn == asyncio_wait_poll_fn_addr() {
@@ -1788,7 +1788,8 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 _ => {}
             }
             release_ptr(ptr);
-            let total_size = header.size;
+            let total_size = total_size_from_header(header, ptr);
+            free_cold_header(ptr);
             let should_pool = matches!(
                 header.type_id,
                 TYPE_ID_OBJECT | TYPE_ID_BOUND_METHOD | TYPE_ID_ITER

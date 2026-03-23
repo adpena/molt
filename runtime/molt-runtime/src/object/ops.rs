@@ -1050,18 +1050,19 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                                 let needed = std::mem::size_of::<MoltHeader>()
                                     + std::mem::size_of::<usize>()
                                     + content_len;
-                                if header.size >= needed {
+                                let total_sz = super::total_size_from_header(header, ptr);
+                                if total_sz >= needed {
                                     // Fast: spare capacity — append in place, zero alloc
                                     let l_data = string_bytes(ptr) as *mut u8;
                                     let r_data = string_bytes(r_ptr);
                                     std::ptr::copy_nonoverlapping(r_data, l_data.add(l_len), r_len);
                                     *(ptr as *mut usize) = l_len + r_len;
-                                    header.state = 0; // invalidate hash
+                                    super::object_set_state(ptr, 0); // invalidate hash
                                     inc_ref_bits(_py, a);
                                     return a;
                                 }
                                 // Slow: allocate 2x, amortised growth
-                                let new_cap = std::cmp::max(header.size * 2, needed + 64);
+                                let new_cap = std::cmp::max(total_sz * 2, needed + 64);
                                 let new_ptr = alloc_object(_py, new_cap, TYPE_ID_STRING);
                                 if !new_ptr.is_null() {
                                     let l_data = string_bytes(ptr);
@@ -31187,30 +31188,24 @@ unsafe fn simd_max_byte_wasm32(bytes: &[u8]) -> u32 {
 }
 
 fn hash_string(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
-    let header = unsafe { header_from_obj_ptr(ptr) };
-    let cached = unsafe { (*header).state };
+    let cached = super::object_state(ptr);
     if cached != 0 {
         return cached.wrapping_sub(1);
     }
     let len = unsafe { string_len(ptr) };
     let bytes = unsafe { std::slice::from_raw_parts(string_bytes(ptr), len) };
     let hash = hash_string_bytes(_py, bytes);
-    unsafe {
-        (*header).state = hash.wrapping_add(1);
-    }
+    super::object_set_state(ptr, hash.wrapping_add(1));
     hash
 }
 
 fn hash_bytes_cached(_py: &PyToken<'_>, ptr: *mut u8, bytes: &[u8]) -> i64 {
-    let header = unsafe { header_from_obj_ptr(ptr) };
-    let cached = unsafe { (*header).state };
+    let cached = super::object_state(ptr);
     if cached != 0 {
         return cached.wrapping_sub(1);
     }
     let hash = hash_bytes(_py, bytes);
-    unsafe {
-        (*header).state = hash.wrapping_add(1);
-    }
+    super::object_set_state(ptr, hash.wrapping_add(1));
     hash
 }
 

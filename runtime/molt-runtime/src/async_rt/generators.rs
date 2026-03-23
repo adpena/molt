@@ -296,7 +296,7 @@ fn resolve_sleep_target(_py: &PyToken<'_>, future_ptr: *mut u8) -> *mut u8 {
     }
     let mut cursor = future_ptr;
     for _ in 0..16 {
-        let poll_fn = unsafe { (*header_from_obj_ptr(cursor)).poll_fn };
+        let poll_fn = unsafe { crate::object::object_poll_fn(cursor) };
         if poll_fn == async_sleep_poll_fn_addr() || poll_fn == io_wait_poll_fn_addr() {
             return cursor;
         }
@@ -407,8 +407,8 @@ pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits:
                 }
             }
             let header = header_from_obj_ptr(ptr);
-            (*header).poll_fn = poll_fn_addr;
-            (*header).state = 0;
+            crate::object::object_set_poll_fn(ptr, poll_fn_addr);
+            crate::object::object_set_state(ptr, 0);
             if is_coroutine {
                 (*header).flags |= HEADER_FLAG_COROUTINE;
             }
@@ -430,7 +430,7 @@ pub extern "C" fn molt_awaitable_await(self_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
         };
         unsafe {
-            if (*header_from_obj_ptr(ptr)).poll_fn == 0 {
+            if crate::object::object_poll_fn(ptr) == 0 {
                 return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
             }
         }
@@ -445,7 +445,7 @@ pub extern "C" fn molt_is_native_awaitable(val_bits: u64) -> u64 {
         let Some(ptr) = maybe_ptr_from_bits(val_bits) else {
             return MoltObject::from_bool(false).bits();
         };
-        let has_poll = unsafe { (*header_from_obj_ptr(ptr)).poll_fn != 0 };
+        let has_poll = unsafe { crate::object::object_poll_fn(ptr) != 0 };
         MoltObject::from_bool(has_poll).bits()
     })
 }
@@ -510,7 +510,7 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
             generator_set_slot(_py, ptr, GEN_SEND_OFFSET, send_bits);
             generator_set_slot(_py, ptr, GEN_THROW_OFFSET, MoltObject::none().bits());
             let header = header_from_obj_ptr(ptr);
-            let poll_fn_addr = (*header).poll_fn;
+            let poll_fn_addr = crate::object::object_poll_fn(ptr);
             if poll_fn_addr == 0 {
                 generator_set_closed(_py, ptr, true);
                 return generator_done_tuple(_py, MoltObject::none().bits());
@@ -605,7 +605,7 @@ pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
             generator_set_slot(_py, ptr, GEN_THROW_OFFSET, exc_bits);
             generator_set_slot(_py, ptr, GEN_SEND_OFFSET, MoltObject::none().bits());
             let header = header_from_obj_ptr(ptr);
-            let poll_fn_addr = (*header).poll_fn;
+            let poll_fn_addr = crate::object::object_poll_fn(ptr);
             if poll_fn_addr == 0 {
                 generator_set_closed(_py, ptr, true);
                 return generator_done_tuple(_py, MoltObject::none().bits());
@@ -689,7 +689,7 @@ unsafe fn generator_resume_bits(_py: &PyToken<'_>, gen_bits: u64) -> u64 {
             return generator_done_tuple(_py, MoltObject::none().bits());
         }
         let header = header_from_obj_ptr(ptr);
-        let poll_fn_addr = (*header).poll_fn;
+        let poll_fn_addr = crate::object::object_poll_fn(ptr);
         if poll_fn_addr == 0 {
             generator_set_closed(_py, ptr, true);
             return generator_done_tuple(_py, MoltObject::none().bits());
@@ -854,7 +854,7 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
             dec_ref_bits(_py, exc_bits);
             generator_set_slot(_py, ptr, GEN_SEND_OFFSET, MoltObject::none().bits());
             let header = header_from_obj_ptr(ptr);
-            let poll_fn_addr = (*header).poll_fn;
+            let poll_fn_addr = crate::object::object_poll_fn(ptr);
             if poll_fn_addr == 0 {
                 generator_set_closed(_py, ptr, true);
                 return MoltObject::none().bits();
@@ -1192,7 +1192,7 @@ pub(crate) unsafe fn asyncgen_await_bits(_py: &PyToken<'_>, ptr: *mut u8) -> u64
         if let Some(gen_ptr) = maybe_ptr_from_bits(gen_bits)
             && object_type_id(gen_ptr) == TYPE_ID_GENERATOR
         {
-            let poll_fn_addr = (*header_from_obj_ptr(gen_ptr)).poll_fn;
+            let poll_fn_addr = crate::object::object_poll_fn(gen_ptr);
             let await_offsets: Vec<usize> = {
                 let registry = runtime_state(_py).asyncgen_locals.lock().unwrap();
                 match registry.get(&poll_fn_addr) {
@@ -1250,7 +1250,7 @@ pub(crate) unsafe fn asyncgen_code_bits(_py: &PyToken<'_>, ptr: *mut u8) -> u64 
             return MoltObject::none().bits();
         }
         let header = header_from_obj_ptr(gen_ptr);
-        let poll_fn_addr = (*header).poll_fn;
+        let poll_fn_addr = crate::object::object_poll_fn(gen_ptr);
         let code_bits = fn_ptr_code_get(_py, poll_fn_addr);
         if code_bits == 0 {
             return MoltObject::none().bits();
@@ -1586,7 +1586,7 @@ pub extern "C" fn molt_asyncgen_locals(asyncgen_bits: u64) -> u64 {
                 return empty_dict();
             }
             let header = header_from_obj_ptr(gen_ptr);
-            let poll_fn_addr = (*header).poll_fn;
+            let poll_fn_addr = crate::object::object_poll_fn(gen_ptr);
             let entry = {
                 let guard = runtime_state(_py).asyncgen_locals.lock().unwrap();
                 guard.get(&poll_fn_addr).cloned()
@@ -1734,7 +1734,7 @@ pub(crate) unsafe fn generator_locals_dict(_py: &PyToken<'_>, gen_ptr: *mut u8) 
             return empty_dict();
         }
         let header = header_from_obj_ptr(gen_ptr);
-        let poll_fn_addr = (*header).poll_fn;
+        let poll_fn_addr = crate::object::object_poll_fn(gen_ptr);
         let entry = {
             let guard = runtime_state(_py).gen_locals.lock().unwrap();
             guard.get(&poll_fn_addr).cloned()
@@ -1980,9 +1980,7 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 3 * std::mem::size_of::<u64>() {
                 return MoltObject::none().bits() as i64;
             }
@@ -2036,7 +2034,7 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                 return raised as i64;
             }
 
-            let res_bits = if (*header).state != 0 {
+            let res_bits = if crate::object::object_state(obj_ptr) != 0 {
                 generator_resume_bits(_py, gen_bits)
             } else {
                 match op {
@@ -2127,7 +2125,7 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                 if running_bits == running_marker_bits {
                     asyncgen_clear_running_bits(_py, asyncgen_ptr);
                 }
-                (*header).state = 0;
+                crate::object::object_set_state(obj_ptr, 0);
                 let exc_bits = molt_exception_last();
                 let kind_bits = molt_exception_kind(exc_bits);
                 let kind = string_obj_to_owned(obj_from_bits(kind_bits));
@@ -2164,14 +2162,14 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
 
             if res_bits as i64 == pending_bits_i64() {
                 asyncgen_set_running_bits(_py, asyncgen_ptr, running_marker_bits);
-                (*header).state = 1;
+                crate::object::object_set_state(obj_ptr, 1);
                 return res_bits as i64;
             }
 
             if running_bits == running_marker_bits {
                 asyncgen_clear_running_bits(_py, asyncgen_ptr);
             }
-            (*header).state = 0;
+            crate::object::object_set_state(obj_ptr, 0);
 
             if let Some((val_bits, done)) = generator_unpack_pair(_py, res_bits) {
                 if !done {
@@ -2239,7 +2237,7 @@ pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
         unsafe {
             let _gil = GilGuard::new();
             let header = header_from_obj_ptr(ptr);
-            let poll_fn_addr = (*header).poll_fn;
+            let poll_fn_addr = crate::object::object_poll_fn(ptr);
             if poll_fn_addr == 0 {
                 if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
                     let mut class_name = None;
@@ -2254,8 +2252,8 @@ pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
                         future_bits,
                         type_name(_py, obj),
                         class_name.as_deref().unwrap_or("-"),
-                        (*header).state,
-                        (*header).size
+                        crate::object::object_state(ptr),
+                        crate::object::total_size_from_header(&*header, ptr)
                     );
                 }
                 raise_exception::<()>(_py, "TypeError", "object is not awaitable");
@@ -2283,7 +2281,7 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
         };
         unsafe {
             let header = header_from_obj_ptr(ptr);
-            let poll_fn_addr = (*header).poll_fn;
+            let poll_fn_addr = crate::object::object_poll_fn(ptr);
             if poll_fn_addr == 0 {
                 if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
                     let mut class_name = None;
@@ -2298,15 +2296,15 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                         future_bits,
                         type_name(_py, obj),
                         class_name.as_deref().unwrap_or("-"),
-                        (*header).state,
-                        (*header).size
+                        crate::object::object_state(ptr),
+                        crate::object::total_size_from_header(&*header, ptr)
                     );
                 }
                 raise_exception::<i64>(_py, "TypeError", "object is not awaitable");
                 return 0;
             }
             if ((*header).flags & HEADER_FLAG_COROUTINE) != 0
-                && (*header).state == 0
+                && crate::object::object_state(ptr) == 0
                 && task_cancel_pending(ptr)
             {
                 task_take_cancel_pending(ptr);
@@ -2315,7 +2313,7 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
             }
             let res = crate::poll_future_with_task_stack(_py, ptr, poll_fn_addr);
             if promise_trace_enabled() && poll_fn_addr == promise_poll_fn_addr() {
-                let state = (*header).state;
+                let state = crate::object::object_state(ptr);
                 eprintln!(
                     "molt async trace: promise_poll task=0x{:x} state={} res=0x{:x}",
                     ptr as usize, state, res as u64
@@ -2441,7 +2439,7 @@ fn cancel_future_task(_py: &PyToken<'_>, task_ptr: *mut u8, msg_bits: Option<u64
         if !awaited_ptr.is_null() {
             let sleep_target = resolve_sleep_target(_py, awaited_ptr);
             if !sleep_target.is_null() {
-                let poll_fn = unsafe { (*header_from_obj_ptr(sleep_target)).poll_fn };
+                let poll_fn = unsafe { crate::object::object_poll_fn(sleep_target) };
                 if poll_fn == io_wait_poll_fn_addr() {
                     #[cfg(not(target_arch = "wasm32"))]
                     runtime_state(_py).io_poller().cancel_waiter(sleep_target);
@@ -2452,7 +2450,7 @@ fn cancel_future_task(_py: &PyToken<'_>, task_ptr: *mut u8, msg_bits: Option<u64
     await_waiter_clear(_py, task_ptr);
     unsafe {
         let header = header_from_obj_ptr(task_ptr);
-        let poll_fn = (*header).poll_fn;
+        let poll_fn = crate::object::object_poll_fn(task_ptr);
         if poll_fn == thread_poll_fn_addr() {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(state) = thread_task_state(_py, task_ptr) {
@@ -2526,7 +2524,7 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
     }
     let task_ptr = resolved_task;
     let header = unsafe { header_from_obj_ptr(future_ptr) };
-    let poll_fn = unsafe { (*header).poll_fn };
+    let poll_fn = unsafe { crate::object::object_poll_fn(future_ptr) };
     if poll_fn != async_sleep_poll_fn_addr() && poll_fn != io_wait_poll_fn_addr() {
         if async_trace_enabled() || sleep_trace_enabled() {
             eprintln!(
@@ -2536,16 +2534,14 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
         }
         return false;
     }
-    if unsafe { (*header).state == 0 } {
+    if unsafe { crate::object::object_state(future_ptr) == 0 } {
         if async_trace_enabled() || sleep_trace_enabled() {
             eprintln!("molt async trace: sleep_register_impl_fail state=0");
         }
         return false;
     }
     let payload_bytes = unsafe {
-        (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>())
+        crate::object::object_payload_size(future_ptr)
     };
     let payload_ptr = future_ptr as *mut u64;
     let deadline_obj = if poll_fn == async_sleep_poll_fn_addr() {
@@ -3776,7 +3772,7 @@ pub extern "C" fn molt_future_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
                     "Molt future init debug: bits=0x{:x} poll=0x{:x} size={}",
                     obj_bits,
                     poll_fn_addr,
-                    (*header).size
+                    crate::object::total_size_from_header(&*header, obj_ptr)
                 );
             }
         }
@@ -3811,11 +3807,11 @@ pub unsafe extern "C" fn molt_promise_poll(obj_bits: u64) -> i64 {
                 eprintln!(
                     "molt async trace: promise_poll task=0x{:x} state={} current=0x{:x}",
                     ptr as usize,
-                    (*header).state,
+                    crate::object::object_state(ptr),
                     current as usize
                 );
             }
-            match (*header).state {
+            match crate::object::object_state(ptr) {
                 0 => pending_bits_i64(),
                 1 => {
                     let payload_ptr = ptr as *mut u64;
@@ -3854,20 +3850,20 @@ pub unsafe extern "C" fn molt_promise_set_result(future_bits: u64, result_bits: 
                 return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
             };
             let header = header_from_obj_ptr(task_ptr);
-            if (*header).poll_fn != promise_poll_fn_addr() {
+            if crate::object::object_poll_fn(task_ptr) != promise_poll_fn_addr() {
                 if async_trace_enabled() || promise_trace_enabled() {
                     eprintln!(
                         "molt async trace: promise_set_result_fail reason=poll_fn poll=0x{:x}",
-                        (*header).poll_fn
+                        crate::object::object_poll_fn(task_ptr)
                     );
                 }
                 return raise_exception::<_>(_py, "TypeError", "object is not a promise");
             }
-            if (*header).state != 0 {
+            if crate::object::object_state(task_ptr) != 0 {
                 if async_trace_enabled() || promise_trace_enabled() {
                     eprintln!(
                         "molt async trace: promise_set_result_skip state={}",
-                        (*header).state
+                        crate::object::object_state(task_ptr)
                     );
                 }
                 return MoltObject::none().bits();
@@ -3875,7 +3871,7 @@ pub unsafe extern "C" fn molt_promise_set_result(future_bits: u64, result_bits: 
             let payload_ptr = task_ptr as *mut u64;
             *payload_ptr = result_bits;
             inc_ref_bits(_py, result_bits);
-            (*header).state = 1;
+            crate::object::object_set_state(task_ptr, 1);
             if async_trace_enabled() || promise_trace_enabled() {
                 eprintln!(
                     "molt async trace: promise_set_result task=0x{:x}",
@@ -3908,16 +3904,16 @@ pub unsafe extern "C" fn molt_promise_set_exception(future_bits: u64, exc_bits: 
                 return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
             };
             let header = header_from_obj_ptr(task_ptr);
-            if (*header).poll_fn != promise_poll_fn_addr() {
+            if crate::object::object_poll_fn(task_ptr) != promise_poll_fn_addr() {
                 return raise_exception::<_>(_py, "TypeError", "object is not a promise");
             }
-            if (*header).state != 0 {
+            if crate::object::object_state(task_ptr) != 0 {
                 return MoltObject::none().bits();
             }
             let payload_ptr = task_ptr as *mut u64;
             *payload_ptr = exc_bits;
             inc_ref_bits(_py, exc_bits);
-            (*header).state = 2;
+            crate::object::object_set_state(task_ptr, 2);
             if async_trace_enabled() || promise_trace_enabled() {
                 eprintln!(
                     "molt async trace: promise_set_exception task=0x{:x}",
@@ -3977,12 +3973,10 @@ pub unsafe extern "C" fn molt_async_sleep(obj_bits: u64) -> i64 {
                 return raise_cancelled_with_message::<i64>(_py, task_ptr);
             }
             let header = header_from_obj_ptr(_obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(_obj_ptr);
             let payload_len = payload_bytes / std::mem::size_of::<u64>();
             let payload_ptr = _obj_ptr as *mut u64;
-            if (*header).state == 0 {
+            if crate::object::object_state(_obj_ptr) == 0 {
                 let delay_secs = if payload_len >= 1 {
                     let delay_bits = *payload_ptr;
                     let float_bits = molt_float_from_obj(delay_bits);
@@ -4005,7 +3999,7 @@ pub unsafe extern "C" fn molt_async_sleep(obj_bits: u64) -> i64 {
                     };
                     *payload_ptr = MoltObject::from_float(deadline).bits();
                 }
-                (*header).state = 1;
+                crate::object::object_set_state(_obj_ptr, 1);
                 if async_trace_enabled() || sleep_trace_enabled() {
                     eprintln!(
                         "molt async trace: async_sleep_init task=0x{:x} delay={} immediate={}",
@@ -4738,9 +4732,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_reader_read_poll(obj_bits: u64) -> 
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 3 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -4803,9 +4795,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_reader_readline_poll(obj_bits: u64)
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 2 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -4869,9 +4859,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_send_all_poll(obj_bits: u64) -> i64
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 3 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -5040,9 +5028,7 @@ pub unsafe extern "C" fn molt_asyncio_socket_reader_read_poll(obj_bits: u64) -> 
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 4 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -5108,9 +5094,7 @@ pub unsafe extern "C" fn molt_asyncio_socket_reader_readline_poll(obj_bits: u64)
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 3 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -5177,9 +5161,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recv_poll(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 4 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -5263,9 +5245,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recv_into_poll(obj_bits: u64) -> i64 
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 5 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -5377,9 +5357,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendall_poll(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 6 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -5526,9 +5504,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_poll(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 4 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -5612,9 +5588,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_into_poll(obj_bits: u64) -> 
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 5 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -5706,9 +5680,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendto_poll(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 5 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -5803,9 +5775,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_connect_poll(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 4 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -5957,9 +5927,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_accept_poll(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 3 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -6138,9 +6106,7 @@ pub unsafe extern "C" fn molt_asyncio_timer_handle_poll(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 7 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -6149,7 +6115,7 @@ pub unsafe extern "C" fn molt_asyncio_timer_handle_poll(obj_bits: u64) -> i64 {
                 );
             }
             let payload_ptr = obj_ptr as *mut u64;
-            if (*header).state == 0 {
+            if crate::object::object_state(obj_ptr) == 0 {
                 let delay_bits = *payload_ptr.add(ASYNCIO_TIMER_SLOT_DELAY);
                 let delay_obj = obj_from_bits(molt_float_from_obj(delay_bits));
                 if exception_pending(_py) {
@@ -6166,7 +6132,7 @@ pub unsafe extern "C" fn molt_asyncio_timer_handle_poll(obj_bits: u64) -> i64 {
                     }
                     *payload_ptr.add(ASYNCIO_TIMER_SLOT_WAIT) = waiter_bits;
                 }
-                (*header).state = 1;
+                crate::object::object_set_state(obj_ptr, 1);
             }
 
             let wait_bits = *payload_ptr.add(ASYNCIO_TIMER_SLOT_WAIT);
@@ -6440,9 +6406,7 @@ pub unsafe extern "C" fn molt_asyncio_fd_watcher_poll(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 6 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -6645,9 +6609,7 @@ pub unsafe extern "C" fn molt_asyncio_server_accept_loop_poll(obj_bits: u64) -> 
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 8 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -6868,9 +6830,7 @@ pub unsafe extern "C" fn molt_asyncio_ready_runner_poll(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 4 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -7033,9 +6993,7 @@ pub unsafe extern "C" fn molt_asyncio_wait_poll(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 4 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(_py, "RuntimeError", "invalid wait payload");
             }
@@ -7154,9 +7112,7 @@ pub unsafe extern "C" fn molt_asyncio_gather_poll(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < ASYNCIO_GATHER_RESULT_OFFSET * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(_py, "RuntimeError", "invalid gather payload");
             }
@@ -7250,9 +7206,7 @@ pub(crate) unsafe fn asyncio_wait_task_drop(_py: &PyToken<'_>, future_ptr: *mut 
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 4 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7271,9 +7225,7 @@ pub(crate) unsafe fn asyncio_gather_task_drop(_py: &PyToken<'_>, future_ptr: *mu
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         let payload_slots = payload_bytes / std::mem::size_of::<u64>();
         if payload_slots < ASYNCIO_GATHER_RESULT_OFFSET {
             return;
@@ -7293,9 +7245,7 @@ pub(crate) unsafe fn asyncio_wait_for_task_drop(_py: &PyToken<'_>, future_ptr: *
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 4 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7318,9 +7268,7 @@ pub(crate) unsafe fn asyncio_stream_reader_read_task_drop(_py: &PyToken<'_>, fut
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 3 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7340,9 +7288,7 @@ pub(crate) unsafe fn asyncio_stream_reader_readline_task_drop(
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 2 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7359,9 +7305,7 @@ pub(crate) unsafe fn asyncio_stream_send_all_task_drop(_py: &PyToken<'_>, future
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 3 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7378,9 +7322,7 @@ pub(crate) unsafe fn asyncio_socket_reader_read_task_drop(_py: &PyToken<'_>, fut
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 4 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7400,9 +7342,7 @@ pub(crate) unsafe fn asyncio_socket_reader_readline_task_drop(
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 3 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7419,9 +7359,7 @@ pub(crate) unsafe fn asyncio_sock_recv_task_drop(_py: &PyToken<'_>, future_ptr: 
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 4 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7438,9 +7376,7 @@ pub(crate) unsafe fn asyncio_sock_connect_task_drop(_py: &PyToken<'_>, future_pt
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 4 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7457,9 +7393,7 @@ pub(crate) unsafe fn asyncio_sock_accept_task_drop(_py: &PyToken<'_>, future_ptr
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 3 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7476,9 +7410,7 @@ pub(crate) unsafe fn asyncio_sock_recv_into_task_drop(_py: &PyToken<'_>, future_
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 5 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7495,9 +7427,7 @@ pub(crate) unsafe fn asyncio_sock_sendall_task_drop(_py: &PyToken<'_>, future_pt
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 6 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7514,9 +7444,7 @@ pub(crate) unsafe fn asyncio_sock_recvfrom_task_drop(_py: &PyToken<'_>, future_p
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 4 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7533,9 +7461,7 @@ pub(crate) unsafe fn asyncio_sock_recvfrom_into_task_drop(_py: &PyToken<'_>, fut
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 5 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7552,9 +7478,7 @@ pub(crate) unsafe fn asyncio_sock_sendto_task_drop(_py: &PyToken<'_>, future_ptr
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 5 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7571,9 +7495,7 @@ pub(crate) unsafe fn asyncio_timer_handle_task_drop(_py: &PyToken<'_>, future_pt
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 7 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7590,9 +7512,7 @@ pub(crate) unsafe fn asyncio_fd_watcher_task_drop(_py: &PyToken<'_>, future_ptr:
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 6 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7609,9 +7529,7 @@ pub(crate) unsafe fn asyncio_server_accept_loop_task_drop(_py: &PyToken<'_>, fut
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 8 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7628,9 +7546,7 @@ pub(crate) unsafe fn asyncio_ready_runner_task_drop(_py: &PyToken<'_>, future_pt
             return;
         }
         let header = header_from_obj_ptr(future_ptr);
-        let payload_bytes = (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>());
+        let payload_bytes = crate::object::object_payload_size(future_ptr);
         if payload_bytes < 4 * std::mem::size_of::<u64>() {
             return;
         }
@@ -7769,9 +7685,7 @@ pub unsafe extern "C" fn molt_asyncio_wait_for_poll(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 4 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(_py, "RuntimeError", "invalid wait_for payload");
             }
@@ -7789,7 +7703,7 @@ pub unsafe extern "C" fn molt_asyncio_wait_for_poll(obj_bits: u64) -> i64 {
                 return raise_cancelled_with_message::<i64>(_py, wrapper_ptr);
             }
 
-            if (*header).state == 0 {
+            if crate::object::object_state(obj_ptr) == 0 {
                 let mut flags = wait_for_flags(payload_ptr);
                 let timeout_bits = *payload_ptr.add(1);
                 if obj_from_bits(timeout_bits).is_none() {
@@ -7811,7 +7725,7 @@ pub unsafe extern "C" fn molt_asyncio_wait_for_poll(obj_bits: u64) -> i64 {
                         };
                         if !done_now {
                             wait_for_cancel_target(_py, target_bits);
-                            (*header).state = WAIT_FOR_STATE_CANCEL_WAIT;
+                            crate::object::object_set_state(obj_ptr, WAIT_FOR_STATE_CANCEL_WAIT);
                             // Fast-path immediate timeout cancellation: if the target settles
                             // synchronously (common when it has not started yet), resolve now
                             // instead of yielding another scheduler turn.
@@ -7852,10 +7766,10 @@ pub unsafe extern "C" fn molt_asyncio_wait_for_poll(obj_bits: u64) -> i64 {
                         wait_for_drop_slot_ref(_py, payload_ptr, 1);
                     }
                 }
-                (*header).state = WAIT_FOR_STATE_PENDING;
+                crate::object::object_set_state(obj_ptr, WAIT_FOR_STATE_PENDING);
             }
 
-            if (*header).state == WAIT_FOR_STATE_CANCEL_WAIT {
+            if crate::object::object_state(obj_ptr) == WAIT_FOR_STATE_CANCEL_WAIT {
                 let target_res = wait_for_poll_target(_py, target_bits);
                 if target_res == pending_bits_i64() {
                     return pending_bits_i64();
@@ -7902,7 +7816,7 @@ pub unsafe extern "C" fn molt_asyncio_wait_for_poll(obj_bits: u64) -> i64 {
             }
             wait_for_cancel_target(_py, target_bits);
             wait_for_drop_slot_ref(_py, payload_ptr, 2);
-            (*header).state = WAIT_FOR_STATE_CANCEL_WAIT;
+            crate::object::object_set_state(obj_ptr, WAIT_FOR_STATE_CANCEL_WAIT);
             pending_bits_i64()
         })
     }
@@ -7919,27 +7833,24 @@ pub unsafe extern "C" fn molt_anext_default_poll(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(_obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(_obj_ptr);
             if payload_bytes < 3 * std::mem::size_of::<u64>() {
                 return MoltObject::none().bits() as i64;
             }
             let payload_ptr = _obj_ptr as *mut u64;
             let iter_bits = *payload_ptr;
             let default_bits = *payload_ptr.add(1);
-            if (*header).state == 0 {
+            if crate::object::object_state(_obj_ptr) == 0 {
                 let await_bits = molt_anext(iter_bits);
                 inc_ref_bits(_py, await_bits);
                 *payload_ptr.add(2) = await_bits;
-                (*header).state = 1;
+                crate::object::object_set_state(_obj_ptr, 1);
             }
             let await_bits = *payload_ptr.add(2);
             let Some(await_ptr) = maybe_ptr_from_bits(await_bits) else {
                 return MoltObject::none().bits() as i64;
             };
-            let await_header = header_from_obj_ptr(await_ptr);
-            let poll_fn_addr = (*await_header).poll_fn;
+            let poll_fn_addr = crate::object::object_poll_fn(await_ptr);
             if poll_fn_addr == 0 {
                 return MoltObject::none().bits() as i64;
             }

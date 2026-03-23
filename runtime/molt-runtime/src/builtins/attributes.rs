@@ -1097,7 +1097,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 }
                 "gi_code" => {
                     let header = header_from_obj_ptr(obj_ptr);
-                    let code_bits = fn_ptr_code_get(_py, (*header).poll_fn);
+                    let code_bits = fn_ptr_code_get(_py, crate::object::object_poll_fn(obj_ptr));
                     if code_bits != 0 {
                         inc_ref_bits(_py, code_bits);
                         return Some(code_bits);
@@ -1130,7 +1130,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     );
                     let val_bits = MoltObject::from_int(lasti).bits();
                     let header = header_from_obj_ptr(obj_ptr);
-                    let mut code_bits = fn_ptr_code_get(_py, (*header).poll_fn);
+                    let mut code_bits = fn_ptr_code_get(_py, crate::object::object_poll_fn(obj_ptr));
                     if code_bits == 0 {
                         code_bits = MoltObject::none().bits();
                     } else {
@@ -2358,11 +2358,11 @@ pub(crate) unsafe fn attr_lookup_ptr(
                         return Some(MoltObject::from_bool(running).bits());
                     }
                     "cr_frame" => {
-                        if (*header).poll_fn == 0 || ((*header).flags & HEADER_FLAG_TASK_DONE) != 0
+                        if crate::object::object_poll_fn(obj_ptr) == 0 || ((*header).flags & HEADER_FLAG_TASK_DONE) != 0
                         {
                             return Some(MoltObject::none().bits());
                         }
-                        let lasti = if (*header).state == 0 { -1 } else { 0 };
+                        let lasti = if crate::object::object_state(obj_ptr) == 0 { -1 } else { 0 };
                         let frame_bits = molt_object_new();
                         let Some(frame_ptr) = maybe_ptr_from_bits(frame_bits) else {
                             return Some(MoltObject::none().bits());
@@ -2382,7 +2382,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                         return Some(frame_bits);
                     }
                     "cr_code" => {
-                        let code_bits = fn_ptr_code_get(_py, (*header).poll_fn);
+                        let code_bits = fn_ptr_code_get(_py, crate::object::object_poll_fn(obj_ptr));
                         if code_bits != 0 {
                             inc_ref_bits(_py, code_bits);
                             return Some(code_bits);
@@ -2418,7 +2418,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     _py,
                     obj_from_bits(attr_bits),
                     obj_from_bits(await_name_bits),
-                ) && (*header_from_obj_ptr(obj_ptr)).poll_fn != 0
+                ) && crate::object::object_poll_fn(obj_ptr) != 0
                 {
                     let self_bits = MoltObject::from_ptr(obj_ptr).bits();
                     let func_bits = awaitable_await_func_bits(_py);
@@ -3405,7 +3405,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
             }
             if type_id == TYPE_ID_OBJECT {
                 let header = header_from_obj_ptr(obj_ptr);
-                if (*header).poll_fn != 0 {
+                if crate::object::object_poll_fn(obj_ptr) != 0 {
                     return attr_error_with_obj(
                         _py,
                         "object",
@@ -3899,7 +3899,7 @@ pub(crate) unsafe fn del_attr_ptr(
         }
         if type_id == TYPE_ID_OBJECT {
             let header = header_from_obj_ptr(obj_ptr);
-            if (*header).poll_fn != 0 {
+            if crate::object::object_poll_fn(obj_ptr) != 0 {
                 return attr_error(_py, "object", attr_name);
             }
             let payload = object_payload_size(obj_ptr);
@@ -4011,7 +4011,7 @@ pub(crate) unsafe fn object_setattr_raw(
 ) -> i64 {
     unsafe {
         let header = header_from_obj_ptr(obj_ptr);
-        if (*header).poll_fn != 0 {
+        if crate::object::object_poll_fn(obj_ptr) != 0 {
             return attr_error_with_obj(
                 _py,
                 "object",
@@ -4310,7 +4310,7 @@ pub(crate) unsafe fn object_delattr_raw(
     unsafe {
         let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
         let header = header_from_obj_ptr(obj_ptr);
-        if (*header).poll_fn != 0 {
+        if crate::object::object_poll_fn(obj_ptr) != 0 {
             return attr_error_with_obj(
                 _py,
                 class_name_for_error(object_class_bits(obj_ptr)),

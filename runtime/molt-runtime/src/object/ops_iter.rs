@@ -504,9 +504,8 @@ pub extern "C" fn molt_anext_builtin(iter_bits: u64, default_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         unsafe {
-            let header = header_from_obj_ptr(obj_ptr);
-            (*header).poll_fn = anext_default_poll_fn_addr();
-            (*header).state = 0;
+            super::object_set_poll_fn(obj_ptr, anext_default_poll_fn_addr());
+            super::object_set_state(obj_ptr, 0);
             let payload_ptr = obj_ptr as *mut u64;
             *payload_ptr = iter_bits;
             inc_ref_bits(_py, iter_bits);
