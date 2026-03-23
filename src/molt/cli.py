@@ -13470,13 +13470,19 @@ def _prepare_frontend_lowering_config(
     # module-level names (including ABC) are fully defined before any downstream
     # module tries to access them.
     if not is_wasm:
+        # Default native chunk size: 3000 ops per module init function.
+        # This prevents OOM when compiling large stdlib modules (like
+        # _collections_abc at 23K+ ops) into a single Cranelift ObjectModule.
+        # The default of 3000 produces ~100-300 functions per compilation
+        # unit, well within Cranelift's comfort zone.
+        module_chunk_max_ops = 3000
         env_native_chunk_ops = os.environ.get("MOLT_MODULE_CHUNK_OPS")
         if env_native_chunk_ops:
             try:
                 module_chunk_max_ops = max(0, int(env_native_chunk_ops))
             except ValueError:
                 warnings.append(
-                    "Invalid MOLT_MODULE_CHUNK_OPS; using default."
+                    "Invalid MOLT_MODULE_CHUNK_OPS; using default of 3000."
                 )
     module_chunking = module_chunk_max_ops > 0
     if target_triple:
