@@ -44,7 +44,8 @@ pub use crate::ir::{
 #[cfg(feature = "native-backend")]
 use crate::native_backend::TrampolineKey;
 pub(crate) use crate::passes::{
-    apply_profile_order, build_const_int_map, elide_dead_struct_allocs, escape_analysis,
+    apply_profile_order, build_const_int_map, elide_dead_struct_allocs,
+    eliminate_dead_functions, escape_analysis,
     fold_constants, fold_constants_cross_block, inline_functions,
     propagate_loop_fast_int, rc_coalescing,
 };
@@ -1601,6 +1602,13 @@ impl SimpleBackend {
             inline_functions(&mut ir);
             ir_analysis = analyze_native_backend_ir(&ir);
         }
+        // Dead function elimination: remove functions that are unreachable from
+        // the entry point after inlining.  This reduces code size for both the
+        // native object and the downstream linker's work.
+        eliminate_dead_functions(&mut ir);
+        // Re-analyze after dead function elimination so defined_functions/
+        // closure_functions reflect only the surviving functions.
+        ir_analysis = analyze_native_backend_ir(&ir);
         // Conditional trace elimination: skip emitting trace_enter/trace_exit calls
         // when tracing is disabled. Each guarded call site emits 2 trace function calls
         // (enter + exit); eliminating them saves codegen work on cache misses and
