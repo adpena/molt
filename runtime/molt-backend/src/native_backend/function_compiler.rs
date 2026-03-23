@@ -11398,14 +11398,10 @@ impl SimpleBackend {
                     let current_block = builder
                         .current_block()
                         .expect("loop_break_if_true requires an active block");
-                    let tracked_obj_snapshot = block_tracked_obj
-                        .get(&current_block)
-                        .map(|names| collect_cleanup_tracked(names, &last_use, op_idx, None))
-                        .unwrap_or_default();
-                    let tracked_ptr_snapshot = block_tracked_ptr
-                        .get(&current_block)
-                        .map(|names| collect_cleanup_tracked(names, &last_use, op_idx, None))
-                        .unwrap_or_default();
+                    let mut carry_obj_lb = block_tracked_obj.remove(&current_block).unwrap_or_default();
+                    let tracked_obj_snapshot = drain_cleanup_tracked(&mut carry_obj_lb, &last_use, op_idx, None);
+                    let mut carry_ptr_lb = block_tracked_ptr.remove(&current_block).unwrap_or_default();
+                    let tracked_ptr_snapshot = drain_cleanup_tracked(&mut carry_ptr_lb, &last_use, op_idx, None);
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -11449,6 +11445,8 @@ impl SimpleBackend {
                     reachable_blocks.insert(frame.after_block);
                     jump_block(&mut builder, frame.after_block, &[]);
                     switch_to_block_tracking(&mut builder, frame.body_block, &mut is_block_filled);
+                    propagate_tracked_to_branches(&mut block_tracked_obj, &[frame.body_block], carry_obj_lb);
+                    propagate_tracked_to_branches(&mut block_tracked_ptr, &[frame.body_block], carry_ptr_lb);
                     }
                 }
                 "loop_break_if_false" => {
@@ -11462,14 +11460,10 @@ impl SimpleBackend {
                     let current_block = builder
                         .current_block()
                         .expect("loop_break_if_false requires an active block");
-                    let tracked_obj_snapshot = block_tracked_obj
-                        .get(&current_block)
-                        .map(|names| collect_cleanup_tracked(names, &last_use, op_idx, None))
-                        .unwrap_or_default();
-                    let tracked_ptr_snapshot = block_tracked_ptr
-                        .get(&current_block)
-                        .map(|names| collect_cleanup_tracked(names, &last_use, op_idx, None))
-                        .unwrap_or_default();
+                    let mut carry_obj_lb = block_tracked_obj.remove(&current_block).unwrap_or_default();
+                    let tracked_obj_snapshot = drain_cleanup_tracked(&mut carry_obj_lb, &last_use, op_idx, None);
+                    let mut carry_ptr_lb = block_tracked_ptr.remove(&current_block).unwrap_or_default();
+                    let tracked_ptr_snapshot = drain_cleanup_tracked(&mut carry_ptr_lb, &last_use, op_idx, None);
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
@@ -11513,6 +11507,8 @@ impl SimpleBackend {
                     reachable_blocks.insert(frame.after_block);
                     jump_block(&mut builder, frame.after_block, &[]);
                     switch_to_block_tracking(&mut builder, frame.body_block, &mut is_block_filled);
+                    propagate_tracked_to_branches(&mut block_tracked_obj, &[frame.body_block], carry_obj_lb);
+                    propagate_tracked_to_branches(&mut block_tracked_ptr, &[frame.body_block], carry_ptr_lb);
                     }
                 }
                 "loop_break" => {
