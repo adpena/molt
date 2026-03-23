@@ -10,6 +10,8 @@ use crate::object::utf8_cache::{
 use crate::*;
 use memchr::memmem;
 use molt_obj_model::MoltObject;
+use num_bigint::{BigInt, Sign};
+use num_traits::ToPrimitive;
 use std::collections::HashSet;
 use unicode_casefold::{Locale, UnicodeCaseFold, Variant};
 use unicode_ident::{is_xid_continue, is_xid_start};
