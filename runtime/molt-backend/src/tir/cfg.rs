@@ -483,6 +483,7 @@ where
 fn compute_loop_depth(
     blocks: &[BasicBlock],
     successors: &[Vec<usize>],
+    predecessors: &[Vec<usize>],
     dominators: &[Option<usize>],
     entry: usize,
 ) -> Vec<u32> {
@@ -494,15 +495,10 @@ fn compute_loop_depth(
         for &h in succs {
             if dominates(dominators, h, b, entry) {
                 // h is a loop header; find the natural loop body.
+                // Use the pre-computed predecessor list (O(1) lookup per node)
+                // instead of scanning all successors (which was O(N) per lookup).
                 let body = natural_loop_body(h, b, blocks.len(), |bid| {
-                    // predecessors — we can derive from successors.
-                    let mut preds = Vec::new();
-                    for (src, s) in successors.iter().enumerate() {
-                        if s.contains(&bid) {
-                            preds.push(src);
-                        }
-                    }
-                    preds
+                    predecessors[bid].clone()
                 });
                 for &member in &body {
                     depth[member] += 1;
@@ -584,7 +580,7 @@ impl CFG {
 
         // For loop depth we need to pass successors to the dominator-based
         // detector, but we also use the structural back-edges.
-        let loop_depth = compute_loop_depth(&blocks, &successors, &dominators, entry);
+        let loop_depth = compute_loop_depth(&blocks, &successors, &predecessors, &dominators, entry);
 
         Self {
             blocks,
