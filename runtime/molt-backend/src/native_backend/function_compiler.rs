@@ -11445,8 +11445,13 @@ impl SimpleBackend {
                     reachable_blocks.insert(frame.after_block);
                     jump_block(&mut builder, frame.after_block, &[]);
                     switch_to_block_tracking(&mut builder, frame.body_block, &mut is_block_filled);
-                    propagate_tracked_to_branches(&mut block_tracked_obj, &[frame.body_block], carry_obj_lb);
-                    propagate_tracked_to_branches(&mut block_tracked_ptr, &[frame.body_block], carry_ptr_lb);
+                    // Surviving tracked objects must reach BOTH the loop body
+                    // (for the next iteration) AND the after-block (for the
+                    // break path).  Missing the after_block propagation caused
+                    // leaked refcounts on objects like ITER_NEXT cached tuples,
+                    // leading to heap-reuse corruption in bench_str_join.
+                    propagate_tracked_to_branches(&mut block_tracked_obj, &[frame.body_block, frame.after_block], carry_obj_lb);
+                    propagate_tracked_to_branches(&mut block_tracked_ptr, &[frame.body_block, frame.after_block], carry_ptr_lb);
                     }
                 }
                 "loop_break_if_false" => {
@@ -11507,8 +11512,8 @@ impl SimpleBackend {
                     reachable_blocks.insert(frame.after_block);
                     jump_block(&mut builder, frame.after_block, &[]);
                     switch_to_block_tracking(&mut builder, frame.body_block, &mut is_block_filled);
-                    propagate_tracked_to_branches(&mut block_tracked_obj, &[frame.body_block], carry_obj_lb);
-                    propagate_tracked_to_branches(&mut block_tracked_ptr, &[frame.body_block], carry_ptr_lb);
+                    propagate_tracked_to_branches(&mut block_tracked_obj, &[frame.body_block, frame.after_block], carry_obj_lb);
+                    propagate_tracked_to_branches(&mut block_tracked_ptr, &[frame.body_block, frame.after_block], carry_ptr_lb);
                     }
                 }
                 "loop_break" => {
