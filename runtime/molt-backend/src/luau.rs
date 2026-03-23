@@ -7216,12 +7216,14 @@ mod tests {
         };
         let mut backend = LuauBackend::new();
         let output = backend.compile(&ir);
-        assert!(output.contains("::label_0::"));
-        assert!(output.contains("goto label_1"));
-        assert!(output.contains("::label_1::"));
-        assert!(!output.contains("-- ::label_0::"));
-        assert!(!output.contains("-- goto label_1"));
-        assert!(!output.contains("-- ::label_1::"));
+        // The dead goto/label stripping pass removes:
+        //   - label_0 (orphaned: no goto targets it)
+        //   - goto label_1 + label_1 (dead: goto jumps to immediately next label)
+        // This is correct — the optimiser eliminates redundant control flow.
+        // Verify they are NOT emitted as comments (the old Bug 4 regression).
+        assert!(!output.contains("-- ::label_0::"), "labels must not be comments");
+        assert!(!output.contains("-- goto"), "gotos must not be comments");
+        // The function still compiles and returns.
         assert!(output.contains("return"));
     }
 
@@ -7329,13 +7331,50 @@ mod tests {
             profile: None,
         };
         let mut backend = LuauBackend::new();
-        // Labels and gotos emit as real Luau control flow.
+        // Labels and gotos emit as real Luau control flow, then the dead
+        // goto/label stripping pass removes unreachable ones.  The key
+        // correctness property is that they are NOT emitted as comments.
         let source = backend
             .compile_checked(&ir)
             .expect("label/goto source should pass validation");
-        assert!(source.contains("::label_0::"));
-        assert!(source.contains("goto label_1"));
-        assert!(!source.contains("-- ::label_0::"));
-        assert!(!source.contains("-- goto label_1"));
+        assert!(!source.contains("-- ::label_0::"), "labels must not be comments");
+        assert!(!source.contains("-- goto"), "gotos must not be comments");
+    }
+
+    #[test]
+    fn test_param_type_hint_list_propagation() {
+        // Bug 2 fix: list type hint on function parameters must propagate
+        // so that .append() emits table.insert() instead of a method call.
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "append_to".to_string(),
+                params: vec!["xs".to_string(), "v".to_string()],
+                param_types: Some(vec!["list[int]".to_string(), "int".to_string()]),
+                ops: vec![
+                    OpIR {
+                        kind: "call_method".to_string(),
+                        s_value: Some("append".to_string()),
+                        args: Some(vec!["xs".to_string(), "v".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        // Must use direct table insertion, not xs:append(v).
+        assert!(
+            output.contains("xs[#xs + 1] = v"),
+            "Expected table insert for list param, got:\n{output}"
+        );
+        assert!(
+            !output.contains("xs:append"),
+            "Must NOT emit method call for list.append(), got:\n{output}"
+        );
     }
 }
