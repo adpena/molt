@@ -5284,6 +5284,35 @@ pub extern "C" fn molt_exception_pending_fast() -> u64 {
 }
 
 #[unsafe(no_mangle)]
+
+
+/// Returns a pointer to the `last_exception_pending` AtomicBool byte.
+/// The native Cranelift backend uses this to inline the exception check
+/// as a single byte load + branch, avoiding the full function call
+/// overhead of `molt_exception_pending_fast` on the happy path.
+///
+/// Returns null if the runtime is not initialized.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_exception_pending_flag_ptr() -> u64 {
+    let Some(state) = crate::state::runtime_state::runtime_state_for_gil() else {
+        return 0;
+    };
+    state.last_exception_pending.as_ptr() as u64
+}
+
+/// Returns a pointer to the `task_last_exception_pending` AtomicBool byte,
+/// or null (0) if no async task is active.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_task_exception_pending_flag_ptr() -> u64 {
+    let Some(state) = crate::state::runtime_state::runtime_state_for_gil() else {
+        return 0;
+    };
+    if current_task_key().is_none() {
+        return 0;
+    }
+    state.task_last_exception_pending.as_ptr() as u64
+}
+
 pub extern "C" fn molt_exception_stack_enter() -> u64 {
     crate::with_gil_entry!(_py, {
         let prev = exception_stack_baseline_get();
