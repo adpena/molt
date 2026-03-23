@@ -15169,6 +15169,24 @@ pub extern "C" fn molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bi
     })
 }
 
+/// Python `setattr(obj, name, value)` builtin.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_setattr_builtin(obj_bits: u64, name_bits: u64, val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        molt_object_setattr(obj_bits, name_bits, val_bits);
+        MoltObject::none().bits()
+    })
+}
+
+/// Python `delattr(obj, name)` builtin.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_delattr_builtin(obj_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        molt_object_delattr(obj_bits, name_bits);
+        MoltObject::none().bits()
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vars_builtin(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
