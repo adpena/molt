@@ -55,8 +55,6 @@ def _compile_and_run(python_source: str, *, expect_fail: bool = False) -> str:
                 py_path,
                 "--target",
                 "luau",
-                "--profile",
-                "dev",
                 "--output",
                 luau_path,
             ],

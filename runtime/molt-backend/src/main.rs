@@ -873,16 +873,33 @@ fn main() -> io::Result<()> {
         .and_then(|idx| args.get(idx + 1))
         .map(String::as_str);
 
-    let mut buffer = String::new();
-    io::stdin().read_to_string(&mut buffer)?;
+    let ir_file_path = args
+        .iter()
+        .position(|arg| arg == "--ir-file")
+        .and_then(|idx| args.get(idx + 1))
+        .map(String::as_str);
 
-    let ir: SimpleIR = match SimpleIR::from_json_str(&buffer) {
+    let mut buffer = String::new();
+    if let Some(ir_path) = ir_file_path {
+        std::fs::File::open(ir_path)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?
+            .read_to_string(&mut buffer)?;
+    } else {
+        io::stdin().read_to_string(&mut buffer)?;
+    }
+
+    let mut ir: SimpleIR = match SimpleIR::from_json_str(&buffer) {
         Ok(ir) => ir,
         Err(err) => {
             eprintln!("{err}");
             std::process::exit(1);
         }
     };
+
+    // Tree-shake for Luau: remove unreachable stdlib functions.
+    if is_luau {
+        ir.tree_shake_luau();
+    }
 
     let default_output = if is_luau {
         "output.luau"

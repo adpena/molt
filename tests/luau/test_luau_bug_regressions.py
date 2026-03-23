@@ -61,7 +61,7 @@ def _compile_to_luau(python_source: str) -> str:
         result = subprocess.run(
             [
                 py_exec, "-m", "molt.cli", "build",
-                py_path, "--target", "luau", "--profile", "dev",
+                py_path, "--target", "luau",
                 "--output", luau_path,
             ],
             capture_output=True,
@@ -109,7 +109,7 @@ def _run_luau(python_source: str) -> str:
         result = subprocess.run(
             [
                 py_exec, "-m", "molt.cli", "build",
-                py_path, "--target", "luau", "--profile", "dev",
+                py_path, "--target", "luau",
                 "--output", luau_path,
             ],
             capture_output=True,
