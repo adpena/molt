@@ -1726,7 +1726,7 @@ pub(crate) fn eliminate_dead_functions(ir: &mut SimpleIR) {
     let mut reachable: BTreeSet<String> = BTreeSet::new();
     let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
 
-    let mut seed = |name: String, r: &mut BTreeSet<String>, q: &mut std::collections::VecDeque<String>| {
+    let seed = |name: String, r: &mut BTreeSet<String>, q: &mut std::collections::VecDeque<String>| {
         if r.insert(name.clone()) {
             q.push_back(name);
         }
