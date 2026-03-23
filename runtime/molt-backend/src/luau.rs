@@ -134,6 +134,20 @@ impl LuauBackend {
         std::mem::take(&mut self.output)
     }
 
+    /// Compile via the IR pipeline with validation and performance review.
+    /// Returns the source directly, printing warnings to stderr on validation
+    /// failures (non-fatal — allows iterative development).
+    pub fn compile_via_ir(&mut self, ir: &SimpleIR) -> String {
+        match self.compile_checked(ir) {
+            Ok(source) => source,
+            Err(msg) => {
+                eprintln!("[molt-luau] Validation warning: {msg}");
+                let mut fallback = LuauBackend::new();
+                fallback.compile(ir)
+            }
+        }
+    }
+
     /// Compile the given IR and reject preview-blocker markers that would
     /// otherwise silently emit syntactically valid but semantically incomplete
     /// Luau.
@@ -456,6 +470,23 @@ impl LuauBackend {
         self.hoisted_vars.clear();
         self.tuple_vars.clear();
         self.var_type_hints.clear();
+
+        // Seed var_type_hints from param_types so that parameters annotated
+        // as list/dict/str carry their type hints into codegen.  Without this,
+        // calling .append() on a list parameter emits a broken method call.
+        if let Some(ref pts) = func.param_types {
+            for (i, py_type) in pts.iter().enumerate() {
+                if let Some(param_name) = func.params.get(i) {
+                    let hint = match py_type.as_str() {
+                        s if s.starts_with("list") || s.starts_with("List") => "list",
+                        s if s.starts_with("dict") || s.starts_with("Dict") => "dict",
+                        "str" | "Str" | "string" => "str",
+                        _ => continue,
+                    };
+                    self.var_type_hints.insert(param_name.clone(), hint.to_string());
+                }
+            }
+        }
 
         // Pre-declare loop index variables so they persist across iterations.
         let mut loop_idx_vars = Vec::new();
@@ -1091,10 +1122,43 @@ impl LuauBackend {
             "ne" => self.emit_binary_op(op, "~="),
 
             // ================================================================
-            // Logical ops
+            // Logical ops — Python truthiness differs from Luau.
+            // Python treats 0, "", [], {} as falsy; Luau only nil/false.
+            // When operands are known-boolean (from comparisons), use native
+            // and/or.  Otherwise use molt_bool() to get Python semantics.
             // ================================================================
-            "and" => self.emit_binary_op(op, "and"),
-            "or" => self.emit_binary_op(op, "or"),
+            "and" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let a = sanitize_ident(&args[0]);
+                    let b = sanitize_ident(&args[1]);
+                    if op.type_hint.as_deref() == Some("bool") {
+                        self.emit_line(&format!("local {out} = {a} and {b}"));
+                    } else {
+                        // Python `a and b`: if a is falsy return a, else return b
+                        self.emit_line(&format!(
+                            "local {out} = if molt_bool({a}) then {b} else {a}"
+                        ));
+                    }
+                }
+            }
+            "or" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let a = sanitize_ident(&args[0]);
+                    let b = sanitize_ident(&args[1]);
+                    if op.type_hint.as_deref() == Some("bool") {
+                        self.emit_line(&format!("local {out} = {a} or {b}"));
+                    } else {
+                        // Python `a or b`: if a is truthy return a, else return b
+                        self.emit_line(&format!(
+                            "local {out} = if molt_bool({a}) then {a} else {b}"
+                        ));
+                    }
+                }
+            }
 
             // ================================================================
             // Pedagogical composite ops (binop/compare/unary_op with s_value)
@@ -1310,7 +1374,24 @@ impl LuauBackend {
                     } else {
                         "1".to_string()
                     };
-                    self.emit_line(&format!("for {out} = {start}, {stop} - 1, {step} do"));
+                    // Python range is exclusive of stop; Luau for-loop is inclusive.
+                    // For positive step: limit = stop - 1
+                    // For negative step: limit = stop + 1
+                    // When step is a variable, emit a ternary at runtime.
+                    let limit_expr = if step == "1" {
+                        format!("{stop} - 1")
+                    } else if step == "-1" {
+                        format!("{stop} + 1")
+                    } else if let Ok(n) = step.parse::<i64>() {
+                        if n > 0 {
+                            format!("{stop} - 1")
+                        } else {
+                            format!("{stop} + 1")
+                        }
+                    } else {
+                        format!("if {step} > 0 then {stop} - 1 else {stop} + 1")
+                    };
+                    self.emit_line(&format!("for {out} = {start}, {limit_expr}, {step} do"));
                     self.push_indent();
                 }
             }
@@ -1650,7 +1731,18 @@ impl LuauBackend {
             }
             "set_new" | "frozenset_new" => {
                 let out = self.out_var(op);
-                self.emit_line(&format!("local {out} = {{}}"));
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.is_empty() {
+                    self.emit_line(&format!("local {out} = {{}}"));
+                } else {
+                    // Sets are tables with value→true entries for O(1) lookup.
+                    let entries = args
+                        .iter()
+                        .map(|a| format!("[{}] = true", sanitize_ident(a)))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.emit_line(&format!("local {out} = {{{entries}}}"));
+                }
             }
             "range_new" | "list_from_range" => {
                 let out = self.out_var(op);
@@ -1723,8 +1815,9 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let list = sanitize_ident(&args[0]);
                     let val = sanitize_ident(&args[1]);
+                    // Use numeric for-loop instead of ipairs to handle nil holes.
                     self.emit_line(&format!(
-                        "for __i, __v in ipairs({list}) do if __v == {val} then table.remove({list}, __i); break end end"
+                        "for __i = 1, #{list} do if {list}[__i] == {val} then table.remove({list}, __i); break end end"
                     ));
                 }
             }
@@ -1798,16 +1891,43 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let dict = sanitize_ident(&args[0]);
                     let key = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("local {out} = {dict}[{key}]"));
+                    if args.len() >= 3 {
+                        // dict.get(key, default) — return default when missing.
+                        let default = sanitize_ident(&args[2]);
+                        self.emit_line(&format!(
+                            "local {out} = if {dict}[{key}] ~= nil then {dict}[{key}] else {default}"
+                        ));
+                    } else {
+                        self.emit_line(&format!("local {out} = {dict}[{key}]"));
+                    }
                 }
             }
-            "dict_set" | "dict_setdefault" | "callargs_push_kw" => {
+            "dict_set" | "callargs_push_kw" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 3 {
                     let dict = sanitize_ident(&args[0]);
                     let key = sanitize_ident(&args[1]);
                     let val = sanitize_ident(&args[2]);
                     self.emit_line(&format!("{dict}[{key}] = {val}"));
+                }
+            }
+            "dict_setdefault" => {
+                // Python dict.setdefault(k, v) only sets if key is absent.
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 3 {
+                    let dict = sanitize_ident(&args[0]);
+                    let key = sanitize_ident(&args[1]);
+                    let val = sanitize_ident(&args[2]);
+                    if let Some(ref out_name) = op.out {
+                        let out = sanitize_ident(out_name);
+                        self.emit_line(&format!(
+                            "if {dict}[{key}] == nil then {dict}[{key}] = {val} end; local {out} = {dict}[{key}]"
+                        ));
+                    } else {
+                        self.emit_line(&format!(
+                            "if {dict}[{key}] == nil then {dict}[{key}] = {val} end"
+                        ));
+                    }
                 }
             }
             "dict_setdefault_empty_list" => {
@@ -3081,12 +3201,16 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(s) = args.first() {
                     let s = sanitize_ident(s);
-                    let sep = if args.len() >= 2 {
-                        sanitize_ident(&args[1])
+                    if args.len() >= 2 {
+                        let sep = sanitize_ident(&args[1]);
+                        self.emit_line(&format!("local {out} = molt_string.split({s}, {sep})"));
                     } else {
-                        "\" \"".to_string()
-                    };
-                    self.emit_line(&format!("local {out} = molt_string.split({s}, {sep})"));
+                        // Python str.split() with no args splits on any
+                        // whitespace and strips leading/trailing.  The
+                        // molt_string.split helper handles sep==nil correctly
+                        // using %s+ pattern matching.
+                        self.emit_line(&format!("local {out} = molt_string.split({s})"));
+                    }
                 }
             }
             "string_concat" => {
@@ -3111,7 +3235,8 @@ impl LuauBackend {
                 }
             }
             "string_split_ws_dict_inc" | "string_split_sep_dict_inc" | "taq_ingest_line" => {
-                self.emit_line(&format!("-- [string op: {}]", op.kind));
+                // Mark as unsupported so compile_checked rejects these.
+                self.emit_line(&format!("local {} = nil -- [unsupported op: {}]", self.out_var(op), op.kind));
             }
 
             // ================================================================
@@ -3598,7 +3723,7 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
             let mut iter_next_out = String::new();
             let mut value_var = String::new();
             let mut loop_end_idx = None;
-            let _skip_until = i + 1; // ops to skip (boilerplate)
+            // ops to skip (boilerplate)
 
             // Find loop_start — skip exception boilerplate (check_exception, raise,
             // exception_last, const_none, is, not, if, end_if, etc.).
@@ -5883,6 +6008,12 @@ fn optimize_luau_perf(source: &mut String) {
         let trimmed = line.trim();
         let mut optimized = line.to_string();
 
+        // Reset numeric tracking at function boundaries to prevent variable
+        // name collisions across different function scopes.
+        if trimmed.starts_with("function ") || trimmed.starts_with("local function ") {
+            numeric_vars.clear();
+        }
+
         // Skip function definition lines — the inlining passes below must not
         // rewrite `local function molt_xyz(...)` declarations.
         let is_func_def = trimmed.starts_with("local function molt_");
@@ -6231,7 +6362,12 @@ fn strip_exception_cleanup_blocks(source: &mut String) {
                                 let tk = lines[k].trim();
                                 if tk.starts_with("local ") && (tk.contains(" == ") || tk.contains("not ")) {
                                     remove.insert(k);
-                                } else if tk.contains("= nil") && !tk.contains("--") {
+                                } else if (tk.ends_with("= nil") || tk.ends_with("= nil -- [exception_last]"))
+                                    && !tk.contains("--[")
+                                {
+                                    // Only remove lines where the ENTIRE RHS is nil
+                                    // (exception cleanup vars), not lines that happen
+                                    // to contain "= nil" as part of a larger expression.
                                     remove.insert(k);
                                 } else if tk.contains("-- [exception_last]") {
                                     remove.insert(k);
@@ -6320,7 +6456,7 @@ fn rehoist_escaped_locals(source: &mut String) {
             if ft == "end" || ft.starts_with("until ") {
                 depth -= 1;
                 if depth == 0 {
-                    func_end = func_end;
+                    // func_end unchanged
                     break;
                 }
             }
