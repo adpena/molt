@@ -321,6 +321,35 @@ impl SimpleBackend {
             &[types::I64],
             &[],
         );
+
+        // Inline exception check: import molt_exception_pending_fast for
+        // the validation fallback, and fetch the flag pointer once per
+        // function that contains a try block.
+        let local_exc_pending_fast = import_func_ref(
+            &mut self.module,
+            &mut self.import_ids,
+            &mut builder,
+            &mut import_refs,
+            "molt_exception_pending_fast",
+            &[],
+            &[types::I64],
+        );
+        let exc_flag_ptr_val: Option<cranelift_codegen::ir::Value> =
+            if function_exception_label_id.is_some() {
+                let flag_ptr_fn = import_func_ref(
+                    &mut self.module,
+                    &mut self.import_ids,
+                    &mut builder,
+                    &mut import_refs,
+                    "molt_exception_pending_flag_ptr",
+                    &[],
+                    &[types::I64],
+                );
+                let call = builder.ins().call(flag_ptr_fn, &[]);
+                Some(builder.inst_results(call)[0])
+            } else {
+                None
+            };
         let local_profile_struct = has_store.then(|| {
             import_func_ref(
                 &mut self.module,
@@ -10731,20 +10760,41 @@ impl SimpleBackend {
                             entry_vars.remove(&name);
                         }
                     }
-                    let mut sig = self.module.make_signature();
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_exception_pending_fast", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[]);
-                    let pending = builder.inst_results(call)[0];
-                    let cond = builder.ins().icmp_imm(IntCC::NotEqual, pending, 0);
+                    // Inline exception check: load the pending flag byte directly
+                    // instead of calling molt_exception_pending_fast() for each
+                    // check_exception site.  The flag pointer is fetched once per
+                    // function (exc_flag_ptr_val) and the byte load is ~1 cycle
+                    // vs ~15-40 cycles for the function call.
                     let fallthrough = builder.create_block();
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough);
-                    brif_block(&mut builder, cond, target_block, &[], fallthrough, &[]);
+                    if let Some(flag_ptr) = exc_flag_ptr_val {
+                        // Fast path: inline byte load from flag address
+                        let pending_byte = builder.ins().load(
+                            types::I8,
+                            MemFlags::trusted(),
+                            flag_ptr,
+                            0,
+                        );
+                        let pending_i64 = builder.ins().uextend(types::I64, pending_byte);
+                        let is_pending = builder.ins().icmp_imm(IntCC::NotEqual, pending_i64, 0);
+                        // On positive read, validate with full function before branching
+                        let validate_block = builder.create_block();
+                        reachable_blocks.insert(validate_block);
+                        brif_block(&mut builder, is_pending, validate_block, &[], fallthrough, &[]);
+                        switch_to_block_tracking(&mut builder, validate_block, &mut is_block_filled);
+                        builder.seal_block(validate_block);
+                        let call = builder.ins().call(local_exc_pending_fast, &[]);
+                        let confirmed = builder.inst_results(call)[0];
+                        let cond2 = builder.ins().icmp_imm(IntCC::NotEqual, confirmed, 0);
+                        brif_block(&mut builder, cond2, target_block, &[], fallthrough, &[]);
+                    } else {
+                        // Fallback: direct function call (no flag pointer available)
+                        let call = builder.ins().call(local_exc_pending_fast, &[]);
+                        let pending = builder.inst_results(call)[0];
+                        let cond = builder.ins().icmp_imm(IntCC::NotEqual, pending, 0);
+                        brif_block(&mut builder, cond, target_block, &[], fallthrough, &[]);
+                    }
                     switch_to_block_tracking(&mut builder, fallthrough, &mut is_block_filled);
                     // Propagate remaining tracked objects to BOTH the fallthrough
                     // and the exception handler. Without this, the exception handler
