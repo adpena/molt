@@ -1073,6 +1073,10 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                                     // Dec-ref the old string — it was replaced by
                                     // the new allocation.  Without this, the old
                                     // string leaks (rc stays at 1 forever).
+                                    // OWNERSHIP: This function consumes one reference
+                                    // to `a` when it allocates a new buffer.  The caller
+                                    // must NOT dec_ref `a` after this call returns a
+                                    // different pointer — the IR rebinds the variable.
                                     dec_ref_bits(_py, a);
                                     return MoltObject::from_ptr(new_ptr).bits();
                                 }
