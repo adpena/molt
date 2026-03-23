@@ -28,6 +28,7 @@ pub fn bump_type_version() -> u64 {
 
 pub mod dict_compact;
 pub mod inline_cache;
+pub mod nursery;
 pub(crate) mod accessors;
 pub(crate) mod buffer2d;
 pub(crate) mod builders;
