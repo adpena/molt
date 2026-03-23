@@ -1592,6 +1592,11 @@ impl SimpleBackend {
     }
 
     pub fn compile(mut self, ir: SimpleIR) -> Vec<u8> {
+        let timing = env_setting("MOLT_BACKEND_TIMING")
+            .as_deref()
+            .map(parse_truthy_env)
+            .unwrap_or(false);
+        let compile_start = std::time::Instant::now();
         let mut ir = ir;
         apply_profile_order(&mut ir);
         for func_ir in &mut ir.functions {
@@ -1623,6 +1628,10 @@ impl SimpleBackend {
         // the entry point after inlining.  This reduces code size for both the
         // native object and the downstream linker's work.
         eliminate_dead_functions(&mut ir);
+        if timing {
+            let passes_elapsed = compile_start.elapsed();
+            eprintln!("MOLT_BACKEND_TIMING: IR passes took {passes_elapsed:.2?}");
+        }
         // Re-analyze after dead function elimination so defined_functions/
         // closure_functions reflect only the surviving functions.
         let ir_analysis = analyze_native_backend_ir(&ir);
@@ -1642,10 +1651,15 @@ impl SimpleBackend {
         // handles large function counts efficiently when individual
         // function compilations are bounded.
         let func_count = ir.functions.len();
-        eprintln!("MOLT_BACKEND: compiling {func_count} functions");
+        let total_ops: usize = ir.functions.iter().map(|f| f.ops.len()).sum();
+        eprintln!("MOLT_BACKEND: compiling {func_count} functions ({total_ops} total ops)");
+        let codegen_start = std::time::Instant::now();
         let mut compiled = 0u32;
         let mut failed = 0u32;
+        let mut slowest_func: Option<(String, std::time::Duration)> = None;
         for func_ir in ir.functions {
+            let func_name = func_ir.name.clone();
+            let func_start = std::time::Instant::now();
             self.compile_func(
                 func_ir,
                 &ir_analysis.task_kinds,
@@ -1654,9 +1668,28 @@ impl SimpleBackend {
                 &ir_analysis.closure_functions,
                 emit_traces,
             );
+            let func_elapsed = func_start.elapsed();
+            if timing && func_elapsed.as_millis() > 500 {
+                eprintln!(
+                    "MOLT_BACKEND_TIMING: function `{func_name}` took {func_elapsed:.2?}"
+                );
+            }
+            if slowest_func
+                .as_ref()
+                .map_or(true, |(_, d)| func_elapsed > *d)
+            {
+                slowest_func = Some((func_name, func_elapsed));
+            }
             compiled += 1;
             if compiled % 100 == 0 {
                 eprintln!("MOLT_BACKEND: compiled {compiled}/{func_count} functions");
+            }
+        }
+        if timing {
+            let codegen_elapsed = codegen_start.elapsed();
+            eprintln!("MOLT_BACKEND_TIMING: Cranelift codegen took {codegen_elapsed:.2?}");
+            if let Some((name, dur)) = &slowest_func {
+                eprintln!("MOLT_BACKEND_TIMING: slowest function: `{name}` ({dur:.2?})");
             }
         }
         if failed > 0 {
@@ -1696,8 +1729,20 @@ impl SimpleBackend {
             );
         }
 
+        let emit_start = std::time::Instant::now();
         let product = self.module.finish();
-        product.emit().unwrap()
+        let bytes = product.emit().unwrap();
+        if timing {
+            let emit_elapsed = emit_start.elapsed();
+            let total_elapsed = compile_start.elapsed();
+            eprintln!("MOLT_BACKEND_TIMING: object emit took {emit_elapsed:.2?}");
+            eprintln!(
+                "MOLT_BACKEND_TIMING: total backend compile: {total_elapsed:.2?} \
+                 ({func_count} functions, {total_ops} ops, {} bytes)",
+                bytes.len()
+            );
+        }
+        bytes
     }
 
     fn ensure_trampoline(

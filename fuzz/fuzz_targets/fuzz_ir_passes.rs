@@ -12,8 +12,12 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use arbitrary::{Arbitrary, Unstructured};
-use molt_backend::{FunctionIR, OpIR, SimpleIR};
-use molt_backend::passes;
+use molt_backend::{
+    FunctionIR, OpIR, SimpleIR,
+    fold_constants, fold_constants_cross_block, elide_dead_struct_allocs,
+    escape_analysis, propagate_loop_fast_int, rc_coalescing,
+    inline_functions, eliminate_dead_functions, apply_profile_order,
+};
 
 /// Generate a structurally valid IR with ops that exercise the passes.
 #[derive(Debug)]
@@ -232,26 +236,26 @@ fuzz_target!(|input: PassFuzzInput| {
 
     // Run each pass independently — none should panic.
     for func in &mut ir.functions {
-        passes::fold_constants(&mut func.ops);
+        fold_constants(&mut func.ops);
     }
     for func in &mut ir.functions {
-        passes::fold_constants_cross_block(&mut func.ops);
+        fold_constants_cross_block(&mut func.ops);
     }
     for func in &mut ir.functions {
-        passes::elide_dead_struct_allocs(func);
+        elide_dead_struct_allocs(func);
     }
     for func in &mut ir.functions {
-        passes::escape_analysis(func);
+        escape_analysis(func);
     }
     for func in &mut ir.functions {
-        passes::propagate_loop_fast_int(func);
+        propagate_loop_fast_int(func);
     }
     for func in &mut ir.functions {
-        passes::rc_coalescing(func);
+        rc_coalescing(func);
     }
-    passes::inline_functions(&mut ir);
-    passes::eliminate_dead_functions(&mut ir);
-    passes::apply_profile_order(&mut ir);
+    inline_functions(&mut ir);
+    eliminate_dead_functions(&mut ir);
+    apply_profile_order(&mut ir);
 
     // After all passes, the IR must still have a non-negative function count.
     assert!(
