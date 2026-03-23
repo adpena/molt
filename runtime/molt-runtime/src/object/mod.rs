@@ -26,6 +26,7 @@ pub fn bump_type_version() -> u64 {
     GLOBAL_TYPE_VERSION.fetch_add(1, AtomicOrdering::Relaxed) + 1
 }
 
+pub mod inline_cache;
 pub(crate) mod accessors;
 pub(crate) mod buffer2d;
 pub(crate) mod builders;
@@ -233,7 +234,7 @@ pub struct MoltHeader {
     pub poll_fn: u64, // Function pointer for polling
     pub state: i64,   // State machine state
     pub size: usize,  // Total size of allocation
-    pub flags: u64,   // Header flags (object metadata)
+    pub flags: u32,   // Header flags (object metadata, bits 0-16 used)
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -359,26 +360,26 @@ const OBJECT_POOL_MAX_BYTES: usize = 1024;
 const OBJECT_POOL_BUCKET_LIMIT: usize = 4096;
 const OBJECT_POOL_TLS_BUCKET_LIMIT: usize = 1024;
 pub(crate) const OBJECT_POOL_BUCKETS: usize = OBJECT_POOL_MAX_BYTES / 8 + 1;
-pub(crate) const HEADER_FLAG_HAS_PTRS: u64 = 1;
-pub(crate) const HEADER_FLAG_SKIP_CLASS_DECREF: u64 = 1 << 1;
-pub(crate) const HEADER_FLAG_GEN_RUNNING: u64 = 1 << 2;
-pub(crate) const HEADER_FLAG_GEN_STARTED: u64 = 1 << 3;
-pub(crate) const HEADER_FLAG_SPAWN_RETAIN: u64 = 1 << 4;
-pub(crate) const HEADER_FLAG_CANCEL_PENDING: u64 = 1 << 5;
-pub(crate) const HEADER_FLAG_BLOCK_ON: u64 = 1 << 6;
-pub(crate) const HEADER_FLAG_TASK_QUEUED: u64 = 1 << 7;
-pub(crate) const HEADER_FLAG_TASK_RUNNING: u64 = 1 << 8;
-pub(crate) const HEADER_FLAG_TASK_WAKE_PENDING: u64 = 1 << 9;
-pub(crate) const HEADER_FLAG_TASK_DONE: u64 = 1 << 10;
-pub(crate) const HEADER_FLAG_TRACEBACK_SUPPRESSED: u64 = 1 << 11;
-pub(crate) const HEADER_FLAG_COROUTINE: u64 = 1 << 12;
-pub(crate) const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN: u64 = 1 << 13;
-pub(crate) const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED: u64 = 1 << 14;
+pub(crate) const HEADER_FLAG_HAS_PTRS: u32 = 1;
+pub(crate) const HEADER_FLAG_SKIP_CLASS_DECREF: u32 = 1 << 1;
+pub(crate) const HEADER_FLAG_GEN_RUNNING: u32 = 1 << 2;
+pub(crate) const HEADER_FLAG_GEN_STARTED: u32 = 1 << 3;
+pub(crate) const HEADER_FLAG_SPAWN_RETAIN: u32 = 1 << 4;
+pub(crate) const HEADER_FLAG_CANCEL_PENDING: u32 = 1 << 5;
+pub(crate) const HEADER_FLAG_BLOCK_ON: u32 = 1 << 6;
+pub(crate) const HEADER_FLAG_TASK_QUEUED: u32 = 1 << 7;
+pub(crate) const HEADER_FLAG_TASK_RUNNING: u32 = 1 << 8;
+pub(crate) const HEADER_FLAG_TASK_WAKE_PENDING: u32 = 1 << 9;
+pub(crate) const HEADER_FLAG_TASK_DONE: u32 = 1 << 10;
+pub(crate) const HEADER_FLAG_TRACEBACK_SUPPRESSED: u32 = 1 << 11;
+pub(crate) const HEADER_FLAG_COROUTINE: u32 = 1 << 12;
+pub(crate) const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN: u32 = 1 << 13;
+pub(crate) const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED: u32 = 1 << 14;
 // CPython-like "immortal" objects: refcount ops are skipped and the object is never freed.
 // Use this only for runtime singletons/cached builtin callables.
-pub(crate) const HEADER_FLAG_IMMORTAL: u64 = 1 << 15;
+pub(crate) const HEADER_FLAG_IMMORTAL: u32 = 1 << 15;
 // Ensure __del__ runs at most once even if the object resurrects itself.
-pub(crate) const HEADER_FLAG_FINALIZER_RAN: u64 = 1 << 16;
+pub(crate) const HEADER_FLAG_FINALIZER_RAN: u32 = 1 << 16;
 
 // ---------------------------------------------------------------------------
 // Cold header pool — stores rarely-used per-object metadata (poll_fn, state,
