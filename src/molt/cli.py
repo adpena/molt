@@ -7146,6 +7146,7 @@ def _build_lock(project_root: Path, name: str):
     try:
         deadline = time.monotonic() + lock_timeout if lock_timeout is not None else None
         stale_checked = False
+        wait_start = time.monotonic()
         while True:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -7155,7 +7156,7 @@ def _build_lock(project_root: Path, name: str):
                     raise
                 # After 5s of waiting, check if the holding process is still alive.
                 # If no process holds the lock (stale), force-acquire it.
-                if not stale_checked and time.monotonic() - (deadline - lock_timeout if deadline else 0) > 5.0:
+                if not stale_checked and time.monotonic() - wait_start > 5.0:
                     stale_checked = True
                     try:
                         # Read PID from lock file (if written by holder)
