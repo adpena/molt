@@ -10523,6 +10523,1155 @@ static inline int PyObject_RichCompareBool(PyObject *o1, PyObject *o2, int opid)
     return truthy;
 }
 
+/* =========================================================================
+ * CPython 3.12 Stable ABI — Gap Fill
+ * ~90 additional definitions to reach 100% coverage.
+ * ========================================================================= */
+
+/* ---- Memory macros (CPython-compatible) ---- */
+
+#define PyMem_New(type, n) ((type *)PyMem_Malloc((n) * sizeof(type)))
+#define PyMem_NEW(type, n) PyMem_New(type, n)
+#define PyMem_Resize(p, type, n) \
+    ((type *)PyMem_Realloc((p), (n) * sizeof(type)))
+#define PyMem_RESIZE(p, type, n) PyMem_Resize(p, type, n)
+#define PyMem_Del PyMem_Free
+#define PyMem_DEL PyMem_Free
+
+/* ---- PyLong: FromDouble, FromUnsignedLong ---- */
+
+static inline PyObject *PyLong_FromDouble(double v) {
+    long long truncated = (long long)v;
+    return PyLong_FromLongLong(truncated);
+}
+
+static inline PyObject *PyLong_FromUnsignedLong(unsigned long v) {
+    return PyLong_FromUnsignedLongLong((unsigned long long)v);
+}
+
+/* ---- Error helpers ---- */
+
+static inline int PyErr_BadArgument(void) {
+    PyErr_SetString(PyExc_TypeError, "bad argument type for built-in operation");
+    return 0;
+}
+
+static inline void PyErr_BadInternalCall(void) {
+    PyErr_SetString(PyExc_SystemError, "bad argument to internal function");
+}
+
+static inline PyObject *PyErr_SetFromErrnoWithFilename(PyObject *exc, const char *filename) {
+    const char *msg = strerror(errno);
+    if (msg == NULL) msg = "unknown error";
+    if (filename != NULL) {
+        PyErr_Format(exc ? exc : PyExc_OSError, "[Errno %d] %s: '%s'", errno, msg, filename);
+    } else {
+        PyErr_SetString(exc ? exc : PyExc_OSError, msg);
+    }
+    return NULL;
+}
+
+static inline void PyErr_SetExcInfo(PyObject *type, PyObject *value, PyObject *traceback) {
+    /* In CPython this sets sys.exc_info().
+       Molt: store the exception via molt_err_set if non-NULL. */
+    (void)traceback;
+    if (value != NULL) {
+        PyErr_SetObject(type != NULL ? type : PyExc_RuntimeError, value);
+    } else {
+        PyErr_Clear();
+    }
+    Py_XDECREF(type);
+    Py_XDECREF(value);
+    Py_XDECREF(traceback);
+}
+
+static inline void PyErr_GetExcInfo(PyObject **ptype, PyObject **pvalue, PyObject **ptraceback) {
+    /* CPython returns the current handled exception.
+       Molt approximation: mirror PyErr_Fetch without clearing. */
+    MoltHandle exc_bits = molt_err_fetch();
+    MoltHandle kind_bits;
+    MoltHandle class_bits;
+    if (ptype != NULL) {
+        if (exc_bits != 0 && exc_bits != molt_none()) {
+            kind_bits = molt_exception_kind(exc_bits);
+            class_bits = molt_exception_class(kind_bits);
+            *ptype = _molt_pyobject_from_handle(class_bits);
+            Py_XINCREF(*ptype);
+        } else {
+            *ptype = NULL;
+        }
+    }
+    if (pvalue != NULL) {
+        if (exc_bits != 0 && exc_bits != molt_none()) {
+            *pvalue = _molt_pyobject_from_handle(exc_bits);
+            Py_XINCREF(*pvalue);
+        } else {
+            *pvalue = NULL;
+        }
+    }
+    if (ptraceback != NULL) {
+        *ptraceback = NULL;
+    }
+    /* Restore the exception — GetExcInfo does NOT clear */
+    if (exc_bits != 0 && exc_bits != molt_none()) {
+        molt_err_restore(exc_bits);
+    }
+}
+
+static inline PyObject *PyErr_GetHandledException(void) {
+    PyObject *type, *value, *tb;
+    PyErr_GetExcInfo(&type, &value, &tb);
+    Py_XDECREF(type);
+    Py_XDECREF(tb);
+    return value;  /* caller owns reference */
+}
+
+static inline void PyErr_SetHandledException(PyObject *exc) {
+    if (exc != NULL && exc != Py_None) {
+        PyErr_SetObject((PyObject *)Py_TYPE(exc), exc);
+    } else {
+        PyErr_Clear();
+    }
+}
+
+/* ---- Capsule: Set/Get helpers ---- */
+
+static inline int PyCapsule_SetPointer(PyObject *capsule, void *pointer) {
+    PyObject *ptr_value;
+    if (capsule == NULL) {
+        PyErr_SetString(PyExc_ValueError, "PyCapsule_SetPointer called with NULL capsule");
+        return -1;
+    }
+    if (pointer == NULL) {
+        PyErr_SetString(PyExc_ValueError, "PyCapsule_SetPointer called with NULL pointer");
+        return -1;
+    }
+    ptr_value = PyLong_FromLongLong((long long)(uintptr_t)pointer);
+    if (ptr_value == NULL) return -1;
+    if (PyDict_SetItemString(capsule, _MOLT_CAPSULE_PTR_KEY, ptr_value) < 0) {
+        Py_DECREF(ptr_value);
+        return -1;
+    }
+    Py_DECREF(ptr_value);
+    return 0;
+}
+
+static inline int PyCapsule_SetName(PyObject *capsule, const char *name) {
+    PyObject *name_value;
+    if (capsule == NULL) {
+        PyErr_SetString(PyExc_ValueError, "PyCapsule_SetName called with NULL capsule");
+        return -1;
+    }
+    if (name != NULL) {
+        name_value = PyUnicode_FromString(name);
+    } else {
+        name_value = Py_None;
+        Py_INCREF(name_value);
+    }
+    if (name_value == NULL) return -1;
+    if (PyDict_SetItemString(capsule, _MOLT_CAPSULE_NAME_KEY, name_value) < 0) {
+        Py_DECREF(name_value);
+        return -1;
+    }
+    Py_DECREF(name_value);
+    return 0;
+}
+
+static inline PyCapsule_Destructor PyCapsule_GetDestructor(PyObject *capsule) {
+    PyObject *dtor_obj;
+    long long raw;
+    if (capsule == NULL) return NULL;
+    dtor_obj = PyDict_GetItemString(capsule, _MOLT_CAPSULE_DESTRUCTOR_KEY);
+    if (dtor_obj == NULL) return NULL;
+    raw = PyLong_AsLongLong(dtor_obj);
+    if (molt_err_pending() != 0) {
+        PyErr_Clear();
+        return NULL;
+    }
+    return (PyCapsule_Destructor)(uintptr_t)raw;
+}
+
+static inline int PyCapsule_SetDestructor(PyObject *capsule, PyCapsule_Destructor destructor) {
+    PyObject *dtor_value;
+    if (capsule == NULL) {
+        PyErr_SetString(PyExc_ValueError, "PyCapsule_SetDestructor called with NULL capsule");
+        return -1;
+    }
+    if (destructor != NULL) {
+        dtor_value = PyLong_FromLongLong((long long)(uintptr_t)destructor);
+        if (dtor_value == NULL) return -1;
+    } else {
+        dtor_value = Py_None;
+        Py_INCREF(dtor_value);
+    }
+    if (PyDict_SetItemString(capsule, _MOLT_CAPSULE_DESTRUCTOR_KEY, dtor_value) < 0) {
+        Py_DECREF(dtor_value);
+        return -1;
+    }
+    Py_DECREF(dtor_value);
+    return 0;
+}
+
+#define _MOLT_CAPSULE_CONTEXT_KEY "__molt_capsule_context__"
+
+static inline void *PyCapsule_GetContext(PyObject *capsule) {
+    PyObject *ctx_obj;
+    long long raw;
+    if (capsule == NULL) {
+        PyErr_SetString(PyExc_ValueError, "PyCapsule_GetContext called with NULL capsule");
+        return NULL;
+    }
+    ctx_obj = PyDict_GetItemString(capsule, _MOLT_CAPSULE_CONTEXT_KEY);
+    if (ctx_obj == NULL) return NULL;
+    raw = PyLong_AsLongLong(ctx_obj);
+    if (molt_err_pending() != 0) {
+        PyErr_Clear();
+        return NULL;
+    }
+    return (void *)(uintptr_t)raw;
+}
+
+static inline int PyCapsule_SetContext(PyObject *capsule, void *context) {
+    PyObject *ctx_value;
+    if (capsule == NULL) {
+        PyErr_SetString(PyExc_ValueError, "PyCapsule_SetContext called with NULL capsule");
+        return -1;
+    }
+    ctx_value = PyLong_FromLongLong((long long)(uintptr_t)context);
+    if (ctx_value == NULL) return -1;
+    if (PyDict_SetItemString(capsule, _MOLT_CAPSULE_CONTEXT_KEY, ctx_value) < 0) {
+        Py_DECREF(ctx_value);
+        return -1;
+    }
+    Py_DECREF(ctx_value);
+    return 0;
+}
+
+/* ---- Unicode: Decode, Append, Translate, RSplit, IsIdentifier, Tailmatch ---- */
+
+static inline PyObject *PyUnicode_Decode(const char *s, Py_ssize_t size,
+                                          const char *encoding, const char *errors) {
+    (void)errors;
+    if (s == NULL) {
+        PyErr_SetString(PyExc_ValueError, "NULL string passed to PyUnicode_Decode");
+        return NULL;
+    }
+    if (encoding == NULL || strcmp(encoding, "utf-8") == 0 || strcmp(encoding, "UTF-8") == 0) {
+        return PyUnicode_DecodeUTF8(s, size, errors);
+    }
+    if (strcmp(encoding, "ascii") == 0 || strcmp(encoding, "ASCII") == 0) {
+        return PyUnicode_DecodeASCII(s, size, errors);
+    }
+    if (strcmp(encoding, "latin-1") == 0 || strcmp(encoding, "latin1") == 0 ||
+        strcmp(encoding, "iso-8859-1") == 0 || strcmp(encoding, "iso8859-1") == 0) {
+        return PyUnicode_DecodeLatin1(s, size, errors);
+    }
+    /* Fallback: try via Python codecs */
+    {
+        PyObject *bytes_obj = PyBytes_FromStringAndSize(s, size);
+        PyObject *result;
+        PyObject *decode_fn;
+        PyObject *args;
+        if (bytes_obj == NULL) return NULL;
+        decode_fn = PyObject_GetAttrString(bytes_obj, "decode");
+        if (decode_fn == NULL) {
+            Py_DECREF(bytes_obj);
+            return NULL;
+        }
+        args = PyTuple_New(1);
+        if (args == NULL) {
+            Py_DECREF(decode_fn);
+            Py_DECREF(bytes_obj);
+            return NULL;
+        }
+        PyTuple_SetItem(args, 0, PyUnicode_FromString(encoding));
+        result = PyObject_CallObject(decode_fn, args);
+        Py_DECREF(args);
+        Py_DECREF(decode_fn);
+        Py_DECREF(bytes_obj);
+        return result;
+    }
+}
+
+static inline void PyUnicode_Append(PyObject **p_left, PyObject *right) {
+    PyObject *result;
+    if (p_left == NULL) return;
+    if (*p_left == NULL || right == NULL) {
+        Py_XDECREF(*p_left);
+        *p_left = NULL;
+        return;
+    }
+    result = PyUnicode_Concat(*p_left, right);
+    Py_DECREF(*p_left);
+    *p_left = result;
+}
+
+static inline void PyUnicode_AppendAndDel(PyObject **p_left, PyObject *right) {
+    PyUnicode_Append(p_left, right);
+    Py_XDECREF(right);
+}
+
+static inline PyObject *PyUnicode_Translate(PyObject *str, PyObject *table,
+                                             const char *errors) {
+    PyObject *translate_fn;
+    PyObject *result;
+    (void)errors;
+    if (str == NULL || table == NULL) {
+        PyErr_SetString(PyExc_TypeError, "NULL argument to PyUnicode_Translate");
+        return NULL;
+    }
+    translate_fn = PyObject_GetAttrString(str, "translate");
+    if (translate_fn == NULL) return NULL;
+    result = PyObject_CallOneArg(translate_fn, table);
+    Py_DECREF(translate_fn);
+    return result;
+}
+
+static inline PyObject *PyUnicode_RSplit(PyObject *s, PyObject *sep,
+                                          Py_ssize_t maxsplit) {
+    PyObject *rsplit_fn;
+    PyObject *args;
+    PyObject *result;
+    if (s == NULL) {
+        PyErr_SetString(PyExc_TypeError, "NULL string in PyUnicode_RSplit");
+        return NULL;
+    }
+    rsplit_fn = PyObject_GetAttrString(s, "rsplit");
+    if (rsplit_fn == NULL) return NULL;
+    args = PyTuple_New(2);
+    if (args == NULL) { Py_DECREF(rsplit_fn); return NULL; }
+    if (sep != NULL) {
+        Py_INCREF(sep);
+        PyTuple_SetItem(args, 0, sep);
+    } else {
+        Py_INCREF(Py_None);
+        PyTuple_SetItem(args, 0, Py_None);
+    }
+    PyTuple_SetItem(args, 1, PyLong_FromSsize_t(maxsplit));
+    result = PyObject_CallObject(rsplit_fn, args);
+    Py_DECREF(args);
+    Py_DECREF(rsplit_fn);
+    return result;
+}
+
+static inline int PyUnicode_IsIdentifier(PyObject *s) {
+    PyObject *method;
+    PyObject *result;
+    int ret;
+    if (s == NULL) return 0;
+    method = PyObject_GetAttrString(s, "isidentifier");
+    if (method == NULL) { PyErr_Clear(); return 0; }
+    result = PyObject_CallNoArgs(method);
+    Py_DECREF(method);
+    if (result == NULL) { PyErr_Clear(); return 0; }
+    ret = PyObject_IsTrue(result);
+    Py_DECREF(result);
+    return ret;
+}
+
+static inline Py_ssize_t PyUnicode_Tailmatch(PyObject *str, PyObject *substr,
+                                               Py_ssize_t start, Py_ssize_t end,
+                                               int direction) {
+    /* direction: -1 = prefix (startswith), 1 = suffix (endswith) */
+    PyObject *method;
+    PyObject *args;
+    PyObject *result;
+    int ret;
+    if (str == NULL || substr == NULL) return -1;
+    method = PyObject_GetAttrString(str, direction < 0 ? "startswith" : "endswith");
+    if (method == NULL) return -1;
+    args = PyTuple_New(3);
+    if (args == NULL) { Py_DECREF(method); return -1; }
+    Py_INCREF(substr);
+    PyTuple_SetItem(args, 0, substr);
+    PyTuple_SetItem(args, 1, PyLong_FromSsize_t(start));
+    PyTuple_SetItem(args, 2, PyLong_FromSsize_t(end));
+    result = PyObject_CallObject(method, args);
+    Py_DECREF(args);
+    Py_DECREF(method);
+    if (result == NULL) return -1;
+    ret = PyObject_IsTrue(result);
+    Py_DECREF(result);
+    return (Py_ssize_t)ret;
+}
+
+static inline Py_ssize_t PyUnicode_AsWideChar(PyObject *unicode, wchar_t *w, Py_ssize_t size) {
+    const char *utf8;
+    Py_ssize_t utf8_len;
+    Py_ssize_t i, count;
+    if (unicode == NULL) return -1;
+    utf8 = PyUnicode_AsUTF8AndSize(unicode, &utf8_len);
+    if (utf8 == NULL) return -1;
+    /* Simple: for BMP-only content, each byte sequence maps 1:1 for ASCII. */
+    count = 0;
+    for (i = 0; i < utf8_len && count < size; ) {
+        unsigned char c = (unsigned char)utf8[i];
+        if (c < 0x80) {
+            if (w) w[count] = (wchar_t)c;
+            count++; i++;
+        } else if ((c & 0xE0) == 0xC0 && i + 1 < utf8_len) {
+            if (w) w[count] = (wchar_t)(((c & 0x1F) << 6) | (utf8[i+1] & 0x3F));
+            count++; i += 2;
+        } else if ((c & 0xF0) == 0xE0 && i + 2 < utf8_len) {
+            if (w) w[count] = (wchar_t)(((c & 0x0F) << 12) | ((utf8[i+1] & 0x3F) << 6) | (utf8[i+2] & 0x3F));
+            count++; i += 3;
+        } else if ((c & 0xF8) == 0xF0 && i + 3 < utf8_len) {
+            /* Supplementary character — encode as single wchar_t if sizeof(wchar_t) >= 4 */
+            uint32_t cp = ((c & 0x07) << 18) | ((utf8[i+1] & 0x3F) << 12) |
+                          ((utf8[i+2] & 0x3F) << 6) | (utf8[i+3] & 0x3F);
+            if (sizeof(wchar_t) >= 4) {
+                if (w) w[count] = (wchar_t)cp;
+                count++; i += 4;
+            } else {
+                /* UTF-16 surrogate pair */
+                if (count + 1 < size) {
+                    if (w) {
+                        cp -= 0x10000;
+                        w[count]     = (wchar_t)(0xD800 | (cp >> 10));
+                        w[count + 1] = (wchar_t)(0xDC00 | (cp & 0x3FF));
+                    }
+                    count += 2; i += 4;
+                } else {
+                    break;
+                }
+            }
+        } else {
+            /* Invalid byte — skip */
+            i++;
+        }
+    }
+    return count;
+}
+
+static inline wchar_t *PyUnicode_AsWideCharString(PyObject *unicode, Py_ssize_t *size) {
+    Py_ssize_t len;
+    wchar_t *buf;
+    if (unicode == NULL) {
+        PyErr_SetString(PyExc_TypeError, "NULL argument to PyUnicode_AsWideCharString");
+        return NULL;
+    }
+    len = PyUnicode_GetLength(unicode);
+    if (len < 0) return NULL;
+    /* Allocate generous buffer: worst case each char becomes a surrogate pair */
+    buf = (wchar_t *)PyMem_Malloc((size_t)(len + 1) * sizeof(wchar_t));
+    if (buf == NULL) return NULL;
+    len = PyUnicode_AsWideChar(unicode, buf, len + 1);
+    if (len < 0) {
+        PyMem_Free(buf);
+        return NULL;
+    }
+    buf[len] = L'\0';
+    if (size != NULL) *size = len;
+    return buf;
+}
+
+static inline PyObject *PyUnicode_FromWideChar(const wchar_t *w, Py_ssize_t size) {
+    /* Convert wchar_t string to UTF-8, then to PyObject */
+    char *buf;
+    Py_ssize_t i, pos;
+    PyObject *result;
+    if (w == NULL) {
+        PyErr_SetString(PyExc_TypeError, "NULL argument to PyUnicode_FromWideChar");
+        return NULL;
+    }
+    if (size < 0) {
+        size = 0;
+        while (w[size] != L'\0') size++;
+    }
+    /* Worst case: 4 bytes per wchar_t */
+    buf = (char *)PyMem_Malloc((size_t)(size * 4 + 1));
+    if (buf == NULL) return NULL;
+    pos = 0;
+    for (i = 0; i < size; i++) {
+        uint32_t cp = (uint32_t)w[i];
+        /* Handle UTF-16 surrogates on narrow wchar_t platforms */
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < size) {
+            uint32_t lo = (uint32_t)w[i + 1];
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                i++;
+            }
+        }
+        if (cp < 0x80) {
+            buf[pos++] = (char)cp;
+        } else if (cp < 0x800) {
+            buf[pos++] = (char)(0xC0 | (cp >> 6));
+            buf[pos++] = (char)(0x80 | (cp & 0x3F));
+        } else if (cp < 0x10000) {
+            buf[pos++] = (char)(0xE0 | (cp >> 12));
+            buf[pos++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+            buf[pos++] = (char)(0x80 | (cp & 0x3F));
+        } else {
+            buf[pos++] = (char)(0xF0 | (cp >> 18));
+            buf[pos++] = (char)(0x80 | ((cp >> 12) & 0x3F));
+            buf[pos++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+            buf[pos++] = (char)(0x80 | (cp & 0x3F));
+        }
+    }
+    buf[pos] = '\0';
+    result = PyUnicode_FromStringAndSize(buf, pos);
+    PyMem_Free(buf);
+    return result;
+}
+
+static inline PyObject *PyUnicode_DecodeLocale(const char *str, const char *errors) {
+    if (str == NULL) {
+        PyErr_SetString(PyExc_ValueError, "NULL string in PyUnicode_DecodeLocale");
+        return NULL;
+    }
+    return PyUnicode_DecodeUTF8(str, (Py_ssize_t)strlen(str), errors);
+}
+
+static inline PyObject *PyUnicode_DecodeLocaleAndSize(const char *str, Py_ssize_t len,
+                                                       const char *errors) {
+    if (str == NULL) {
+        PyErr_SetString(PyExc_ValueError, "NULL string in PyUnicode_DecodeLocaleAndSize");
+        return NULL;
+    }
+    return PyUnicode_DecodeUTF8(str, len, errors);
+}
+
+static inline PyObject *PyUnicode_EncodeLocale(PyObject *unicode, const char *errors) {
+    (void)errors;
+    return PyUnicode_AsEncodedString(unicode, "utf-8", "surrogateescape");
+}
+
+static inline PyObject *PyUnicode_FromKindAndData(int kind, const void *buffer, Py_ssize_t size) {
+    /* kind: 1=UCS1, 2=UCS2, 4=UCS4 */
+    if (buffer == NULL || size < 0) {
+        PyErr_SetString(PyExc_ValueError, "invalid arguments to PyUnicode_FromKindAndData");
+        return NULL;
+    }
+    if (kind == 1) {
+        /* Latin-1 */
+        return PyUnicode_DecodeLatin1((const char *)buffer, size, NULL);
+    }
+    /* For UCS2/UCS4, convert to wchar_t approach */
+    {
+        wchar_t *tmp = (wchar_t *)PyMem_Malloc((size_t)(size + 1) * sizeof(wchar_t));
+        Py_ssize_t i;
+        PyObject *result;
+        if (tmp == NULL) return NULL;
+        if (kind == 2) {
+            const uint16_t *src = (const uint16_t *)buffer;
+            for (i = 0; i < size; i++) tmp[i] = (wchar_t)src[i];
+        } else if (kind == 4) {
+            const uint32_t *src = (const uint32_t *)buffer;
+            for (i = 0; i < size; i++) tmp[i] = (wchar_t)src[i];
+        } else {
+            PyMem_Free(tmp);
+            PyErr_SetString(PyExc_ValueError, "invalid kind for PyUnicode_FromKindAndData");
+            return NULL;
+        }
+        tmp[size] = L'\0';
+        result = PyUnicode_FromWideChar(tmp, size);
+        PyMem_Free(tmp);
+        return result;
+    }
+}
+
+static inline PyObject *PyUnicode_AsUnicodeEscapeString(PyObject *unicode) {
+    PyObject *method;
+    PyObject *args;
+    PyObject *result;
+    if (unicode == NULL) {
+        PyErr_SetString(PyExc_TypeError, "NULL argument to PyUnicode_AsUnicodeEscapeString");
+        return NULL;
+    }
+    method = PyObject_GetAttrString(unicode, "encode");
+    if (method == NULL) return NULL;
+    args = PyTuple_Pack(1, PyUnicode_FromString("unicode_escape"));
+    if (args == NULL) { Py_DECREF(method); return NULL; }
+    result = PyObject_CallObject(method, args);
+    Py_DECREF(args);
+    Py_DECREF(method);
+    return result;
+}
+
+static inline PyObject *PyUnicode_AsRawUnicodeEscapeString(PyObject *unicode) {
+    PyObject *method;
+    PyObject *args;
+    PyObject *result;
+    if (unicode == NULL) {
+        PyErr_SetString(PyExc_TypeError, "NULL argument to PyUnicode_AsRawUnicodeEscapeString");
+        return NULL;
+    }
+    method = PyObject_GetAttrString(unicode, "encode");
+    if (method == NULL) return NULL;
+    args = PyTuple_Pack(1, PyUnicode_FromString("raw_unicode_escape"));
+    if (args == NULL) { Py_DECREF(method); return NULL; }
+    result = PyObject_CallObject(method, args);
+    Py_DECREF(args);
+    Py_DECREF(method);
+    return result;
+}
+
+static inline PyObject *PyUnicode_DecodeUnicodeEscape(const char *s, Py_ssize_t size,
+                                                       const char *errors) {
+    return PyUnicode_Decode(s, size, "unicode_escape", errors);
+}
+
+static inline PyObject *PyUnicode_DecodeRawUnicodeEscape(const char *s, Py_ssize_t size,
+                                                          const char *errors) {
+    return PyUnicode_Decode(s, size, "raw_unicode_escape", errors);
+}
+
+/* ---- Tuple / List slice helpers ---- */
+
+static inline PyObject *PyTuple_GetSlice(PyObject *tuple, Py_ssize_t low, Py_ssize_t high) {
+    PyObject *slice;
+    PyObject *result;
+    if (tuple == NULL) {
+        PyErr_SetString(PyExc_TypeError, "NULL argument to PyTuple_GetSlice");
+        return NULL;
+    }
+    slice = PySlice_New(PyLong_FromSsize_t(low), PyLong_FromSsize_t(high), NULL);
+    if (slice == NULL) return NULL;
+    result = PyObject_GetItem(tuple, slice);
+    Py_DECREF(slice);
+    return result;
+}
+
+static inline int PyList_SetSlice(PyObject *list, Py_ssize_t low, Py_ssize_t high,
+                                   PyObject *itemlist) {
+    PyObject *slice;
+    int rc;
+    if (list == NULL) {
+        PyErr_SetString(PyExc_TypeError, "NULL argument to PyList_SetSlice");
+        return -1;
+    }
+    slice = PySlice_New(PyLong_FromSsize_t(low), PyLong_FromSsize_t(high), NULL);
+    if (slice == NULL) return -1;
+    if (itemlist != NULL) {
+        rc = PyObject_SetItem(list, slice, itemlist);
+    } else {
+        rc = PyObject_DelItem(list, slice);
+    }
+    Py_DECREF(slice);
+    return rc;
+}
+
+static inline PyObject *PySequence_GetSlice(PyObject *o, Py_ssize_t i1, Py_ssize_t i2) {
+    PyObject *slice;
+    PyObject *result;
+    if (o == NULL) {
+        PyErr_SetString(PyExc_TypeError, "NULL argument to PySequence_GetSlice");
+        return NULL;
+    }
+    slice = PySlice_New(PyLong_FromSsize_t(i1), PyLong_FromSsize_t(i2), NULL);
+    if (slice == NULL) return NULL;
+    result = PyObject_GetItem(o, slice);
+    Py_DECREF(slice);
+    return result;
+}
+
+static inline int PySequence_SetSlice(PyObject *o, Py_ssize_t i1, Py_ssize_t i2,
+                                       PyObject *v) {
+    PyObject *slice;
+    int rc;
+    if (o == NULL) {
+        PyErr_SetString(PyExc_TypeError, "NULL argument to PySequence_SetSlice");
+        return -1;
+    }
+    slice = PySlice_New(PyLong_FromSsize_t(i1), PyLong_FromSsize_t(i2), NULL);
+    if (slice == NULL) return -1;
+    if (v != NULL) {
+        rc = PyObject_SetItem(o, slice, v);
+    } else {
+        rc = PyObject_DelItem(o, slice);
+    }
+    Py_DECREF(slice);
+    return rc;
+}
+
+/* ---- Thread-specific Storage (TSS) API — CPython 3.7+ stable ABI ---- */
+
+typedef struct {
+    int _is_initialized;
+    void *_key;
+} Py_tss_t;
+
+#define Py_tss_NEEDS_INIT {0, NULL}
+
+static inline Py_tss_t *PyThread_tss_alloc(void) {
+    Py_tss_t *key = (Py_tss_t *)PyMem_Malloc(sizeof(Py_tss_t));
+    if (key != NULL) {
+        key->_is_initialized = 0;
+        key->_key = NULL;
+    }
+    return key;
+}
+
+static inline void PyThread_tss_free(Py_tss_t *key) {
+    if (key != NULL) {
+        PyMem_Free(key);
+    }
+}
+
+static inline int PyThread_tss_is_created(Py_tss_t *key) {
+    if (key == NULL) return 0;
+    return key->_is_initialized;
+}
+
+static inline int PyThread_tss_create(Py_tss_t *key) {
+    if (key == NULL) return -1;
+    key->_is_initialized = 1;
+    key->_key = NULL;
+    return 0;
+}
+
+static inline void PyThread_tss_delete(Py_tss_t *key) {
+    if (key != NULL) {
+        key->_is_initialized = 0;
+        key->_key = NULL;
+    }
+}
+
+static inline int PyThread_tss_set(Py_tss_t *key, void *value) {
+    if (key == NULL || !key->_is_initialized) return -1;
+    key->_key = value;
+    return 0;
+}
+
+static inline void *PyThread_tss_get(Py_tss_t *key) {
+    if (key == NULL || !key->_is_initialized) return NULL;
+    return key->_key;
+}
+
+/* ---- PyIndex_Check ---- */
+
+static inline int PyIndex_Check(PyObject *obj) {
+    if (obj == NULL) return 0;
+    /* An object supports the index protocol if it has __index__ */
+    {
+        PyObject *method = PyObject_GetAttrString(obj, "__index__");
+        if (method != NULL) {
+            Py_DECREF(method);
+            return 1;
+        }
+        PyErr_Clear();
+        return 0;
+    }
+}
+
+/* ---- Py_FatalError ---- */
+
+static inline void Py_FatalError(const char *message) {
+    fprintf(stderr, "Fatal Python error: %s\n", message ? message : "(null)");
+    abort();
+}
+
+/* ---- PyType_GenericAlloc / PyType_GenericNew ---- */
+
+static inline PyObject *PyType_GenericAlloc(PyTypeObject *type, Py_ssize_t nitems) {
+    (void)nitems;
+    return PyObject_Init((PyObject *)PyMem_Malloc(sizeof(PyObject)), type);
+}
+
+static inline PyObject *PyType_GenericNew(PyTypeObject *type, PyObject *args, PyObject *kwds) {
+    (void)args; (void)kwds;
+    return PyType_GenericAlloc(type, 0);
+}
+
+/* ---- Py_Exit ---- */
+
+static inline void Py_Exit(int status) {
+    exit(status);
+}
+
+/* ---- PyOS_vsnprintf ---- */
+
+static inline int PyOS_vsnprintf(char *str, size_t size, const char *format, va_list va) {
+    return vsnprintf(str, size, format, va);
+}
+
+/* PyDict_GetItemWithError — already defined earlier in this file. */
+
+/* ---- PyDict_GetItemRef (3.12+) ---- */
+
+static inline int PyDict_GetItemRef(PyObject *p, PyObject *key, PyObject **result) {
+    PyObject *item;
+    if (p == NULL || key == NULL || result == NULL) {
+        if (result) *result = NULL;
+        PyErr_SetString(PyExc_TypeError, "NULL argument to PyDict_GetItemRef");
+        return -1;
+    }
+    item = PyObject_GetItem(p, key);
+    if (item == NULL) {
+        if (PyErr_ExceptionMatches(PyExc_KeyError)) {
+            PyErr_Clear();
+            *result = NULL;
+            return 0;  /* not found, no error */
+        }
+        *result = NULL;
+        return -1;  /* error */
+    }
+    *result = item;  /* new reference */
+    return 1;  /* found */
+}
+
+/* ---- PyDict_GetItemStringRef (3.12+) ---- */
+
+static inline int PyDict_GetItemStringRef(PyObject *p, const char *key, PyObject **result) {
+    PyObject *key_obj;
+    int rc;
+    if (key == NULL || result == NULL) {
+        if (result) *result = NULL;
+        PyErr_SetString(PyExc_TypeError, "NULL argument to PyDict_GetItemStringRef");
+        return -1;
+    }
+    key_obj = PyUnicode_FromString(key);
+    if (key_obj == NULL) {
+        *result = NULL;
+        return -1;
+    }
+    rc = PyDict_GetItemRef(p, key_obj, result);
+    Py_DECREF(key_obj);
+    return rc;
+}
+
+/* ---- PyDict_Pop (3.12+) ---- */
+
+static inline int PyDict_Pop(PyObject *p, PyObject *key, PyObject **result) {
+    PyObject *pop_fn;
+    PyObject *item;
+    if (p == NULL || key == NULL) {
+        if (result) *result = NULL;
+        PyErr_SetString(PyExc_TypeError, "NULL argument to PyDict_Pop");
+        return -1;
+    }
+    pop_fn = PyObject_GetAttrString(p, "pop");
+    if (pop_fn == NULL) {
+        if (result) *result = NULL;
+        return -1;
+    }
+    {
+        PyObject *args = PyTuple_Pack(2, key, Py_None);
+        if (args == NULL) {
+            Py_DECREF(pop_fn);
+            if (result) *result = NULL;
+            return -1;
+        }
+        item = PyObject_CallObject(pop_fn, args);
+        Py_DECREF(args);
+    }
+    Py_DECREF(pop_fn);
+    if (item == NULL) {
+        if (result) *result = NULL;
+        return -1;
+    }
+    if (item == Py_None) {
+        /* Key was not present (we used None as default) */
+        Py_DECREF(item);
+        if (result) *result = NULL;
+        return 0;
+    }
+    if (result) {
+        *result = item;
+    } else {
+        Py_DECREF(item);
+    }
+    return 1;
+}
+
+/* Py_NewRef, Py_XNewRef — already defined earlier in this file. */
+
+/* ---- PyFloat_GetInfo ---- */
+
+static inline PyObject *PyFloat_GetInfo(void) {
+    /* Return a dict with float constants matching sys.float_info */
+    PyObject *d = PyDict_New();
+    if (d == NULL) return NULL;
+    PyDict_SetItemString(d, "max", PyFloat_FromDouble(1.7976931348623157e+308));
+    PyDict_SetItemString(d, "min", PyFloat_FromDouble(2.2250738585072014e-308));
+    PyDict_SetItemString(d, "epsilon", PyFloat_FromDouble(2.220446049250313e-16));
+    PyDict_SetItemString(d, "dig", PyLong_FromLong(15));
+    PyDict_SetItemString(d, "mant_dig", PyLong_FromLong(53));
+    PyDict_SetItemString(d, "max_exp", PyLong_FromLong(1024));
+    PyDict_SetItemString(d, "max_10_exp", PyLong_FromLong(308));
+    PyDict_SetItemString(d, "min_exp", PyLong_FromLong(-1021));
+    PyDict_SetItemString(d, "min_10_exp", PyLong_FromLong(-307));
+    PyDict_SetItemString(d, "radix", PyLong_FromLong(2));
+    PyDict_SetItemString(d, "rounds", PyLong_FromLong(1));
+    return d;
+}
+
+/* ---- PyLong_AsUnsignedLongLongMask already exists but ensure PyLong_AsUnsignedLongMask ---- */
+
+static inline unsigned long PyLong_AsUnsignedLongMask(PyObject *pylong) {
+    return (unsigned long)PyLong_AsUnsignedLongLongMask(pylong);
+}
+
+/* PyOS_stricmp, PyOS_strnicmp — already defined earlier in this file. */
+
+/* ---- Py_AddPendingCall / Py_MakePendingCalls ---- */
+
+static inline int Py_AddPendingCall(int (*func)(void *), void *arg) {
+    /* Molt is single-threaded; call immediately */
+    return func(arg);
+}
+
+static inline int Py_MakePendingCalls(void) {
+    return 0;
+}
+
+/* ---- PyObject_GC_IsTracked / PyObject_GC_IsFinalized already exist;
+        ensure _PyObject_GC_TRACK / _PyObject_GC_UNTRACK macros ---- */
+
+#ifndef _PyObject_GC_TRACK
+#define _PyObject_GC_TRACK(op) PyObject_GC_Track(op)
+#endif
+#ifndef _PyObject_GC_UNTRACK
+#define _PyObject_GC_UNTRACK(op) PyObject_GC_UnTrack(op)
+#endif
+
+/* ---- PyUnicode_New (used by some extensions to allocate mutable buffers) ---- */
+
+static inline PyObject *PyUnicode_New(Py_ssize_t size, Py_UCS4 maxchar) {
+    /* Molt strings are immutable; return a zero-filled string of given length.
+       Extensions that call this typically fill it with PyUnicode_WriteChar
+       which we error on, but we must still provide the allocation. */
+    char *buf;
+    PyObject *result;
+    (void)maxchar;
+    if (size < 0) {
+        PyErr_SetString(PyExc_ValueError, "negative size in PyUnicode_New");
+        return NULL;
+    }
+    if (size == 0) {
+        return PyUnicode_FromString("");
+    }
+    buf = (char *)PyMem_Malloc((size_t)size + 1);
+    if (buf == NULL) return NULL;
+    memset(buf, ' ', (size_t)size);
+    buf[size] = '\0';
+    result = PyUnicode_FromStringAndSize(buf, size);
+    PyMem_Free(buf);
+    return result;
+}
+
+/* ---- PyUnicode_AsUCS4 / PyUnicode_AsUCS4Copy ---- */
+
+static inline Py_UCS4 *PyUnicode_AsUCS4(PyObject *unicode, Py_UCS4 *target,
+                                          Py_ssize_t targetsize, int copy_null) {
+    const char *utf8;
+    Py_ssize_t utf8_len, i, pos;
+    if (unicode == NULL || target == NULL) {
+        PyErr_SetString(PyExc_TypeError, "NULL argument to PyUnicode_AsUCS4");
+        return NULL;
+    }
+    utf8 = PyUnicode_AsUTF8AndSize(unicode, &utf8_len);
+    if (utf8 == NULL) return NULL;
+    pos = 0;
+    for (i = 0; i < utf8_len && pos < targetsize; ) {
+        unsigned char c = (unsigned char)utf8[i];
+        Py_UCS4 cp;
+        if (c < 0x80) { cp = c; i++; }
+        else if ((c & 0xE0) == 0xC0 && i + 1 < utf8_len) {
+            cp = ((c & 0x1F) << 6) | (utf8[i+1] & 0x3F); i += 2;
+        } else if ((c & 0xF0) == 0xE0 && i + 2 < utf8_len) {
+            cp = ((c & 0x0F) << 12) | ((utf8[i+1] & 0x3F) << 6) | (utf8[i+2] & 0x3F); i += 3;
+        } else if ((c & 0xF8) == 0xF0 && i + 3 < utf8_len) {
+            cp = ((c & 0x07) << 18) | ((utf8[i+1] & 0x3F) << 12) |
+                 ((utf8[i+2] & 0x3F) << 6) | (utf8[i+3] & 0x3F); i += 4;
+        } else { i++; continue; }
+        target[pos++] = cp;
+    }
+    if (copy_null && pos < targetsize) {
+        target[pos] = 0;
+    }
+    return target;
+}
+
+static inline Py_UCS4 *PyUnicode_AsUCS4Copy(PyObject *unicode) {
+    Py_ssize_t len = PyUnicode_GetLength(unicode);
+    Py_UCS4 *buf;
+    if (len < 0) return NULL;
+    buf = (Py_UCS4 *)PyMem_Malloc(((size_t)len + 1) * sizeof(Py_UCS4));
+    if (buf == NULL) return NULL;
+    if (PyUnicode_AsUCS4(unicode, buf, len + 1, 1) == NULL) {
+        PyMem_Free(buf);
+        return NULL;
+    }
+    return buf;
+}
+
+/* Py_SetProgramName, Py_GetProgramName, Py_GetProgramFullPath,
+   Py_GetPrefix, Py_GetExecPrefix, Py_GetPath — already defined earlier. */
+
+/* ---- Py_GetRecursionLimit / Py_SetRecursionLimit ---- */
+
+static inline int Py_GetRecursionLimit(void) {
+    return 1000;
+}
+
+static inline void Py_SetRecursionLimit(int limit) {
+    (void)limit; /* no-op — Molt uses its own stack management */
+}
+
+/* ---- PyOS_InterruptOccurred ---- */
+
+static inline int PyOS_InterruptOccurred(void) {
+    return 0;
+}
+
+/* ---- PyUnicode_Splitlines already exists, ensure PyUnicode_DecodeCharmap ---- */
+
+static inline PyObject *PyUnicode_DecodeCharmap(const char *data, Py_ssize_t size,
+                                                  PyObject *mapping, const char *errors) {
+    (void)mapping; (void)errors;
+    /* Fallback: decode as latin-1 */
+    return PyUnicode_DecodeLatin1(data, size, errors);
+}
+
+/* PyType_FromModuleAndSpec — already defined earlier in this file. */
+
+/* ---- PyModule_AddIntMacro / PyModule_AddStringMacro ---- */
+
+#ifndef PyModule_AddIntMacro
+#define PyModule_AddIntMacro(module, macro) \
+    PyModule_AddIntConstant(module, #macro, (long)(macro))
+#endif
+
+#ifndef PyModule_AddStringMacro
+#define PyModule_AddStringMacro(module, macro) \
+    PyModule_AddStringConstant(module, #macro, macro)
+#endif
+
+/* Py_EnterRecursiveCall, Py_LeaveRecursiveCall — already defined earlier. */
+
+/* ---- Py_UNREACHABLE ---- */
+
+#ifndef Py_UNREACHABLE
+#define Py_UNREACHABLE() abort()
+#endif
+
+/* ---- Py_UNUSED ---- */
+
+#ifndef Py_UNUSED
+#define Py_UNUSED(name) _unused_ ## name __attribute__((unused))
+#endif
+
+/* ---- PyLong_AsInt (3.12+) ---- */
+
+static inline int PyLong_AsInt(PyObject *obj) {
+    long val = PyLong_AsLong(obj);
+    if (val > INT_MAX || val < INT_MIN) {
+        PyErr_SetString(PyExc_OverflowError, "Python int too large to convert to C int");
+        return -1;
+    }
+    return (int)val;
+}
+
+/* PyObject_CallFunction, PyObject_CallMethod, PyObject_HasAttr,
+   PyObject_HasAttrString — already defined earlier in this file. */
+
+/* ---- Py_GETENV ---- */
+
+#ifndef Py_GETENV
+#define Py_GETENV(s) getenv(s)
+#endif
+
+/* ---- Py_ssize_t max/min ---- */
+
+#ifndef PY_SSIZE_T_MAX
+#define PY_SSIZE_T_MAX ((Py_ssize_t)(((size_t)-1) >> 1))
+#endif
+
+#ifndef PY_SSIZE_T_MIN
+#define PY_SSIZE_T_MIN (-PY_SSIZE_T_MAX - 1)
+#endif
+
+/* PyMemAllocatorDomain, PyMemAllocatorEx, PyMem_SetAllocator,
+   PyMem_GetAllocator — already defined earlier in this file. */
+
+/* ---- Py_SetPath ---- */
+
+static inline void Py_SetPath(const wchar_t *path) {
+    (void)path;
+}
+
+/* PyEval_SaveThread, PyEval_RestoreThread, PyEval_GetFrame,
+   PyEval_GetBuiltins, PyEval_GetGlobals, PyEval_GetLocals,
+   PyFrameObject — already defined earlier in this file. */
+
+/* PyFrame_GetBack, PyFrame_GetCode, PyFrame_GetLineNumber,
+   PyFrame_GetLocals, PyFrame_GetGlobals, PyFrame_GetBuiltins,
+   PyFrame_GetLasti — already defined earlier in this file. */
+
+/* PyDescr_NewMethod, PyDescr_NewClassMethod, PyDescr_NewMember,
+   PyDescr_NewGetSet — already defined earlier in this file. */
+
+/* ---- PySlice_GetIndices ---- */
+
+static inline int PySlice_GetIndices(PyObject *slice, Py_ssize_t length,
+                                      Py_ssize_t *start, Py_ssize_t *stop, Py_ssize_t *step) {
+    Py_ssize_t slicelength;
+    return PySlice_GetIndicesEx(slice, length, start, stop, step, &slicelength);
+}
+
+/* ---- Py_MATH_PI / Py_MATH_E / Py_MATH_TAU / Py_MATH_INF / Py_MATH_NAN ---- */
+
+#ifndef Py_MATH_PI
+#define Py_MATH_PI 3.14159265358979323846
+#endif
+#ifndef Py_MATH_E
+#define Py_MATH_E 2.71828182845904523536
+#endif
+#ifndef Py_MATH_TAU
+#define Py_MATH_TAU 6.28318530717958647692
+#endif
+#ifndef Py_MATH_INF
+#define Py_MATH_INF HUGE_VAL
+#endif
+#ifndef Py_MATH_NAN
+#define Py_MATH_NAN ((double)NAN)
+#endif
+
+/* ---- Py_STRINGIFY ---- */
+
+#ifndef Py_STRINGIFY
+#define _Py_STRINGIFY(x) #x
+#define Py_STRINGIFY(x) _Py_STRINGIFY(x)
+#endif
+
+/* Py_ABS, Py_MIN, Py_MAX, Py_MEMBER_SIZE, Py_ARRAY_LENGTH
+   — already defined earlier in this file. */
+
+/* PyUnicode_1BYTE_KIND, PyUnicode_2BYTE_KIND, PyUnicode_4BYTE_KIND
+   — already defined earlier in this file. */
+
+#ifndef PyUnicode_KIND
+static inline unsigned int PyUnicode_KIND(PyObject *op) {
+    (void)op;
+    /* Molt always stores as UTF-8 internally; report as 1BYTE_KIND */
+    return PyUnicode_1BYTE_KIND;
+}
+#define PyUnicode_KIND(op) PyUnicode_KIND((PyObject *)(op))
+#endif
+
+#ifndef PyUnicode_DATA
+static inline void *PyUnicode_DATA(PyObject *op) {
+    return (void *)PyUnicode_AsUTF8(op);
+}
+#define PyUnicode_DATA(op) PyUnicode_DATA((PyObject *)(op))
+#endif
+
+/* Py_CLEAR, Py_SETREF, Py_XSETREF — already defined earlier in this file. */
+
+/* ---- Py_IS_TYPE ---- */
+
+#ifndef Py_IS_TYPE
+#define Py_IS_TYPE(ob, type) (Py_TYPE(ob) == (type))
+#endif
+
+/* ---- PyObject_SelfIter ---- */
+
+static inline PyObject *PyObject_SelfIter(PyObject *obj) {
+    Py_INCREF(obj);
+    return obj;
+}
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
