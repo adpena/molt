@@ -5,16 +5,17 @@
 #   internal — Runtime machinery, not exposed to Python
 #   stdlib   — Standard library modules, loaded on demand
 #
-# This file is informational and used by tools/gen_intrinsics.py to
-# generate per-category import groups for WASM tree shaking.
+# This file is the source of truth for import groups.
+# Excluded by design (per molt parity contract):
+#   exec, eval, breakpoint, help, exit, quit, copyright, credits, license
 
 [builtin]
-# True Python builtins (always available, ~30 functions)
-prefixes = [
-    "molt_abs", "molt_all_builtin", "molt_any_builtin",
-    "molt_ascii_builtin", "molt_bin", "molt_bool",
-    "molt_chr", "molt_compile_builtin", "molt_dir_builtin",
-    "molt_divmod", "molt_enumerate", "molt_format_builtin",
+functions = [
+    "molt_abs", "molt_aiter", "molt_all_builtin", "molt_anext_builtin",
+    "molt_any_builtin", "molt_ascii_builtin", "molt_bin", "molt_bool",
+    "molt_callable_builtin", "molt_chr", "molt_delattr_builtin",
+    "molt_dir_builtin", "molt_divmod", "molt_enumerate",
+    "molt_filter_builtin", "molt_format_builtin", "molt_getattr_builtin",
     "molt_globals_builtin", "molt_hasattr", "molt_hash_builtin",
     "molt_hex", "molt_id_builtin", "molt_input_builtin",
     "molt_isinstance", "molt_issubclass", "molt_iter_builtin",
@@ -22,29 +23,86 @@ prefixes = [
     "molt_max_builtin", "molt_min_builtin", "molt_next_builtin",
     "molt_oct_builtin", "molt_open_builtin", "molt_ord",
     "molt_pow", "molt_pow_mod", "molt_print_builtin",
-    "molt_repr_builtin", "molt_repr_from_obj",
-    "molt_reversed_builtin", "molt_round_builtin",
-    "molt_sorted_builtin", "molt_sum_builtin",
-    "molt_zip_builtin",
+    "molt_repr_builtin", "molt_reversed_builtin", "molt_round_builtin",
+    "molt_setattr_builtin", "molt_sorted_builtin", "molt_sum_builtin",
+    "molt_vars_builtin", "molt_zip_builtin",
+]
+type_constructors = [
+    "molt_int", "molt_float", "molt_str", "molt_bool",
+    "molt_list", "molt_dict", "molt_set", "molt_frozenset",
+    "molt_tuple", "molt_bytes", "molt_bytearray", "molt_complex",
+    "molt_range", "molt_slice", "molt_type", "molt_object_new",
+    "molt_memoryview", "molt_super_new",
+]
+class_decorators = [
+    "molt_classmethod_new", "molt_staticmethod_new", "molt_property_new",
 ]
 
 [internal]
-# Runtime machinery — not exposed to Python, always linked
 prefixes = [
-    "molt_alloc", "molt_class_new", "molt_class_set_base",
-    "molt_class_apply_set_name", "molt_module_new", "molt_module_import",
-    "molt_module_cache", "molt_exception_active", "molt_exception_clear",
-    "molt_exception_last", "molt_exception_pending",
-    "molt_trace_", "molt_gc_", "molt_capabilities_",
-    "molt_function_set_builtin", "molt_stdlib_probe",
-    "molt_import_smoke", "molt_types_bootstrap",
-    "molt_abc_bootstrap", "molt_collections_abc_runtime",
-    "molt_classmethod_new", "molt_staticmethod_new", "molt_property_new",
-    "molt_builtin_class_lookup",
+    "alloc", "dec_ref", "inc_ref",
+    "module_new", "module_import", "module_cache", "module_get_attr",
+    "module_get_global", "module_set_attr", "module_del_global",
+    "exception_", "raise", "recursion_guard_",
+    "class_new", "class_set_base", "class_apply_set_name",
+    "object_set_class", "object_field_", "object_new",
+    "guard_", "guarded_field_", "builtin_type", "type_of",
+    "func_new", "fn_ptr_code_set", "bound_method_new",
+    "is_bound_method", "is_function_obj", "function_",
+    "call_bind", "call_indirect_ic", "call_func_dispatch",
+    "invoke_ffi_ic", "call_arity_error", "bridge_unavailable",
+    "callargs_", "closure_", "handle_resolve",
+    "is", "string_eq", "eq", "ne", "lt", "le", "gt", "ge",
+    "missing", "pending", "not_implemented", "ellipsis",
+    "is_truthy", "not", "is_callable", "is_generator",
+    "context_", "code_", "trace_", "frame_locals_set",
+    "runtime_init", "runtime_shutdown", "sys_set_version_info",
+    "print_obj", "print_newline",
+    "gen_locals", "task_new", "task_register_token_owned",
+    "stdlib_probe", "import_smoke", "types_bootstrap",
+    "abc_bootstrap", "collections_abc_runtime", "builtin_class_lookup",
+    "capabilities_",
 ]
 
-[stdlib]
-# Everything else — loaded on demand by their respective modules.
-# This is the default category for any intrinsic not matching
-# builtin or internal prefixes.
-default = true
+[stdlib.math]
+prefixes = ["math_"]
+[stdlib.json]
+prefixes = ["json_"]
+[stdlib.time]
+prefixes = ["time_"]
+[stdlib.os]
+prefixes = ["os_"]
+[stdlib.socket]
+prefixes = ["socket_"]
+[stdlib.struct]
+prefixes = ["struct_"]
+[stdlib.csv]
+prefixes = ["csv_"]
+[stdlib.threading]
+prefixes = ["thread_"]
+[stdlib.asyncio]
+prefixes = ["asyncio_", "async_sleep"]
+[stdlib.subprocess]
+prefixes = ["process_"]
+[stdlib.io]
+prefixes = ["stream_", "file_", "io_wait"]
+[stdlib.websocket]
+prefixes = ["ws_"]
+[stdlib.importlib]
+prefixes = ["importlib_"]
+[stdlib.bytes]
+prefixes = ["bytes_", "bytearray_"]
+[stdlib.string]
+prefixes = ["string_"]
+[stdlib.buffer]
+prefixes = ["buffer2d_"]
+[stdlib.weakref]
+prefixes = ["weakref_"]
+[stdlib.contextlib]
+prefixes = ["contextlib_"]
+[stdlib.cancel]
+prefixes = ["cancel_token_", "cancel_current", "cancelled"]
+[stdlib.lock]
+prefixes = ["lock_"]
+[stdlib.sqlite]
+prefixes = ["sqlite_", "db_"]
