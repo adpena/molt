@@ -34,6 +34,8 @@ mod ir_schema;
 mod json_boundary;
 pub mod luau_ir;
 pub mod luau_lower;
+#[cfg(feature = "llvm")]
+pub mod llvm_backend;
 #[cfg(feature = "native-backend")]
 mod native_backend;
 mod passes;
