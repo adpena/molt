@@ -32,6 +32,7 @@ pub(crate) mod builders;
 pub(crate) mod layout;
 pub(crate) mod memoryview;
 pub(crate) mod ops;
+pub(crate) mod ops_bytes;
 pub(crate) mod ops_heapq;
 pub(crate) mod refcount;
 pub(crate) mod type_ids;
