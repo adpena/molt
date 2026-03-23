@@ -14,6 +14,7 @@ use wasm_encoder::{
 use wasmparser::{DataKind, ElementItems, ExternalKind, Operator, Parser, Payload, TypeRef};
 
 const QNAN: u64 = 0x7ff8_0000_0000_0000;
+const CANONICAL_NAN_BITS: u64 = 0x7ff0_0000_0000_0001;
 const TAG_INT: u64 = 0x0001_0000_0000_0000;
 const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
 const TAG_NONE: u64 = 0x0003_0000_0000_0000;
@@ -220,7 +221,13 @@ fn box_int(val: i64) -> i64 {
 }
 
 fn box_float(val: f64) -> i64 {
-    val.to_bits() as i64
+    if val.is_nan() {
+        // Canonicalize NaN to avoid collision with the QNAN tag prefix.
+        // Must match CANONICAL_NAN_BITS in molt-obj-model.
+        0x7ff0_0000_0000_0001_u64 as i64
+    } else {
+        val.to_bits() as i64
+    }
 }
 
 fn box_bool(val: i64) -> i64 {
@@ -234,6 +241,27 @@ fn box_none() -> i64 {
 
 fn box_pending() -> i64 {
     (QNAN | TAG_PENDING) as i64
+}
+
+/// Emit WASM instructions to convert an f64 on the stack to a NaN-canonicalized i64.
+/// Uses `scratch_local` (an i64 local) as temporary storage.
+/// Expects: stack = [..., f64_val]
+/// Produces: stack = [..., i64_boxed] where NaN is replaced with CANONICAL_NAN_BITS.
+fn emit_f64_to_i64_canonical(func: &mut wasm_encoder::Function, scratch_local: u32) {
+    // Reinterpret f64 to i64 raw bits, save in scratch
+    func.instruction(&Instruction::I64ReinterpretF64);
+    func.instruction(&Instruction::LocalTee(scratch_local));
+    // Check if raw bits have QNAN prefix: (raw & QNAN) == QNAN
+    func.instruction(&Instruction::I64Const(QNAN as i64));
+    func.instruction(&Instruction::I64And);
+    func.instruction(&Instruction::I64Const(QNAN as i64));
+    func.instruction(&Instruction::I64Eq);
+    // select(canonical, raw, is_nan) — if is_nan is true (nonzero), picks canonical
+    func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+    func.instruction(&Instruction::I64Const(CANONICAL_NAN_BITS as i64));
+    func.instruction(&Instruction::Else);
+    func.instruction(&Instruction::LocalGet(scratch_local));
+    func.instruction(&Instruction::End);
 }
 
 fn stable_ic_site_id(func_name: &str, op_idx: usize, lane: &str) -> i64 {
@@ -5380,7 +5408,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             func.instruction(&Instruction::F64ReinterpretI64);
                             func.instruction(&Instruction::F64Add);
-                            func.instruction(&Instruction::I64ReinterpretF64);
+                            emit_f64_to_i64_canonical(func, locals["__molt_tmp3"]);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5447,7 +5475,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             func.instruction(&Instruction::F64ReinterpretI64);
                             func.instruction(&Instruction::F64Add);
-                            func.instruction(&Instruction::I64ReinterpretF64);
+                            emit_f64_to_i64_canonical(func, locals["__molt_tmp3"]);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5550,7 +5578,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             func.instruction(&Instruction::F64ReinterpretI64);
                             func.instruction(&Instruction::F64Sub);
-                            func.instruction(&Instruction::I64ReinterpretF64);
+                            emit_f64_to_i64_canonical(func, locals["__molt_tmp3"]);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5617,7 +5645,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             func.instruction(&Instruction::F64ReinterpretI64);
                             func.instruction(&Instruction::F64Mul);
-                            func.instruction(&Instruction::I64ReinterpretF64);
+                            emit_f64_to_i64_canonical(func, locals["__molt_tmp3"]);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5684,7 +5712,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             func.instruction(&Instruction::F64ReinterpretI64);
                             func.instruction(&Instruction::F64Sub);
-                            func.instruction(&Instruction::I64ReinterpretF64);
+                            emit_f64_to_i64_canonical(func, locals["__molt_tmp3"]);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -5751,7 +5779,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             func.instruction(&Instruction::F64ReinterpretI64);
                             func.instruction(&Instruction::F64Mul);
-                            func.instruction(&Instruction::I64ReinterpretF64);
+                            emit_f64_to_i64_canonical(func, locals["__molt_tmp3"]);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -6157,7 +6185,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(tmp_rhs));
                             func.instruction(&Instruction::F64ConvertI64S);
                             func.instruction(&Instruction::F64Div);
-                            func.instruction(&Instruction::I64ReinterpretF64);
+                            emit_f64_to_i64_canonical(func, locals["__molt_tmp3"]);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
@@ -6188,7 +6216,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             func.instruction(&Instruction::F64ReinterpretI64);
                             func.instruction(&Instruction::F64Div);
-                            func.instruction(&Instruction::I64ReinterpretF64);
+                            emit_f64_to_i64_canonical(func, locals["__molt_tmp3"]);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
