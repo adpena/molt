@@ -643,7 +643,9 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op.fast_int.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("int")
+                    {
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -758,7 +760,9 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op.fast_int.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("int")
+                    {
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -1322,7 +1326,9 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op.fast_int.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("int")
+                    {
                         // Inline isub with overflow check + BigInt fallback.
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
@@ -1438,7 +1444,9 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op.fast_int.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("int")
+                    {
                         // Inline isub with overflow check + BigInt fallback.
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
@@ -1550,7 +1558,9 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op.fast_int.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("int")
+                    {
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -1664,7 +1674,9 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op.fast_int.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("int")
+                    {
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -3539,20 +3551,87 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let out_name = op.out.unwrap();
 
-                    if op.stack_eligible == Some(true) {
-                        // Stack-eligible fast path: keep element Values in
-                        // stack_tuples instead of calling runtime builder.
-                        let mut elems: Vec<Value> = Vec::with_capacity(args.len());
-                        for name in args {
+                    if op.stack_eligible == Some(true) && args.len() <= 4 {
+                        // Stack-eligible fast path: allocate tuple on the
+                        // Cranelift stack frame instead of calling the runtime
+                        // heap allocator.  Layout mirrors MoltHeader (40 bytes)
+                        // followed by n packed i64 element slots.
+                        //
+                        // The element Values are also kept in `stack_tuples`
+                        // so that `index` and `len` ops can resolve them at
+                        // compile time without any memory loads.
+                        let n = args.len();
+                        let slot_bytes = (HEADER_SIZE_BYTES as usize) + n * 8;
+                        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            slot_bytes as u32,
+                            3, // align_shift: 2^3 = 8-byte alignment
+                        ));
+                        // Data pointer = slot base + HEADER_SIZE_BYTES.
+                        // All header fields are addressed via negative offsets
+                        // from data_ptr, matching the runtime MoltHeader layout.
+                        let data_ptr = builder.ins().stack_addr(
+                            types::I64,
+                            slot,
+                            HEADER_SIZE_BYTES,
+                        );
+
+                        // Initialize header fields (offsets relative to data_ptr).
+                        // type_id (u32 at -40)
+                        let type_id_val = builder.ins().iconst(types::I32, 206); // TYPE_ID_TUPLE
+                        builder.ins().store(
+                            MemFlags::trusted(),
+                            type_id_val,
+                            data_ptr,
+                            -HEADER_SIZE_BYTES,
+                        );
+                        // ref_count (u32 at -36) — set to u32::MAX (immortal)
+                        // so the runtime never frees the stack memory.
+                        let rc_val = builder.ins().iconst(types::I32, u32::MAX as i64);
+                        builder.ins().store(
+                            MemFlags::trusted(),
+                            rc_val,
+                            data_ptr,
+                            HEADER_REFCOUNT_OFFSET,
+                        );
+                        // flags (u64 at -8) — set HEADER_FLAG_IMMORTAL
+                        let flags_val = builder
+                            .ins()
+                            .iconst(types::I64, HEADER_FLAG_IMMORTAL as i64);
+                        builder.ins().store(
+                            MemFlags::trusted(),
+                            flags_val,
+                            data_ptr,
+                            HEADER_FLAGS_OFFSET,
+                        );
+                        // size (u64 at -16) — total allocation size
+                        let size_val = builder.ins().iconst(types::I64, slot_bytes as i64);
+                        builder.ins().store(
+                            MemFlags::trusted(),
+                            size_val,
+                            data_ptr,
+                            -16,
+                        );
+
+                        // Store elements and collect Values for stack_tuples.
+                        let mut elems: Vec<Value> = Vec::with_capacity(n);
+                        for (i, name) in args.iter().enumerate() {
                             let val = var_get(&mut builder, &vars, name)
                                 .expect("Stack tuple elem not found");
                             elems.push(*val);
+                            builder.ins().store(
+                                MemFlags::trusted(),
+                                *val,
+                                data_ptr,
+                                (i * 8) as i32,
+                            );
                         }
                         stack_tuples.insert(out_name.to_string(), elems);
-                        // Define the variable as a sentinel (zero) — it should
-                        // never be used directly; index ops will intercept it.
-                        let sentinel = builder.ins().iconst(types::I64, 0);
-                        def_var_named(&mut builder, &vars, out_name, sentinel);
+
+                        // Box the data pointer as a NaN-boxed pointer so the
+                        // variable holds a usable value (not a zero sentinel).
+                        let boxed = box_ptr_value(&mut builder, data_ptr);
+                        def_var_named(&mut builder, &vars, out_name, boxed);
                     } else {
                         let size = builder.ins().iconst(types::I64, box_int(args.len() as i64));
 
@@ -8944,12 +9023,24 @@ impl SimpleBackend {
                     }
                 }
                 "dec_ref" | "release" => {
-                    if !rc_skip_inc.contains(&op_idx) {
-                        let args_names =
-                            op.args.as_ref().expect("dec_ref/release args missing");
-                        let src_name = args_names
-                            .first()
-                            .expect("dec_ref/release requires one source arg");
+                    let args_names =
+                        op.args.as_ref().expect("dec_ref/release args missing");
+                    let src_name = args_names
+                        .first()
+                        .expect("dec_ref/release requires one source arg");
+                    // Skip dec_ref for stack-allocated tuples — their memory
+                    // is freed automatically when the stack frame unwinds.
+                    let is_stack_tuple = stack_tuples.contains_key(src_name.as_str());
+                    if is_stack_tuple || rc_skip_inc.contains(&op_idx) {
+                        // No runtime call needed.  Still define the output
+                        // variable so downstream SSA reads succeed.
+                        if let Some(out_name) = op.out.as_ref()
+                            && out_name != "none"
+                        {
+                            let none_bits = builder.ins().iconst(types::I64, box_none());
+                            def_var_named(&mut builder, &vars, out_name.clone(), none_bits);
+                        }
+                    } else {
                         let src = *var_get(&mut builder, &vars, src_name)
                             .expect("dec_ref/release source not found");
                         builder.ins().call(local_dec_ref_obj, &[src]);
@@ -8959,13 +9050,6 @@ impl SimpleBackend {
                             let none_bits = builder.ins().iconst(types::I64, box_none());
                             def_var_named(&mut builder, &vars, out_name.clone(), none_bits);
                         }
-                    } else if let Some(out_name) = op.out.as_ref()
-                        && out_name != "none"
-                    {
-                        // RC coalesced: still define the output as none so the
-                        // SSA variable is available for later reads.
-                        let none_bits = builder.ins().iconst(types::I64, box_none());
-                        def_var_named(&mut builder, &vars, out_name.clone(), none_bits);
                     }
                 }
                 "box" | "unbox" | "cast" | "widen" => {
