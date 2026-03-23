@@ -62,6 +62,7 @@ pub mod egraph_simplify;
 #[cfg(feature = "native-backend")]
 mod native_backend_consts {
     pub(super) const QNAN: u64 = 0x7ff8_0000_0000_0000;
+    pub(super) const CANONICAL_NAN_BITS: u64 = 0x7ff0_0000_0000_0001;
     pub(super) const TAG_INT: u64 = 0x0001_0000_0000_0000;
     pub(super) const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
     pub(super) const TAG_NONE: u64 = 0x0003_0000_0000_0000;
@@ -333,7 +334,13 @@ fn box_int(val: i64) -> i64 {
 
 #[cfg(feature = "native-backend")]
 fn box_float(val: f64) -> i64 {
-    val.to_bits() as i64
+    if val.is_nan() {
+        // Canonicalize NaN to avoid collision with the QNAN tag prefix.
+        // Must match CANONICAL_NAN_BITS in molt-obj-model.
+        0x7ff0_0000_0000_0001_u64 as i64
+    } else {
+        val.to_bits() as i64
+    }
 }
 
 #[cfg(feature = "native-backend")]
@@ -485,7 +492,12 @@ fn box_int_value(builder: &mut FunctionBuilder, val: Value) -> Value {
 
 #[cfg(feature = "native-backend")]
 fn box_float_value(builder: &mut FunctionBuilder, val: Value) -> Value {
-    builder.ins().bitcast(types::I64, MemFlags::new(), val)
+    // Canonicalize NaN: if the f64 value is NaN, replace with CANONICAL_NAN_BITS
+    // to avoid collision with the QNAN tag prefix used by NaN-boxing.
+    let raw_bits = builder.ins().bitcast(types::I64, MemFlags::new(), val);
+    let is_nan = builder.ins().fcmp(FloatCC::Unordered, val, val);
+    let canonical = builder.ins().iconst(types::I64, CANONICAL_NAN_BITS as i64);
+    builder.ins().select(is_nan, canonical, raw_bits)
 }
 
 #[cfg(feature = "native-backend")]
