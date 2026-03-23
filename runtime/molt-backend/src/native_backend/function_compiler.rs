@@ -3648,6 +3648,21 @@ impl SimpleBackend {
                             data_ptr,
                             HEADER_FLAGS_OFFSET,
                         );
+                        // poll_fn (u64 at -32) — zero (not a coroutine)
+                        let zero_i64 = builder.ins().iconst(types::I64, 0);
+                        builder.ins().store(
+                            MemFlags::trusted(),
+                            zero_i64,
+                            data_ptr,
+                            -32,
+                        );
+                        // state (i64 at -24) — zero
+                        builder.ins().store(
+                            MemFlags::trusted(),
+                            zero_i64,
+                            data_ptr,
+                            -24,
+                        );
                         // size (u64 at -16) — total allocation size
                         let size_val = builder.ins().iconst(types::I64, slot_bytes as i64);
                         builder.ins().store(
