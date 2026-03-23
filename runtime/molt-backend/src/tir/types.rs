@@ -71,6 +71,24 @@ impl TirType {
             return TirType::List(Box::new(a.meet(b)));
         }
 
+        // Dict(K1,V1) meet Dict(K2,V2) = Dict(meet(K1,K2), meet(V1,V2))
+        if let (TirType::Dict(k1, v1), TirType::Dict(k2, v2)) = (self, other) {
+            return TirType::Dict(Box::new(k1.meet(k2)), Box::new(v1.meet(v2)));
+        }
+
+        // Set(T) meet Set(U) = Set(meet(T, U))
+        if let (TirType::Set(a), TirType::Set(b)) = (self, other) {
+            return TirType::Set(Box::new(a.meet(b)));
+        }
+
+        // Tuple meet: same arity → element-wise meet; different arity → Union/DynBox
+        if let (TirType::Tuple(a), TirType::Tuple(b)) = (self, other) {
+            if a.len() == b.len() {
+                let merged: Vec<TirType> = a.iter().zip(b.iter()).map(|(x, y)| x.meet(y)).collect();
+                return TirType::Tuple(merged);
+            }
+        }
+
         // Flatten unions when building the join.
         // Max possible size: 3 (self union) + 3 (other union) = 6, so this is bounded.
         let mut members = Vec::with_capacity(6);
