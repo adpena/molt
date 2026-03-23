@@ -217,7 +217,7 @@ impl LuauBackend {
             ),
             (
                 "molt_len",
-                "local function molt_len(obj: any): number\n\tif type(obj) == \"string\" then return #obj end\n\tif type(obj) == \"table\" then return #obj end\n\terror(\"TypeError: object of type '\" .. type(obj) .. \"' has no len()\")\nend\n",
+                "local function molt_len(obj: any): number\n\tif type(obj) == \"string\" then return #obj end\n\tif type(obj) == \"table\" then\n\t\tlocal n = #obj\n\t\tif n > 0 or next(obj) == nil then return n end\n\t\tlocal c = 0; for _ in pairs(obj) do c += 1 end; return c\n\tend\n\terror(\"TypeError: object of type '\" .. type(obj) .. \"' has no len()\")\nend\n",
             ),
             (
                 "molt_int",
@@ -1342,11 +1342,16 @@ impl LuauBackend {
                 } else {
                     "false".to_string()
                 };
+                let not_cond = if cond.starts_with("molt_bool(") {
+                    format!("not ({cond})")
+                } else {
+                    format!("not {cond}")
+                };
                 if let Some(id) = op.value {
-                    self.emit_line(&format!("if not ({cond}) then goto label_{id} end"));
+                    self.emit_line(&format!("if {not_cond} then goto label_{id} end"));
                 } else if let Some(ref target) = op.s_value {
                     let target = sanitize_label(target);
-                    self.emit_line(&format!("if not ({cond}) then goto {target} end"));
+                    self.emit_line(&format!("if {not_cond} then goto {target} end"));
                 } else {
                     self.emit_line(&format!(
                         "error(\"[unsupported op: branch_false {cond} missing target label]\")"
@@ -1419,7 +1424,14 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(cond_raw) = args.first() {
                     let cond = self.guard_truthiness(cond_raw, op);
-                    self.emit_line(&format!("if not ({cond}) then break end"));
+                    // Use parens only when cond is a molt_bool() call (compound expr).
+                    // Plain idents don't need parens and must not have them
+                    // (optimization passes pattern-match `if not vN then`).
+                    if cond.starts_with("molt_bool(") {
+                        self.emit_line(&format!("if not ({cond}) then break end"));
+                    } else {
+                        self.emit_line(&format!("if not {cond} then break end"));
+                    }
                 }
             }
             "loop_continue" => {
@@ -1642,8 +1654,11 @@ impl LuauBackend {
                             "remove" => {
                                 if let Some(val) = args.get(1) {
                                     let val = sanitize_ident(val);
+                                    // Guard: table.find returns nil when not found,
+                                    // and table.remove(t, nil) silently removes the
+                                    // LAST element. Must check and raise ValueError.
                                     self.emit_line(&format!(
-                                        "table.remove({obj}, table.find({obj}, {val}))"
+                                        "do local __idx = table.find({obj}, {val}); if __idx then table.remove({obj}, __idx) else error(\"ValueError: list.remove(x): x not in list\") end end"
                                     ));
                                 }
                             }
@@ -2194,8 +2209,9 @@ impl LuauBackend {
                     if container_is_str {
                         // Luau does not support string[index]; use string.sub.
                         // Python uses 0-based indexing, Luau uses 1-based.
+                        // Handle negative indexing for strings too.
                         self.emit_line(&format!(
-                            "local {out} = string.sub({container}, {key} + 1, {key} + 1)"
+                            "local {out} = if {key} >= 0 then string.sub({container}, {key} + 1, {key} + 1) else string.sub({container}, #{container} + {key} + 1, #{container} + {key} + 1)"
                         ));
                         // Propagate str type to output.
                         if let Some(ref out_name) = op.out {
@@ -2220,10 +2236,13 @@ impl LuauBackend {
                             }
                         }
                         if key_is_int {
-                            self.emit_line(&format!("local {out} = {container}[{key} + 1]"));
+                            // Handle negative indexing: Python a[-1] = last element.
+                            self.emit_line(&format!(
+                                "local {out} = {container}[if {key} >= 0 then {key} + 1 else #{container} + {key} + 1]"
+                            ));
                         } else {
                             self.emit_line(&format!(
-                                "local {out} = {container}[if type({key}) == \"number\" then {key} + 1 else {key}]"
+                                "local {out} = {container}[if type({key}) == \"number\" then (if {key} >= 0 then {key} + 1 else #{container} + {key} + 1) else {key}]"
                             ));
                         }
                     }
@@ -2239,10 +2258,12 @@ impl LuauBackend {
                         || op.raw_int == Some(true)
                         || matches!(op.type_hint.as_deref(), Some("int"));
                     if key_is_int {
-                        self.emit_line(&format!("{container}[{key} + 1] = {value}"));
+                        self.emit_line(&format!(
+                            "{container}[if {key} >= 0 then {key} + 1 else #{container} + {key} + 1] = {value}"
+                        ));
                     } else {
                         self.emit_line(&format!(
-                            "{container}[if type({key}) == \"number\" then {key} + 1 else {key}] = {value}"
+                            "{container}[if type({key}) == \"number\" then (if {key} >= 0 then {key} + 1 else #{container} + {key} + 1) else {key}] = {value}"
                         ));
                     }
                 }
@@ -2260,10 +2281,12 @@ impl LuauBackend {
                         || op.raw_int == Some(true)
                         || matches!(op.type_hint.as_deref(), Some("int"));
                     if key_is_int {
-                        self.emit_line(&format!("table.remove({container}, {key} + 1)"));
+                        self.emit_line(&format!(
+                            "table.remove({container}, if {key} >= 0 then {key} + 1 else #{container} + {key} + 1)"
+                        ));
                     } else {
                         self.emit_line(&format!(
-                            "if type({key}) == \"number\" then table.remove({container}, {key} + 1) else {container}[{key}] = nil end"
+                            "if type({key}) == \"number\" then table.remove({container}, if {key} >= 0 then {key} + 1 else #{container} + {key} + 1) else {container}[{key}] = nil end"
                         ));
                     }
                 }
