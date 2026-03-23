@@ -3579,7 +3579,14 @@ impl WasmBackend {
                 }
             }
         }
-        let builtin_table_len = builtin_table_funcs.len() + auto_builtin_table_funcs.len();
+        // Table compaction: only count referenced builtins for the table size.
+        // Unreferenced builtins are omitted entirely (not sentinel-filled).
+        let builtin_table_len: usize = builtin_table_funcs
+            .iter()
+            .map(|(rn, _, _)| (*rn).to_string())
+            .chain(auto_builtin_table_funcs.iter().map(|(rn, _, _)| rn.clone()))
+            .filter(|rn| builtin_trampoline_specs.contains_key(rn.as_str()))
+            .count();
         let table_base: u32 = self.options.table_base;
         let poll_table_prefix = 33u32;
         let table_len = (poll_table_prefix as usize
@@ -3871,7 +3878,10 @@ impl WasmBackend {
             32,
         );
 
-        for (offset, (runtime_name, import_name, _)) in builtin_table_funcs
+        // Table compaction: only allocate slots for referenced builtins.
+        // Unreferenced builtins are completely omitted from the element table.
+        let mut compact_slot = 0u32;
+        for (runtime_name, import_name, _) in builtin_table_funcs
             .iter()
             .map(|(runtime_name, import_name, arity)| {
                 (
@@ -3881,34 +3891,32 @@ impl WasmBackend {
                 )
             })
             .chain(auto_builtin_table_funcs.iter().cloned())
-            .enumerate()
         {
-            let idx = (offset as u32) + poll_table_prefix;
             let runtime_key = runtime_name;
-            func_to_table_idx.insert(runtime_key.clone(), idx);
-
-            // Tree shaking: only populate table slots for builtins that are
-            // actually referenced by user code.  Unreferenced builtins get
-            // sentinel, allowing wasm-opt DCE to eliminate their wrappers.
             let is_referenced = builtin_trampoline_specs.contains_key(runtime_key.as_str());
-            if is_referenced {
-                if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key) {
-                    func_to_index.insert(runtime_key, *wrapper_idx);
-                    table_indices.push(*wrapper_idx);
-                } else {
-                    let import_idx = self
-                        .import_ids
-                        .get(&import_name)
-                        .copied()
-                        .unwrap_or(sentinel_func_idx);
-                    func_to_index.insert(runtime_key, import_idx);
-                    table_indices.push(import_idx);
-                }
-            } else {
-                func_to_index.insert(runtime_key, sentinel_func_idx);
-                table_indices.push(sentinel_func_idx);
+            if !is_referenced {
+                continue; // Omit — no slot allocated.
             }
+            let idx = compact_slot + poll_table_prefix;
+            func_to_table_idx.insert(runtime_key.clone(), idx);
+            if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key) {
+                func_to_index.insert(runtime_key, *wrapper_idx);
+                table_indices.push(*wrapper_idx);
+            } else {
+                let import_idx = self
+                    .import_ids
+                    .get(&import_name)
+                    .copied()
+                    .unwrap_or(sentinel_func_idx);
+                func_to_index.insert(runtime_key, import_idx);
+                table_indices.push(import_idx);
+            }
+            compact_slot += 1;
         }
+        debug_assert_eq!(
+            compact_slot as usize, builtin_table_len,
+            "compact slot count must match pre-computed builtin_table_len"
+        );
 
         let user_func_start = self.func_count;
         let user_func_count = ir.functions.len() as u32;
