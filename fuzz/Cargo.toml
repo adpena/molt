@@ -1,0 +1,48 @@
+[package]
+name = "molt-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+molt-backend = { path = "../runtime/molt-backend", default-features = false, features = ["wasm-backend"] }
+molt-obj-model = { package = "molt-lang-obj-model", path = "../runtime/molt-obj-model" }
+
+# Prevent this from being discovered as a normal workspace member;
+# cargo-fuzz manages the build independently.
+[workspace]
+
+[[bin]]
+name = "fuzz_ir_parse"
+path = "fuzz_targets/fuzz_ir_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_wasm_compile"
+path = "fuzz_targets/fuzz_wasm_compile.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_nan_boxing"
+path = "fuzz_targets/fuzz_nan_boxing.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_ir_passes"
+path = "fuzz_targets/fuzz_ir_passes.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_ir_validate"
+path = "fuzz_targets/fuzz_ir_validate.rs"
+test = false
+doc = false
