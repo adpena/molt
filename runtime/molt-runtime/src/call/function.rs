@@ -5,7 +5,6 @@ use crate::{
     ensure_function_code_bits, frame_stack_pop, frame_stack_push, function_arity,
     function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
     function_trampoline_ptr, header_from_obj_ptr, intern_static_name, is_truthy,
-    molt_call_bind, molt_callargs_new, molt_callargs_push_pos,
     obj_from_bits, object_type_id, profile_hit, raise_exception, recursion_guard_enter,
     recursion_guard_exit, runtime_state, seq_vec_ref,
 };
@@ -1645,15 +1644,10 @@ unsafe fn call_function_obj_trampoline(_py: &PyToken<'_>, func_bits: u64, args: 
                 }
             }
             // Could not resolve the mismatch via __defaults__.
-            // Fall back to the full argument-binding path (molt_call_bind)
-            // which handles varargs, kwonly, **kwargs, and complex defaults.
-            let pos_cap = MoltObject::from_int(n as i64).bits();
-            let kw_cap = MoltObject::from_int(0).bits();
-            let callargs_bits = molt_callargs_new(pos_cap, kw_cap);
-            for &arg in args {
-                molt_callargs_push_pos(callargs_bits, arg);
-            }
-            return molt_call_bind(func_bits, callargs_bits);
+            // Return a clear arity mismatch error. The __defaults__ fast path
+            // handles the common case; varargs/kwargs dispatch is handled by
+            // the CallArgs path which is entered from a different call site.
+            return raise_call_arity_mismatch(_py, func_ptr, a as u64, n as u64);
         }
         let tramp_ptr = function_trampoline_ptr(func_ptr);
         if tramp_ptr == 0 {
