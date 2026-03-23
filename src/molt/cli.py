@@ -13751,20 +13751,48 @@ def _execute_backend_compile(
             elif target_triple:
                 cmd.extend(["--target-triple", target_triple])
             cmd_with_output = cmd + ["--output", str(backend_output)]
+            ir_bytes = _ensure_backend_ir_bytes()
+            ir_file_path: str | None = None
             try:
-                backend_process = subprocess.run(
-                    cmd_with_output,
-                    input=_ensure_backend_ir_bytes(),
-                    capture_output=True,
-                    env=backend_env,
-                    timeout=backend_timeout,
-                )
+                # For large IRs (>50MB), write to a temp file to avoid
+                # stdin pipe buffer issues with non-finite float encoding.
+                if len(ir_bytes) > 50 * 1024 * 1024:
+                    import tempfile as _tempfile
+
+                    ir_fd, ir_file_path = _tempfile.mkstemp(
+                        suffix=".json", prefix="molt_ir_"
+                    )
+                    try:
+                        os.write(ir_fd, ir_bytes)
+                    finally:
+                        os.close(ir_fd)
+                    cmd_with_output.extend(["--ir-file", ir_file_path])
+                    backend_process = subprocess.run(
+                        cmd_with_output,
+                        capture_output=True,
+                        env=backend_env,
+                        timeout=backend_timeout,
+                    )
+                else:
+                    backend_process = subprocess.run(
+                        cmd_with_output,
+                        input=ir_bytes,
+                        capture_output=True,
+                        env=backend_env,
+                        timeout=backend_timeout,
+                    )
             except subprocess.TimeoutExpired:
                 return None, _fail(
                     "Backend compilation timed out",
                     json_output,
                     command="build",
                 )
+            finally:
+                if ir_file_path is not None:
+                    try:
+                        os.unlink(ir_file_path)
+                    except OSError:
+                        pass
             if backend_process.returncode != 0:
                 backend_stderr = _subprocess_output_text(backend_process.stderr)
                 backend_stdout = _subprocess_output_text(backend_process.stdout)

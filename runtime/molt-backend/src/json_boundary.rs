@@ -67,10 +67,21 @@ pub(crate) fn optional_i64(obj: &JsonObject, key: &str, ctx: &str) -> Result<Opt
 pub(crate) fn optional_f64(obj: &JsonObject, key: &str, ctx: &str) -> Result<Option<f64>, String> {
     match obj.get(key) {
         None | Some(JsonValue::Null) => Ok(None),
-        Some(value) => value
-            .as_f64()
-            .map(Some)
-            .ok_or_else(|| format!("{ctx}.{key} must be a number")),
+        Some(value) => {
+            if let Some(n) = value.as_f64() {
+                return Ok(Some(n));
+            }
+            // Accept string representations of non-finite floats
+            if let Some(s) = value.as_str() {
+                return match s {
+                    "Infinity" => Ok(Some(f64::INFINITY)),
+                    "-Infinity" => Ok(Some(f64::NEG_INFINITY)),
+                    "NaN" => Ok(Some(f64::NAN)),
+                    _ => Err(format!("{ctx}.{key} must be a number or special float string")),
+                };
+            }
+            Err(format!("{ctx}.{key} must be a number"))
+        }
     }
 }
 
