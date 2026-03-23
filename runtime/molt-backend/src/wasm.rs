@@ -3886,19 +3886,27 @@ impl WasmBackend {
             let idx = (offset as u32) + poll_table_prefix;
             let runtime_key = runtime_name;
             func_to_table_idx.insert(runtime_key.clone(), idx);
-            if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key) {
-                func_to_index.insert(runtime_key, *wrapper_idx);
-                table_indices.push(*wrapper_idx);
+
+            // Tree shaking: only populate table slots for builtins that are
+            // actually referenced by user code.  Unreferenced builtins get
+            // sentinel, allowing wasm-opt DCE to eliminate their wrappers.
+            let is_referenced = builtin_trampoline_specs.contains_key(runtime_key.as_str());
+            if is_referenced {
+                if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key) {
+                    func_to_index.insert(runtime_key, *wrapper_idx);
+                    table_indices.push(*wrapper_idx);
+                } else {
+                    let import_idx = self
+                        .import_ids
+                        .get(&import_name)
+                        .copied()
+                        .unwrap_or(sentinel_func_idx);
+                    func_to_index.insert(runtime_key, import_idx);
+                    table_indices.push(import_idx);
+                }
             } else {
-                let import_idx = self
-                    .import_ids
-                    .get(&import_name)
-                    .copied()
-                    // Avoid panicking on malformed/partial import tables; route missing entries
-                    // to the sentinel so lowering remains total and callers can surface errors.
-                    .unwrap_or(sentinel_func_idx);
-                func_to_index.insert(runtime_key, import_idx);
-                table_indices.push(import_idx);
+                func_to_index.insert(runtime_key, sentinel_func_idx);
+                table_indices.push(sentinel_func_idx);
             }
         }
 
