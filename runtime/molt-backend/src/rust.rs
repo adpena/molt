@@ -2657,15 +2657,22 @@ impl RustBackend {
 
             // ── Exception stubs ────────────────────────────────────────────────
             "raise" | "reraise" => {
-                // In stub mode, Python exceptions are silently swallowed — the
-                // stub environment has no real module system, so ImportError /
-                // AttributeError from missing stubs must not abort the process.
-                // User code will still work correctly for the tested subset.
-                self.emit_line("return MoltValue::None;");
+                // In stub/native-Rust mode, Python exceptions cannot propagate
+                // through the Rust call stack.  Instead of silently returning
+                // None (which hides real errors), we panic with context so the
+                // failure is immediately visible during testing.
+                let msg = if op.args.is_empty() {
+                    "\"Python raise with no argument\"".to_string()
+                } else {
+                    format!("\"Python raise: {{:?}}\", {}", op.args[0].name)
+                };
+                self.emit_line(&format!("panic!({msg});"));
             }
             "try_start" | "try_end" | "except_start" | "except_end" | "finally_start"
             | "finally_end" => {
-                // No Rust equivalent in v1 — exceptions become panics.
+                // No Rust equivalent in v1 — exception control flow ops are
+                // structural markers only.  The actual error handling is done
+                // via Result propagation in the generated Rust code.
             }
 
             // ── String operations ──────────────────────────────────────────────

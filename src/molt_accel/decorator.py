@@ -27,7 +27,7 @@ def _default_response_factory(payload: Any, status: int) -> Any:
         from django.http import JsonResponse
 
         return JsonResponse(payload, status=status, safe=isinstance(payload, dict))
-    except Exception:
+    except ImportError:
         return {"status": status, "payload": payload}
 
 
@@ -58,7 +58,7 @@ def raw_json_response_factory(payload: Any, status: int) -> Any:
                 content_type="application/json",
             )
         return JsonResponse(payload, status=status, safe=isinstance(payload, dict))
-    except Exception:
+    except ImportError:
         return {"status": status, "payload": payload}
 
 
