@@ -382,6 +382,9 @@ pub(crate) const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED: u32 = 1 << 14;
 pub(crate) const HEADER_FLAG_IMMORTAL: u32 = 1 << 15;
 // Ensure __del__ runs at most once even if the object resurrects itself.
 pub(crate) const HEADER_FLAG_FINALIZER_RAN: u32 = 1 << 16;
+// String content is an ASCII identifier stored in the global intern pool.
+// Objects with this flag are also immortal (never freed).
+pub(crate) const HEADER_FLAG_INTERNED: u32 = 1 << 17;
 
 // ---------------------------------------------------------------------------
 // Cold header pool — stores rarely-used per-object metadata (poll_fn, state,
