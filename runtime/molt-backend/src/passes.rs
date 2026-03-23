@@ -1674,13 +1674,6 @@ pub(crate) fn hoist_loop_invariants(func_ir: &mut FunctionIR) {
 /// call sites, it becomes unreachable and will be eliminated here.
 /// Applies to both native and WASM backends.
 pub(crate) fn eliminate_dead_functions(ir: &mut SimpleIR) {
-    // Disabled: pass incorrectly removes runtime-required symbols (molt_main,
-    // molt_isolate_import, etc.) that are referenced at link time but not in
-    // Python-level IR.  Needs a "keep list" before re-enabling.
-    let _ = ir;
-    return;
-
-    #[allow(unreachable_code)]
     if std::env::var("MOLT_DISABLE_DEAD_FUNC_ELIM").is_ok() {
         return;
     }
@@ -1706,8 +1699,6 @@ pub(crate) fn eliminate_dead_functions(ir: &mut SimpleIR) {
                     }
                 }
                 "call_indirect" => {
-                    // call_indirect can invoke any function through a table,
-                    // but the target name (if known) is in s_value.
                     if let Some(name) = op.s_value.as_ref() {
                         if defined.contains(name.as_str()) {
                             refs.insert(name.clone());
@@ -1729,19 +1720,36 @@ pub(crate) fn eliminate_dead_functions(ir: &mut SimpleIR) {
         references.insert(func.name.clone(), refs);
     }
 
-    // BFS from the entry function (index 0) to find all reachable functions.
-    // Also seed with molt_main which is the WASM entry point used by the
-    // table-init wrapper (not referenced in IR but required at link time).
-    let entry = ir.functions[0].name.clone();
+    // BFS from entry roots to find all reachable functions.
+    // Roots: (1) the first function (entry), (2) well-known linker/runtime
+    // entry points, (3) any function whose name matches a keep-pattern.
     let mut reachable: BTreeSet<String> = BTreeSet::new();
     let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
-    reachable.insert(entry.clone());
-    queue.push_back(entry);
-    for func in ir.functions.iter() {
-        if func.name == "molt_main" || func.name == "_start" {
-            if reachable.insert(func.name.clone()) {
-                queue.push_back(func.name.clone());
-            }
+
+    let mut seed = |name: String, r: &mut BTreeSet<String>, q: &mut std::collections::VecDeque<String>| {
+        if r.insert(name.clone()) {
+            q.push_back(name);
+        }
+    };
+
+    // (1) First function is always the module entry.
+    seed(ir.functions[0].name.clone(), &mut reachable, &mut queue);
+
+    // (2) + (3) Scan all functions for keep-patterns.
+    for func in &ir.functions {
+        let name = &func.name;
+        let keep = name == "molt_main"
+            || name == "_start"
+            // Module init functions are called by the runtime importer, not IR.
+            || name.starts_with("molt_init_")
+            // Isolate import hooks are referenced at link time.
+            || name.starts_with("molt_isolate_")
+            // Poll functions for async generators / coroutines.
+            || name.ends_with("_poll")
+            // __annotate__ functions for typing support.
+            || name.contains("__annotate__");
+        if keep {
+            seed(name.clone(), &mut reachable, &mut queue);
         }
     }
 
