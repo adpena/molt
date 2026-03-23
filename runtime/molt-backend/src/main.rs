@@ -900,20 +900,26 @@ fn main() -> io::Result<()> {
         .and_then(|idx| args.get(idx + 1))
         .map(String::as_str);
 
-    let mut buffer = String::new();
-    if let Some(ir_path) = ir_file_path {
-        std::fs::File::open(ir_path)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?
-            .read_to_string(&mut buffer)?;
-    } else {
-        io::stdin().read_to_string(&mut buffer)?;
-    }
-
-    let mut ir: SimpleIR = match SimpleIR::from_json_str(&buffer) {
-        Ok(ir) => ir,
-        Err(err) => {
-            eprintln!("{err}");
-            std::process::exit(1);
+    // Read and parse IR.  Drop the raw JSON string immediately after
+    // deserialization to avoid holding two copies (~50MB JSON + ~200MB
+    // struct) in memory simultaneously.
+    let mut ir: SimpleIR = {
+        let mut buffer = String::new();
+        if let Some(ir_path) = ir_file_path {
+            std::fs::File::open(ir_path)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?
+                .read_to_string(&mut buffer)?;
+        } else {
+            io::stdin().read_to_string(&mut buffer)?;
+        }
+        let result = SimpleIR::from_json_str(&buffer);
+        drop(buffer); // free JSON string before handling result
+        match result {
+            Ok(ir) => ir,
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
         }
     };
 
