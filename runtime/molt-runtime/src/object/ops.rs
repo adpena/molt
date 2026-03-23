@@ -1220,6 +1220,14 @@ pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
 pub extern "C" fn molt_inplace_sub(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        // Int/float fast paths — avoid dunder dispatch overhead for numeric types.
+        if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            return int_bits_from_i128(_py, li as i128 - ri as i128);
+        }
+        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
+            return MoltObject::from_float(lf - rf).bits();
+        }
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_SET {
@@ -1487,6 +1495,14 @@ unsafe fn bytearray_concat_in_place(_py: &PyToken<'_>, ptr: *mut u8, other_bits:
 pub extern "C" fn molt_inplace_mul(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        // Int/float fast paths — avoid dunder dispatch overhead for numeric types.
+        if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            return int_bits_from_i128(_py, li as i128 * ri as i128);
+        }
+        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
+            return MoltObject::from_float(lf * rf).bits();
+        }
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
                 let ltype = object_type_id(ptr);
