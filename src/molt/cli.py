@@ -12156,6 +12156,10 @@ def _build_native_link_command(
             link_cmd.append("-Wl,--gc-sections")
             link_cmd.append("-lstdc++")
             link_cmd.append("-lm")
+        elif "windows" in target_triple or "msvc" in target_triple:
+            # MSVC linker: /OPT:REF eliminates unreferenced functions/data,
+            # /OPT:ICF folds identical COMDATs — equivalent to --gc-sections.
+            link_cmd.extend(["-Wl,/OPT:REF", "-Wl,/OPT:ICF"])
     else:
         if sys.platform == "darwin":
             link_cmd.append("-Wl,-dead_strip")
@@ -12165,6 +12169,8 @@ def _build_native_link_command(
             link_cmd.append("-Wl,--gc-sections")
             link_cmd.append("-lstdc++")
             link_cmd.append("-lm")
+        elif sys.platform == "win32":
+            link_cmd.extend(["-Wl,/OPT:REF", "-Wl,/OPT:ICF"])
     return link_cmd, linker_hint, normalized_target
 
 
