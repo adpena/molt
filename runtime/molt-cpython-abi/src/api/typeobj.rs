@@ -120,7 +120,78 @@ pub unsafe extern "C" fn PyCallable_Check(op: *mut PyObject) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Hash(op: *mut PyObject) -> isize {
+    if op.is_null() {
+        return -1;
+    }
+    // Try tp_hash first.
+    let tp = unsafe { (*op).ob_type };
+    if !tp.is_null() {
+        if let Some(hash_fn) = unsafe { (*tp).tp_hash } {
+            return unsafe { hash_fn(op) };
+        }
+    }
     op as isize // pointer-based hash as last resort
+}
+
+// ─── PyType subtype / flags / name ────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_IsSubtype(
+    a: *mut PyTypeObject,
+    b: *mut PyTypeObject,
+) -> c_int {
+    if a.is_null() || b.is_null() {
+        return 0;
+    }
+    if std::ptr::eq(a, b) {
+        return 1;
+    }
+    // Walk tp_base chain.
+    let mut cursor = a;
+    while !cursor.is_null() {
+        if std::ptr::eq(cursor, b) {
+            return 1;
+        }
+        cursor = unsafe { (*cursor).tp_base };
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_GetFlags(tp: *mut PyTypeObject) -> std::os::raw::c_ulong {
+    if tp.is_null() {
+        return 0;
+    }
+    unsafe { (*tp).tp_flags }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_GetName(tp: *mut PyTypeObject) -> *mut PyObject {
+    if tp.is_null() {
+        return ptr::null_mut();
+    }
+    let name_ptr = unsafe { (*tp).tp_name };
+    if name_ptr.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe { crate::api::strings::PyUnicode_FromString(name_ptr) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_GetQualName(tp: *mut PyTypeObject) -> *mut PyObject {
+    // For our purposes, qualname == name.
+    unsafe { PyType_GetName(tp) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_HasFeature(
+    tp: *mut PyTypeObject,
+    feature: std::os::raw::c_ulong,
+) -> c_int {
+    if tp.is_null() {
+        return 0;
+    }
+    (unsafe { (*tp).tp_flags } & feature != 0) as c_int
 }
 
 #[unsafe(no_mangle)]

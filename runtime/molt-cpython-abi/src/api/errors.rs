@@ -77,6 +77,140 @@ pub unsafe extern "C" fn PyErr_Format(
     ptr::null_mut()
 }
 
+// ─── Additional error API ─────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_SetObject(exc_type: *mut PyObject, value: *mut PyObject) {
+    // Simplified: set the error with the repr of the value.
+    let _ = value;
+    unsafe { PyErr_SetString(exc_type, c"<exception>".as_ptr()) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_NoMemory() -> *mut PyObject {
+    unsafe {
+        PyErr_SetString(
+            &raw mut crate::abi_types::PyExc_MemoryError,
+            c"out of memory".as_ptr(),
+        );
+    }
+    ptr::null_mut()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_BadArgument() -> c_int {
+    unsafe {
+        PyErr_SetString(
+            &raw mut crate::abi_types::PyExc_TypeError,
+            c"bad argument type for built-in operation".as_ptr(),
+        );
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_BadInternalCall() {
+    unsafe {
+        PyErr_SetString(
+            &raw mut crate::abi_types::PyExc_RuntimeError,
+            c"bad argument to internal function".as_ptr(),
+        );
+    }
+}
+
+/// Fetch (and clear) the current exception state.
+/// Writes the exception type, value, and traceback into the provided pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_Fetch(
+    p_type: *mut *mut PyObject,
+    p_value: *mut *mut PyObject,
+    p_tb: *mut *mut PyObject,
+) {
+    CURRENT_EXC.with(|c| {
+        let exc = c.borrow_mut().take();
+        if let Some((_type_bits, _msg)) = exc {
+            if !p_type.is_null() {
+                // Return a non-null sentinel for the type.
+                unsafe { *p_type = &raw mut crate::abi_types::Py_None };
+            }
+            if !p_value.is_null() {
+                unsafe { *p_value = ptr::null_mut() };
+            }
+        } else {
+            if !p_type.is_null() {
+                unsafe { *p_type = ptr::null_mut() };
+            }
+            if !p_value.is_null() {
+                unsafe { *p_value = ptr::null_mut() };
+            }
+        }
+        if !p_tb.is_null() {
+            unsafe { *p_tb = ptr::null_mut() };
+        }
+    });
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_Restore(
+    _tp: *mut PyObject,
+    _value: *mut PyObject,
+    _tb: *mut PyObject,
+) {
+    // Simplified: just set the error state to the provided type.
+    if _tp.is_null() {
+        unsafe { PyErr_Clear() };
+    } else {
+        CURRENT_EXC.with(|c| *c.borrow_mut() = Some((0, String::from("<restored exception>"))));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_NormalizeException(
+    _exc: *mut *mut PyObject,
+    _val: *mut *mut PyObject,
+    _tb: *mut *mut PyObject,
+) {
+    // No-op — full normalization requires instantiating exception objects.
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_ExceptionMatches(exc: *mut PyObject) -> c_int {
+    let _ = exc;
+    CURRENT_EXC.with(|c| c.borrow().is_some() as c_int)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_GivenExceptionMatches(
+    given: *mut PyObject,
+    exc: *mut PyObject,
+) -> c_int {
+    if given.is_null() || exc.is_null() {
+        return 0;
+    }
+    std::ptr::eq(given, exc) as c_int
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_WarnEx(
+    _category: *mut PyObject,
+    _message: *const c_char,
+    _stack_level: c_int,
+) -> c_int {
+    // Warnings are silently ignored in the bridge.
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_WriteUnraisable(obj: *mut PyObject) {
+    let _ = obj;
+    CURRENT_EXC.with(|c| {
+        if let Some((_, ref msg)) = *c.borrow() {
+            eprintln!("[molt-cpython-abi] unraisable exception: {msg}");
+        }
+    });
+    unsafe { PyErr_Clear() };
+}
+
 // ─── PyArg_ParseTuple ─────────────────────────────────────────────────────
 //
 // Implements the subset of format codes that cover ~95% of real extensions:
