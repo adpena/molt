@@ -46,8 +46,8 @@ use crate::native_backend::TrampolineKey;
 pub(crate) use crate::passes::{
     apply_profile_order, build_const_int_map, elide_dead_struct_allocs,
     eliminate_dead_functions, escape_analysis,
-    fold_constants, fold_constants_cross_block, inline_functions,
-    propagate_loop_fast_int, rc_coalescing,
+    fold_constants, fold_constants_cross_block, hoist_loop_invariants,
+    inline_functions, propagate_loop_fast_int, rc_coalescing,
 };
 
 #[cfg(feature = "luau-backend")]
@@ -1595,6 +1595,9 @@ impl SimpleBackend {
         for func_ir in &mut ir.functions {
             fold_constants(&mut func_ir.ops);
             fold_constants_cross_block(&mut func_ir.ops);
+        }
+        for func_ir in &mut ir.functions {
+            hoist_loop_invariants(func_ir);
         }
         for func_ir in &mut ir.functions {
             propagate_loop_fast_int(func_ir);
