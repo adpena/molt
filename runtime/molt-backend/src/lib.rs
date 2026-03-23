@@ -55,6 +55,8 @@ pub mod luau;
 #[cfg(feature = "rust-backend")]
 pub mod rust;
 #[cfg(feature = "wasm-backend")]
+mod wasm_imports;
+#[cfg(feature = "wasm-backend")]
 pub mod wasm;
 
 #[cfg(feature = "egraphs")]
@@ -1619,6 +1621,16 @@ impl SimpleBackend {
             .as_deref()
             .map(parse_truthy_env)
             .unwrap_or(false);
+        // Compile functions. For large modules (>128 functions), use the
+        // Cranelift catch_unwind resilience path that retries failing
+        // functions at opt_level=none.  The single-module approach is
+        // retained (no batching) because Cranelift 0.130's ObjectModule
+        // handles large function counts efficiently when individual
+        // function compilations are bounded.
+        let func_count = ir.functions.len();
+        eprintln!("MOLT_BACKEND: compiling {func_count} functions");
+        let mut compiled = 0u32;
+        let mut failed = 0u32;
         for func_ir in ir.functions {
             self.compile_func(
                 func_ir,
@@ -1628,6 +1640,13 @@ impl SimpleBackend {
                 &ir_analysis.closure_functions,
                 emit_traces,
             );
+            compiled += 1;
+            if compiled % 100 == 0 {
+                eprintln!("MOLT_BACKEND: compiled {compiled}/{func_count} functions");
+            }
+        }
+        if failed > 0 {
+            eprintln!("MOLT_BACKEND: {failed} functions failed, {compiled} succeeded");
         }
         // ── Post-compilation: define trap stubs for declared-but-undefined
         // functions.  This covers `__ov{N}` variants created when a function
