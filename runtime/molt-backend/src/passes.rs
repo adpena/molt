@@ -1663,3 +1663,92 @@ pub(crate) fn hoist_loop_invariants(func_ir: &mut FunctionIR) {
     }
     func_ir.ops = new_ops;
 }
+
+/// Dead-function elimination: remove functions that are never referenced from
+/// any reachable function.  The entry function (first in the list, typically
+/// `<module>`) is always retained; any function reachable from it through
+/// `call_internal`, `func_new`, `func_new_closure`, `func_new_builtin`,
+/// or `code_new` references is kept.
+///
+/// This pass runs after inlining — if a callee was fully inlined into all
+/// call sites, it becomes unreachable and will be eliminated here.
+/// Applies to both native and WASM backends.
+pub(crate) fn eliminate_dead_functions(ir: &mut SimpleIR) {
+    if std::env::var("MOLT_DISABLE_DEAD_FUNC_ELIM").is_ok() {
+        return;
+    }
+    if ir.functions.is_empty() {
+        return;
+    }
+
+    // Build the call graph: function name -> set of referenced function names.
+    // Use owned Strings so that `ir.functions` is not borrowed when we call retain().
+    let defined: BTreeSet<String> = ir.functions.iter().map(|f| f.name.clone()).collect();
+    let mut references: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    for func in &ir.functions {
+        let mut refs: BTreeSet<String> = BTreeSet::new();
+        for op in &func.ops {
+            match op.kind.as_str() {
+                "call_internal" | "func_new" | "func_new_closure"
+                | "func_new_builtin" | "code_new" | "call_guarded" => {
+                    if let Some(name) = op.s_value.as_ref() {
+                        if defined.contains(name.as_str()) {
+                            refs.insert(name.clone());
+                        }
+                    }
+                }
+                "call_indirect" => {
+                    // call_indirect can invoke any function through a table,
+                    // but the target name (if known) is in s_value.
+                    if let Some(name) = op.s_value.as_ref() {
+                        if defined.contains(name.as_str()) {
+                            refs.insert(name.clone());
+                        }
+                    }
+                }
+                _ => {
+                    // Some ops embed function names in s_value for
+                    // generator/coroutine wiring (e.g. task_new, generator_send).
+                    // Conservatively retain anything that names a defined function.
+                    if let Some(name) = op.s_value.as_ref() {
+                        if defined.contains(name.as_str()) {
+                            refs.insert(name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        references.insert(func.name.clone(), refs);
+    }
+
+    // BFS from the entry function (index 0) to find all reachable functions.
+    let entry = ir.functions[0].name.clone();
+    let mut reachable: BTreeSet<String> = BTreeSet::new();
+    let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    reachable.insert(entry.clone());
+    queue.push_back(entry);
+
+    while let Some(current) = queue.pop_front() {
+        if let Some(refs) = references.get(&current) {
+            for target in refs {
+                if reachable.insert(target.clone()) {
+                    queue.push_back(target.clone());
+                }
+            }
+        }
+    }
+
+    let original_count = ir.functions.len();
+    ir.functions.retain(|f| reachable.contains(&f.name));
+    let eliminated = original_count - ir.functions.len();
+
+    if eliminated > 0 {
+        if std::env::var("MOLT_DEBUG_DEAD_FUNC_ELIM").is_ok() {
+            eprintln!(
+                "dead-func-elim: removed {eliminated} of {original_count} functions ({} retained)",
+                ir.functions.len()
+            );
+        }
+    }
+}
