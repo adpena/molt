@@ -77,10 +77,12 @@ impl LargeStorage {
         let mut pos = self.slot_for_hash(hash);
         let mut first_deleted: Option<usize> = None;
 
-        loop {
+        // Safety: bound the probe to cap iterations. If the table is somehow
+        // 100% full with no EMPTY_SLOT (shouldn't happen with load factor 0.75),
+        // this prevents an infinite loop.
+        for _ in 0..cap {
             let entry = self.indices[pos];
             if entry == EMPTY_SLOT {
-                // Key not present; return best insertion point.
                 return Err(first_deleted.unwrap_or(pos));
             } else if entry == DELETED_SLOT {
                 if first_deleted.is_none() {
@@ -94,6 +96,8 @@ impl LargeStorage {
             }
             pos = (pos + 1) & (cap - 1);
         }
+        // Exhausted all slots — return insertion at first deleted or wrap position.
+        Err(first_deleted.unwrap_or(pos))
     }
 
     /// Insert a new key/value/hash triple (key must not already exist).
