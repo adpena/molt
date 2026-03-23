@@ -13275,12 +13275,22 @@ impl SimpleBackend {
                 panic!("declare_function failed for {}: {}", func_ir.name, e);
             }
         };
-        // Clone the function *before* handing it to the optimizer — if an
-        // optimization pass panics (e.g. Cranelift remove_constant_phis
-        // assertion at cranelift-codegen 0.128) the in-place IR may be
-        // partially mutated and unusable.  The clone lets us retry with a
-        // lower optimization level on the pristine IR.
-        let func_snapshot = self.ctx.func.clone();
+        // When opt_level=none there are no optimization passes that can
+        // panic, so we skip the expensive clone + catch_unwind path.  This
+        // saves a full IR deep-copy per function (~10-20% of dev compile time
+        // for large modules).
+        let skip_resilience = crate::env_setting("MOLT_BACKEND_OPT_LEVEL")
+            .as_deref() == Some("none");
+        let func_snapshot = if skip_resilience {
+            None
+        } else {
+            // Clone the function *before* handing it to the optimizer — if an
+            // optimization pass panics (e.g. Cranelift remove_constant_phis
+            // assertion at cranelift-codegen 0.128) the in-place IR may be
+            // partially mutated and unusable.  The clone lets us retry with a
+            // lower optimization level on the pristine IR.
+            Some(self.ctx.func.clone())
+        };
         let define_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.module
                 .define_function(id, &mut self.ctx)
@@ -13338,6 +13348,11 @@ impl SimpleBackend {
                 // which skips the problematic pass.  This is the same
                 // resilience pattern used by LLVM and GCC when an
                 // optimizer pass faults — fall back, warn, keep going.
+                let Some(func_snapshot) = func_snapshot else {
+                    // skip_resilience was true — should not happen at
+                    // opt_level=none, but propagate the panic if it does.
+                    std::panic::resume_unwind(payload);
+                };
                 eprintln!(
                     "WARNING: Cranelift optimizer panic in function `{}`; \
                      retrying at opt_level=none",
