@@ -1592,6 +1592,9 @@ impl WasmBackend {
         }
         crate::inline_functions(&mut ir);
 
+        // Dead function elimination: remove unreachable functions after inlining.
+        crate::eliminate_dead_functions(&mut ir);
+
         // Multi-value return candidate detection (§3.1).
         // This analysis identifies internal functions whose call sites always
         // destructure the result via 2-3 consecutive tuple_index ops AND whose
