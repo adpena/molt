@@ -18,6 +18,8 @@ default = ["stdlib_full", "wasi_host"]
 stdlib_full = [
     "stdlib_crypto", "stdlib_compression", "stdlib_serialization",
     "stdlib_archive", "stdlib_ast", "stdlib_fs_extra", "stdlib_unicode_names",
+    "builtin_set", "builtin_complex", "builtin_memoryview",
+    "builtin_contextvars", "builtin_fcntl",
 ]
 stdlib_unicode_names = ["dep:unicode_names2"]
 
@@ -37,6 +39,13 @@ stdlib_serialization = ["dep:rmpv", "dep:serde_cbor"]
 stdlib_archive = ["dep:zip"]
 stdlib_ast = ["dep:rustpython-parser"]
 stdlib_fs_extra = ["dep:glob", "dep:tempfile"]
+
+# Function-level tree shaking: each builtin type can be excluded.
+builtin_set = []
+builtin_complex = []
+builtin_memoryview = []
+builtin_contextvars = []
+builtin_fcntl = []
 
 molt_debug_gil = []
 molt_tk_native = ["dep:libloading"]
