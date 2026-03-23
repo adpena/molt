@@ -336,23 +336,23 @@ impl SimpleBackend {
             &[types::I64],
         );
         // Inline exception flag optimization: fetch the flag pointer once
-        // and use a Cranelift Variable to propagate it across blocks.
-        // IMPORTANT: Disable for stateful (generator/async poll) functions.
-        // In stateful functions, the state_switch dispatches to multiple
-        // resume blocks via br_table/Switch. The SSA variable propagation
-        // through these switch-generated intermediate blocks can produce
-        // invalid alias chains (Value::reserved_value / u32::MAX index)
-        // during Cranelift's resolve_all_aliases pass, causing an index
-        // out of bounds panic in dfg.rs. The fallback (direct function
-        // call per check_exception site) is safe for all function shapes.
-        let use_inline_exc_flag = function_exception_label_id.is_some() && !stateful;
-        let exc_flag_ptr_var: Option<Variable> = if use_inline_exc_flag {
+        // per block and inline a byte load at each check_exception site.
+        // For non-stateful functions we fetch the pointer once in the entry
+        // block via a Cranelift Variable (SSA propagates it automatically).
+        // For stateful (generator/async poll) functions we cannot use a
+        // Variable because Cranelift's SSA resolution through Switch-
+        // generated intermediate blocks can produce invalid alias chains
+        // (Value::reserved_value / u32::MAX), causing an index-out-of-
+        // bounds panic in dfg.rs:286.  Instead we fetch the pointer lazily
+        // once per basic block and cache the raw Value in a BTreeMap.
+        let has_exc_handling = function_exception_label_id.is_some();
+        let exc_flag_ptr_var: Option<Variable> = if has_exc_handling && !stateful {
             let var = builder.declare_var(types::I64);
             Some(var)
         } else {
             None
         };
-        let exc_flag_ptr_fn = if use_inline_exc_flag {
+        let exc_flag_ptr_fn = if has_exc_handling {
             Some(import_func_ref(
                 &mut self.module,
                 &mut self.import_ids,
@@ -365,6 +365,8 @@ impl SimpleBackend {
         } else {
             None
         };
+        // Per-block cache for the flag pointer Value (stateful functions only).
+        let mut exc_flag_ptr_block_cache: BTreeMap<Block, Value> = BTreeMap::new();
         let local_profile_struct = has_store.then(|| {
             import_func_ref(
                 &mut self.module,
@@ -458,11 +460,11 @@ impl SimpleBackend {
             builder.inst_results(call)[0]
         });
 
-        // Fetch the exception flag pointer in the entry block and store it
-        // in a Cranelift Variable.  Using a Variable (instead of a raw Value)
-        // lets the SSA system propagate the definition across state-dispatch
-        // blocks in stateful (generator/async) functions, avoiding dominator
-        // errors like "uses value from non-dominating inst".
+        // For non-stateful functions: fetch the exception flag pointer in
+        // the entry block and store it in a Cranelift Variable.  The SSA
+        // system propagates the definition across blocks automatically.
+        // Stateful functions use per-block caching instead (see
+        // exc_flag_ptr_block_cache) to avoid SSA alias-chain panics.
         if let (Some(var), Some(fn_ref)) = (exc_flag_ptr_var, exc_flag_ptr_fn) {
             let call = builder.ins().call(fn_ref, &[]);
             let ptr_val = builder.inst_results(call)[0];
@@ -10804,16 +10806,38 @@ impl SimpleBackend {
                     // Inline exception check: load the pending flag byte directly
                     // instead of calling molt_exception_pending_fast() for each
                     // check_exception site.  The flag pointer is fetched once per
-                    // function via a Cranelift Variable and the byte load is ~1
-                    // cycle vs ~15-40 cycles for the function call.
-                    // NOTE: Disabled for stateful (poll/generator) functions
-                    // because SSA variable propagation through switch-generated
-                    // blocks can cause Cranelift DFG alias resolution panics.
+                    // block and the byte load is ~1 cycle vs ~15-40 cycles for the
+                    // function call.
+                    //
+                    // For non-stateful functions the pointer lives in a Cranelift
+                    // Variable (SSA propagates it across blocks automatically).
+                    // For stateful (poll/generator) functions we fetch the pointer
+                    // lazily once per basic block (cached in exc_flag_ptr_block_cache)
+                    // to avoid Cranelift SSA alias-chain panics through Switch-
+                    // generated intermediate blocks.
                     let fallthrough = builder.create_block();
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough);
-                    if let Some(var) = exc_flag_ptr_var {
-                        let flag_ptr = builder.use_var(var);
+                    // Resolve the flag pointer for this check_exception site.
+                    let flag_ptr_val: Option<Value> = if let Some(var) = exc_flag_ptr_var {
+                        // Non-stateful path: use the Cranelift Variable.
+                        Some(builder.use_var(var))
+                    } else if let Some(fn_ref) = exc_flag_ptr_fn {
+                        // Stateful path: fetch pointer once per block, cache it.
+                        let current_block = builder.current_block().unwrap();
+                        let ptr = if let Some(&cached) = exc_flag_ptr_block_cache.get(&current_block) {
+                            cached
+                        } else {
+                            let call = builder.ins().call(fn_ref, &[]);
+                            let ptr = builder.inst_results(call)[0];
+                            exc_flag_ptr_block_cache.insert(current_block, ptr);
+                            ptr
+                        };
+                        Some(ptr)
+                    } else {
+                        None
+                    };
+                    if let Some(flag_ptr) = flag_ptr_val {
                         // Fast path: inline byte load from flag address
                         let pending_byte = builder.ins().load(
                             types::I8,
