@@ -2,6 +2,7 @@ pub mod types;
 pub mod values;
 pub mod ops;
 pub mod blocks;
+pub mod cfg;
 pub mod function;
 
 // Re-export primary types for convenience.
