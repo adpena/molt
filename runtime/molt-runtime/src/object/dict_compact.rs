@@ -329,9 +329,9 @@ impl CompactDict {
                         s.keys.pop();
                         s.values.pop();
                         s.hashes.pop();
-                        // After pop, rebuild indices to clear any stale DELETED_SLOT entries
-                        // that referenced the now-invalid slot index.
-                        s.rebuild_indices();
+                        // No need to rebuild again — rebuild_indices_after_swap already
+                        // fixed the moved entry's index, and the popped entry's tombstone
+                        // is harmless (will be cleaned on next resize).
                         self.len -= 1;
                         self.version += 1;
                         Some(old_val)
@@ -396,11 +396,26 @@ impl CompactDict {
 
 // Helper method on LargeStorage for the swap-during-delete case.
 impl LargeStorage {
-    /// After swapping data slot `from` → `to`, fix any index entry that still
-    /// points to the old position (`from` now contains what was at `to`).
-    fn rebuild_indices_after_swap(&mut self, _moved_to: usize, _old_pos: usize) {
-        // We just call full rebuild for correctness; performance optimisation is future work.
-        self.rebuild_indices();
+    /// After swapping data slot `moved_to` ← `old_pos`, fix the index entry
+    /// that still points to `old_pos` so it points to `moved_to` instead.
+    /// O(1) amortized — probes the hash of the moved element to find its index slot.
+    fn rebuild_indices_after_swap(&mut self, moved_to: usize, old_pos: usize) {
+        let hash = self.hashes[moved_to]; // element now lives at moved_to
+        let cap = self.index_capacity();
+        let mut pos = (hash as usize) & (cap - 1);
+        loop {
+            let entry = self.indices[pos];
+            if entry == old_pos as u32 {
+                self.indices[pos] = moved_to as u32;
+                return;
+            }
+            if entry == EMPTY_SLOT {
+                // Shouldn't happen — the entry must exist. Fall back to full rebuild.
+                self.rebuild_indices();
+                return;
+            }
+            pos = (pos + 1) & (cap - 1);
+        }
     }
 }
 

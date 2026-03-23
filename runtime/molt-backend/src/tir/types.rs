@@ -72,10 +72,16 @@ impl TirType {
         }
 
         // Flatten unions when building the join.
-        let mut members = Vec::new();
+        // Max possible size: 3 (self union) + 3 (other union) = 6, so this is bounded.
+        let mut members = Vec::with_capacity(6);
         Self::collect_union_members(self, &mut members);
         Self::collect_union_members(other, &mut members);
-        members.dedup();
+        // Remove duplicates: since members are bounded at ≤6, a simple O(N²)
+        // retain-based dedup is fine and avoids requiring Ord on TirType.
+        let mut seen = Vec::with_capacity(6);
+        members.retain(|m| {
+            if seen.contains(m) { false } else { seen.push(m.clone()); true }
+        });
 
         if members.len() == 1 {
             return members.into_iter().next().unwrap();
@@ -87,19 +93,15 @@ impl TirType {
     }
 
     /// Flatten nested unions into a flat member list.
+    /// Deduplication is handled by the caller via `dedup()` after collection,
+    /// so we push unconditionally here — O(1) per element, no linear scan.
     fn collect_union_members(ty: &TirType, out: &mut Vec<TirType>) {
         match ty {
             TirType::Union(members) => {
-                for m in members {
-                    if !out.contains(m) {
-                        out.push(m.clone());
-                    }
-                }
+                out.extend(members.iter().cloned());
             }
             _ => {
-                if !out.contains(ty) {
-                    out.push(ty.clone());
-                }
+                out.push(ty.clone());
             }
         }
     }
