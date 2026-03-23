@@ -39,6 +39,7 @@ pub(crate) mod ops_iter;
 pub(crate) mod ops_set;
 pub(crate) mod ops_string;
 pub(crate) mod refcount;
+pub mod string_intern;
 pub(crate) mod type_ids;
 pub(crate) mod utf8_cache;
 pub(crate) mod weakref;
@@ -378,6 +379,57 @@ pub(crate) const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED: u64 = 1 << 14;
 pub(crate) const HEADER_FLAG_IMMORTAL: u64 = 1 << 15;
 // Ensure __del__ runs at most once even if the object resurrects itself.
 pub(crate) const HEADER_FLAG_FINALIZER_RAN: u64 = 1 << 16;
+
+// ---------------------------------------------------------------------------
+// Cold header pool — stores rarely-used per-object metadata (poll_fn, state,
+// extended_size) separately from the hot MoltHeader so that the hot header
+// can be kept small and cache-friendly.
+// ---------------------------------------------------------------------------
+
+/// Rarely-accessed per-object metadata, stored in a side pool keyed by the
+/// object's data pointer address.
+#[derive(Copy, Clone, Debug, Default)]
+pub(crate) struct MoltColdHeader {
+    /// Function pointer for polling (generators / async tasks).
+    pub(crate) poll_fn: u64,
+    /// State machine state (generators / async tasks / hash cache).
+    pub(crate) state: i64,
+    /// Exact allocation size for objects that exceed the size-class table.
+    pub(crate) extended_size: usize,
+}
+
+/// Global cold-header pool. Keyed by the object's *data* pointer (i.e. the
+/// pointer returned by `alloc_object`, NOT the header pointer).
+///
+/// Uses `OnceLock<Mutex<HashMap>>` — no `lazy_static` dependency.
+static COLD_HEADER_POOL: OnceLock<Mutex<HashMap<usize, MoltColdHeader>>> = OnceLock::new();
+
+fn cold_header_pool() -> &'static Mutex<HashMap<usize, MoltColdHeader>> {
+    COLD_HEADER_POOL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Allocate (or update) a cold header for the object at `data_ptr`.
+pub(crate) fn alloc_cold_header(data_ptr: *mut u8, cold: MoltColdHeader) {
+    let key = data_ptr as usize;
+    let mut pool = cold_header_pool().lock().unwrap();
+    pool.insert(key, cold);
+}
+
+/// Retrieve a **copy** of the cold header for the object at `data_ptr`.
+/// Returns `None` if no cold header was allocated for this pointer.
+pub(crate) fn get_cold_header(data_ptr: *mut u8) -> Option<MoltColdHeader> {
+    let key = data_ptr as usize;
+    let pool = cold_header_pool().lock().unwrap();
+    pool.get(&key).copied()
+}
+
+/// Free the cold header for the object at `data_ptr`.
+/// No-op if no cold header exists.
+pub(crate) fn free_cold_header(data_ptr: *mut u8) {
+    let key = data_ptr as usize;
+    let mut pool = cold_header_pool().lock().unwrap();
+    pool.remove(&key);
+}
 
 thread_local! {
     pub(crate) static OBJECT_POOL_TLS: RefCell<Vec<Vec<PtrSlot>>> =
