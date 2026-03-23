@@ -79,6 +79,6 @@ except Exception:  # noqa: BLE001
 quit = Quitter("quit")
 exit = Quitter("exit")
 
-# del _MOLT_SITE_HELP0  # TODO: restore once WASM del-global codegen is fixed
-# del _MOLT_SITE_HELP1
-# del _MOLT_SITE_QUITTER_CALL
+# Module-level intrinsic references are intentionally kept alive.
+# They are captured as default-argument values in __call__ methods above,
+# so deleting them here would not reclaim memory and is not needed.

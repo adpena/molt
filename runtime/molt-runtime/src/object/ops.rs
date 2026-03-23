@@ -43052,7 +43052,7 @@ unsafe fn dict_subclass_storage_bits(_py: &PyToken<'_>, ptr: *mut u8) -> Option<
     }
 }
 
-unsafe fn dict_like_bits_from_ptr(_py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
+pub(super) unsafe fn dict_like_bits_from_ptr(_py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
     unsafe {
         if object_type_id(ptr) == TYPE_ID_DICT {
             return Some(MoltObject::from_ptr(ptr).bits());

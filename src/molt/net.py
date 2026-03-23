@@ -83,7 +83,10 @@ class _RuntimeHandle:
         try:
             self._drop_fn(self._handle)
         except Exception:
-            return
+            # Finalizer: exceptions during resource cleanup cannot propagate
+            # (especially from __del__).  Silencing is intentional per Python
+            # finalizer conventions.
+            pass
 
     @property
     def handle(self) -> Any:

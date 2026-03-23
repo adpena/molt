@@ -79,13 +79,42 @@ pub unsafe extern "C" fn PyObject_TypeCheck(op: *mut PyObject, tp: *mut PyTypeOb
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_IsInstance(inst: *mut PyObject, cls: *mut PyObject) -> c_int {
-    let _ = (inst, cls);
-    0 // conservative: unknown instance
+    if inst.is_null() || cls.is_null() {
+        return 0;
+    }
+    // Check whether inst's type pointer matches cls (exact type match).
+    // This does not walk the MRO — full isinstance() requires the Molt runtime.
+    // Returning -1 (error) would be worse than a conservative match, so we
+    // check the one thing we *can* check: pointer identity of ob_type.
+    let inst_type = unsafe { (*inst).ob_type };
+    if inst_type.is_null() {
+        return 0;
+    }
+    if std::ptr::eq(inst_type as *const PyObject, cls) {
+        return 1;
+    }
+    // Cannot determine — return 0 (not an instance) rather than lying.
+    // Extensions that hit this path get a false negative, which is safer than
+    // a false positive.  Log via bridge tracing if available.
+    0
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyCallable_Check(op: *mut PyObject) -> c_int {
-    let _ = op;
+    if op.is_null() {
+        return 0;
+    }
+    // Check if the object's type has tp_call set — the CPython definition of
+    // "callable".  Without tp_call we cannot determine callability from the
+    // bridge alone, but checking it is strictly better than always returning 0,
+    // which caused extensions to wrongly reject callable objects.
+    let tp = unsafe { (*op).ob_type };
+    if tp.is_null() {
+        return 0;
+    }
+    if unsafe { (*tp).tp_call }.is_some() {
+        return 1;
+    }
     0
 }
 
@@ -109,12 +138,26 @@ pub unsafe extern "C" fn PyObject_Str(op: *mut PyObject) -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_RichCompare(
-    _v: *mut PyObject,
-    _w: *mut PyObject,
-    _op: c_int,
+    v: *mut PyObject,
+    w: *mut PyObject,
+    op: c_int,
 ) -> *mut PyObject {
-    // Stub — return Py_NotImplemented sentinel.
-    &raw mut crate::abi_types::Py_None
+    // Try tp_richcompare on v's type first, then w's type (reflected).
+    if !v.is_null() {
+        let tp = unsafe { (*v).ob_type };
+        if !tp.is_null() {
+            if let Some(richcmp) = unsafe { (*tp).tp_richcompare } {
+                let result = unsafe { richcmp(v, w, op) };
+                if !result.is_null()
+                    && !std::ptr::eq(result, &raw mut crate::abi_types::Py_NotImplementedSentinel)
+                {
+                    return result;
+                }
+            }
+        }
+    }
+    // Return NotImplemented sentinel — callers must check for this.
+    &raw mut crate::abi_types::Py_NotImplementedSentinel
 }
 
 #[unsafe(no_mangle)]
@@ -124,5 +167,29 @@ pub unsafe extern "C" fn PyObject_RichCompareBool(
     op: c_int,
 ) -> c_int {
     let result = unsafe { PyObject_RichCompare(v, w, op) };
-    if result.is_null() { -1 } else { 1 }
+    if result.is_null() {
+        return -1;
+    }
+    if std::ptr::eq(result, &raw mut crate::abi_types::Py_NotImplementedSentinel) {
+        // Comparison not supported — for Py_EQ/Py_NE fall back to pointer
+        // identity (CPython semantics for unsupported comparisons).
+        const PY_EQ: c_int = 2;
+        const PY_NE: c_int = 3;
+        return match op {
+            PY_EQ => std::ptr::eq(v, w) as c_int,
+            PY_NE => !std::ptr::eq(v, w) as c_int,
+            _ => -1, // cannot compare: error
+        };
+    }
+    // Truthy check: Py_True → 1, Py_False → 0, Py_None → 0
+    if std::ptr::eq(result, &raw mut crate::abi_types::Py_True) {
+        1
+    } else if std::ptr::eq(result, &raw mut crate::abi_types::Py_False) {
+        0
+    } else if std::ptr::eq(result, &raw mut crate::abi_types::Py_None) {
+        0
+    } else {
+        // Non-null, non-sentinel result — treat as truthy.
+        1
+    }
 }
