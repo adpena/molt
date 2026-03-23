@@ -955,6 +955,34 @@ fn extend_unique_tracked(dst: &mut Vec<String>, src: Vec<String>) {
     }
 }
 
+/// Propagate tracked objects to ALL branch target blocks.
+/// Prevents use-after-free when exception handlers access freed objects.
+#[cfg(feature = "native-backend")]
+pub(crate) fn propagate_tracked_to_branches(
+    block_tracked: &mut BTreeMap<cranelift_codegen::ir::Block, Vec<String>>,
+    targets: &[cranelift_codegen::ir::Block],
+    carry: Vec<String>,
+) {
+    if carry.is_empty() || targets.is_empty() {
+        return;
+    }
+    if targets.len() == 1 {
+        extend_unique_tracked(block_tracked.entry(targets[0]).or_default(), carry);
+        return;
+    }
+    let last_idx = targets.len() - 1;
+    for (i, &target) in targets.iter().enumerate() {
+        if i == last_idx {
+            extend_unique_tracked(block_tracked.entry(target).or_default(), carry);
+            return;
+        }
+        extend_unique_tracked(
+            block_tracked.entry(target).or_default(),
+            carry.clone(),
+        );
+    }
+}
+
 #[cfg(feature = "native-backend")]
 fn drain_cleanup_entry_tracked(
     names: &mut Vec<String>,
