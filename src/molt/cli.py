@@ -16931,7 +16931,7 @@ def _ensure_backend_binary(
             # Quick probe: verify the cached binary actually supports the
             # requested target.  Cargo feature collisions can leave a binary
             # with the right fingerprint but wrong compiled features.
-            _quick_target = "wasm" if "wasm-backend" in backend_features else "native"
+            _quick_target = "wasm" if "wasm-backend" in backend_features else ("luau" if "luau-backend" in backend_features else "native")
             _quick_ir = json.dumps({
                 "functions": [], "module": "__probe__", "entry": "main",
                 "metadata": {"target": _quick_target, "deterministic": True},
@@ -17025,7 +17025,7 @@ def _ensure_backend_binary(
         # Cargo's incremental cache may skip recompilation when only
         # features change, leaving a binary built for the wrong target.
         # Probe the binary and, on mismatch, clean + rebuild once.
-        _probe_target = "wasm" if "wasm-backend" in backend_features else "native"
+        _probe_target = "wasm" if "wasm-backend" in backend_features else ("luau" if "luau-backend" in backend_features else "native")
         _probe_ir = json.dumps({
             "functions": [], "module": "__probe__", "entry": "main",
             "metadata": {"target": _probe_target, "deterministic": True},
@@ -17033,6 +17033,8 @@ def _ensure_backend_binary(
         _probe_cmd = [str(backend_bin)]
         if _probe_target == "wasm":
             _probe_cmd.extend(["--target", "wasm"])
+        elif _probe_target == "luau":
+            _probe_cmd.extend(["--target", "luau"])
         try:
             _probe = subprocess.run(
                 _probe_cmd, input=_probe_ir,
@@ -17413,12 +17415,22 @@ def _ensure_runtime_wasm(
             "--target",
             "wasm32-wasip1",
         ]
-        if cargo_runtime_features:
-            cmd.extend(["--features", ",".join(cargo_runtime_features)])
         if stdlib_profile == "micro":
-            cmd.extend(["--no-default-features"])
-        elif stdlib_profile == "full":
-            pass  # default features include stdlib_full
+            cmd.append("--no-default-features")
+            if cargo_runtime_features:
+                cmd.extend(["--features", ",".join(cargo_runtime_features)])
+        else:
+            # Exclude stdlib_ast (rustpython-parser ~2MB) and
+            # stdlib_unicode_names (unicode_names2 ~1MB) from WASM builds.
+            # These are not useful on WASM and inflate the binary past 3MB.
+            cmd.append("--no-default-features")
+            wasm_features = list(cargo_runtime_features) + [
+                "stdlib_crypto", "stdlib_compression", "stdlib_serialization",
+                "stdlib_archive", "stdlib_fs_extra",
+                "builtin_set", "builtin_complex", "builtin_memoryview",
+                "builtin_contextvars", "builtin_fcntl",
+            ]
+            cmd.extend(["--features", ",".join(wasm_features)])
         try:
             build, src = _run_runtime_wasm_cargo_build(
                 cmd=cmd,
