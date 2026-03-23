@@ -1,3 +1,5 @@
+use serde::Deserialize;
+
 use crate::ir_schema;
 use crate::json_boundary::{
     expect_object, optional_bool, optional_bytes, optional_f64, optional_i64, optional_string,
@@ -6,20 +8,21 @@ use crate::json_boundary::{
 use serde_json::Value as JsonValue;
 use std::collections::{BTreeSet, VecDeque};
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default)]
 pub struct PgoProfileIR {
     pub version: Option<String>,
     pub hash: Option<String>,
     pub hot_functions: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct SimpleIR {
     pub functions: Vec<FunctionIR>,
     pub profile: Option<PgoProfileIR>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct FunctionIR {
     pub name: String,
     pub params: Vec<String>,
@@ -27,7 +30,8 @@ pub struct FunctionIR {
     pub param_types: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
 pub struct OpIR {
     pub kind: String,
     pub value: Option<i64>,
