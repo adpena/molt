@@ -4,6 +4,7 @@
 pub mod bce;
 pub mod cha;
 pub mod dce;
+pub mod interprocedural;
 pub mod escape_analysis;
 pub mod refcount_elim;
 pub mod sccp;
