@@ -1756,8 +1756,7 @@ elif route == "sort":
         data = "42,17,93,8,55,3,71,29,64,11"
     nums, bad = sort_data(data)
     if len(nums) > 1000:
-        print("Error: too many elements (max 1000)")
-        sys.exit(1)
+        raise SystemExit("too many elements (max 1000)")
     before = []
     i = 0
     while i < len(nums):
@@ -2065,4 +2064,4 @@ else:
     print("")
     print("  github.com/adpena  |  adpena@gmail.com")
     if route:
-        sys.exit(1)
+        raise SystemExit(1)
