@@ -2,10 +2,13 @@
 //! Each pass transforms a TirFunction in-place and returns statistics.
 
 pub mod bce;
+pub mod cha;
 pub mod dce;
 pub mod escape_analysis;
+pub mod refcount_elim;
 pub mod sccp;
 pub mod strength_reduction;
+pub mod type_guard_hoist;
 pub mod unboxing;
 
 /// Statistics returned by each optimization pass.
@@ -29,10 +32,12 @@ pub struct PassStats {
 ///
 /// The TIR verifier runs after all passes to catch invariant violations.
 pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
-    let mut stats = Vec::with_capacity(6);
+    let mut stats = Vec::with_capacity(8);
 
     stats.push(unboxing::run(func));
     stats.push(escape_analysis::run(func));
+    stats.push(refcount_elim::run(func));
+    stats.push(type_guard_hoist::run(func));
     stats.push(sccp::run(func));
     stats.push(strength_reduction::run(func));
     stats.push(bce::run(func));
