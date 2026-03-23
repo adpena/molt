@@ -5351,6 +5351,8 @@ static inline PyObject *PyType_GetDict(PyTypeObject *type) {
 static inline void *PyType_GetSlot(PyTypeObject *type, int slot) {
     (void)type;
     (void)slot;
+    PyErr_SetString(PyExc_NotImplementedError,
+        "PyType_GetSlot not implemented in Molt — requires C-to-Python trampolines");
     return NULL;
 }
 

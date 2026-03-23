@@ -11194,23 +11194,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                         if dk in _DATACLASS_VALID_OPTS and isinstance(dv, bool):
                                             dataclass_opts[dk] = dv
                                     resolved = True
-                                elif varname in ("slots_true", "SLOTS", "KW_ONLY"):
-                                    # Common convention: slots_true = {"slots": True}
-                                    # Used by pydantic, annotated_types, etc.
-                                    # If we can't resolve it, assume {"slots": True}
-                                    # for slots_true and SLOTS, {"kw_only": True} for KW_ONLY
-                                    if varname in ("slots_true", "SLOTS"):
-                                        dataclass_opts["slots"] = True
-                                    elif varname == "KW_ONLY":
-                                        dataclass_opts["kw_only"] = True
-                                    resolved = True
                             if resolved:
                                 continue
-                            # Fall back: skip unknown **kwargs and use defaults
-                            # This is safer than crashing — the dataclass will work
-                            # with default options if the splat values are just
-                            # performance hints (slots, kw_only)
-                            continue
+                            raise NotImplementedError(
+                                "dataclass **kwargs spread: cannot resolve '"
+                                + (kw.value.id if isinstance(kw.value, ast.Name) else "?")
+                                + "' at compile time. Define it as a module-level "
+                                + "constant dict (e.g., OPTS = {'slots': True})"
+                            )
                         if kw.arg not in _DATACLASS_VALID_OPTS:
                             # Unknown option — skip it (CPython would raise TypeError
                             # but we prefer to compile and let the runtime handle it)
@@ -11264,19 +11255,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                         if dk in _DATACLASS_VALID_OPTS2 and isinstance(dv, bool):
                                             dataclass_opts[dk] = dv
                                     resolved = True
-                                elif varname in ("slots_true", "SLOTS", "KW_ONLY"):
-                                    if varname in ("slots_true", "SLOTS"):
-                                        dataclass_opts["slots"] = True
-                                    elif varname == "KW_ONLY":
-                                        dataclass_opts["kw_only"] = True
-                                    resolved = True
                             if resolved:
                                 continue
-                            # Skip unknown **kwargs — use defaults
-                            continue
-                        if kw.arg not in _DATACLASS_VALID_OPTS2:
                             raise NotImplementedError(
-                                f"Unsupported dataclass option: {kw.arg}"
+                                "dataclass **kwargs spread: cannot resolve '"
+                                + (kw.value.id if isinstance(kw.value, ast.Name) else "?")
+                                + "' at compile time. Define it as a module-level "
+                                + "constant dict (e.g., OPTS = {'slots': True})"
                             )
                         if isinstance(kw.value, ast.Constant) and kw.value.value is None:
                             # None means "use the default" in CPython
