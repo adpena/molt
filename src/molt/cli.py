@@ -15098,6 +15098,15 @@ def _prepare_non_native_build_result(
                     'APP = "app.wasm"\n'
                 )
 
+            # Cloudflare Workers isolate memory limit: 128MB.
+            # Warn if the combined WASM size exceeds a safe threshold.
+            combined_mb = (app_size + rt_size) / (1024 * 1024)
+            if combined_mb > 100:
+                success_messages.append(
+                    f"WARNING: Combined WASM size ({combined_mb:.1f}MB) approaches "
+                    f"Cloudflare Workers 128MB isolate memory limit. "
+                    f"Consider enabling --stdlib-profile micro for smaller builds."
+                )
             success_messages.append(
                 f"Split runtime: {app_wasm.name} ({app_size // 1024}KB) "
                 f"+ {rt_wasm.name} ({rt_size // 1024}KB)"
