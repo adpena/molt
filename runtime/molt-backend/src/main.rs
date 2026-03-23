@@ -900,25 +900,57 @@ fn main() -> io::Result<()> {
         .and_then(|idx| args.get(idx + 1))
         .map(String::as_str);
 
-    // Read and parse IR.  Drop the raw JSON string immediately after
-    // deserialization to avoid holding two copies (~50MB JSON + ~200MB
-    // struct) in memory simultaneously.
+    let ir_format = args
+        .iter()
+        .position(|arg| arg == "--ir-format")
+        .and_then(|idx| args.get(idx + 1))
+        .map(String::as_str)
+        .unwrap_or("json");
+
+    // Read and parse IR.  Drop the raw buffer immediately after
+    // deserialization to avoid holding two copies in memory simultaneously.
     let mut ir: SimpleIR = {
-        let mut buffer = String::new();
-        if let Some(ir_path) = ir_file_path {
-            std::fs::File::open(ir_path)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?
-                .read_to_string(&mut buffer)?;
+        if ir_format == "msgpack" {
+            // msgpack binary format — deserialize directly via serde
+            if let Some(ir_path) = ir_file_path {
+                let file = std::fs::File::open(ir_path)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?;
+                let reader = io::BufReader::new(file);
+                match rmp_serde::from_read(reader) {
+                    Ok(ir) => ir,
+                    Err(err) => {
+                        eprintln!("invalid msgpack IR: {err}");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                let mut buf = Vec::new();
+                io::stdin().read_to_end(&mut buf)?;
+                match rmp_serde::from_slice::<SimpleIR>(&buf) {
+                    Ok(ir) => { drop(buf); ir },
+                    Err(err) => {
+                        eprintln!("invalid msgpack IR: {err}");
+                        std::process::exit(1);
+                    }
+                }
+            }
         } else {
-            io::stdin().read_to_string(&mut buffer)?;
-        }
-        let result = SimpleIR::from_json_str(&buffer);
-        drop(buffer); // free JSON string before handling result
-        match result {
-            Ok(ir) => ir,
-            Err(err) => {
-                eprintln!("{err}");
-                std::process::exit(1);
+            let mut buffer = String::new();
+            if let Some(ir_path) = ir_file_path {
+                std::fs::File::open(ir_path)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?
+                    .read_to_string(&mut buffer)?;
+            } else {
+                io::stdin().read_to_string(&mut buffer)?;
+            }
+            let result = SimpleIR::from_json_str(&buffer);
+            drop(buffer); // free JSON string before handling result
+            match result {
+                Ok(ir) => ir,
+                Err(err) => {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                }
             }
         }
     };
