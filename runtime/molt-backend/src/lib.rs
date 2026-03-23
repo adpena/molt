@@ -32,6 +32,7 @@ use std::sync::OnceLock;
 mod ir;
 mod ir_schema;
 mod json_boundary;
+pub mod tir;
 pub mod luau_ir;
 pub mod luau_lower;
 #[cfg(feature = "llvm")]
