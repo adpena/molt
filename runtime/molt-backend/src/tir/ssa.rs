@@ -627,19 +627,9 @@ fn is_variable(name: &str) -> bool {
     !name.is_empty() && name != "none" && name != "True" && name != "False"
 }
 
-/// Returns true for structural/control-flow-only ops that don't produce or
-/// consume values.
-fn is_structural(kind: &str) -> bool {
-    matches!(
-        kind,
-        "label" | "state_label" | "if" | "else" | "end_if"
-            | "loop_start" | "loop_end" | "loop_break"
-            | "jump" | "goto" | "br_if"
-            | "loop_break_if_true" | "loop_break_if_false"
-            | "ret" | "ret_void" | "return"
-            | "nop"
-    )
-}
+// Use shared is_structural from parent module (ensures SSA and lower_from_simple
+// always agree on which ops to skip).
+use super::is_structural;
 
 /// Map a SimpleIR `kind` string to a TIR `OpCode`.
 fn kind_to_opcode(kind: &str) -> OpCode {

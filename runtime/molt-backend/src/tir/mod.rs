@@ -11,6 +11,24 @@ pub mod verify;
 pub mod lower_to_simple;
 pub mod type_refine;
 
+/// Returns true for SimpleIR ops that are purely structural control-flow
+/// markers (if/else/end_if/loop_start/loop_end/label/state_label) and should
+/// be skipped during SSA conversion and type hint correlation.
+///
+/// Shared between `ssa.rs` and `lower_from_simple.rs` to ensure identical
+/// classification — divergence would silently misalign SSA ops with original ops.
+pub(crate) fn is_structural(kind: &str) -> bool {
+    matches!(
+        kind,
+        "label" | "state_label" | "if" | "else" | "end_if"
+            | "loop_start" | "loop_end" | "loop_break" | "loop_continue"
+            | "jump" | "goto" | "br_if"
+            | "loop_break_if_true" | "loop_break_if_false"
+            | "ret" | "ret_void" | "return"
+            | "nop"
+    )
+}
+
 // Re-export primary types for convenience.
 pub use self::blocks::{BlockId, TirBlock, Terminator};
 pub use self::function::{TirFunction, TirModule};
