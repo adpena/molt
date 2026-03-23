@@ -1,3 +1,5 @@
+#[cfg(feature = "luau-backend")]
+use molt_backend::luau::LuauBackend;
 #[cfg(feature = "native-backend")]
 use molt_backend::SimpleBackend;
 use molt_backend::SimpleIR;
@@ -858,6 +860,7 @@ fn main() -> io::Result<()> {
     }
     let is_wasm = args.contains(&"--target".to_string()) && args.contains(&"wasm".to_string());
     let is_rust = args.contains(&"--target".to_string()) && args.contains(&"rust".to_string());
+    let is_luau = args.contains(&"--target".to_string()) && args.contains(&"luau".to_string());
     #[cfg_attr(not(feature = "native-backend"), allow(unused_variables))]
     let target_triple = args
         .iter()
@@ -881,7 +884,9 @@ fn main() -> io::Result<()> {
         }
     };
 
-    let default_output = if is_rust {
+    let default_output = if is_luau {
+        "output.luau"
+    } else if is_rust {
         "output.rs"
     } else if is_wasm {
         "output.wasm"
@@ -891,7 +896,25 @@ fn main() -> io::Result<()> {
     let output_file = output_path.unwrap_or(default_output);
     let mut file = File::create(output_file)?;
 
-    if is_rust {
+    if is_luau {
+        #[cfg(feature = "luau-backend")]
+        {
+            let mut backend = LuauBackend::new();
+            // Use unchecked compile for now — compile_checked rejects
+            // unsupported ops from stdlib modules. Once more ops are
+            // implemented, switch to compile_checked.
+            let source = backend.compile(&ir);
+            file.write_all(source.as_bytes())?;
+            eprintln!("Successfully transpiled to {output_file}");
+        }
+        #[cfg(not(feature = "luau-backend"))]
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "backend binary was built without luau-backend support",
+            ));
+        }
+    } else if is_rust {
         #[cfg(feature = "rust-backend")]
         {
             let mut backend = RustBackend::new();

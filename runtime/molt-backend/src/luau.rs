@@ -24,6 +24,11 @@ pub struct LuauBackend {
     /// these is returned we emit `return table.unpack(v)` so the caller
     /// receives multiple values instead of a single table.
     tuple_vars: BTreeSet<String>,
+    /// Heuristic type hints propagated through operations.  When a variable is
+    /// known to be a list (via `build_list`/`list_new` or `type_hint`), we
+    /// record it here so that downstream `get_item` and `call_method` ops can
+    /// emit more precise Luau code.
+    var_type_hints: BTreeMap<String, String>,
 }
 
 impl LuauBackend {
@@ -34,6 +39,7 @@ impl LuauBackend {
             uses_forward_decls: false,
             hoisted_vars: BTreeSet::new(),
             tuple_vars: BTreeSet::new(),
+            var_type_hints: BTreeMap::new(),
         }
     }
 
@@ -91,8 +97,13 @@ impl LuauBackend {
         // Second copy-prop pass: optimize_luau_perf reduces type-guard
         // expressions (4 uses → 2 uses), unlocking more copy propagation.
         propagate_single_use_copies(&mut func_body);
+        eliminate_common_subexpressions(&mut func_body);
+        hoist_loop_invariants(&mut func_body);
         sink_single_use_locals(&mut func_body);
         simplify_return_chain(&mut func_body);
+        freeze_constant_tables(&mut func_body);
+        optimize_multi_return(&mut func_body);
+        fold_range_indices(&mut func_body);
 
         // Phase 3: Emit prelude with only the helpers that survive optimization.
         self.emit_prelude_conditional(&func_body);
@@ -134,7 +145,7 @@ impl LuauBackend {
     fn emit_prelude_conditional(&mut self, func_body: &str) {
         // Always-emitted header.
         self.output
-            .push_str("--!strict\n-- Molt -> Luau transpiled output\n-- Runtime helpers\n\n");
+            .push_str("--!native\n--!strict\n-- Molt -> Luau transpiled output\n-- Runtime helpers\n\n");
         self.output
             .push_str("local molt_func_attrs: {[any]: {[string]: any}} = {}\n");
         self.output.push_str("local molt_module_cache: {[string]: any} = {\n\tmath = nil,\n\tjson = nil,\n\ttime = nil,\n\tos = nil,\n}\n\n");
@@ -154,7 +165,7 @@ impl LuauBackend {
         let helpers: &[(&str, &str)] = &[
             (
                 "molt_range",
-                "@native\nlocal function molt_range(start: number, stop: number, step: number?): {number}\n\tlocal result = {}\n\tlocal s = step or 1\n\tlocal n = 0\n\tlocal i = start\n\twhile (s > 0 and i < stop) or (s < 0 and i > stop) do\n\t\tn += 1\n\t\tresult[n] = i\n\t\ti += s\n\tend\n\treturn result\nend\n",
+                "@native\nlocal function molt_range(start: number, stop: number, step: number?): {number}\n\tlocal s = step or 1\n\tlocal result = table.create(math.max(0, math.ceil((stop - start) / s)))\n\tlocal n = 0\n\tlocal i = start\n\twhile (s > 0 and i < stop) or (s < 0 and i > stop) do\n\t\tn += 1\n\t\tresult[n] = i\n\t\ti += s\n\tend\n\treturn result\nend\n",
             ),
             (
                 "molt_len",
@@ -182,7 +193,7 @@ impl LuauBackend {
             ),
             (
                 "molt_floor_div",
-                "local function molt_floor_div(a: number, b: number): number\n\treturn math.floor(a / b)\nend\n",
+                "local function molt_floor_div(a: number, b: number): number\n\treturn a // b\nend\n",
             ),
             (
                 "molt_pow",
@@ -190,11 +201,11 @@ impl LuauBackend {
             ),
             (
                 "molt_mod",
-                "local function molt_mod(a: number, b: number): number\n\treturn a - math.floor(a / b) * b\nend\n",
+                "local function molt_mod(a: number, b: number): number\n\treturn a % b\nend\n",
             ),
             (
                 "molt_enumerate",
-                "local function molt_enumerate(t: {any}, start: number?): {{any}}\n\tlocal result = {}\n\tlocal s = start or 0\n\tlocal n = 0\n\tfor i, v in ipairs(t) do\n\t\tn += 1\n\t\tresult[n] = {s + i - 1, v}\n\tend\n\treturn result\nend\n",
+                "local function molt_enumerate(t: {any}, start: number?): {{any}}\n\tlocal len = #t\n\tlocal result = table.create(len)\n\tlocal s = start or 0\n\tfor i = 1, len do\n\t\tresult[i] = {s + i - 1, t[i]}\n\tend\n\treturn result\nend\n",
             ),
             (
                 "molt_zip",
@@ -210,15 +221,15 @@ impl LuauBackend {
             ),
             (
                 "molt_sum",
-                "@native\nlocal function molt_sum(t: {number}, start: number?): number\n\tlocal s = start or 0\n\tfor _, v in ipairs(t) do s += v end\n\treturn s\nend\n",
+                "@native\nlocal function molt_sum(t: {number}, start: number?): number\n\tlocal s = start or 0\n\tfor __i = 1, #t do s += t[__i] end\n\treturn s\nend\n",
             ),
             (
                 "molt_any",
-                "local function molt_any(t: {any}): boolean\n\tfor _, v in ipairs(t) do\n\t\tif v then return true end\n\tend\n\treturn false\nend\n",
+                "local function molt_any(t: {any}): boolean\n\tfor __i = 1, #t do\n\t\tif t[__i] then return true end\n\tend\n\treturn false\nend\n",
             ),
             (
                 "molt_all",
-                "local function molt_all(t: {any}): boolean\n\tfor _, v in ipairs(t) do\n\t\tif not v then return false end\n\tend\n\treturn true\nend\n",
+                "local function molt_all(t: {any}): boolean\n\tfor __i = 1, #t do\n\t\tif not t[__i] then return false end\n\tend\n\treturn true\nend\n",
             ),
             (
                 "molt_map",
@@ -226,7 +237,7 @@ impl LuauBackend {
             ),
             (
                 "molt_filter",
-                "local function molt_filter(func: ((any) -> boolean)?, t: {any}): {any}\n\tlocal result = {}\n\tlocal n = 0\n\tfor _, v in ipairs(t) do\n\t\tif func then\n\t\t\tif func(v) then n += 1; result[n] = v end\n\t\telseif v then\n\t\t\tn += 1; result[n] = v\n\t\tend\n\tend\n\treturn result\nend\n",
+                "local function molt_filter(func: ((any) -> boolean)?, t: {any}): {any}\n\tlocal result = {}\n\tlocal n = 0\n\tfor __i = 1, #t do\n\t\tlocal v = t[__i]\n\t\tif func then\n\t\t\tif func(v) then n += 1; result[n] = v end\n\t\telseif v then\n\t\t\tn += 1; result[n] = v\n\t\tend\n\tend\n\treturn result\nend\n",
             ),
             (
                 "molt_dict_keys",
@@ -301,7 +312,7 @@ impl LuauBackend {
                 "\tabs = math.abs,\n\tsin = math.sin,\n\tcos = math.cos,\n",
                 "\ttan = math.tan,\n\tasin = math.asin,\n\tacos = math.acos,\n",
                 "\tatan = math.atan,\n\tatan2 = math.atan2,\n\texp = math.exp,\n",
-                "\tlog = math.log,\n\tlog10 = math.log,\n\tpi = math.pi,\n",
+                "\tlog = math.log,\n\tlog10 = function(x) return math.log(x, 10) end,\n\tpi = math.pi,\n",
                 "\te = 2.718281828459045,\n\tinf = math.huge,\n\tnan = 0/0,\n",
                 "}\n\n",
             ));
@@ -335,7 +346,7 @@ impl LuauBackend {
                 "local molt_os = {\n",
                 "\tgetcwd = function() return \".\" end,\n",
                 "\tgetenv = function(k: string) return nil end,\n",
-                "\tpath = { join = function(...) local p = {} for _, v in {...} do table.insert(p, v) end return table.concat(p, \"/\") end,\n",
+                "\tpath = { join = function(...) local a = {...} return table.concat(a, \"/\") end,\n",
                 "\t\texists = function() return false end, sep = \"/\" },\n",
                 "}\n\n",
             ));
@@ -350,14 +361,14 @@ impl LuauBackend {
                 "\tformat = string.format,\n",
                 "\tjoin = function(sep: string, t: {string}): string\n\t\treturn table.concat(t, sep)\n\tend,\n",
                 "\tsplit = function(s: string, sep: string?): {string}\n",
-                "\t\tlocal result = {}\n\t\tlocal pattern = sep and sep or \"%s+\"\n",
+                "\t\tlocal result = {}\n\t\tlocal n = 0\n\t\tlocal pattern = sep and sep or \"%s+\"\n",
                 "\t\tif sep then\n\t\t\tlocal pos = 1\n\t\t\twhile pos <= #s do\n",
                 "\t\t\t\tlocal i, j = string.find(s, pattern, pos, true)\n",
-                "\t\t\t\tif i then\n\t\t\t\t\ttable.insert(result, string.sub(s, pos, i - 1))\n",
+                "\t\t\t\tif i then\n\t\t\t\t\tn += 1; result[n] = string.sub(s, pos, i - 1)\n",
                 "\t\t\t\t\tpos = j + 1\n\t\t\t\telse\n",
-                "\t\t\t\t\ttable.insert(result, string.sub(s, pos))\n\t\t\t\t\tbreak\n",
+                "\t\t\t\t\tn += 1; result[n] = string.sub(s, pos)\n\t\t\t\t\tbreak\n",
                 "\t\t\t\tend\n\t\t\tend\n\t\telse\n",
-                "\t\t\tfor w in string.gmatch(s, \"%S+\") do\n\t\t\t\ttable.insert(result, w)\n",
+                "\t\t\tfor w in string.gmatch(s, \"%S+\") do\n\t\t\t\tn += 1; result[n] = w\n",
                 "\t\t\tend\n\t\tend\n\t\treturn result\n\tend,\n}\n\n",
             ));
         }
@@ -410,6 +421,7 @@ impl LuauBackend {
         // Reset per-function state.
         self.hoisted_vars.clear();
         self.tuple_vars.clear();
+        self.var_type_hints.clear();
 
         // Pre-declare loop index variables so they persist across iterations.
         let mut loop_idx_vars = Vec::new();
@@ -797,6 +809,19 @@ impl LuauBackend {
                 let var = self.var_ref(op);
                 if let Some(ref args) = op.args {
                     if let Some(src) = args.first() {
+                        // Propagate tuple tracking: if the source is a known
+                        // tuple variable, the destination inherits that status.
+                        if self.tuple_vars.contains(src) {
+                            if let Some(ref var_name) = op.var {
+                                self.tuple_vars.insert(var_name.clone());
+                            }
+                        }
+                        // Propagate type hints through copies.
+                        if let Some(hint) = self.var_type_hints.get(src).cloned() {
+                            if let Some(ref var_name) = op.var {
+                                self.var_type_hints.insert(var_name.clone(), hint);
+                            }
+                        }
                         self.emit_line(&format!("{var} = {}", sanitize_ident(src)));
                     }
                 }
@@ -825,6 +850,17 @@ impl LuauBackend {
                 let out = self.out_var(op);
                 if let Some(ref args) = op.args {
                     if let Some(src) = args.first() {
+                        // Propagate tuple and type-hint tracking through aliases.
+                        if self.tuple_vars.contains(src) {
+                            if let Some(ref out_name) = op.out {
+                                self.tuple_vars.insert(out_name.clone());
+                            }
+                        }
+                        if let Some(hint) = self.var_type_hints.get(src).cloned() {
+                            if let Some(ref out_name) = op.out {
+                                self.var_type_hints.insert(out_name.clone(), hint);
+                            }
+                        }
                         self.emit_line(&format!("local {out} = {}", sanitize_ident(src)));
                     }
                 }
@@ -858,9 +894,8 @@ impl LuauBackend {
             "mul" | "inplace_mul" => self.emit_binary_op(op, "*"),
             "div" => self.emit_binary_op(op, "/"),
             "mod" => {
-                // Luau % uses truncated mod but matches Python floor-mod for
-                // positive divisors (the overwhelmingly common case in real code).
-                // Emit direct % for maximum performance.
+                // Python % and Luau % are both floor-mod (result sign matches divisor).
+                // Direct % is optimal — single LOP_MOD or LOP_MODK opcode.
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -870,13 +905,14 @@ impl LuauBackend {
                 }
             }
             "floordiv" => {
+                // Luau // operator maps to dedicated LOP_IDIV opcode — 2-3x faster
+                // than math.floor(a/b) which goes through FASTCALL.
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let lhs = sanitize_ident(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
-                    // Direct inline — no helper call overhead.
-                    self.emit_line(&format!("local {out} = math_floor({lhs} / {rhs})"));
+                    self.emit_line(&format!("local {out} = {lhs} // {rhs}"));
                 }
             }
             "pow" => {
@@ -890,13 +926,22 @@ impl LuauBackend {
                 }
             }
             "pow_mod" => {
+                // Python pow(base, exp, mod) uses modular exponentiation —
+                // computing base^exp directly overflows for large exponents.
+                // Emit a loop-based modular exponentiation (square-and-multiply).
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 3 {
                     let base = sanitize_ident(&args[0]);
                     let exp = sanitize_ident(&args[1]);
                     let modulus = sanitize_ident(&args[2]);
-                    self.emit_line(&format!("local {out} = ({base} ^ {exp}) % {modulus}"));
+                    self.emit_line(&format!(
+                        "local {out}; do local __b, __e, __m = {base} % {modulus}, {exp}, {modulus}; \
+                         local __r = 1; while __e > 0 do \
+                         if __e % 2 == 1 then __r = (__r * __b) % __m end; \
+                         __b = (__b * __b) % __m; __e = __e // 2 end; \
+                         {out} = __r end"
+                    ));
                 }
             }
             "matmul" => {
@@ -914,12 +959,15 @@ impl LuauBackend {
                 }
             }
             "trunc" => {
+                // Python math.trunc: truncates toward zero.
+                // math.floor truncates toward negative infinity — wrong for negatives.
+                // math.modf returns (integer_part, fractional_part).
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
+                    let v = sanitize_ident(val);
                     self.emit_line(&format!(
-                        "local {out} = math_floor({})",
-                        sanitize_ident(val)
+                        "local {out} = if {v} >= 0 then math_floor({v}) else math.ceil({v})"
                     ));
                 }
             }
@@ -989,7 +1037,7 @@ impl LuauBackend {
                     let op_str = op.s_value.as_deref().unwrap_or("+");
                     let expr = match op_str {
                         "+" | "-" | "*" | "/" | "%" => format!("{lhs} {op_str} {rhs}"),
-                        "//" => format!("math_floor({lhs} / {rhs})"),
+                        "//" => format!("{lhs} // {rhs}"),
                         "**" => format!("{lhs} ^ {rhs}"),
                         "&" => format!("bit32.band({lhs}, {rhs})"),
                         "|" => format!("bit32.bor({lhs}, {rhs})"),
@@ -1062,7 +1110,9 @@ impl LuauBackend {
                         let target = sanitize_label(target);
                         self.emit_line(&format!("if {cond} then goto {target} end"));
                     } else {
-                        self.emit_line(&format!("-- br_if {cond}"));
+                        self.emit_line(&format!(
+                            "error(\"[unsupported op: br_if {cond} missing target label]\")"
+                        ));
                     }
                 }
             }
@@ -1081,7 +1131,9 @@ impl LuauBackend {
                     let target = sanitize_label(target);
                     self.emit_line(&format!("if {cond} then goto {target} end"));
                 } else {
-                    self.emit_line(&format!("-- branch {cond}"));
+                    self.emit_line(&format!(
+                        "error(\"[unsupported op: branch {cond} missing target label]\")"
+                    ));
                 }
             }
             "branch_false" => {
@@ -1099,7 +1151,9 @@ impl LuauBackend {
                     let target = sanitize_label(target);
                     self.emit_line(&format!("if not {cond} then goto {target} end"));
                 } else {
-                    self.emit_line(&format!("-- branch_false {cond}"));
+                    self.emit_line(&format!(
+                        "error(\"[unsupported op: branch_false {cond} missing target label]\")"
+                    ));
                 }
             }
 
@@ -1304,14 +1358,107 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if !args.is_empty() {
                     let obj = sanitize_ident(&args[0]);
-                    let method = op.s_value.as_deref().unwrap_or("unknown");
-                    let method = sanitize_ident(method);
+                    let method_name = op.s_value.as_deref().unwrap_or("unknown");
+                    let method = sanitize_ident(method_name);
                     let call_args = args[1..]
                         .iter()
                         .map(|a| sanitize_ident(a))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    if let Some(ref out_name) = op.out {
+                    // When the receiver is a known list, emit direct table
+                    // operations instead of method calls (Luau tables don't
+                    // have Python list methods).
+                    let obj_is_list = self.var_type_hints.get(&args[0])
+                        .map_or(false, |t| t == "list");
+                    if obj_is_list {
+                        match method_name {
+                            "append" => {
+                                if let Some(val) = args.get(1) {
+                                    self.emit_line(&format!(
+                                        "table.insert({obj}, {})", sanitize_ident(val)
+                                    ));
+                                }
+                                // append returns None in Python; skip output.
+                            }
+                            "pop" => {
+                                if let Some(ref out_name) = op.out {
+                                    let out = sanitize_ident(out_name);
+                                    if args.len() > 1 {
+                                        let idx = sanitize_ident(&args[1]);
+                                        self.emit_line(&format!(
+                                            "local {out} = table.remove({obj}, {idx} + 1)"
+                                        ));
+                                    } else {
+                                        self.emit_line(&format!(
+                                            "local {out} = table.remove({obj})"
+                                        ));
+                                    }
+                                } else if args.len() > 1 {
+                                    let idx = sanitize_ident(&args[1]);
+                                    self.emit_line(&format!(
+                                        "table.remove({obj}, {idx} + 1)"
+                                    ));
+                                } else {
+                                    self.emit_line(&format!("table.remove({obj})"));
+                                }
+                            }
+                            "insert" => {
+                                if args.len() >= 3 {
+                                    let idx = sanitize_ident(&args[1]);
+                                    let val = sanitize_ident(&args[2]);
+                                    self.emit_line(&format!(
+                                        "table.insert({obj}, {idx} + 1, {val})"
+                                    ));
+                                }
+                            }
+                            "remove" => {
+                                if let Some(val) = args.get(1) {
+                                    let val = sanitize_ident(val);
+                                    self.emit_line(&format!(
+                                        "table.remove({obj}, table.find({obj}, {val}))"
+                                    ));
+                                }
+                            }
+                            "sort" => {
+                                self.emit_line(&format!("table.sort({obj})"));
+                            }
+                            "reverse" => {
+                                // In-place reverse via swap loop.
+                                self.emit_line(&format!(
+                                    "for __i = 1, math.floor(#{obj} / 2) do {obj}[__i], {obj}[#{obj} - __i + 1] = {obj}[#{obj} - __i + 1], {obj}[__i] end"
+                                ));
+                            }
+                            "clear" => {
+                                self.emit_line(&format!("table.clear({obj})"));
+                            }
+                            "copy" => {
+                                if let Some(ref out_name) = op.out {
+                                    let out = sanitize_ident(out_name);
+                                    self.emit_line(&format!(
+                                        "local {out} = table.clone({obj})"
+                                    ));
+                                    self.var_type_hints.insert(out_name.clone(), "list".to_string());
+                                }
+                            }
+                            "extend" => {
+                                if let Some(other) = args.get(1) {
+                                    let other = sanitize_ident(other);
+                                    self.emit_line(&format!(
+                                        "table.move({other}, 1, #{other}, #{obj} + 1, {obj})"
+                                    ));
+                                }
+                            }
+                            _ => {
+                                // Fall through to generic method call for count/index/etc.
+                                if let Some(ref out_name) = op.out {
+                                    let out = sanitize_ident(out_name);
+                                    self.emit_line(&format!("local {out} = {obj}:{method}({call_args})"));
+                                } else {
+                                    self.emit_line(&format!("{obj}:{method}({call_args})"));
+                                }
+                            }
+                        }
+                    } else if let Some(ref out_name) = op.out {
                         let out = sanitize_ident(out_name);
                         self.emit_line(&format!("local {out} = {obj}:{method}({call_args})"));
                     } else {
@@ -1382,6 +1529,9 @@ impl LuauBackend {
             // ================================================================
             "build_list" | "list_new" | "callargs_new" => {
                 let out = self.out_var(op);
+                if let Some(ref out_name) = op.out {
+                    self.var_type_hints.insert(out_name.clone(), "list".to_string());
+                }
                 let items = op
                     .args
                     .as_deref()
@@ -1463,7 +1613,7 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let list = sanitize_ident(&args[0]);
                     let val = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("table.insert({list}, {val})"));
+                    self.emit_line(&format!("{list}[#{list} + 1] = {val}"));
                 }
             }
             "list_pop" => {
@@ -1484,7 +1634,7 @@ impl LuauBackend {
                     let list = sanitize_ident(&args[0]);
                     let other = sanitize_ident(&args[1]);
                     self.emit_line(&format!(
-                        "for _, __v in ipairs({other}) do table.insert({list}, __v) end"
+                        "for __i = 1, #{other} do {list}[#{list} + 1] = {other}[__i] end"
                     ));
                 }
             }
@@ -1561,7 +1711,7 @@ impl LuauBackend {
                     let val = sanitize_ident(&args[0]);
                     let count = sanitize_ident(&args[1]);
                     self.emit_line(&format!(
-                        "local {out} = {{}}; for __i = 1, {count} do table.insert({out}, {val}) end"
+                        "local {out} = table.create({count}, {val})"
                     ));
                 } else {
                     self.emit_line(&format!("local {out} = {{}}"));
@@ -1697,7 +1847,28 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let container = sanitize_ident(&args[0]);
                     let val = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("local {out} = ({container}[{val}] ~= nil)"));
+                    // Use type_hint or container_type to specialize.
+                    let is_dict = matches!(
+                        op.type_hint.as_deref(),
+                        Some("dict") | Some("set") | Some("frozenset")
+                    ) || matches!(
+                        op.container_type.as_deref(),
+                        Some("dict") | Some("set") | Some("frozenset")
+                    );
+                    if is_dict {
+                        self.emit_line(&format!("local {out} = ({container}[{val}] ~= nil)"));
+                    } else {
+                        // Generic contains: string→find (FASTCALL), list→table.find (FASTCALL),
+                        // dict→key lookup. table.find is a FASTCALL that does linear scan
+                        // without allocating an IIFE closure — much faster than ipairs loop.
+                        self.emit_line(&format!(
+                            "local {out} = if type({container}) == \"string\" then \
+                             (string.find({container}, {val}, 1, true) ~= nil) \
+                             elseif type({container}) == \"table\" then \
+                             (table.find({container}, {val}) ~= nil or {container}[{val}] ~= nil) \
+                             else false"
+                        ));
+                    }
                 }
             }
 
@@ -1710,11 +1881,23 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let container = sanitize_ident(&args[0]);
                     let key = sanitize_ident(&args[1]);
-                    // When the key is known-integer (from fast_int or type_hint),
-                    // skip the runtime type guard and always offset by +1.
+                    // Propagate type hints: if the container is a known list,
+                    // the key is integer-indexed and the result may also be a
+                    // list (nested lists).  We also infer integer keys when the
+                    // container is a known list.
+                    let container_is_list = self.var_type_hints.get(&args[0])
+                        .map_or(false, |t| t == "list");
                     let key_is_int = op.fast_int == Some(true)
                         || op.raw_int == Some(true)
-                        || matches!(op.type_hint.as_deref(), Some("int"));
+                        || matches!(op.type_hint.as_deref(), Some("int"))
+                        || container_is_list;
+                    // When the container has type_hint="list" on the op itself,
+                    // propagate the hint to the output variable.
+                    if container_is_list || matches!(op.type_hint.as_deref(), Some("list")) {
+                        if let Some(ref out_name) = op.out {
+                            self.var_type_hints.insert(out_name.clone(), "list".to_string());
+                        }
+                    }
                     if key_is_int {
                         self.emit_line(&format!("local {out} = {container}[{key} + 1]"));
                     } else {
@@ -1743,11 +1926,24 @@ impl LuauBackend {
                 }
             }
             "del_index" | "del_item" => {
+                // Python del lst[i] removes the element and shifts remaining.
+                // Setting to nil creates a hole that breaks # and ipairs.
+                // For integer keys (list deletion), use table.remove with +1 offset.
+                // For string keys (dict deletion), nil assignment is correct.
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let container = sanitize_ident(&args[0]);
                     let key = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("{container}[{key}] = nil"));
+                    let key_is_int = op.fast_int == Some(true)
+                        || op.raw_int == Some(true)
+                        || matches!(op.type_hint.as_deref(), Some("int"));
+                    if key_is_int {
+                        self.emit_line(&format!("table.remove({container}, {key} + 1)"));
+                    } else {
+                        self.emit_line(&format!(
+                            "if type({key}) == \"number\" then table.remove({container}, {key} + 1) else {container}[{key}] = nil end"
+                        ));
+                    }
                 }
             }
 
@@ -1926,10 +2122,23 @@ impl LuauBackend {
             // Len / type introspection
             // ================================================================
             "len" => {
+                // # operator (LOP_LENGTH) is a single opcode — 2-3x faster than
+                // molt_len() function call. Use # directly when type is known;
+                // fall back to molt_len() for unknown types (handles 0 for non-table/string).
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(obj) = args.first() {
-                    self.emit_line(&format!("local {out} = molt_len({})", sanitize_ident(obj)));
+                    let obj_s = sanitize_ident(obj);
+                    let is_known_lennable = matches!(
+                        op.type_hint.as_deref(),
+                        Some("list") | Some("str") | Some("string") | Some("bytes") | Some("tuple")
+                    ) || self.var_type_hints.get(obj.as_str())
+                        .map_or(false, |h| h == "list" || h == "str");
+                    if is_known_lennable {
+                        self.emit_line(&format!("local {out} = #{obj_s}"));
+                    } else {
+                        self.emit_line(&format!("local {out} = molt_len({obj_s})"));
+                    }
                 }
             }
             "id" => {
@@ -1968,7 +2177,21 @@ impl LuauBackend {
             }
             "isinstance" | "issubclass" => {
                 let out = self.out_var(op);
-                self.emit_line(&format!("local {out} = true -- [stub: {}]", op.kind));
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let obj = sanitize_ident(&args[0]);
+                    let cls = sanitize_ident(&args[1]);
+                    // Check if the object's type matches the class, or if it's a table
+                    // with matching metatable. For builtins: string→str, number→int/float, etc.
+                    self.emit_line(&format!(
+                        "local {out} = (type({obj}) == \"table\" and type({cls}) == \"table\") or \
+                         (type({obj}) == \"number\" and ({cls} == \"int\" or {cls} == \"float\" or {cls} == \"number\")) or \
+                         (type({obj}) == \"string\" and ({cls} == \"str\" or {cls} == \"string\")) or \
+                         (type({obj}) == \"boolean\" and {cls} == \"bool\")"
+                    ));
+                } else {
+                    self.emit_line(&format!("local {out} = true -- [stub: {}]", op.kind));
+                }
             }
 
             // ================================================================
@@ -2139,7 +2362,13 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = {mapped}"));
                 }
             }
-            "class_new" | "module_new" | "object_new" | "builtin_type" => {
+            "class_new" => {
+                let out = self.out_var(op);
+                self.emit_line(&format!("local {out} = {{}}"));
+                // Self-referential __index enables Luau's inline caching
+                self.emit_line(&format!("{out}.__index = {out}"));
+            }
+            "module_new" | "object_new" | "builtin_type" => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = {{}}"));
             }
@@ -2157,9 +2386,23 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = nil -- bound_method missing args"));
                 }
             }
-            "class_set_base"
-            | "object_set_class"
-            | "class_set_layout_version"
+            "class_set_base" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let class = sanitize_ident(&args[0]);
+                    let base = sanitize_ident(&args[1]);
+                    self.emit_line(&format!("setmetatable({class}, {{__index = {base}}})"));
+                }
+            }
+            "object_set_class" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let obj = sanitize_ident(&args[0]);
+                    let class = sanitize_ident(&args[1]);
+                    self.emit_line(&format!("setmetatable({obj}, {class})"));
+                }
+            }
+            "class_set_layout_version"
             | "class_apply_set_name"
             | "class_layout_version" => {
                 self.emit_line(&format!("-- [class op: {}]", op.kind));
@@ -2216,7 +2459,7 @@ impl LuauBackend {
                         // Look up in module cache to resolve `import math` etc.
                         let name_var = sanitize_ident(&args[1]);
                         self.emit_line(&format!(
-                            "local {out} = (molt_module_cache[{name_var}] or nil)"
+                            "local {out} = molt_module_cache[{name_var}]"
                         ));
                     } else {
                         // module_get_attr: args[0] = module table, args[1] = attr name var.
@@ -2254,10 +2497,24 @@ impl LuauBackend {
             // ================================================================
             // Alloc / memory (table stubs)
             // ================================================================
+            "alloc_class" | "alloc_class_trusted" | "alloc_class_static" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(class_var) = args.first() {
+                    let class_ref = sanitize_ident(class_var);
+                    self.emit_line(&format!(
+                        "local {out} = setmetatable({{}}, {class_ref})"
+                    ));
+                } else if let Some(ref class_name) = op.s_value {
+                    let class_ref = sanitize_ident(class_name);
+                    self.emit_line(&format!(
+                        "local {out} = setmetatable({{}}, {class_ref})"
+                    ));
+                } else {
+                    self.emit_line(&format!("local {out} = {{}}"));
+                }
+            }
             "alloc"
-            | "alloc_class"
-            | "alloc_class_trusted"
-            | "alloc_class_static"
             | "alloc_task" => {
                 let out = self.out_var(op);
                 // If this is a genexpr/listcomp task, create a coroutine-based
@@ -2271,15 +2528,16 @@ impl LuauBackend {
                     self.emit_line(&format!(
                         "local {out} = (function()\n\
                          \t\tlocal __result = {{}}\n\
+                         \t\tlocal __n = 0\n\
                          \t\tlocal __co = coroutine.wrap({func_name})\n\
                          \t\twhile true do\n\
                          \t\t\tlocal __item = __co()\n\
                          \t\t\tif __item == nil then break end\n\
                          \t\t\tif type(__item) == \"table\" then\n\
                          \t\t\t\tif __item[2] == true then break end\n\
-                         \t\t\t\ttable.insert(__result, __item[1])\n\
+                         \t\t\t\t__n += 1; __result[__n] = __item[1]\n\
                          \t\t\telse\n\
-                         \t\t\t\ttable.insert(__result, __item)\n\
+                         \t\t\t\t__n += 1; __result[__n] = __item\n\
                          \t\t\tend\n\
                          \t\tend\n\
                          \t\treturn __result\n\
@@ -2447,7 +2705,19 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = nil -- [{}]", op.kind));
                 }
             }
-            "super_new" | "classmethod_new" | "staticmethod_new" | "property_new" => {
+            "super_new" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let class = sanitize_ident(&args[0]);
+                    self.emit_line(&format!(
+                        "local {out} = setmetatable({{}}, {{__index = getmetatable({class}).__index}})"
+                    ));
+                } else {
+                    self.emit_line(&format!("local {out} = {{}}"));
+                }
+            }
+            "classmethod_new" | "staticmethod_new" | "property_new" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     self.emit_line(&format!("local {out} = nil -- [{}]", op.kind));
@@ -2524,7 +2794,7 @@ impl LuauBackend {
                     ));
                     self.push_indent();
                     self.emit_line(&format!("local acc = {init}"));
-                    self.emit_line(&format!("for _, v in ipairs({iterable}) do {body_op} end"));
+                    self.emit_line(&format!("for __vi = 1, #{iterable} do local v = {iterable}[__vi]; {body_op} end"));
                     self.emit_line(&format!("{out} = {{acc, false}}"));
                     self.pop_indent();
                     self.emit_line("else");
@@ -2598,12 +2868,28 @@ impl LuauBackend {
                     }
                 }
             }
-            "string_strip" | "string_lstrip" | "string_rstrip" => {
+            "string_strip" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(s) = args.first() {
                     let s = sanitize_ident(s);
                     self.emit_line(&format!("local {out} = ({s}:match(\"^%s*(.-)%s*$\"))"));
+                }
+            }
+            "string_lstrip" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(s) = args.first() {
+                    let s = sanitize_ident(s);
+                    self.emit_line(&format!("local {out} = ({s}:match(\"^%s*(.+)\") or \"\")"));
+                }
+            }
+            "string_rstrip" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(s) = args.first() {
+                    let s = sanitize_ident(s);
+                    self.emit_line(&format!("local {out} = ({s}:match(\"^(.-)%s*$\"))"));
                 }
             }
             "string_upper" => {
@@ -2654,8 +2940,15 @@ impl LuauBackend {
                 if args.len() >= 3 {
                     let s = sanitize_ident(&args[0]);
                     let old = sanitize_ident(&args[1]);
-                    let new = sanitize_ident(&args[2]);
-                    self.emit_line(&format!("local {out} = (string.gsub({s}, {old}, {new}))"));
+                    let new_val = sanitize_ident(&args[2]);
+                    // Escape Lua pattern magic characters in search string so gsub
+                    // does literal matching. Also escape % in replacement string
+                    // since gsub interprets %0, %1, etc. as capture references.
+                    self.emit_line(&format!(
+                        "local {out} = (string.gsub({s}, \
+                         {old}:gsub(\"[%(%)%.%%%+%-%*%?%[%]%^%$]\", \"%%%0\"), \
+                         ({new_val}):gsub(\"%%\", \"%%%%\")))"
+                    ));
                 }
             }
             "string_find" => {
@@ -2957,7 +3250,8 @@ fn collect_luau_preview_blockers(source: &str) -> Vec<String> {
             // goto/branch ops now emit real Luau labels and gotos for
             // Roblox Studio compatibility.  Nil-stub comments like
             // `-- [exception_last]` are harmless Luau.
-            let is_blocker = trimmed.contains("-- [unsupported op:");
+            let is_blocker = trimmed.contains("-- [unsupported op:")
+                || trimmed.contains("error(\"[unsupported op:");
             if is_blocker {
                 Some(trimmed.to_string())
             } else {
@@ -2993,6 +3287,7 @@ pub fn validate_luau_source(source: &str) -> Result<(), String> {
 /// Each entry is a (line_number, category, message) triple.
 pub fn review_luau_perf(source: &str) -> Vec<(usize, &'static str, String)> {
     let mut issues = Vec::new();
+    let has_file_native = source.lines().any(|l| l.trim() == "--!native");
     for (i, line) in source.lines().enumerate() {
         let trimmed = line.trim();
         let ln = i + 1;
@@ -3009,7 +3304,7 @@ pub fn review_luau_perf(source: &str) -> Vec<(usize, &'static str, String)> {
             issues.push((
                 ln,
                 "helper-call",
-                "molt_floor_div() not inlined — use math_floor(a / b)".into(),
+                "molt_floor_div() not inlined — use a // b (LOP_IDIV)".into(),
             ));
         }
         if trimmed.contains("molt_mod(") {
@@ -3039,7 +3334,11 @@ pub fn review_luau_perf(source: &str) -> Vec<(usize, &'static str, String)> {
         }
 
         // Missing @native on `local function` definitions (only syntax that supports @native).
-        if trimmed.starts_with("local function ") && !trimmed.starts_with("--") {
+        // Skip this check if the file has --!native directive (enables native for all functions).
+        if !has_file_native
+            && trimmed.starts_with("local function ")
+            && !trimmed.starts_with("--")
+        {
             // Check if previous line has @native.
             if i == 0
                 || !source
@@ -4658,6 +4957,380 @@ fn simplify_return_chain(source: &mut String) {
     eprintln!("[molt-luau] Simplified {} return chains", count);
 }
 
+/// Returns `true` if the expression is a *pure* non-trivial RHS suitable for
+/// common-subexpression elimination or loop-invariant hoisting.
+///
+/// "Pure" means no observable side effects: arithmetic, comparisons,
+/// table reads, known-pure math/string builtins, concatenation, and the
+/// length operator are accepted.  Arbitrary function calls are rejected.
+fn is_pure_expr(s: &str) -> bool {
+    // Reject simple literals and variable refs — no point in CSE for those.
+    if is_simple_literal(s) || is_simple_var_ref(s) {
+        return false;
+    }
+    // If the expression contains a parenthesised call, only allow known-pure
+    // math/string/conversion functions.
+    if s.contains('(') {
+        const ALLOWED: &[&str] = &[
+            "math.floor(",
+            "math.sqrt(",
+            "math.abs(",
+            "math.sin(",
+            "math.cos(",
+            "math.ceil(",
+            "math_floor(",
+            "math.min(",
+            "math.max(",
+            "string.find(",
+            "string.sub(",
+            "string.len(",
+            "tonumber(",
+            "tostring(",
+        ];
+        if !ALLOWED.iter().any(|p| s.contains(p)) {
+            return false;
+        }
+    }
+    // Must not contain an embedded assignment.
+    if s.contains(" = ") {
+        return false;
+    }
+    true
+}
+
+/// Common-subexpression elimination (CSE).
+///
+/// Scans for `local vN = <pure_expr>` declarations.  When the *exact* same
+/// pure expression appears as the RHS of a later `local vM = <pure_expr>` at
+/// the same indentation depth, the second declaration is rewritten to
+/// `local vM = vN` (reuse the first computation).
+///
+/// Only applies when `vN` is not reassigned between the two declarations and
+/// none of the variables referenced in the expression are reassigned either.
+fn eliminate_common_subexpressions(source: &mut String) {
+    let lines: Vec<&str> = source.lines().collect();
+
+    // Phase 1: collect `local vN = <pure_expr>` keyed by (expr, indent).
+    let mut expr_map: BTreeMap<String, Vec<(usize, String)>> = BTreeMap::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("local v") {
+            if let Some(eq_pos) = rest.find(" = ") {
+                let suffix = &rest[..eq_pos];
+                if suffix.chars().all(|c| c.is_ascii_digit()) {
+                    let var = format!("v{suffix}");
+                    let rhs = rest[eq_pos + 3..].trim();
+                    if is_pure_expr(rhs) && rhs.len() > 3 {
+                        let indent = line.len() - trimmed.len();
+                        let key = format!("{}@{}", rhs, indent);
+                        expr_map.entry(key).or_default().push((i, var));
+                    }
+                }
+            }
+        }
+    }
+
+    // Phase 2: for expressions with 2+ occurrences, replace later ones.
+    let mut replacements: BTreeMap<usize, String> = BTreeMap::new();
+    let mut count: usize = 0;
+
+    for (_key, occurrences) in &expr_map {
+        if occurrences.len() < 2 {
+            continue;
+        }
+        let (first_line, first_var) = &occurrences[0];
+
+        for (later_line, later_var) in &occurrences[1..] {
+            // Verify first_var is not reassigned between the two sites.
+            let mut reassigned = false;
+            for j in (*first_line + 1)..*later_line {
+                let t = lines[j].trim();
+                if t.starts_with(&format!("{first_var} = ")) {
+                    reassigned = true;
+                    break;
+                }
+            }
+            if reassigned {
+                continue;
+            }
+
+            // Also verify that none of the vN variables referenced in the
+            // expression are reassigned between the two sites.
+            let expr_part = {
+                let t = lines[*first_line].trim();
+                let rest = t.strip_prefix("local v").unwrap();
+                let eq = rest.find(" = ").unwrap();
+                rest[eq + 3..].trim()
+            };
+            let mut expr_vars_reassigned = false;
+            {
+                let bytes = expr_part.as_bytes();
+                let mut pos = 0;
+                while pos < bytes.len() {
+                    if bytes[pos] == b'v'
+                        && (pos == 0 || !is_ident_char(bytes[pos - 1]))
+                    {
+                        let start = pos;
+                        pos += 1;
+                        while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+                            pos += 1;
+                        }
+                        if pos > start + 1
+                            && (pos >= bytes.len() || !is_ident_char(bytes[pos]))
+                        {
+                            let ref_var =
+                                std::str::from_utf8(&bytes[start..pos]).unwrap_or("");
+                            // Check reassignment between the two sites.
+                            for j in (*first_line + 1)..*later_line {
+                                let t = lines[j].trim();
+                                if t.starts_with(&format!("{ref_var} = ")) {
+                                    expr_vars_reassigned = true;
+                                    break;
+                                }
+                            }
+                            if expr_vars_reassigned {
+                                break;
+                            }
+                        }
+                    } else {
+                        pos += 1;
+                    }
+                }
+            }
+            if expr_vars_reassigned {
+                continue;
+            }
+
+            let indent_str = &lines[*later_line]
+                [..lines[*later_line].len() - lines[*later_line].trim().len()];
+            replacements.insert(
+                *later_line,
+                format!("{indent_str}local {later_var} = {first_var}"),
+            );
+            count += 1;
+        }
+    }
+
+    if replacements.is_empty() {
+        return;
+    }
+
+    let mut result = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(replacement) = replacements.get(&i) {
+            result.push_str(replacement);
+        } else {
+            result.push_str(line);
+        }
+        result.push('\n');
+    }
+    *source = result;
+    eprintln!(
+        "[molt-luau] Eliminated {} common subexpressions",
+        count
+    );
+}
+
+/// Loop-invariant code motion (LICM).
+///
+/// Finds `while true do … end` and `for … do … end` loops.  Inside the
+/// immediate loop body (one indent level deeper than the loop header),
+/// identifies `local vN = <pure_expr>` where *all* referenced variables
+/// are defined outside the loop and are never modified inside the loop.
+/// Those declarations are hoisted to just before the loop.
+fn hoist_loop_invariants(source: &mut String) {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut hoisted_lines: BTreeSet<usize> = BTreeSet::new();
+    let mut insertions: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    let mut count: usize = 0;
+
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        let is_loop = trimmed == "while true do"
+            || (trimmed.starts_with("for ") && trimmed.ends_with(" do"));
+        if !is_loop {
+            i += 1;
+            continue;
+        }
+
+        let loop_start = i;
+        let loop_indent = lines[i].len() - trimmed.len();
+
+        // Find matching `end` at the same indent.
+        let mut depth: usize = 1;
+        let mut loop_end = i + 1;
+        while loop_end < lines.len() && depth > 0 {
+            let t = lines[loop_end].trim();
+            // Count nesting openers.
+            if t == "while true do"
+                || (t.starts_with("for ") && t.ends_with(" do"))
+                || (t.starts_with("if ") && t.ends_with(" then"))
+                || t == "else"
+                || (t.starts_with("elseif ") && t.ends_with(" then"))
+                || t.starts_with("local function ")
+            {
+                // `else` / `elseif` don't add depth, they just continue the
+                // block opened by `if`.  Only count real block openers.
+                if !t.starts_with("else") {
+                    depth += 1;
+                }
+            } else if t == "end" {
+                depth -= 1;
+            }
+            if depth > 0 {
+                loop_end += 1;
+            }
+        }
+
+        if depth != 0 {
+            i += 1;
+            continue;
+        }
+
+        // Collect every variable modified inside the loop body.
+        let mut modified_in_loop: BTreeSet<String> = BTreeSet::new();
+        for j in (loop_start + 1)..loop_end {
+            let t = lines[j].trim();
+            // Bare assignment: `vN = ...`
+            if t.starts_with('v') {
+                if let Some(eq) = t.find(" = ") {
+                    let lhs = &t[..eq];
+                    if lhs.starts_with('v')
+                        && lhs[1..].chars().all(|c| c.is_ascii_digit())
+                    {
+                        modified_in_loop.insert(lhs.to_string());
+                    }
+                }
+            }
+            // `local vN = ...` also defines vN inside the loop.
+            if let Some(rest) = t.strip_prefix("local v") {
+                if let Some(eq) = rest.find(" = ") {
+                    let suffix = &rest[..eq];
+                    if suffix.chars().all(|c| c.is_ascii_digit()) {
+                        modified_in_loop.insert(format!("v{suffix}"));
+                    }
+                }
+            }
+            // `for` iteration variables.
+            if t.starts_with("for ") {
+                if let Some(in_pos) = t.find(" in ") {
+                    let vars_part = &t[4..in_pos];
+                    for v in vars_part.split(", ") {
+                        modified_in_loop.insert(v.trim().to_string());
+                    }
+                }
+                // Numeric for: `for vN = ...`
+                if let Some(eq_pos) = t.find(" = ") {
+                    let var_part = &t[4..eq_pos];
+                    if !var_part.contains(' ') {
+                        modified_in_loop.insert(var_part.trim().to_string());
+                    }
+                }
+            }
+        }
+
+        // Find hoistable declarations at exactly one indent deeper.
+        let body_indent = loop_indent + 1;
+        for j in (loop_start + 1)..loop_end {
+            let t = lines[j].trim();
+            let line_indent = lines[j].len() - t.len();
+
+            if line_indent != body_indent {
+                continue;
+            }
+
+            if let Some(rest) = t.strip_prefix("local v") {
+                if let Some(eq) = rest.find(" = ") {
+                    let suffix = &rest[..eq];
+                    if !suffix.chars().all(|c| c.is_ascii_digit()) {
+                        continue;
+                    }
+                    let var = format!("v{suffix}");
+                    let rhs = rest[eq + 3..].trim();
+
+                    if !is_pure_expr(rhs) {
+                        continue;
+                    }
+
+                    // The declared variable itself must not be modified in loop.
+                    if modified_in_loop.contains(&var) {
+                        continue;
+                    }
+
+                    // All vN references in the RHS must not be modified in loop.
+                    let mut all_invariant = true;
+                    let bytes = rhs.as_bytes();
+                    let mut pos = 0;
+                    while pos < bytes.len() {
+                        if bytes[pos] == b'v'
+                            && (pos == 0 || !is_ident_char(bytes[pos - 1]))
+                        {
+                            let start = pos;
+                            pos += 1;
+                            while pos < bytes.len() && bytes[pos].is_ascii_digit()
+                            {
+                                pos += 1;
+                            }
+                            if pos > start + 1
+                                && (pos >= bytes.len()
+                                    || !is_ident_char(bytes[pos]))
+                            {
+                                let ref_var =
+                                    std::str::from_utf8(&bytes[start..pos])
+                                        .unwrap_or("");
+                                if modified_in_loop.contains(ref_var) {
+                                    all_invariant = false;
+                                    break;
+                                }
+                            }
+                        } else {
+                            pos += 1;
+                        }
+                    }
+
+                    if !all_invariant {
+                        continue;
+                    }
+
+                    // Hoist: emit at the same indent as the loop header.
+                    let hoist_indent =
+                        &lines[loop_start][..loop_indent];
+                    insertions
+                        .entry(loop_start)
+                        .or_default()
+                        .push(format!("{hoist_indent}{t}"));
+                    hoisted_lines.insert(j);
+                    count += 1;
+                }
+            }
+        }
+
+        i += 1;
+    }
+
+    if hoisted_lines.is_empty() {
+        return;
+    }
+
+    let mut result = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(hoisted) = insertions.get(&i) {
+            for h in hoisted {
+                result.push_str(h);
+                result.push('\n');
+            }
+        }
+        if !hoisted_lines.contains(&i) {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    *source = result;
+    eprintln!("[molt-luau] Hoisted {} loop-invariant locals", count);
+}
+
 /// Sink single-use locals into their sole consumer when the consumer is on
 /// the immediately following (non-blank, non-comment) line.
 ///
@@ -4951,7 +5624,7 @@ fn optimize_luau_perf(source: &mut String) {
             break;
         }
 
-        // Pass 2: Inline molt_floor_div(a, b) → math_floor(a / b)
+        // Pass 2: Inline molt_floor_div(a, b) → a // b (LOP_IDIV opcode)
         while !is_func_def {
             let Some(start) = optimized.find("molt_floor_div(") else {
                 break;
@@ -4961,7 +5634,7 @@ fn optimize_luau_perf(source: &mut String) {
                 if let Some(comma) = inner.find(", ") {
                     let a = inner[..comma].trim();
                     let b = inner[comma + 2..].trim();
-                    let replacement = format!("math_floor({a} / {b})");
+                    let replacement = format!("{a} // {b}");
                     optimized = format!(
                         "{}{}{}",
                         &optimized[..start],
@@ -5212,6 +5885,415 @@ fn find_matching_paren(s: &str, open_pos: usize) -> Option<usize> {
         i += 1;
     }
     None
+}
+
+/// Freeze constant tables: when a `local vN = {items}` declaration at indent
+/// level 1 (function body top-level) is never mutated, insert `table.freeze(vN)`
+/// immediately after the declaration.  The Luau VM optimizes reads from frozen
+/// tables and prevents accidental mutation.
+fn freeze_constant_tables(source: &mut String) {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut inserts: BTreeMap<usize, String> = BTreeMap::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        // Must be at indent level 1 (one tab or leading whitespace consistent
+        // with function body top-level).
+        let indent = &line[..line.len() - trimmed.len()];
+        if indent.is_empty() {
+            continue;
+        }
+        // Match `local vN = {` ... `}`
+        if !trimmed.starts_with("local v") {
+            continue;
+        }
+        let rest = &trimmed["local ".len()..];
+        // Extract variable name (vN where N is digits)
+        let var_end = rest
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .unwrap_or(rest.len());
+        let var_name = &rest[..var_end];
+        if !var_name.starts_with('v')
+            || var_name.len() < 2
+            || !var_name[1..].chars().all(|c| c.is_ascii_digit())
+        {
+            continue;
+        }
+
+        // Check RHS is a table literal: `= {`...`}`
+        let after_var = rest[var_end..].trim();
+        if !after_var.starts_with("= {") {
+            continue;
+        }
+        // The table literal might span multiple lines; find closing `}`.
+        // For simplicity, only handle single-line table literals.
+        if !after_var.ends_with('}') {
+            continue;
+        }
+
+        // Now check that vN is never mutated anywhere in the source.
+        let var = var_name.to_string();
+        let mut mutated = false;
+        for (j, other_line) in lines.iter().enumerate() {
+            if j == i {
+                continue;
+            }
+            let ot = other_line.trim();
+            // Check: `vN[...] = `, `vN.xxx = `, or bare `vN = ` (reassignment)
+            if ot.starts_with(&format!("{var}[")) && ot.contains(" = ") {
+                mutated = true;
+                break;
+            }
+            if ot.starts_with(&format!("{var}.")) && ot.contains(" = ") {
+                mutated = true;
+                break;
+            }
+            // Bare reassignment: `vN = expr` but NOT `local vN = expr`
+            if ot.starts_with(&format!("{var} = ")) && !ot.starts_with(&format!("local {var}")) {
+                mutated = true;
+                break;
+            }
+            // Mutating function calls: table.insert(vN, ...), table.remove(vN, ...),
+            // table.sort(vN...), table.clear(vN)
+            for mfn in &[
+                "table.insert(",
+                "table.remove(",
+                "table.sort(",
+                "table.clear(",
+            ] {
+                if let Some(pos) = ot.find(mfn) {
+                    let after_paren = &ot[pos + mfn.len()..];
+                    // First arg should be vN
+                    if after_paren.starts_with(&var)
+                        && after_paren[var.len()..]
+                            .starts_with(|c: char| c == ')' || c == ',')
+                    {
+                        mutated = true;
+                        break;
+                    }
+                }
+            }
+            if mutated {
+                break;
+            }
+        }
+
+        if !mutated {
+            inserts.insert(i, format!("{indent}table.freeze({var})"));
+        }
+    }
+
+    if inserts.is_empty() {
+        return;
+    }
+
+    let count = inserts.len();
+    let mut result = String::with_capacity(source.len() + count * 30);
+    for (i, line) in lines.iter().enumerate() {
+        result.push_str(line);
+        result.push('\n');
+        if let Some(freeze_line) = inserts.get(&i) {
+            result.push_str(freeze_line);
+            result.push('\n');
+        }
+    }
+    *source = result;
+    eprintln!("[molt-luau] Froze {} constant tables", count);
+}
+
+/// Multi-return optimization: replace `local vN = {a, b, c}; return table.unpack(vN)`
+/// with `return a, b, c`, eliminating an unnecessary table allocation.
+fn optimize_multi_return(source: &mut String) {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut remove_lines: BTreeSet<usize> = BTreeSet::new();
+    let mut replacements: BTreeMap<usize, String> = BTreeMap::new();
+
+    // Count variable uses for filtering.
+    let mut var_use_count: BTreeMap<String, usize> = BTreeMap::new();
+    for line in &lines {
+        let bytes = line.as_bytes();
+        let mut pos = 0;
+        while pos < bytes.len() {
+            if bytes[pos] == b'v' && (pos == 0 || !is_ident_char(bytes[pos - 1])) {
+                let start = pos;
+                pos += 1;
+                while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+                    pos += 1;
+                }
+                if pos > start + 1 && (pos >= bytes.len() || !is_ident_char(bytes[pos])) {
+                    let var = std::str::from_utf8(&bytes[start..pos]).unwrap_or("");
+                    *var_use_count.entry(var.to_string()).or_insert(0) += 1;
+                }
+            } else {
+                pos += 1;
+            }
+        }
+    }
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        // Match: `local vN = {items}`
+        if !trimmed.starts_with("local v") {
+            continue;
+        }
+        let rest = &trimmed["local ".len()..];
+        let var_end = rest
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .unwrap_or(rest.len());
+        let var_name = &rest[..var_end];
+        if !var_name.starts_with('v')
+            || var_name.len() < 2
+            || !var_name[1..].chars().all(|c| c.is_ascii_digit())
+        {
+            continue;
+        }
+        let after_var = rest[var_end..].trim();
+        if !after_var.starts_with("= {") || !after_var.ends_with('}') {
+            continue;
+        }
+
+        // Extract items between { and }
+        let inner = &after_var[2..after_var.len()].trim();
+        let inner = &inner[1..inner.len() - 1]; // strip { and }
+        // Must be positional entries only (no `=` signs which indicate keyed entries)
+        if inner.contains('=') {
+            continue;
+        }
+        let items_str = inner.trim();
+        if items_str.is_empty() {
+            continue;
+        }
+
+        // vN must be used exactly 2 times (declaration + return)
+        let count = var_use_count.get(var_name).copied().unwrap_or(0);
+        if count != 2 {
+            continue;
+        }
+
+        // Look for `return table.unpack(vN)` on a following line
+        let expected_return = format!("return table.unpack({var_name})");
+        let mut found_return = None;
+        for j in (i + 1)..lines.len() {
+            let jt = lines[j].trim();
+            if jt.is_empty() || jt.starts_with("--") {
+                continue;
+            }
+            if jt == expected_return {
+                found_return = Some(j);
+            }
+            break;
+        }
+
+        if let Some(ret_line) = found_return {
+            let indent = &line[..line.len() - trimmed.len()];
+            replacements.insert(ret_line, format!("{indent}return {items_str}"));
+            remove_lines.insert(i);
+        }
+    }
+
+    if remove_lines.is_empty() && replacements.is_empty() {
+        return;
+    }
+
+    let count = replacements.len();
+    let mut result = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if remove_lines.contains(&i) {
+            continue;
+        }
+        if let Some(replacement) = replacements.get(&i) {
+            result.push_str(replacement);
+        } else {
+            result.push_str(line);
+        }
+        result.push('\n');
+    }
+    *source = result;
+    eprintln!(
+        "[molt-luau] Optimized {} multi-return pack/unpack sequences",
+        count
+    );
+}
+
+/// Index folding for range loops: when `for vN = 0, expr - 1 do` and every use
+/// of `vN` in the loop body is `[vN + 1]`, rewrite to `for vN = 1, expr do`
+/// and replace `[vN + 1]` with `[vN]`, eliminating one ADD per iteration.
+fn fold_range_indices(source: &mut String) {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut replacements: BTreeMap<usize, String> = BTreeMap::new();
+
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        // Match: `for vN = 0, EXPR - 1 do` or `for vN = 0, EXPR - 1, 1 do`
+        if !trimmed.starts_with("for v") {
+            i += 1;
+            continue;
+        }
+        let rest = &trimmed["for ".len()..];
+        let eq_pos = match rest.find(" = ") {
+            Some(p) => p,
+            None => {
+                i += 1;
+                continue;
+            }
+        };
+        let var_name = &rest[..eq_pos];
+        if !var_name.starts_with('v')
+            || var_name.len() < 2
+            || !var_name[1..].chars().all(|c| c.is_ascii_digit())
+        {
+            i += 1;
+            continue;
+        }
+
+        let after_eq = rest[eq_pos + 3..].trim(); // after " = "
+        // Must start with "0, "
+        if !after_eq.starts_with("0, ") {
+            i += 1;
+            continue;
+        }
+        let bound_and_rest = &after_eq[3..]; // after "0, "
+
+        // Must end with " do"
+        if !bound_and_rest.ends_with(" do") {
+            i += 1;
+            continue;
+        }
+        let bound_part = &bound_and_rest[..bound_and_rest.len() - 3]; // strip " do"
+
+        // Strip optional ", 1" step suffix
+        let bound_expr = if bound_part.ends_with(", 1") {
+            &bound_part[..bound_part.len() - 3]
+        } else {
+            bound_part
+        };
+
+        // Must end with " - 1"
+        if !bound_expr.ends_with(" - 1") {
+            i += 1;
+            continue;
+        }
+        let upper_expr = &bound_expr[..bound_expr.len() - 4]; // the EXPR part
+
+        // Find loop body: from i+1 to matching `end`
+        let loop_indent = &lines[i][..lines[i].len() - trimmed.len()];
+        let mut depth = 1i32;
+        let loop_start = i + 1;
+        let mut loop_end = None;
+        for j in loop_start..lines.len() {
+            let jt = lines[j].trim();
+            // Count block openers/closers
+            if jt.starts_with("for ")
+                || jt.starts_with("while ")
+                || jt.starts_with("if ")
+                || jt == "repeat"
+                || (jt.starts_with("function ") && jt.ends_with(")"))
+            {
+                // Only count if it opens a block (ends with "do", "then", or ")")
+                if jt.ends_with(" do") || jt.ends_with(" then") || jt == "repeat" || jt.ends_with(")") {
+                    depth += 1;
+                }
+            }
+            if jt == "end" {
+                depth -= 1;
+                if depth == 0 {
+                    // Verify it's at the same indent level
+                    let j_indent = &lines[j][..lines[j].len() - jt.len()];
+                    if j_indent == loop_indent {
+                        loop_end = Some(j);
+                    }
+                    break;
+                }
+            }
+        }
+
+        let loop_end = match loop_end {
+            Some(e) => e,
+            None => {
+                i += 1;
+                continue;
+            }
+        };
+
+        // Check that every use of vN in the loop body is `[vN + 1]`
+        let body_lines = &lines[loop_start..loop_end];
+        let idx_pattern = format!("[{var_name} + 1]");
+        let mut all_uses_are_indexed = true;
+        let mut has_any_use = false;
+
+        for body_line in body_lines {
+            let bl = *body_line;
+            // Check if vN appears in this line at all (whole-word)
+            let bytes = bl.as_bytes();
+            let var_bytes = var_name.as_bytes();
+            let mut pos = 0;
+            while pos + var_bytes.len() <= bytes.len() {
+                if &bytes[pos..pos + var_bytes.len()] == var_bytes {
+                    let before_ok =
+                        pos == 0 || !is_ident_char(bytes[pos - 1]);
+                    let after_ok = pos + var_bytes.len() >= bytes.len()
+                        || !is_ident_char(bytes[pos + var_bytes.len()]);
+                    if before_ok && after_ok {
+                        has_any_use = true;
+                        // This occurrence must be part of `[vN + 1]`
+                        // Check: byte before should be `[` and bytes after should be ` + 1]`
+                        let bracket_before = pos > 0 && bytes[pos - 1] == b'[';
+                        let suffix = &bl[pos + var_bytes.len()..];
+                        let has_plus_one = suffix.starts_with(" + 1]");
+                        if !bracket_before || !has_plus_one {
+                            all_uses_are_indexed = false;
+                            break;
+                        }
+                    }
+                }
+                pos += 1;
+            }
+            if !all_uses_are_indexed {
+                break;
+            }
+        }
+
+        if !has_any_use || !all_uses_are_indexed {
+            i += 1;
+            continue;
+        }
+
+        // Rewrite the for-loop header
+        let new_header = format!("{loop_indent}for {var_name} = 1, {upper_expr} do");
+        replacements.insert(i, new_header);
+
+        // Rewrite body lines: replace `[vN + 1]` with `[vN]`
+        let replacement_bracket = format!("[{var_name}]");
+        for j in loop_start..loop_end {
+            if lines[j].contains(&idx_pattern) {
+                let new_line = lines[j].replace(&idx_pattern, &replacement_bracket);
+                replacements.insert(j, new_line);
+            }
+        }
+
+        i = loop_end + 1;
+    }
+
+    if replacements.is_empty() {
+        return;
+    }
+
+    let count = replacements
+        .keys()
+        .filter(|k| lines[**k].trim().starts_with("for "))
+        .count();
+    let mut result = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(replacement) = replacements.get(&i) {
+            result.push_str(replacement);
+        } else {
+            result.push_str(line);
+        }
+        result.push('\n');
+    }
+    *source = result;
+    eprintln!("[molt-luau] Folded range indices in {} loops", count);
 }
 
 #[cfg(test)]
