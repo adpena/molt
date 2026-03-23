@@ -1924,9 +1924,10 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let list = sanitize_ident(&args[0]);
                     let val = sanitize_ident(&args[1]);
-                    // Use numeric for-loop instead of ipairs to handle nil holes.
+                    // Use numeric for-loop with a found flag. Python list.remove(x)
+                    // raises ValueError when x is not in the list.
                     self.emit_line(&format!(
-                        "for __i = 1, #{list} do if {list}[__i] == {val} then table.remove({list}, __i); break end end"
+                        "do local __found = false; for __i = 1, #{list} do if {list}[__i] == {val} then table.remove({list}, __i); __found = true; break end end; if not __found then error(\"ValueError: list.remove(x): x not in list\") end end"
                     ));
                 }
             }
@@ -2178,19 +2179,28 @@ impl LuauBackend {
                     ) || matches!(
                         op.container_type.as_deref(),
                         Some("dict") | Some("set") | Some("frozenset")
-                    );
+                    ) || self.var_type_hints.get(&args[0])
+                        .map_or(false, |t| t == "dict" || t == "set");
+                    let is_list = matches!(op.type_hint.as_deref(), Some("list"))
+                        || matches!(op.container_type.as_deref(), Some("list"))
+                        || self.var_type_hints.get(&args[0])
+                            .map_or(false, |t| t == "list");
                     if is_dict {
+                        // Dict/set: key lookup.
                         self.emit_line(&format!("local {out} = ({container}[{val}] ~= nil)"));
+                    } else if is_list {
+                        // List: value search via table.find.
+                        self.emit_line(&format!(
+                            "local {out} = (table.find({container}, {val}) ~= nil)"
+                        ));
                     } else {
-                        // Generic contains: string→find, table→table.find (value search).
-                        // For dicts/sets, the is_dict branch above handles key lookup.
-                        // Here we use only table.find (linear value scan) — NOT key lookup,
-                        // which would cause `3 in [10,20,30]` to return True (index 3 exists).
+                        // Unknown container: string→find, table→check both
+                        // array values AND hash keys for correctness.
                         self.emit_line(&format!(
                             "local {out} = if type({container}) == \"string\" then \
                              (string.find({container}, {val}, 1, true) ~= nil) \
                              elseif type({container}) == \"table\" then \
-                             (table.find({container}, {val}) ~= nil) \
+                             (table.find({container}, {val}) ~= nil or {container}[{val}] ~= nil) \
                              else false"
                         ));
                     }
@@ -6208,7 +6218,10 @@ fn optimize_luau_perf(source: &mut String) {
 
         // Reset numeric tracking at function boundaries to prevent variable
         // name collisions across different function scopes.
-        if trimmed.starts_with("function ") || trimmed.starts_with("local function ") {
+        if trimmed.starts_with("function ")
+            || trimmed.starts_with("local function ")
+            || trimmed.contains("= function(")
+        {
             numeric_vars.clear();
         }
 
