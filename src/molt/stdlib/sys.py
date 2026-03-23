@@ -632,42 +632,42 @@ def _try_tuple_intrinsic(
 
 
 # On WASM, intrinsics that return heap-allocated objects (tuples, dicts)
-# may fail or return None.  Use hardcoded fallback defaults for all
-# version/platform metadata to guarantee successful bootstrap.
-version = "3.12.0 (molt)"
-_raw_version_info = (3, 12, 0, "final", 0)
-version_info = (3, 12, 0, "final", 0)
-hexversion = 0x030C00F0
-api_version = 0
-abiflags = ""
-implementation = _ImplementationNamespace("molt", "molt-312", _raw_version_info, hexversion)
-# On WASM, tuple subclass __new__ (e.g. version_info(tuple).__new__) triggers
-# "'float' object is not callable" inside the runtime's tuple creation.
-# Work around by using plain tuples for all named-tuple-like sys attributes.
-_SYS_FLAGS_GIL = 1
-flags = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 4300)
-path: list[str] = []
-meta_path: list[object] = []
-path_hooks: list[object] = []
-path_importer_cache: dict[str, object] = {}
+# Split metadata init into a helper to reduce molt_init_sys function size.
+# Cranelift generates incorrect code for functions >200KB of machine code.
+def _init_metadata():
+    """Initialize version/platform metadata as module globals."""
+    g = globals()
+    g["version"] = "3.12.0 (molt)"
+    _rvi = (3, 12, 0, "final", 0)
+    g["_raw_version_info"] = _rvi
+    g["version_info"] = _rvi
+    g["hexversion"] = 0x030C00F0
+    g["api_version"] = 0
+    g["abiflags"] = ""
+    g["implementation"] = _ImplementationNamespace("molt", "molt-312", _rvi, 0x030C00F0)
+    g["flags"] = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 4300)
+    g["path"] = []
+    g["meta_path"] = []
+    g["path_hooks"] = []
+    g["path_importer_cache"] = {}
+    g["maxsize"] = 2**63 - 1
+    g["maxunicode"] = 0x10FFFF
+    g["byteorder"] = "little"
+    g["prefix"] = ""
+    g["exec_prefix"] = ""
+    g["base_prefix"] = ""
+    g["base_exec_prefix"] = ""
+    g["platlibdir"] = "lib"
+    g["float_info"] = (1.7976931348623157e+308, 1024, 308, 2.2250738585072014e-308, -1021, -307, 15, 53, 2.220446049250313e-16, 2, 1)
+    g["int_info"] = (30, 4, 4300, 640)
+    g["hash_info"] = (64, 2305843009213693951, 314159, 0, 1000003, "siphash13", 64, 128, 0)
+    g["thread_info"] = ("pthread", None, None)
+    g["orig_argv"] = []
+    g["copyright"] = "Copyright (c) Molt contributors."
+    g["stdlib_module_names"] = frozenset()
+    g["builtin_module_names"] = ()
 
-# --- New sys attributes (CPython 3.12+ parity) ---
-maxsize = 2**63 - 1
-maxunicode = 0x10FFFF
-byteorder = "little"
-prefix = ""
-exec_prefix = ""
-base_prefix = ""
-base_exec_prefix = ""
-platlibdir = "lib"
-float_info = (1.7976931348623157e+308, 1024, 308, 2.2250738585072014e-308, -1021, -307, 15, 53, 2.220446049250313e-16, 2, 1)
-int_info = (30, 4, 4300, 640)
-hash_info = (64, 2305843009213693951, 314159, 0, 1000003, "siphash13", 64, 128, 0)
-thread_info = ("pthread", None, None)
-orig_argv: list[str] = []
-copyright = "Copyright (c) Molt contributors."
-stdlib_module_names: frozenset[str] = frozenset()
-builtin_module_names: tuple[str, ...] = ()
+_init_metadata()
 
 
 def _bootstrap_module_file() -> str | None:
