@@ -335,13 +335,24 @@ impl SimpleBackend {
             &[],
             &[types::I64],
         );
-        let exc_flag_ptr_var: Option<Variable> = if function_exception_label_id.is_some() {
+        // Inline exception flag optimization: fetch the flag pointer once
+        // and use a Cranelift Variable to propagate it across blocks.
+        // IMPORTANT: Disable for stateful (generator/async poll) functions.
+        // In stateful functions, the state_switch dispatches to multiple
+        // resume blocks via br_table/Switch. The SSA variable propagation
+        // through these switch-generated intermediate blocks can produce
+        // invalid alias chains (Value::reserved_value / u32::MAX index)
+        // during Cranelift's resolve_all_aliases pass, causing an index
+        // out of bounds panic in dfg.rs. The fallback (direct function
+        // call per check_exception site) is safe for all function shapes.
+        let use_inline_exc_flag = function_exception_label_id.is_some() && !stateful;
+        let exc_flag_ptr_var: Option<Variable> = if use_inline_exc_flag {
             let var = builder.declare_var(types::I64);
             Some(var)
         } else {
             None
         };
-        let exc_flag_ptr_fn = if function_exception_label_id.is_some() {
+        let exc_flag_ptr_fn = if use_inline_exc_flag {
             Some(import_func_ref(
                 &mut self.module,
                 &mut self.import_ids,
@@ -10795,6 +10806,9 @@ impl SimpleBackend {
                     // check_exception site.  The flag pointer is fetched once per
                     // function via a Cranelift Variable and the byte load is ~1
                     // cycle vs ~15-40 cycles for the function call.
+                    // NOTE: Disabled for stateful (poll/generator) functions
+                    // because SSA variable propagation through switch-generated
+                    // blocks can cause Cranelift DFG alias resolution panics.
                     let fallthrough = builder.create_block();
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough);
