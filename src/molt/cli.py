@@ -6609,6 +6609,73 @@ _BUILTIN_FEATURE_MODULE_MAP: dict[str, str] = {
     "cmath": "builtin_complex",
 }
 
+# Mapping from imported module name (or prefix) to stdlib_* Cargo feature.
+# When the micro profile is active and the module is not in the import graph,
+# the feature is omitted so the linker can strip the corresponding intrinsics.
+_STDLIB_DOMAIN_FEATURE_MAP: dict[str, str] = {
+    # tk
+    "tkinter": "stdlib_tk",
+    "_tkinter": "stdlib_tk",
+    # networking
+    "ssl": "stdlib_net",
+    "_ssl": "stdlib_net",
+    "http": "stdlib_net",
+    "http.client": "stdlib_net",
+    "http.server": "stdlib_net",
+    "http.cookiejar": "stdlib_net",
+    "urllib": "stdlib_net",
+    "urllib.request": "stdlib_net",
+    "urllib.parse": "stdlib_net",
+    "urllib.error": "stdlib_net",
+    "urllib3": "stdlib_net",
+    "ipaddress": "stdlib_net",
+    # asyncio
+    "asyncio": "stdlib_asyncio",
+    # email
+    "email": "stdlib_email",
+    "email.message": "stdlib_email",
+    "email.mime": "stdlib_email",
+    "email.parser": "stdlib_email",
+    "email.policy": "stdlib_email",
+    # decimal
+    "decimal": "stdlib_decimal",
+    "_decimal": "stdlib_decimal",
+    # logging
+    "logging": "stdlib_logging",
+    "logging.handlers": "stdlib_logging",
+    "logging.config": "stdlib_logging",
+    # concurrent
+    "concurrent": "stdlib_concurrent",
+    "concurrent.futures": "stdlib_concurrent",
+    # dbm
+    "dbm": "stdlib_dbm",
+    "dbm.dumb": "stdlib_dbm",
+    # importlib extras
+    "importlib.resources": "stdlib_importlib_extra",
+    "importlib.metadata": "stdlib_importlib_extra",
+    # csv
+    "csv": "stdlib_csv",
+    # signal
+    "signal": "stdlib_signal",
+    # select
+    "select": "stdlib_select",
+    "selectors": "stdlib_select",
+}
+
+# Prefix-based domain feature mapping: module names that start with
+# these prefixes imply the corresponding feature.
+_STDLIB_DOMAIN_PREFIX_MAP: tuple[tuple[str, str], ...] = (
+    ("asyncio.", "stdlib_asyncio"),
+    ("email.", "stdlib_email"),
+    ("http.", "stdlib_net"),
+    ("urllib.", "stdlib_net"),
+    ("logging.", "stdlib_logging"),
+    ("concurrent.", "stdlib_concurrent"),
+    ("dbm.", "stdlib_dbm"),
+    ("importlib.resources.", "stdlib_importlib_extra"),
+    ("importlib.metadata.", "stdlib_importlib_extra"),
+)
+
 _SET_IMPLYING_MODULES = frozenset({
     "email",
     "urllib",
@@ -6636,24 +6703,43 @@ _ALL_BUILTIN_FEATURES: tuple[str, ...] = (
     "builtin_fcntl",
 )
 
+# All domain features that can be individually toggled.
+_ALL_DOMAIN_FEATURES: tuple[str, ...] = (
+    "stdlib_tk",
+    "stdlib_net",
+    "stdlib_asyncio",
+    "stdlib_email",
+    "stdlib_decimal",
+    "stdlib_logging",
+    "stdlib_concurrent",
+    "stdlib_dbm",
+    "stdlib_importlib_extra",
+    "stdlib_csv",
+    "stdlib_signal",
+    "stdlib_select",
+)
+
 
 def _builtin_features_from_import_graph(
     resolved_modules: set[str] | None,
     stdlib_profile: str | None,
 ) -> list[str]:
-    """Return the ``builtin_*`` cargo features required for *resolved_modules*.
+    """Return the ``builtin_*`` and ``stdlib_*`` cargo features required for
+    *resolved_modules*.
 
-    For ``stdlib_full`` (or *None*) profiles every builtin feature is enabled
+    For ``stdlib_full`` (or *None*) profiles every feature is enabled
     unconditionally.  For ``micro`` profiles the import graph is inspected so
-    that only the builtins actually reachable from user code are compiled in.
+    that only the features actually reachable from user code are compiled in.
     """
+    all_features = list(_ALL_BUILTIN_FEATURES) + list(_ALL_DOMAIN_FEATURES)
+
     # Full / default profile: enable everything.
     if stdlib_profile != "micro":
-        return list(_ALL_BUILTIN_FEATURES)
+        return all_features
 
     # No module information available: be safe and enable everything.
     if resolved_modules is None:
-        return list(_ALL_BUILTIN_FEATURES)
+        return all_features
 
     features: list[str] = []
 
@@ -6673,6 +6759,18 @@ def _builtin_features_from_import_graph(
     # memoryview: included if struct/array/io/_io/mmap is present.
     if _MEMORYVIEW_IMPLYING_MODULES & resolved_modules:
         features.append("builtin_memoryview")
+
+    # Domain features: direct module name match.
+    for module_name, feature in _STDLIB_DOMAIN_FEATURE_MAP.items():
+        if module_name in resolved_modules and feature not in features:
+            features.append(feature)
+
+    # Domain features: prefix-based match for submodules.
+    for prefix, feature in _STDLIB_DOMAIN_PREFIX_MAP:
+        if feature in features:
+            continue
+        if any(r.startswith(prefix) for r in resolved_modules):
+            features.append(feature)
 
     return features
 
