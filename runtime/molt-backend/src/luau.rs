@@ -1801,6 +1801,18 @@ impl LuauBackend {
                     .join(", ");
                 self.emit_line(&format!("local {out} = {{{items}}}"));
             }
+            "unpack_sequence" | "unpack_ex" => {
+                // Destructure a tuple/list into individual variables.
+                // args[0] = source container, args[1..] = output variable names.
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let src = sanitize_ident(&args[0]);
+                    for (i, out_name) in args[1..].iter().enumerate() {
+                        let out = sanitize_ident(out_name);
+                        self.emit_line(&format!("local {out} = {src}[{}]", i + 1));
+                    }
+                }
+            }
             "build_dict" | "dict_new" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
