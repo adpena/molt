@@ -198,6 +198,15 @@ pub static mut Py_False: PyObject = PyObject {
     ob_type: std::ptr::null_mut(),
 };
 
+/// Sentinel returned by rich comparison when the operation is not supported.
+/// Extensions compare against this pointer to decide whether to try the
+/// reflected operation.  Must be distinct from Py_None.
+#[allow(non_upper_case_globals)]
+pub static mut Py_NotImplementedSentinel: PyObject = PyObject {
+    ob_refcnt: 1 << 30,
+    ob_type: std::ptr::null_mut(),
+};
+
 // We can't use the macro with const-init for tp_name (C strings aren't const).
 // Instead the names are patched in `init_static_types()`.
 #[allow(non_upper_case_globals)]

@@ -2130,14 +2130,312 @@ def _dedup_data_segments(data: bytes) -> bytes | None:
     return _build_sections(new_sections)
 
 
-def _post_link_optimize(data: bytes) -> bytes:
+def _parse_type_section(sections: list[tuple[int, bytes]]) -> list[tuple[tuple[int, ...], tuple[int, ...]]]:
+    """Parse the type section and return a list of (param_types, result_types)."""
+    for sid, payload in sections:
+        if sid == 1:
+            offset = 0
+            type_count, offset = _read_varuint(payload, offset)
+            types: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
+            for _ in range(type_count):
+                _form = payload[offset]; offset += 1
+                pc, offset = _read_varuint(payload, offset)
+                params = tuple(payload[offset + j] for j in range(pc))
+                offset += pc
+                rc, offset = _read_varuint(payload, offset)
+                results = tuple(payload[offset + j] for j in range(rc))
+                offset += rc
+                types.append((params, results))
+            return types
+    return []
+
+
+def _parse_func_type_indices(sections: list[tuple[int, bytes]]) -> tuple[int, list[int]]:
+    """Parse the function section. Returns (section_list_index, type_indices)."""
+    for idx, (sid, payload) in enumerate(sections):
+        if sid == 3:
+            offset = 0
+            fc, offset = _read_varuint(payload, offset)
+            type_indices: list[int] = []
+            for _ in range(fc):
+                ti, offset = _read_varuint(payload, offset)
+                type_indices.append(ti)
+            return idx, type_indices
+    return -1, []
+
+
+def _fixup_func_type_indices(data: bytes, reference_data: bytes | None = None) -> bytes | None:
+    """Detect and repair function-section type-index mismatches.
+
+    After wasm-ld merges two relocatable modules, the type section is
+    renumbered (merged + deduplicated).  In certain wasm-ld versions or
+    when the linking section metadata is stale, the function-section
+    entries (which map each defined function to its type index) can
+    retain the *pre-merge* type indices.  This makes the binary invalid:
+    a function whose body references ``local.get 2`` but whose assigned
+    type only has 1 parameter triggers "unknown local: local index out of
+    bounds" in strict validators (wasmtime, wasm-tools validate).
+
+    The fix scans each function body for ``local.get`` / ``local.set`` /
+    ``local.tee`` instructions to determine the minimum local count.  If
+    the assigned type does not provide enough parameters (accounting for
+    declared locals), we search the type section for a matching signature
+    and patch the function section.
+
+    Returns ``None`` if no repairs were needed.
+    """
+    try:
+        sections = _parse_sections(data)
+    except ValueError:
+        return None
+
+    linked_types = _parse_type_section(sections)
+    if not linked_types:
+        return None
+
+    func_section_idx, func_type_indices = _parse_func_type_indices(sections)
+    if not func_type_indices or func_section_idx < 0:
+        return None
+
+    import_count = _count_func_imports(sections)
+
+    repairs: dict[int, int] = {}  # code_index -> new_type_index
+
+    code_payload = None
+    for sid, payload in sections:
+        if sid == 10:
+            code_payload = payload
+            break
+    if code_payload is None:
+        return None
+
+    offset = 0
+    func_count, offset = _read_varuint(code_payload, offset)
+    if func_count != len(func_type_indices):
+        return None
+
+    for f_idx in range(func_count):
+        body_size, offset = _read_varuint(code_payload, offset)
+        body_end = offset + body_size
+
+        if body_size <= 2:
+            offset = body_end
+            continue
+
+        pos = offset
+        try:
+            local_decl_count, pos = _read_varuint(code_payload, pos)
+            declared_locals = 0
+            for _ in range(local_decl_count):
+                n, pos = _read_varuint(code_payload, pos)
+                pos += 1  # valtype
+                declared_locals += n
+        except (IndexError, ValueError):
+            offset = body_end
+            continue
+
+        # Scan for local.get/set/tee to find max index
+        max_local = -1
+        while pos < body_end:
+            op = code_payload[pos]
+            pos += 1
+            if op in (0x20, 0x21, 0x22):
+                try:
+                    idx_val, pos = _read_varuint(code_payload, pos)
+                    if idx_val > max_local:
+                        max_local = idx_val
+                except (IndexError, ValueError):
+                    break
+            elif op in (0x00, 0x01, 0x05, 0x0B, 0x0F, 0x1A, 0x1B, 0xD1, 0xD3):
+                pass
+            elif op in (0x02, 0x03, 0x04):
+                if pos < body_end:
+                    bt = code_payload[pos]
+                    if bt in (0x40, 0x7F, 0x7E, 0x7D, 0x7C, 0x70, 0x6F, 0x7B):
+                        pos += 1
+                    else:
+                        while pos < body_end and code_payload[pos] & 0x80:
+                            pos += 1
+                        if pos < body_end:
+                            pos += 1
+            elif op in (0x0C, 0x0D, 0x23, 0x24, 0x25, 0x26,
+                        0x3F, 0x40, 0xD0, 0xD4, 0xD5):
+                try:
+                    _, pos = _read_varuint(code_payload, pos)
+                except (IndexError, ValueError):
+                    break
+            elif op == 0x0E:
+                try:
+                    n, pos = _read_varuint(code_payload, pos)
+                    for _ in range(n + 1):
+                        _, pos = _read_varuint(code_payload, pos)
+                except (IndexError, ValueError):
+                    break
+            elif op in (0x10, 0x12):
+                try:
+                    _, pos = _read_varuint(code_payload, pos)
+                except (IndexError, ValueError):
+                    break
+            elif op in (0x11, 0x13):
+                try:
+                    _, pos = _read_varuint(code_payload, pos)
+                    _, pos = _read_varuint(code_payload, pos)
+                except (IndexError, ValueError):
+                    break
+            elif op in (0x14, 0x15):
+                try:
+                    _, pos = _read_varuint(code_payload, pos)
+                except (IndexError, ValueError):
+                    break
+            elif op == 0xD2:
+                try:
+                    _, pos = _read_varuint(code_payload, pos)
+                except (IndexError, ValueError):
+                    break
+            elif 0x28 <= op <= 0x3E:
+                try:
+                    _, pos = _read_varuint(code_payload, pos)
+                    _, pos = _read_varuint(code_payload, pos)
+                except (IndexError, ValueError):
+                    break
+            elif op == 0x41:
+                while pos < body_end and code_payload[pos] & 0x80:
+                    pos += 1
+                if pos < body_end:
+                    pos += 1
+            elif op == 0x42:
+                while pos < body_end and code_payload[pos] & 0x80:
+                    pos += 1
+                if pos < body_end:
+                    pos += 1
+            elif op == 0x43:
+                pos += 4
+            elif op == 0x44:
+                pos += 8
+            elif 0x45 <= op <= 0xC4:
+                pass
+            elif op == 0x1C:
+                try:
+                    n, pos = _read_varuint(code_payload, pos)
+                    pos += n
+                except (IndexError, ValueError):
+                    break
+            elif op == 0xFC:
+                try:
+                    ext, pos = _read_varuint(code_payload, pos)
+                    if ext <= 7:
+                        pass
+                    elif ext in (8, 10, 12, 14):
+                        _, pos = _read_varuint(code_payload, pos)
+                        _, pos = _read_varuint(code_payload, pos)
+                    elif ext in (9, 11, 13, 15, 16, 17):
+                        _, pos = _read_varuint(code_payload, pos)
+                except (IndexError, ValueError):
+                    break
+            elif op == 0xFD:
+                try:
+                    simd, pos = _read_varuint(code_payload, pos)
+                    if simd <= 11:
+                        _, pos = _read_varuint(code_payload, pos)
+                        _, pos = _read_varuint(code_payload, pos)
+                    elif simd in (12, 13):
+                        pos += 16
+                    elif 84 <= simd <= 91:
+                        _, pos = _read_varuint(code_payload, pos)
+                        _, pos = _read_varuint(code_payload, pos)
+                        pos += 1
+                    elif 21 <= simd <= 34:
+                        pos += 1
+                    elif 92 <= simd <= 93:
+                        _, pos = _read_varuint(code_payload, pos)
+                        _, pos = _read_varuint(code_payload, pos)
+                except (IndexError, ValueError):
+                    break
+            elif op == 0xFE:
+                try:
+                    atom, pos = _read_varuint(code_payload, pos)
+                    if atom == 0x03:
+                        pos += 1
+                    elif atom >= 0x10 or atom in (0x00, 0x01, 0x02):
+                        _, pos = _read_varuint(code_payload, pos)
+                        _, pos = _read_varuint(code_payload, pos)
+                except (IndexError, ValueError):
+                    break
+            else:
+                break
+
+        if max_local < 0:
+            offset = body_end
+            continue
+
+        type_idx = func_type_indices[f_idx]
+        if type_idx >= len(linked_types):
+            offset = body_end
+            continue
+        param_count = len(linked_types[type_idx][0])
+        result_count = len(linked_types[type_idx][1])
+        total_available = param_count + declared_locals
+        needed = max_local + 1
+        if total_available >= needed:
+            offset = body_end
+            continue
+        required_params = needed - declared_locals
+        if required_params <= 0:
+            offset = body_end
+            continue
+        result_types = linked_types[type_idx][1]
+        candidates = [
+            ti for ti, (pt, rt) in enumerate(linked_types)
+            if len(pt) == required_params and rt == result_types
+        ]
+        if candidates:
+            repairs[f_idx] = candidates[0]
+        offset = body_end
+
+    if not repairs:
+        return None
+
+    # -- Rebuild function section ------------------------------------------
+    new_type_indices = list(func_type_indices)
+    for f_idx, new_ti in repairs.items():
+        new_type_indices[f_idx] = new_ti
+
+    new_func_payload = bytearray(_write_varuint(len(new_type_indices)))
+    for ti in new_type_indices:
+        new_func_payload.extend(_write_varuint(ti))
+
+    new_sections = list(sections)
+    new_sections[func_section_idx] = (3, bytes(new_func_payload))
+
+    print(
+        f"Repaired {len(repairs):,} function type-index mismatches "
+        f"(wasm-ld type remapping fixup)",
+        file=sys.stderr,
+    )
+    return _build_sections(new_sections)
+
+
+def _post_link_optimize(
+    data: bytes, *, reference_data: bytes | None = None
+) -> bytes:
     """Apply post-link optimizations to reduce V8 compilation memory pressure.
 
     This is the key fix for MOL-183/MOL-186: the linked artifact was
     overwhelming V8 because of debug sections, internal exports, and
     duplicate data.  Stripping them reduces the module size by 30-60%
     which directly translates to less compilation memory.
+
+    *reference_data*, when provided, is the original (pre-link) user module.
+    It enables exact type-index repair via signature matching rather than
+    the heuristic body-scan fallback.
     """
+    # First, repair any type-index corruption from wasm-ld merging.
+    # This must run before any other pass to ensure all subsequent
+    # analysis (call graph, dead code, etc.) sees valid function types.
+    updated = _fixup_func_type_indices(data, reference_data=reference_data)
+    if updated is not None:
+        data = updated
+
     updated = _strip_debug_sections(data)
     if updated is not None:
         data = updated
@@ -2312,6 +2610,39 @@ def _validate_linked(linked: Path) -> bool:
     if not ok:
         print(f"Linked wasm element validation failed: {err}", file=sys.stderr)
         return False
+    # Run wasm-tools validate for full structural validation (type-index
+    # consistency, local-index bounds, etc.).  This catches wasm-ld
+    # type-remapping bugs that simpler checks miss.
+    exe = shutil.which("wasm-tools")
+    if exe is not None:
+        with tempfile.NamedTemporaryFile(suffix=".wasm", delete=False) as f:
+            f.write(data)
+            f.flush()
+            tmp_path = f.name
+        try:
+            result = subprocess.run(
+                [exe, "validate", tmp_path],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode != 0:
+                print(
+                    f"Linked wasm failed structural validation: "
+                    f"{result.stderr.strip()[:500]}",
+                    file=sys.stderr,
+                )
+                return False
+        except Exception as exc:
+            print(
+                f"wasm-tools validate warning: {exc}",
+                file=sys.stderr,
+            )
+        finally:
+            try:
+                Path(tmp_path).unlink()
+            except OSError:
+                pass
     return True
 
 
@@ -2429,6 +2760,27 @@ def _run_wasm_ld(
                     file=sys.stderr,
                 )
                 runtime_exports = {}
+    if not runtime_exports:
+        # The runtime might be a relocatable object with no export section.
+        # Search sibling directories for a non-relocatable build that has
+        # exports (e.g. wasm-release profile).
+        for sibling_dir in (
+            runtime.parent.parent / "wasm-release",
+            runtime.parent.parent / "debug",
+        ):
+            candidate = sibling_dir / runtime.name
+            if candidate.exists() and candidate != runtime:
+                try:
+                    runtime_exports = _collect_exports(candidate.read_bytes())
+                except ValueError:
+                    runtime_exports = set()
+                if runtime_exports:
+                    print(
+                        f"Using exports from {candidate} "
+                        f"({len(runtime_exports)} exports)",
+                        file=sys.stderr,
+                    )
+                    break
     if not runtime_exports:
         print("Runtime exports unavailable for linking.", file=sys.stderr)
         return 1
@@ -2571,8 +2923,17 @@ def _run_wasm_ld(
 
         # MOL-183/MOL-186: Post-link optimization to reduce V8 OOM risk.
         # Strip debug sections, internal exports, and report data duplicates.
+        # Pass the original user module as reference_data so the type-index
+        # repair can use exact signature matching (Strategy 1) instead of
+        # the heuristic body-scan fallback.
         pre_opt_size = len(linked_bytes)
-        linked_bytes = _post_link_optimize(linked_bytes)
+        try:
+            output_reference = output.read_bytes()
+        except OSError:
+            output_reference = None
+        linked_bytes = _post_link_optimize(
+            linked_bytes, reference_data=output_reference
+        )
         post_opt_size = len(linked_bytes)
         if post_opt_size < pre_opt_size:
             savings = pre_opt_size - post_opt_size
