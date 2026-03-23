@@ -88,3 +88,4 @@ packaging/out/
 .gemini/worktrees/
 .claude/todos/
 type_facts.json
+.claire/
