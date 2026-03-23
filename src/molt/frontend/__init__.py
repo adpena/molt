@@ -35349,6 +35349,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         sccp_in_consts = self._sccp_in_const_int_values(sccp)
         induction_steps = self._analyze_loop_induction_steps(working_ops, round_cfg)
 
+        # Build value-name -> defining-block-id map so we can filter cross-block
+        # aliases to only those whose targets are defined in dominating blocks.
+        _value_def_block: dict[str, int] = {}
+        for _blk in round_cfg.blocks:
+            for _op_idx in range(_blk.start, _blk.end):
+                _def_name = working_ops[_op_idx].result.name
+                if _def_name != "none" and _def_name not in _value_def_block:
+                    _value_def_block[_def_name] = _blk.id
+
         block_inputs: dict[int, CanonicalizationState] = {
             block.id: self._empty_canonicalization_state() for block in round_cfg.blocks
         }
@@ -35389,6 +35398,38 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         # rewriting gaps at control joins.
                         in_state["aliases"] = {}
                         in_state["available_values"] = {}
+                    else:
+                        # Filter aliases and available_values to only those
+                        # whose target values are defined in blocks that
+                        # dominate the current block.  Without this guard,
+                        # CSE can rewrite an operand (e.g. a STORE_INDEX
+                        # value arg) to reference a variable from a non-
+                        # dominating block, producing invalid IR — the
+                        # "return-buffer" bug.
+                        block_doms = round_cfg.dominators.get(
+                            block_id, {block_id}
+                        )
+                        filtered_aliases: dict[str, MoltValue] = {}
+                        for _ak, _av in in_state["aliases"].items():
+                            _target_block = _value_def_block.get(_av.name)
+                            if (
+                                _target_block is None
+                                or _target_block in block_doms
+                            ):
+                                filtered_aliases[_ak] = _av
+                        in_state["aliases"] = filtered_aliases
+                        filtered_avail: dict[tuple[Any, ...], MoltValue] = {}
+                        for _vk, _vv in in_state["available_values"].items():
+                            _target_block = _value_def_block.get(_vv.name)
+                            if (
+                                _target_block is None
+                                or _target_block in block_doms
+                            ):
+                                filtered_avail[_vk] = _vv
+                        in_state["available_values"] = filtered_avail
+                        self._invalidate_canonicalization_state_signature(
+                            in_state
+                        )
 
                 for name, value in sccp_in_consts.get(block_id, {}).items():
                     in_state["const_int_values"][name] = value
@@ -36294,6 +36335,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return expanded_ops
 
         self.midend_stats["expanded_fallbacks"] += 1
+        # Diagnostic: log which variables caused the verification failure so
+        # that the cross-block CSE issue can be traced.  Each failure is a
+        # tuple (op_index, op_kind, value_name).
+        if os.getenv("MOLT_MIDEND_STATS"):
+            failed_vars = sorted({name for _, _, name in expanded_failures})
+            failed_ops = sorted({kind for _, kind, _ in expanded_failures})
+            print(
+                f"molt midend cross-block CSE fallback:"
+                f" func={self._active_midend_function_name!r}"
+                f" failed_vars={failed_vars}"
+                f" failed_ops={failed_ops}"
+                f" failure_count={len(expanded_failures)}",
+                file=sys.stderr,
+            )
         safe_ops = self._canonicalize_control_aware_ops_impl(
             ops, allow_cross_block_const_dedupe=False
         )
