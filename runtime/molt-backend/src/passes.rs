@@ -252,6 +252,7 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
                             task_kind: None,
                             container_type: None,
                             type_hint: None,
+                            ic_index: None,
                         });
                     }
                     continue;

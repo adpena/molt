@@ -12200,19 +12200,45 @@ impl SimpleBackend {
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_get_attr_ptr", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder
-                        .ins()
-                        .call(local_callee, &[obj_ptr, attr_ptr, attr_len]);
+
+                    let call = if let Some(ic_idx) = op.ic_index {
+                        // IC-accelerated path: pass the IC table index as a 4th
+                        // argument so `molt_getattr_ic` can probe/populate the
+                        // lock-free inline cache.
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_getattr_ic", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+                        let ic_bits =
+                            builder.ins().iconst(types::I64, box_int(ic_idx));
+                        builder
+                            .ins()
+                            .call(local_callee, &[obj_ptr, attr_ptr, attr_len, ic_bits])
+                    } else {
+                        // Legacy path: no IC index available.
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_get_attr_ptr", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee =
+                            self.module.declare_func_in_func(callee, builder.func);
+                        builder
+                            .ins()
+                            .call(local_callee, &[obj_ptr, attr_ptr, attr_len])
+                    };
                     let res = builder.inst_results(call)[0];
                     // Attribute lookup may return borrowed values from object/class internals.
                     // Normalize to an owned reference so last-use decref remains safe.
