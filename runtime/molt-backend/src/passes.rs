@@ -1416,6 +1416,8 @@ pub(crate) fn compute_rc_coalesce_skips(
         "state_yield", "state_switch", "state_label", "exception_push",
         "exception_pop", "chan_send_yield", "chan_recv_yield",
         "ret", "ret_void",
+        "loop_start", "loop_index_start", "loop_end",
+        "loop_break_if_true", "loop_break_if_false", "loop_continue",
     ];
     let cf_set: HashSet<&str> = CONTROL_FLOW.iter().copied().collect();
     let mut skip_ops: HashSet<usize> = HashSet::new();

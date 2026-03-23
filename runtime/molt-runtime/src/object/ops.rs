@@ -1070,6 +1070,10 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                                     std::ptr::copy_nonoverlapping(l_data, n_data, l_len);
                                     std::ptr::copy_nonoverlapping(r_data, n_data.add(l_len), r_len);
                                     *(new_ptr as *mut usize) = l_len + r_len;
+                                    // Dec-ref the old string — it was replaced by
+                                    // the new allocation.  Without this, the old
+                                    // string leaks (rc stays at 1 forever).
+                                    dec_ref_bits(_py, a);
                                     return MoltObject::from_ptr(new_ptr).bits();
                                 }
                                 } // if let Some(content_len) — overflow falls through
@@ -32826,6 +32830,17 @@ pub extern "C" fn molt_guarded_class_def(
                     b"__init_subclass__",
                 );
                 for &base in bases_slice {
+                    // Guard: base must be a valid heap pointer (type object).
+                    // A CSE alias bug can cause float/int bits to appear in
+                    // the base slot — skip non-pointer values to prevent
+                    // "'float' object has no attribute '__init__'" crashes.
+                    let base_obj = obj_from_bits(base);
+                    let Some(base_ptr) = base_obj.as_ptr() else {
+                        continue;
+                    };
+                    if object_type_id(base_ptr) != TYPE_ID_TYPE {
+                        continue;
+                    }
                     let init_attr = crate::builtins::attributes::molt_get_attr_name_default(
                         base, init_name, none,
                     );
