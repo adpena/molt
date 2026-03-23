@@ -4,7 +4,7 @@ pub(crate) fn resolve_task_ptr(bits: u64) -> Option<*mut u8> {
     let obj = obj_from_bits(bits);
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
-            if (*header_from_obj_ptr(ptr)).poll_fn == 0 {
+            if crate::object::object_poll_fn(ptr) == 0 {
                 return None;
             }
         }
@@ -21,7 +21,7 @@ pub(crate) fn resolve_task_ptr(bits: u64) -> Option<*mut u8> {
         }
         let ptr = resolve_ptr(bits)?;
         unsafe {
-            if (*header_from_obj_ptr(ptr)).poll_fn == 0 {
+            if crate::object::object_poll_fn(ptr) == 0 {
                 return None;
             }
         }
