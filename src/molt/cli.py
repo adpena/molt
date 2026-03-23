@@ -8062,7 +8062,6 @@ export default {
 
     // Host stubs for platform features not available in Workers
     const hostEnv = {
-      __indirect_function_table: new WebAssembly.Table({ initial: 8192, element: "anyfunc" }),
       molt_time_timezone_host()  { return 0n; },
       molt_time_local_offset_host() { return 0n; },
       molt_getpid_host()         { return 1n; },
@@ -8114,10 +8113,16 @@ export default {
       molt_ws_connect_host()     { return -1; },
     };
 
+    // Shared memory and table — created BEFORE either module so both
+    // runtime and app operate on the same linear memory and call table.
+    const sharedMemory = new WebAssembly.Memory({ initial: 64 });
+    const sharedTable = new WebAssembly.Table({ initial: 8192, element: "anyfunc" });
+    wasmMemory = sharedMemory;
+
     // Shared imports for both modules
     const sharedImports = {
       wasi_snapshot_preview1: wasi,
-      env: hostEnv,
+      env: { ...hostEnv, memory: sharedMemory, __indirect_function_table: sharedTable },
     };
 
     try {
@@ -8129,9 +8134,6 @@ export default {
         ...sharedImports,
         molt_runtime: rtInstance.exports,
       });
-
-      // 3. Wire up shared memory (app owns it, runtime uses it)
-      wasmMemory = appInstance.exports.memory || rtInstance.exports.memory;
 
       // 4. Initialize and run
       if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();
@@ -14917,6 +14919,8 @@ def _prepare_non_native_build_result(
             manifest_data = {
                 "version": 1,
                 "mode": "split-runtime",
+                "shared_memory_pages": 64,
+                "shared_table_initial": 8192,
                 "modules": {
                     "runtime": {
                         "path": "molt_runtime.wasm",
