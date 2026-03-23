@@ -1,0 +1,44 @@
+name = "edgebox"
+main = "src/index.ts"
+compatibility_date = "2025-09-23"
+
+[durable_objects]
+bindings = [
+  { name = "EDGE_BOX", class_name = "EdgeBox" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["EdgeBox"]
+
+[r2_buckets]
+bindings = [
+  { name = "ARTIFACTS", bucket_name = "edgebox-artifacts" }
+]
+
+[vars]
+BOX_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS review_comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    path TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    side TEXT NOT NULL DEFAULT 'RIGHT',
+    body TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    author TEXT NOT NULL DEFAULT 'agent'
+);
+CREATE TABLE IF NOT EXISTS box_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+"""
