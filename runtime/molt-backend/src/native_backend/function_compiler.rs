@@ -8686,8 +8686,9 @@ impl SimpleBackend {
                     let origin_ptr_cleanup =
                         drain_cleanup_tracked(&mut origin_ptr_live, &last_use, op_idx, None);
                     if std::env::var("MOLT_DEBUG_CALL_CLEANUP").as_deref() == Ok("1")
-                        && (func_ir.name.contains("open_arg_drop_check")
-                            || func_ir.name.contains("builtins_symbol_open"))
+                        && std::env::var("MOLT_DEBUG_FUNC_FILTER")
+                            .ok()
+                            .map_or(true, |f| func_ir.name.contains(&f))
                     {
                         let obj_names: Vec<&str> =
                             origin_obj_cleanup.iter().map(|t| t.as_str()).collect();
@@ -10605,7 +10606,9 @@ impl SimpleBackend {
                             carry_ptr.append(&mut tracked_vars);
                         }
                         if std::env::var("MOLT_DEBUG_CHECK_EXCEPTION").as_deref() == Ok("1")
-                            && func_ir.name.contains("_tmp_compress_repro11b__f")
+                            && std::env::var("MOLT_DEBUG_FUNC_FILTER")
+                                .ok()
+                                .map_or(true, |f| func_ir.name.contains(&f))
                         {
                             eprintln!("check_exception {} op={}", func_ir.name, op_idx,);
                         }
@@ -12564,10 +12567,9 @@ impl SimpleBackend {
                 }
                 "ret" => {
                     if std::env::var("MOLT_DEBUG_RET_CLEANUP").as_deref() == Ok("1")
-                        && (func_ir
-                            .name
-                            .contains("open0_dead_comp_capture_probe__touch")
-                            || func_ir.name == "__main____touch")
+                        && std::env::var("MOLT_DEBUG_FUNC_FILTER")
+                            .ok()
+                            .map_or(true, |f| func_ir.name.contains(&f))
                     {
                         eprintln!(
                             "debug ret cleanup func={} op_idx={} ret_var={:?} tracked_obj_vars_len={} tracked_vars_len={}",

@@ -5346,7 +5346,9 @@ static inline PyObject *PyType_GetDict(PyTypeObject *type) {
  * degrade; extensions that assume non-NULL will get a clear failure rather
  * than silent memory corruption.
  *
- * TODO: implement proper C-to-Python trampolines per slot type.
+ * Deferred: implementing C-to-Python trampolines per slot type requires a
+ * JIT thunk allocator. Extensions that need slot access should use the
+ * tp_* struct fields directly (which Molt populates where possible).
  */
 static inline void *PyType_GetSlot(PyTypeObject *type, int slot) {
     (void)type;

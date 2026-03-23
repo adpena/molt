@@ -606,10 +606,17 @@ fn lower_ops(ops: &[OpIR], ctx: &mut LowerCtx) -> Vec<LuauStmt> {
             "phi" | "nop" | "line" | "loop_carry_init" | "loop_carry_update" => {}
 
             // =============================================================
-            // Everything else: emit as TODO comment for now
+            // Unknown ops: emit a Luau error() call so the failure is
+            // visible at runtime rather than silently dropped.
             // =============================================================
             _ => {
-                stmts.push(LuauStmt::Comment(format!("[TODO: lower {}]", op.kind)));
+                stmts.push(LuauStmt::ExprStmt(LuauExpr::Call(
+                    Box::new(LuauExpr::Var("error".to_string())),
+                    vec![LuauExpr::Lit(LuauLit::Str(format!(
+                        "molt: unimplemented Luau lowering for op '{}'",
+                        op.kind
+                    )))],
+                )));
             }
         }
 
