@@ -14187,7 +14187,11 @@ def _execute_backend_compile(
                 cmd.extend(["--target-triple", target_triple])
             cmd_with_output = cmd + ["--output", str(backend_output)]
             ir_bytes = _ensure_backend_ir_bytes()
+            ir_fmt = backend_ir_fmt
+            if ir_fmt != "json":
+                cmd_with_output.extend(["--ir-format", ir_fmt])
             ir_file_path: str | None = None
+            ir_suffix = ".msgpack" if ir_fmt == "msgpack" else ".json"
             try:
                 # For large IRs (>50MB), write to a temp file to avoid
                 # stdin pipe buffer issues with non-finite float encoding.
@@ -14195,7 +14199,7 @@ def _execute_backend_compile(
                     import tempfile as _tempfile
 
                     ir_fd, ir_file_path = _tempfile.mkstemp(
-                        suffix=".json", prefix="molt_ir_"
+                        suffix=ir_suffix, prefix="molt_ir_"
                     )
                     try:
                         os.write(ir_fd, ir_bytes)
@@ -14643,11 +14647,12 @@ def _run_backend_pipeline(
     if prepared_build_preamble.diagnostics_enabled:
         prepared_build_preamble.phase_starts["runtime_setup"] = time.perf_counter()
     backend_ir_bytes: bytes | None = None
+    backend_ir_fmt: str = "json"
 
     def _ensure_backend_ir_bytes() -> bytes:
-        nonlocal backend_ir_bytes
+        nonlocal backend_ir_bytes, backend_ir_fmt
         if backend_ir_bytes is None:
-            backend_ir_bytes = _backend_ir_bytes(ir)
+            backend_ir_fmt, backend_ir_bytes = _backend_ir_format_and_bytes(ir)
         return backend_ir_bytes
 
     prepared_backend_setup, prepared_backend_setup_error = _prepare_backend_setup(
@@ -19370,6 +19375,16 @@ def _backend_ir_text(ir: dict[str, Any]) -> str:
 
 def _backend_ir_bytes(ir: dict[str, Any]) -> bytes:
     return _backend_ir_text(ir).encode("utf-8")
+
+
+def _backend_ir_format_and_bytes(ir: dict[str, Any]) -> tuple[str, bytes]:
+    """Return (format, bytes) for the IR: msgpack if available, else JSON."""
+    try:
+        import msgpack  # type: ignore[import-untyped]
+
+        return "msgpack", msgpack.packb(ir)
+    except ImportError:
+        return "json", _backend_ir_bytes(ir)
 
 
 def _subprocess_output_text(value: str | bytes | None) -> str:
