@@ -7903,6 +7903,242 @@ def _codesign_binary(binary_path: Path) -> None:
         pass  # codesign not available or failed — proceed optimistically
 
 
+
+
+def _generate_split_worker_js() -> str:
+    """Generate a Cloudflare Workers shim for split-runtime deployment.
+
+    The runtime WASM module is loaded separately and can be cached by the
+    CDN independently of the app module.  Both modules share linear memory
+    through WASI imports.
+    """
+    return """// Molt split-runtime Cloudflare Workers shim
+// Runtime module is cached independently by the CDN.
+import runtimeModule from "./molt_runtime.wasm";
+import appModule from "./app.wasm";
+
+class ProcExit { constructor(code) { this.code = code; } }
+
+export default {
+  async fetch(request) {
+    const url = new URL(request.url);
+    const urlPath = url.pathname;
+    const queryString = url.search ? url.search.slice(1) : "";
+
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    let wasmMemory = null;
+
+    const wasiArgs = ["molt", urlPath, queryString];
+    const argsEncoded = wasiArgs.map(a => encoder.encode(a + "\0"));
+    const argsTotalSize = argsEncoded.reduce((s, a) => s + a.length, 0);
+
+    const envVars = [
+      "MOLT_TRUSTED=1",
+      ...(queryString ? [`QUERY_STRING=${queryString}`] : []),
+    ];
+    const envEncoded = envVars.map(e => encoder.encode(e + "\0"));
+    const envTotalSize = envEncoded.reduce((s, e) => s + e.length, 0);
+
+    const wasi = {
+      fd_write(fd, iovs, iovsLen, nwritten) {
+        if ((fd === 1 || fd === 2) && wasmMemory) {
+          const view = new DataView(wasmMemory.buffer);
+          let totalWritten = 0;
+          for (let i = 0; i < iovsLen; i++) {
+            const ptr = view.getUint32(iovs + i * 8, true);
+            const len = view.getUint32(iovs + i * 8 + 4, true);
+            const bytes = new Uint8Array(wasmMemory.buffer, ptr, len);
+            const text = decoder.decode(bytes, { stream: true });
+            if (fd === 1) stdoutChunks.push(text);
+            else stderrChunks.push(text);
+            totalWritten += len;
+          }
+          view.setUint32(nwritten, totalWritten, true);
+        }
+        return 0;
+      },
+      fd_read() { return 0; },
+      fd_close() { return 0; },
+      fd_seek() { return 0; },
+      fd_prestat_get() { return 8; },
+      fd_prestat_dir_name() { return 8; },
+      fd_fdstat_get(fd, statPtr) {
+        if (wasmMemory) {
+          const view = new DataView(wasmMemory.buffer);
+          const filetype = (fd <= 2) ? 2 : 4;
+          view.setUint8(statPtr, filetype);
+          view.setUint16(statPtr + 2, 0, true);
+          view.setBigUint64(statPtr + 8, 0xFFFFFFFFFFFFFFFFn, true);
+          view.setBigUint64(statPtr + 16, 0xFFFFFFFFFFFFFFFFn, true);
+        }
+        return 0;
+      },
+      fd_tell() { return 0; },
+      fd_filestat_get(fd, bufPtr) {
+        if (wasmMemory) new Uint8Array(wasmMemory.buffer, bufPtr, 64).fill(0);
+        return 0;
+      },
+      fd_filestat_set_size() { return 0; },
+      fd_readdir() { return 0; },
+      environ_sizes_get(countPtr, sizePtr) {
+        if (wasmMemory) {
+          const view = new DataView(wasmMemory.buffer);
+          view.setUint32(countPtr, envVars.length, true);
+          view.setUint32(sizePtr, envTotalSize, true);
+        }
+        return 0;
+      },
+      environ_get(environPtr, environBufPtr) {
+        if (wasmMemory) {
+          const view = new DataView(wasmMemory.buffer);
+          let bufOffset = environBufPtr;
+          for (let i = 0; i < envEncoded.length; i++) {
+            view.setUint32(environPtr + i * 4, bufOffset, true);
+            new Uint8Array(wasmMemory.buffer, bufOffset, envEncoded[i].length).set(envEncoded[i]);
+            bufOffset += envEncoded[i].length;
+          }
+        }
+        return 0;
+      },
+      args_sizes_get(countPtr, sizePtr) {
+        if (wasmMemory) {
+          const view = new DataView(wasmMemory.buffer);
+          view.setUint32(countPtr, wasiArgs.length, true);
+          view.setUint32(sizePtr, argsTotalSize, true);
+        }
+        return 0;
+      },
+      args_get(argvPtr, argvBufPtr) {
+        if (wasmMemory) {
+          const view = new DataView(wasmMemory.buffer);
+          let bufOffset = argvBufPtr;
+          for (let i = 0; i < argsEncoded.length; i++) {
+            view.setUint32(argvPtr + i * 4, bufOffset, true);
+            new Uint8Array(wasmMemory.buffer, bufOffset, argsEncoded[i].length).set(argsEncoded[i]);
+            bufOffset += argsEncoded[i].length;
+          }
+        }
+        return 0;
+      },
+      clock_time_get(id, precision, outPtr) {
+        if (wasmMemory) {
+          new DataView(wasmMemory.buffer).setBigUint64(outPtr, BigInt(Date.now()) * 1000000n, true);
+        }
+        return 0;
+      },
+      random_get(ptr, len) {
+        if (wasmMemory) crypto.getRandomValues(new Uint8Array(wasmMemory.buffer, ptr, len));
+        return 0;
+      },
+      proc_exit(code) { throw new ProcExit(code); },
+      sched_yield() { return 0; },
+      poll_oneoff() { return 0; },
+      path_open() { return 44; },
+      path_filestat_get() { return 44; },
+      path_rename() { return 44; },
+      path_readlink() { return 44; },
+      path_unlink_file() { return 44; },
+      path_create_directory() { return 44; },
+      path_remove_directory() { return 44; },
+    };
+
+    // Host stubs for platform features not available in Workers
+    const hostEnv = {
+      __indirect_function_table: new WebAssembly.Table({ initial: 8192, element: "anyfunc" }),
+      molt_time_timezone_host()  { return 0n; },
+      molt_time_local_offset_host() { return 0n; },
+      molt_getpid_host()         { return 1n; },
+      molt_socket_clone_host()   { return -1n; },
+      molt_socket_detach_host()  { return -1n; },
+      molt_socket_accept_host()  { return -1n; },
+      molt_socket_new_host()     { return -1n; },
+      molt_time_tzname_host()    { return -1; },
+      molt_process_write_host()  { return -1; },
+      molt_process_close_stdin_host() { return -1; },
+      molt_socket_wait_host()    { return -1; },
+      molt_db_exec_host()        { return -1; },
+      molt_db_query_host()       { return -1; },
+      molt_ws_recv_host()        { return -1; },
+      molt_ws_send_host()        { return -1; },
+      molt_ws_close_host()       { return -1; },
+      molt_socket_poll_host()    { return 0; },
+      molt_ws_poll_host()        { return 0; },
+      molt_process_terminate_host() { return -1; },
+      molt_os_close_host()       { return 0; },
+      molt_process_kill_host()   { return -1; },
+      molt_process_wait_host()   { return -1; },
+      molt_process_spawn_host()  { return -1; },
+      molt_process_stdio_host()  { return -1; },
+      molt_socket_bind_host()    { return -1; },
+      molt_socket_close_host()   { return 0; },
+      molt_socket_connect_host() { return -1; },
+      molt_socket_connect_ex_host() { return -1; },
+      molt_socket_getaddrinfo_host() { return -1; },
+      molt_socket_gethostname_host() { return -1; },
+      molt_socket_getpeername_host() { return -1; },
+      molt_socket_getservbyname_host() { return -1; },
+      molt_socket_getservbyport_host() { return -1; },
+      molt_socket_getsockname_host() { return -1; },
+      molt_socket_getsockopt_host() { return -1; },
+      molt_socket_has_ipv6_host() { return 0; },
+      molt_socket_listen_host()  { return -1; },
+      molt_socket_recv_host()    { return -1; },
+      molt_socket_recvfrom_host() { return -1; },
+      molt_socket_recvmsg_host() { return -1; },
+      molt_socket_send_host()    { return -1; },
+      molt_socket_sendmsg_host() { return -1; },
+      molt_socket_sendto_host()  { return -1; },
+      molt_socket_setsockopt_host() { return -1; },
+      molt_socket_shutdown_host() { return -1; },
+      molt_socket_socketpair_host() { return -1; },
+      molt_db_host_poll()        { return 0; },
+      molt_process_host_poll()   { return 0; },
+      molt_ws_connect_host()     { return -1; },
+    };
+
+    // Shared imports for both modules
+    const sharedImports = {
+      wasi_snapshot_preview1: wasi,
+      env: hostEnv,
+    };
+
+    try {
+      // 1. Instantiate runtime — provides molt_runtime.* exports
+      const rtInstance = await WebAssembly.instantiate(runtimeModule, sharedImports);
+
+      // 2. Instantiate app — imports from runtime + shared WASI/env
+      const appInstance = await WebAssembly.instantiate(appModule, {
+        ...sharedImports,
+        molt_runtime: rtInstance.exports,
+      });
+
+      // 3. Wire up shared memory (app owns it, runtime uses it)
+      wasmMemory = appInstance.exports.memory || rtInstance.exports.memory;
+
+      // 4. Initialize and run
+      if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();
+      if (appInstance.exports.molt_main) appInstance.exports.molt_main();
+      else if (appInstance.exports._start) appInstance.exports._start();
+    } catch (err) {
+      if (!(err instanceof ProcExit)) throw err;
+    }
+
+    const output = stdoutChunks.join("");
+    const trimmed = output.trimStart();
+    const contentType = (trimmed.startsWith("<!DOCTYPE html>") || trimmed.startsWith("<html"))
+      ? "text/html; charset=utf-8"
+      : "text/plain; charset=utf-8";
+    return new Response(output, {
+      headers: { "content-type": contentType },
+    });
+  }
+};
+"""
+
+
 def _backend_bin_path(
     project_root: Path,
     cargo_profile: str,
@@ -14675,38 +14911,29 @@ def _prepare_non_native_build_result(
             }
             manifest.write_text(_json.dumps(manifest_data, indent=2) + "\n")
 
-            # Generate Cloudflare Workers shim
+            # Generate split-runtime Cloudflare Workers shim with full
+            # WASI support and multi-module instantiation.
             worker_js = split_dir / "worker.js"
-            worker_js.write_text(
-                '// Auto-generated split-runtime Cloudflare Workers shim\n'
-                'import runtimeModule from "./molt_runtime.wasm";\n'
-                'import appModule from "./app.wasm";\n\n'
-                'export default {\n'
-                '  async fetch(request) {\n'
-                '    const stdoutChunks = [];\n'
-                '    const decoder = new TextDecoder();\n'
-                '    let wasmMemory = null;\n'
-                '    // Instantiate runtime first, then app with runtime exports\n'
-                '    const rtInstance = await WebAssembly.instantiate(runtimeModule, {});\n'
-                '    const appInstance = await WebAssembly.instantiate(appModule, {\n'
-                '      molt_runtime: rtInstance.exports,\n'
-                '    });\n'
-                '    wasmMemory = appInstance.exports.memory || rtInstance.exports.memory;\n'
-                '    if (appInstance.exports.molt_table_init) {\n'
-                '      appInstance.exports.molt_table_init();\n'
-                '    }\n'
-                '    appInstance.exports.molt_main();\n'
-                '    const output = stdoutChunks.join("");\n'
-                '    const trimmed = output.trimStart();\n'
-                '    const contentType = (trimmed.startsWith("<!DOCTYPE html>") || trimmed.startsWith("<html"))\n'
-                '        ? "text/html; charset=utf-8"\n'
-                '        : "text/plain; charset=utf-8";\n'
-                '    return new Response(output, {\n'
-                '      headers: { "content-type": contentType },\n'
-                '    });\n'
-                '  }\n'
-                '};\n'
-            )
+            worker_js.write_text(_generate_split_worker_js())
+
+            # Generate wrangler.toml for Cloudflare Workers deployment
+            wrangler_toml = split_dir / "wrangler.toml"
+            if not wrangler_toml.exists():
+                wrangler_toml.write_text(
+                    '# Auto-generated by molt build --split-runtime\n'
+                    'name = "molt-app"\n'
+                    'main = "worker.js"\n'
+                    'compatibility_date = "2024-01-01"\n\n'
+                    '[build]\n'
+                    'command = ""\n\n'
+                    '# Split-runtime: runtime.wasm is cached independently\n'
+                    '[[wasm_modules]]\n'
+                    'name = "RUNTIME"\n'
+                    'path = "molt_runtime.wasm"\n\n'
+                    '[[wasm_modules]]\n'
+                    'name = "APP"\n'
+                    'path = "app.wasm"\n'
+                )
 
             success_messages.append(
                 f"Split runtime: {app_wasm.name} ({app_size // 1024}KB) "
