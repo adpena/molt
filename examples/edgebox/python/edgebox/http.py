@@ -37,7 +37,7 @@ class BoxRequest:
             EDGEBOX_HEADERS -- JSON-encoded headers dict
             EDGEBOX_QUERY   -- JSON-encoded query params dict
 
-        The request body is taken from sys.argv[1] if present.
+        The request body is taken from EDGEBOX_BODY env var.
         """
         method = os.environ.get("EDGEBOX_METHOD", "GET")
         path = os.environ.get("EDGEBOX_PATH", "/")
@@ -46,14 +46,24 @@ class BoxRequest:
         headers_raw = os.environ.get("EDGEBOX_HEADERS", "{}")
         headers = json.loads(headers_raw)
 
-        # Parse query params from env
-        params_raw = os.environ.get("EDGEBOX_QUERY", "{}")
-        params = json.loads(params_raw)
+        # Parse query params from env — supports both JSON-encoded
+        # dicts and URL-encoded query strings (key=val&key2=val2).
+        params_raw = os.environ.get("EDGEBOX_QUERY", "")
+        if params_raw.startswith("{"):
+            params = json.loads(params_raw)
+        elif params_raw:
+            params = {}
+            for part in params_raw.split("&"):
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    params[k] = v
+                elif part:
+                    params[part] = ""
+        else:
+            params = {}
 
-        # Body comes from argv[1] if present
-        body = ""
-        if len(sys.argv) > 1:
-            body = sys.argv[1]
+        # Body from env var (not argv — argv is used for WASI args)
+        body = os.environ.get("EDGEBOX_BODY", "")
 
         return cls(
             method=method,
