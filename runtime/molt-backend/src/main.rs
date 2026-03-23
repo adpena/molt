@@ -861,6 +861,7 @@ fn main() -> io::Result<()> {
     let is_wasm = args.contains(&"--target".to_string()) && args.contains(&"wasm".to_string());
     let is_rust = args.contains(&"--target".to_string()) && args.contains(&"rust".to_string());
     let is_luau = args.contains(&"--target".to_string()) && args.contains(&"luau".to_string());
+    let use_ir_pipeline = args.contains(&"--ir-pipeline".to_string());
     #[cfg_attr(not(feature = "native-backend"), allow(unused_variables))]
     let target_triple = args
         .iter()
@@ -917,12 +918,20 @@ fn main() -> io::Result<()> {
         #[cfg(feature = "luau-backend")]
         {
             let mut backend = LuauBackend::new();
-            // Use unchecked compile for now — compile_checked rejects
-            // unsupported ops from stdlib modules. Once more ops are
-            // implemented, switch to compile_checked.
-            let source = backend.compile(&ir);
+            let source = if use_ir_pipeline {
+                backend.compile_via_ir(&ir)
+            } else {
+                // Use unchecked compile for now — compile_checked rejects
+                // unsupported ops from stdlib modules. Once more ops are
+                // implemented, switch to compile_checked.
+                backend.compile(&ir)
+            };
             file.write_all(source.as_bytes())?;
-            eprintln!("Successfully transpiled to {output_file}");
+            let lines = source.lines().count();
+            eprintln!(
+                "Successfully transpiled to {output_file} ({lines} lines, {:.1} KB)",
+                source.len() as f64 / 1024.0
+            );
         }
         #[cfg(not(feature = "luau-backend"))]
         {

@@ -10946,7 +10946,7 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
                 if mark_bom_written {
                     handle.text_bom_written = true;
                 }
-                let written_len = crate::object::ops::utf8_codepoint_count_cached(
+                let written_len = crate::object::ops_string::utf8_codepoint_count_cached(
                     _py,
                     raw,
                     Some(data_ptr as usize),
