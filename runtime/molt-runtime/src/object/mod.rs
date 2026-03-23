@@ -608,13 +608,17 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
     profile_alloc_type(_py, type_id);
     profile_alloc_type_bytes(_py, type_id, total_size);
     unsafe {
+        // Zero the entire allocation so data fields past the header
+        // start as null pointers / zero values.  This prevents the
+        // deallocation path from misinterpreting stale heap data as
+        // valid inner pointers (Vec*, DataclassDesc*, etc.) when an
+        // object type allocates more space than it initializes.
+        std::ptr::write_bytes(header_ptr, 0, total_size);
         let header = header_ptr as *mut MoltHeader;
         (*header).type_id = type_id;
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
-        (*header).poll_fn = 0;
-        (*header).state = 0;
+        // poll_fn, state, size, flags are already 0 from write_bytes
         (*header).size = total_size;
-        (*header).flags = 0;
         header_ptr.add(std::mem::size_of::<MoltHeader>())
     }
 }
