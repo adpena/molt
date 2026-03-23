@@ -50,3 +50,23 @@ required-features = ["rust-backend"]
 [[test]]
 name = "wasm_fastcall_lowering"
 required-features = ["wasm-backend"]
+
+[[test]]
+name = "wasm_import_registry"
+required-features = ["wasm-backend"]
+
+[[test]]
+name = "wasm_import_filtering"
+required-features = ["wasm-backend"]
+
+[[test]]
+name = "wasm_compilation"
+required-features = ["wasm-backend"]
+
+[[test]]
+name = "wasm_data_segments"
+required-features = ["wasm-backend"]
+
+[[test]]
+name = "wasm_type_section"
+required-features = ["wasm-backend"]
