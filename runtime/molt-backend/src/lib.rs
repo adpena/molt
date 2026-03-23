@@ -45,7 +45,7 @@ pub use crate::ir::{
 use crate::native_backend::TrampolineKey;
 pub(crate) use crate::passes::{
     apply_profile_order, build_const_int_map, elide_dead_struct_allocs, escape_analysis,
-    fold_constants, fold_constants_cross_block, hoist_loop_invariants, inline_functions,
+    fold_constants, fold_constants_cross_block, inline_functions,
     propagate_loop_fast_int, rc_coalescing,
 };
 
