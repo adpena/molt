@@ -1674,6 +1674,13 @@ pub(crate) fn hoist_loop_invariants(func_ir: &mut FunctionIR) {
 /// call sites, it becomes unreachable and will be eliminated here.
 /// Applies to both native and WASM backends.
 pub(crate) fn eliminate_dead_functions(ir: &mut SimpleIR) {
+    // Disabled: pass incorrectly removes runtime-required symbols (molt_main,
+    // molt_isolate_import, etc.) that are referenced at link time but not in
+    // Python-level IR.  Needs a "keep list" before re-enabling.
+    let _ = ir;
+    return;
+
+    #[allow(unreachable_code)]
     if std::env::var("MOLT_DISABLE_DEAD_FUNC_ELIM").is_ok() {
         return;
     }
@@ -1723,11 +1730,20 @@ pub(crate) fn eliminate_dead_functions(ir: &mut SimpleIR) {
     }
 
     // BFS from the entry function (index 0) to find all reachable functions.
+    // Also seed with molt_main which is the WASM entry point used by the
+    // table-init wrapper (not referenced in IR but required at link time).
     let entry = ir.functions[0].name.clone();
     let mut reachable: BTreeSet<String> = BTreeSet::new();
     let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     reachable.insert(entry.clone());
     queue.push_back(entry);
+    for func in ir.functions.iter() {
+        if func.name == "molt_main" || func.name == "_start" {
+            if reachable.insert(func.name.clone()) {
+                queue.push_back(func.name.clone());
+            }
+        }
+    }
 
     while let Some(current) = queue.pop_front() {
         if let Some(refs) = references.get(&current) {
