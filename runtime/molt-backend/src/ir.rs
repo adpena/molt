@@ -44,6 +44,9 @@ pub struct OpIR {
     pub task_kind: Option<String>,
     pub container_type: Option<String>,
     pub type_hint: Option<String>,
+    /// Inline-cache site index for attribute access acceleration.
+    /// Assigned by the frontend for `get_attr_generic_ptr` ops.
+    pub ic_index: Option<i64>,
 }
 
 impl PgoProfileIR {
@@ -174,6 +177,12 @@ impl FunctionIR {
 impl OpIR {
     fn from_json_value(value: &JsonValue, ctx: &str) -> Result<Self, String> {
         let obj = expect_object(value, ctx)?;
+        // Extract ic_index from nested "metadata" object if present.
+        let ic_index = obj
+            .get("metadata")
+            .and_then(|m| m.as_object())
+            .and_then(|m| m.get("ic_index"))
+            .and_then(|v| v.as_i64());
         Ok(Self {
             kind: required_string(obj, "kind", ctx)?,
             value: optional_i64(obj, "value", ctx)?,
@@ -190,6 +199,7 @@ impl OpIR {
             task_kind: optional_string(obj, "task_kind", ctx)?,
             container_type: optional_string(obj, "container_type", ctx)?,
             type_hint: optional_string(obj, "type_hint", ctx)?,
+            ic_index,
         })
     }
 }
