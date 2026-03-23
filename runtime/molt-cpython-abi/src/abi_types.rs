@@ -253,9 +253,16 @@ pub unsafe fn init_static_types() {
         set_name!(PyBool_Type, b"bool\0");
         set_name!(PyModule_Type, b"module\0");
 
-        Py_None.ob_type = &raw mut PyUnicode_Type; // placeholder; bridge overrides
+        set_name!(PyNone_Type, b"NoneType\0");
+        set_name!(PyNotImplemented_Type, b"NotImplementedType\0");
+        set_name!(PyType_Type, b"type\0");
+        set_name!(PyBaseObject_Type, b"object\0");
+        set_name!(PyFrozenSet_Type, b"frozenset\0");
+
+        Py_None.ob_type = &raw mut PyNone_Type;
         Py_True.ob_type = &raw mut PyBool_Type;
         Py_False.ob_type = &raw mut PyBool_Type;
+        Py_NotImplementedSentinel.ob_type = &raw mut PyNotImplemented_Type;
     }
 }
 
@@ -290,3 +297,73 @@ exc_singleton!(PyExc_ImportError);
 exc_singleton!(PyExc_StopIteration);
 exc_singleton!(PyExc_NotImplementedError);
 exc_singleton!(PyExc_OSError);
+exc_singleton!(PyExc_IOError);
+exc_singleton!(PyExc_FileNotFoundError);
+exc_singleton!(PyExc_PermissionError);
+exc_singleton!(PyExc_FileExistsError);
+exc_singleton!(PyExc_IsADirectoryError);
+exc_singleton!(PyExc_NotADirectoryError);
+exc_singleton!(PyExc_TimeoutError);
+exc_singleton!(PyExc_ArithmeticError);
+exc_singleton!(PyExc_FloatingPointError);
+exc_singleton!(PyExc_LookupError);
+exc_singleton!(PyExc_AssertionError);
+exc_singleton!(PyExc_EOFError);
+exc_singleton!(PyExc_NameError);
+exc_singleton!(PyExc_UnboundLocalError);
+exc_singleton!(PyExc_SyntaxError);
+exc_singleton!(PyExc_SystemError);
+exc_singleton!(PyExc_SystemExit);
+exc_singleton!(PyExc_UnicodeError);
+exc_singleton!(PyExc_UnicodeDecodeError);
+exc_singleton!(PyExc_UnicodeEncodeError);
+exc_singleton!(PyExc_BufferError);
+exc_singleton!(PyExc_RecursionError);
+exc_singleton!(PyExc_GeneratorExit);
+exc_singleton!(PyExc_KeyboardInterrupt);
+exc_singleton!(PyExc_ConnectionError);
+exc_singleton!(PyExc_ConnectionResetError);
+exc_singleton!(PyExc_BrokenPipeError);
+exc_singleton!(PyExc_DeprecationWarning);
+exc_singleton!(PyExc_RuntimeWarning);
+exc_singleton!(PyExc_FutureWarning);
+exc_singleton!(PyExc_UserWarning);
+
+/// Py_HASH_EXTERNAL constant — used by some extensions.
+pub const Py_HASH_EXTERNAL: c_int = 0;
+
+/// Buffer protocol — minimal Py_buffer struct.
+#[repr(C)]
+pub struct Py_buffer {
+    pub buf: *mut std::ffi::c_void,
+    pub obj: *mut PyObject,
+    pub len: Py_ssize_t,
+    pub itemsize: Py_ssize_t,
+    pub readonly: c_int,
+    pub ndim: c_int,
+    pub format: *mut std::os::raw::c_char,
+    pub shape: *mut Py_ssize_t,
+    pub strides: *mut Py_ssize_t,
+    pub suboffsets: *mut Py_ssize_t,
+    pub internal: *mut std::ffi::c_void,
+}
+
+/// NoneType type object (for type(None) checks).
+#[allow(non_upper_case_globals)]
+pub static mut PyNone_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+
+/// NotImplemented type object.
+#[allow(non_upper_case_globals)]
+pub static mut PyNotImplemented_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+
+/// Type type object.
+#[allow(non_upper_case_globals)]
+pub static mut PyType_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+
+/// Base object type.
+#[allow(non_upper_case_globals)]
+pub static mut PyBaseObject_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+
+/// FrozenSet type.
+#[allow(non_upper_case_globals)]
+pub static mut PyFrozenSet_Type: PyTypeObject = unsafe { std::mem::zeroed() };
