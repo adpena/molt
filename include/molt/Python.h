@@ -201,6 +201,9 @@ typedef struct {
 } PyFloatObject;
 
 static inline const char *PyUnicode_AsUTF8AndSize(PyObject *value, Py_ssize_t *size_out);
+static inline PyObject *PyUnicode_AsEncodedString(PyObject *unicode,
+                                                    const char *encoding,
+                                                    const char *errors);
 static inline PyObject *PyType_FromSpec(PyType_Spec *spec);
 static inline PyObject *PyType_FromSpecWithBases(PyType_Spec *spec, PyObject *bases);
 static inline PyObject *PyType_FromModuleAndSpec(
@@ -216,6 +219,8 @@ static inline PyObject *_molt_builtin_class_lookup_utf8(const char *name);
 static inline void PyErr_Clear(void);
 static inline int PyErr_ExceptionMatches(PyObject *exc);
 static inline void PyErr_SetString(PyObject *exc, const char *message);
+static inline void PyErr_SetNone(PyObject *exc);
+static inline PyObject *PyErr_FormatV(PyObject *exc, const char *fmt, va_list vargs);
 static inline PyObject *PyErr_NoMemory(void);
 static inline int PyArg_UnpackTuple(
     PyObject *args,
@@ -1305,6 +1310,13 @@ static inline int PyType_Ready(PyTypeObject *type) {
         return -1;
     }
     return molt_type_ready(_molt_py_handle((PyObject *)type));
+}
+
+static inline void PyType_Modified(PyTypeObject *type) {
+    /* In CPython this invalidates internal caches (method resolution order,
+       attribute lookup caches) after a type object is mutated.  Molt does not
+       maintain MRO caches at the C-API level, so this is a no-op. */
+    (void)type;
 }
 
 static inline int _molt_dict_set_utf8_key(
@@ -2858,6 +2870,12 @@ static inline PyObject *PyUnicode_AsUTF8String(PyObject *value) {
 
 static inline PyObject *PyUnicode_AsASCIIString(PyObject *value) {
     return PyUnicode_AsUTF8String(value);
+}
+
+static inline PyObject *PyUnicode_AsLatin1String(PyObject *value) {
+    /* Latin-1 is a superset of ASCII; for byte-range code points it matches
+       the first 256 Unicode values.  Delegate to the runtime encoder. */
+    return PyUnicode_AsEncodedString(value, "latin-1", NULL);
 }
 
 #define PyUnicode_1BYTE_KIND 1
@@ -4931,6 +4949,26 @@ static inline int PyArg_ParseTuple(PyObject *args, const char *format, ...) {
     va_start(ap, format);
     out = _molt_pyarg_parse_tuple_va(args, format, &ap);
     va_end(ap);
+    return out;
+}
+
+static inline int PyArg_Parse(PyObject *arg, const char *format, ...) {
+    /* PyArg_Parse parses a single value (not a tuple).  Wrap in a 1-tuple and
+       reuse the existing tuple parser. */
+    MoltHandle items[1];
+    MoltHandle tuple_bits;
+    int out;
+    va_list ap;
+    if (arg == NULL) {
+        PyErr_SetString(PyExc_TypeError, "argument must not be NULL");
+        return 0;
+    }
+    items[0] = _molt_py_handle(arg);
+    tuple_bits = molt_tuple_from_array(items, 1);
+    va_start(ap, format);
+    out = _molt_pyarg_parse_tuple_va(_molt_pyobject_from_handle(tuple_bits), format, &ap);
+    va_end(ap);
+    molt_handle_decref(tuple_bits);
     return out;
 }
 
@@ -8589,23 +8627,25 @@ static inline int PyErr_GivenExceptionMatches(PyObject *given, PyObject *exc) {
     return PyObject_IsInstance(given, exc);
 }
 
-static inline void PyErr_SetFromErrno(PyObject *type) {
+static inline PyObject *PyErr_SetFromErrno(PyObject *type) {
+    const char *msg;
     if (type == NULL) type = PyExc_OSError;
-    PyErr_SetString(type, strerror(errno));
+    msg = strerror(errno);
+    if (msg == NULL) msg = "unknown error";
+    PyErr_SetString(type, msg);
+    return NULL;
 }
 
 static inline PyObject *PyErr_SetFromErrnoWithFilenameObject(PyObject *type, PyObject *filenameObject) {
     (void)filenameObject;
-    PyErr_SetFromErrno(type);
-    return NULL;
+    return PyErr_SetFromErrno(type);
 }
 
 static inline PyObject *PyErr_SetFromErrnoWithFilenameObjects(PyObject *type,
                                                                PyObject *filenameObject,
                                                                PyObject *filenameObject2) {
     (void)filenameObject; (void)filenameObject2;
-    PyErr_SetFromErrno(type);
-    return NULL;
+    return PyErr_SetFromErrno(type);
 }
 
 static inline PyObject *PyErr_SetImportError(PyObject *msg, PyObject *name, PyObject *path) {
@@ -10168,38 +10208,7 @@ static inline int PyObject_GenericSetAttr(PyObject *obj, PyObject *name, PyObjec
     return 0;
 }
 
-/*
- * PyNumber_Long — convert to int. Already exists but ensure we also
- * provide PyNumber_Index which many extensions use interchangeably.
- */
-#ifndef _MOLT_PYNUMBER_INDEX_DEFINED
-#define _MOLT_PYNUMBER_INDEX_DEFINED
-static inline PyObject *PyNumber_Index(PyObject *o) {
-    PyObject *index_method;
-    PyObject *result;
-    if (o == NULL) {
-        PyErr_SetString(PyExc_TypeError, "NULL object passed to PyNumber_Index");
-        return NULL;
-    }
-    /* If it's already an int, return it directly */
-    if (PyLong_Check(o)) {
-        Py_INCREF(o);
-        return o;
-    }
-    /* Try __index__ */
-    index_method = PyObject_GetAttrString(o, "__index__");
-    if (index_method == NULL) {
-        PyErr_Clear();
-        PyErr_Format(PyExc_TypeError,
-            "'%.200s' object cannot be interpreted as an integer",
-            Py_TYPE_NAME(o));
-        return NULL;
-    }
-    result = PyObject_CallNoArgs(index_method);
-    Py_DECREF(index_method);
-    return result;
-}
-#endif
+/* PyNumber_Index — defined earlier in this file. */
 
 /*
  * PyObject_RichCompare — rich comparison with op argument.
@@ -10214,314 +10223,16 @@ static inline PyObject *PyNumber_Index(PyObject *o) {
 #define Py_GE 5
 #endif
 
-/* ========================================================================
- * Priority 3: Type creation from spec (PyO3, modern C extensions)
- *
- * PyType_FromSpec / PyType_FromSpecWithBases already exist (lines ~1606/2003).
- * We add PyType_FromModuleAndSpec for PEP 573 (module-state-aware types).
- * ======================================================================== */
+/* PyType_FromModuleAndSpec, PyType_GetModule, PyType_GetModuleState —
+ * defined earlier in this file. */
 
-static inline PyObject *PyType_FromModuleAndSpec(
-    PyObject *module,
-    PyType_Spec *spec,
-    PyObject *bases
-) {
-    PyObject *type_obj;
-    (void)module; /* Molt doesn't yet track per-type module ownership */
-    type_obj = PyType_FromSpecWithBases(spec, bases);
-    if (type_obj == NULL) {
-        return NULL;
-    }
-    /* Store module reference on the type for PyType_GetModule */
-    if (module != NULL) {
-        (void)PyObject_SetAttrString(type_obj, "__module_ref__", module);
-        /* Best-effort — don't fail type creation if this doesn't stick */
-        if (PyErr_Occurred()) {
-            PyErr_Clear();
-        }
-    }
-    return type_obj;
-}
+/* PyObject_CallFunctionObjArgs — defined earlier in this file. */
 
-/*
- * PyType_GetModule — retrieve module from a type created with
- * PyType_FromModuleAndSpec.
- */
-static inline PyObject *PyType_GetModule(PyTypeObject *type) {
-    PyObject *module;
-    if (type == NULL) {
-        PyErr_SetString(PyExc_TypeError, "type must not be NULL");
-        return NULL;
-    }
-    module = PyObject_GetAttrString((PyObject *)type, "__module_ref__");
-    if (module == NULL) {
-        PyErr_Clear();
-        PyErr_SetString(PyExc_TypeError,
-            "type was not created with PyType_FromModuleAndSpec");
-        return NULL;
-    }
-    return module;
-}
+/* PyErr_SetFromErrno, PyErr_SetFromErrnoWithFilenameObject,
+ * PyErr_SetFromErrnoWithFilenameObjects — defined earlier in this file. */
 
-/*
- * PyType_GetModuleState — shorthand for getting module state from a type.
- */
-static inline void *PyType_GetModuleState(PyTypeObject *type) {
-    PyObject *module = PyType_GetModule(type);
-    void *state;
-    if (module == NULL) {
-        return NULL;
-    }
-    state = PyModule_GetState(module);
-    Py_DECREF(module);
-    return state;
-}
-
-/*
- * PyObject_CallFunctionObjArgs — variadic function call with PyObject* args.
- * Like PyObject_CallMethodObjArgs but calls the callable directly.
- */
-static inline PyObject *PyObject_CallFunctionObjArgs(
-    PyObject *callable,
-    ...
-) {
-    va_list ap;
-    MoltHandle args_arr[32];
-    uint64_t nargs = 0;
-    MoltHandle args_bits;
-    PyObject *result;
-    PyObject *arg;
-
-    if (callable == NULL) {
-        PyErr_SetString(PyExc_TypeError, "NULL callable passed to PyObject_CallFunctionObjArgs");
-        return NULL;
-    }
-
-    va_start(ap, callable);
-    while ((arg = va_arg(ap, PyObject *)) != NULL) {
-        if (nargs >= 32) {
-            va_end(ap);
-            PyErr_SetString(PyExc_TypeError,
-                "PyObject_CallFunctionObjArgs: too many arguments (max 32)");
-            return NULL;
-        }
-        args_arr[nargs++] = _molt_py_handle(arg);
-    }
-    va_end(ap);
-
-    args_bits = molt_tuple_from_array(nargs > 0 ? args_arr : NULL, nargs);
-    if (args_bits == 0 || molt_err_pending() != 0) {
-        return NULL;
-    }
-    result = _molt_pyobject_from_result(
-        molt_object_call(_molt_py_handle(callable), args_bits, molt_none()));
-    molt_handle_decref(args_bits);
-    return result;
-}
-
-/*
- * PyErr_SetFromErrno — set exception from errno. Common in I/O extensions.
- */
-static inline PyObject *PyErr_SetFromErrno(PyObject *exc) {
-    const char *msg;
-    if (exc == NULL) {
-        exc = PyExc_OSError;
-    }
-    msg = strerror(errno);
-    if (msg == NULL) {
-        msg = "unknown error";
-    }
-    PyErr_SetString(exc, msg);
-    return NULL;
-}
-
-/*
- * PyErr_SetFromErrnoWithFilenameObject — set OSError with filename context.
- */
-static inline PyObject *PyErr_SetFromErrnoWithFilenameObject(
-    PyObject *exc,
-    PyObject *filenameObject
-) {
-    (void)filenameObject;
-    return PyErr_SetFromErrno(exc);
-}
-
-/*
- * PyErr_SetFromErrnoWithFilenameObjects — set OSError with two filenames.
- */
-static inline PyObject *PyErr_SetFromErrnoWithFilenameObjects(
-    PyObject *exc,
-    PyObject *filenameObject,
-    PyObject *filenameObject2
-) {
-    (void)filenameObject;
-    (void)filenameObject2;
-    return PyErr_SetFromErrno(exc);
-}
-
-/*
- * PyErr_WriteUnraisable — write unraisable exception to stderr.
- * Used by extensions in destructors where exceptions can't propagate.
- */
-static inline void PyErr_WriteUnraisable(PyObject *obj) {
-    PyObject *exc;
-    if (molt_err_pending() == 0) {
-        return;
-    }
-    exc = PyErr_GetRaisedException();
-    if (exc != NULL) {
-        PyObject *str = PyObject_Str(exc);
-        if (str != NULL) {
-            const char *text = PyUnicode_AsUTF8(str);
-            if (text != NULL) {
-                if (obj != NULL) {
-                    PyObject *obj_repr = PyObject_Repr(obj);
-                    if (obj_repr != NULL) {
-                        const char *obj_text = PyUnicode_AsUTF8(obj_repr);
-                        if (obj_text != NULL) {
-                            fprintf(stderr, "Exception ignored in: %s\n%s\n",
-                                    obj_text, text);
-                        }
-                        Py_DECREF(obj_repr);
-                    }
-                } else {
-                    fprintf(stderr, "Exception ignored: %s\n", text);
-                }
-            }
-            Py_DECREF(str);
-        }
-        Py_DECREF(exc);
-    }
-    /* Clear error state regardless */
-    (void)molt_err_clear();
-}
-
-/*
- * PyIter_Next — get next item from iterator. Returns NULL with no error
- * set on StopIteration, NULL with error set on other errors.
- */
-static inline PyObject *PyIter_Next(PyObject *iter) {
-    PyObject *next_method;
-    PyObject *result;
-    if (iter == NULL) {
-        PyErr_SetString(PyExc_TypeError, "NULL iterator");
-        return NULL;
-    }
-    next_method = PyObject_GetAttrString(iter, "__next__");
-    if (next_method == NULL) {
-        return NULL;
-    }
-    result = PyObject_CallNoArgs(next_method);
-    Py_DECREF(next_method);
-    if (result == NULL) {
-        /* StopIteration is not an error for PyIter_Next — suppress it */
-        if (PyErr_ExceptionMatches(PyExc_StopIteration)) {
-            PyErr_Clear();
-        }
-    }
-    return result;
-}
-
-/*
- * PyObject_GetIter — get an iterator from an object.
- */
-static inline PyObject *PyObject_GetIter(PyObject *obj) {
-    PyObject *iter_fn;
-    MoltHandle arg;
-    MoltHandle args_bits;
-    PyObject *result;
-    if (obj == NULL) {
-        PyErr_SetString(PyExc_TypeError, "NULL object passed to PyObject_GetIter");
-        return NULL;
-    }
-    iter_fn = _molt_builtin_class_lookup_utf8("iter");
-    if (iter_fn == NULL) {
-        return NULL;
-    }
-    arg = _molt_py_handle(obj);
-    args_bits = molt_tuple_from_array(&arg, 1);
-    if (args_bits == 0 || molt_err_pending() != 0) {
-        Py_DECREF(iter_fn);
-        return NULL;
-    }
-    result = _molt_pyobject_from_result(
-        molt_object_call(_molt_py_handle(iter_fn), args_bits, molt_none()));
-    molt_handle_decref(args_bits);
-    Py_DECREF(iter_fn);
-    return result;
-}
-
-/*
- * PyObject_RichCompareBool — rich comparison returning int.
- * Returns -1 on error, 0 for false, 1 for true.
- */
-static inline int PyObject_RichCompareBool(PyObject *o1, PyObject *o2, int opid) {
-    PyObject *result;
-    int truthy;
-    const char *dunder;
-    PyObject *method;
-    MoltHandle arg;
-    MoltHandle args_bits;
-
-    if (o1 == NULL || o2 == NULL) {
-        PyErr_SetString(PyExc_TypeError, "NULL argument to PyObject_RichCompareBool");
-        return -1;
-    }
-    /* Identity shortcut for Py_EQ / Py_NE */
-    if (o1 == o2) {
-        if (opid == Py_EQ) return 1;
-        if (opid == Py_NE) return 0;
-    }
-
-    switch (opid) {
-        case Py_LT: dunder = "__lt__"; break;
-        case Py_LE: dunder = "__le__"; break;
-        case Py_EQ: dunder = "__eq__"; break;
-        case Py_NE: dunder = "__ne__"; break;
-        case Py_GT: dunder = "__gt__"; break;
-        case Py_GE: dunder = "__ge__"; break;
-        default:
-            PyErr_SetString(PyExc_ValueError, "invalid comparison op");
-            return -1;
-    }
-
-    method = PyObject_GetAttrString(o1, dunder);
-    if (method == NULL) {
-        PyErr_Clear();
-        /* For EQ/NE fall back to identity */
-        if (opid == Py_EQ) return (o1 == o2) ? 1 : 0;
-        if (opid == Py_NE) return (o1 != o2) ? 1 : 0;
-        PyErr_Format(PyExc_TypeError,
-            "'%s' not supported between instances of '%.100s' and '%.100s'",
-            dunder, Py_TYPE_NAME(o1), Py_TYPE_NAME(o2));
-        return -1;
-    }
-    arg = _molt_py_handle(o2);
-    args_bits = molt_tuple_from_array(&arg, 1);
-    if (args_bits == 0 || molt_err_pending() != 0) {
-        Py_DECREF(method);
-        return -1;
-    }
-    result = _molt_pyobject_from_result(
-        molt_object_call(_molt_py_handle(method), args_bits, molt_none()));
-    molt_handle_decref(args_bits);
-    Py_DECREF(method);
-    if (result == NULL) {
-        return -1;
-    }
-    if (result == Py_NotImplemented) {
-        Py_DECREF(result);
-        if (opid == Py_EQ) return (o1 == o2) ? 1 : 0;
-        if (opid == Py_NE) return (o1 != o2) ? 1 : 0;
-        PyErr_Format(PyExc_TypeError,
-            "'%s' not supported between instances of '%.100s' and '%.100s'",
-            dunder, Py_TYPE_NAME(o1), Py_TYPE_NAME(o2));
-        return -1;
-    }
-    truthy = PyObject_IsTrue(result);
-    Py_DECREF(result);
-    return truthy;
-}
+/* PyErr_WriteUnraisable, PyIter_Next, PyObject_GetIter,
+ * PyObject_RichCompareBool — defined earlier in this file. */
 
 /* =========================================================================
  * CPython 3.12 Stable ABI — Gap Fill
@@ -11287,48 +10998,7 @@ static inline int PyOS_vsnprintf(char *str, size_t size, const char *format, va_
 
 /* PyDict_GetItemWithError — already defined earlier in this file. */
 
-/* ---- PyDict_GetItemRef (3.12+) ---- */
-
-static inline int PyDict_GetItemRef(PyObject *p, PyObject *key, PyObject **result) {
-    PyObject *item;
-    if (p == NULL || key == NULL || result == NULL) {
-        if (result) *result = NULL;
-        PyErr_SetString(PyExc_TypeError, "NULL argument to PyDict_GetItemRef");
-        return -1;
-    }
-    item = PyObject_GetItem(p, key);
-    if (item == NULL) {
-        if (PyErr_ExceptionMatches(PyExc_KeyError)) {
-            PyErr_Clear();
-            *result = NULL;
-            return 0;  /* not found, no error */
-        }
-        *result = NULL;
-        return -1;  /* error */
-    }
-    *result = item;  /* new reference */
-    return 1;  /* found */
-}
-
-/* ---- PyDict_GetItemStringRef (3.12+) ---- */
-
-static inline int PyDict_GetItemStringRef(PyObject *p, const char *key, PyObject **result) {
-    PyObject *key_obj;
-    int rc;
-    if (key == NULL || result == NULL) {
-        if (result) *result = NULL;
-        PyErr_SetString(PyExc_TypeError, "NULL argument to PyDict_GetItemStringRef");
-        return -1;
-    }
-    key_obj = PyUnicode_FromString(key);
-    if (key_obj == NULL) {
-        *result = NULL;
-        return -1;
-    }
-    rc = PyDict_GetItemRef(p, key_obj, result);
-    Py_DECREF(key_obj);
-    return rc;
-}
+/* PyDict_GetItemRef, PyDict_GetItemStringRef — defined earlier in this file. */
 
 /* ---- PyDict_Pop (3.12+) ---- */
 
@@ -11375,6 +11045,43 @@ static inline int PyDict_Pop(PyObject *p, PyObject *key, PyObject **result) {
 }
 
 /* Py_NewRef, Py_XNewRef — already defined earlier in this file. */
+
+/* ---- PyDictProxy_New ---- */
+
+static inline PyObject *PyDictProxy_New(PyObject *mapping) {
+    /* Create a read-only mappingproxy wrapping *mapping*.
+       Implemented via types.MappingProxyType(mapping). */
+    PyObject *types_mod;
+    PyObject *proxy_type;
+    MoltHandle args_arr[1];
+    MoltHandle args_bits;
+    PyObject *result;
+    if (mapping == NULL) {
+        PyErr_SetString(PyExc_TypeError, "NULL argument to PyDictProxy_New");
+        return NULL;
+    }
+    types_mod = PyImport_ImportModule("types");
+    if (types_mod == NULL) return NULL;
+    proxy_type = PyObject_GetAttrString(types_mod, "MappingProxyType");
+    Py_DECREF(types_mod);
+    if (proxy_type == NULL) return NULL;
+    args_arr[0] = _molt_py_handle(mapping);
+    args_bits = molt_tuple_from_array(args_arr, 1);
+    result = _molt_pyobject_from_result(
+        molt_object_call(_molt_py_handle(proxy_type), args_bits, molt_none()));
+    molt_handle_decref(args_bits);
+    Py_DECREF(proxy_type);
+    return result;
+}
+
+/* ---- PyObject_ClearWeakRefs ---- */
+
+static inline void PyObject_ClearWeakRefs(PyObject *obj) {
+    /* In CPython this clears all weak references pointing to *obj* and is
+       called from tp_dealloc.  Molt's GC handles weak-reference invalidation
+       internally, so this is a no-op at the C-API boundary. */
+    (void)obj;
+}
 
 /* ---- PyFloat_GetInfo ---- */
 
