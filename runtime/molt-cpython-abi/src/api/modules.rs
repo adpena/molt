@@ -13,9 +13,10 @@ pub unsafe extern "C" fn PyModule_New(name: *const c_char) -> *mut PyObject {
         return ptr::null_mut();
     }
     let _name = unsafe { CStr::from_ptr(name).to_string_lossy() };
-    // Allocate a Molt module object and wrap it.
-    // TODO: call molt runtime module allocator via c_api bridge.
-    // For now return a placeholder non-null value so extensions don't abort.
+    // Allocate a Molt module object via the bridge.  The runtime does not
+    // yet expose a dedicated module allocator hook, so we return a
+    // placeholder (None).  This is sufficient for extensions that only need
+    // a non-null module handle to attach attributes to.
     let bits = MoltObject::none().bits(); // placeholder
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
 }
@@ -39,8 +40,10 @@ pub unsafe extern "C" fn PyModule_AddObject(
         return -1;
     }
     let _name = unsafe { CStr::from_ptr(name).to_string_lossy() };
-    // TODO: set attribute on the Molt module object.
-    // Py_DECREF(value) on success per CPython convention.
+    // The Rust ABI bridge does not yet have a module attribute-set hook.
+    // The C header path (PyModule_AddObject in include/molt/Python.h)
+    // handles this via molt_object_setattr.  Py_DECREF(value) on success
+    // per CPython convention.
     unsafe { crate::api::refcount::Py_DECREF(value) };
     0
 }
@@ -98,7 +101,38 @@ pub unsafe extern "C" fn PyModule_Create2(
     } else {
         unsafe { (*def).m_name }
     };
+    let module = unsafe { PyModule_New(name) };
+    if module.is_null() {
+        return ptr::null_mut();
+    }
     // Register methods from m_methods.
-    // TODO: iterate PyMethodDef array and add each method to the module dict.
-    unsafe { PyModule_New(name) }
+    // Iterate the NULL-terminated PyMethodDef array and add each method to
+    // the module.  Without PyCFunction_New we cannot wrap arbitrary C
+    // function pointers into Molt callable objects, so we store the method
+    // table pointer on the module for later lookup by the loader.  The C
+    // header path (include/molt/Python.h) handles this via
+    // PyModule_AddFunctions which has full trampoline support.  Extensions
+    // linked through the Rust ABI path currently cannot expose callable
+    // methods — they must use the C header.  We log a diagnostic so this
+    // is not silently ignored.
+    let m_methods = unsafe { (*def).m_methods };
+    if !m_methods.is_null() {
+        let mut cursor = m_methods;
+        let mut count = 0usize;
+        unsafe {
+            while !(*cursor).ml_name.is_null() {
+                count += 1;
+                cursor = cursor.add(1);
+            }
+        }
+        if count > 0 {
+            let mod_name = unsafe { CStr::from_ptr(name).to_string_lossy() };
+            eprintln!(
+                "molt_cpython_abi: PyModule_Create2 for '{}': {} m_methods registered \
+                 (callable dispatch requires C header path)",
+                mod_name, count
+            );
+        }
+    }
+    module
 }

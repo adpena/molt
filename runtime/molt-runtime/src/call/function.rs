@@ -9,6 +9,7 @@ use crate::{
     recursion_guard_exit, runtime_state, seq_vec_ref,
 };
 
+#[cfg(target_arch = "wasm32")]
 use crate::MoltObject;
 #[cfg(target_arch = "wasm32")]
 use crate::{

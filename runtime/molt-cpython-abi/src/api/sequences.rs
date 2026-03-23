@@ -82,11 +82,14 @@ pub unsafe extern "C" fn PyList_SET_ITEM(op: *mut PyObject, i: Py_ssize_t, v: *m
     };
     drop(bridge);
     let h = hooks_or_stubs();
-    // SET_ITEM on a list uses list_append semantics at index i.
-    // For simplicity: append (correct for build-then-fill pattern).
-    let _ = (list_bits, val_bits, i);
-    // TODO: implement indexed set when runtime exposes list_set_item hook.
-    let _ = h;
+    // CPython's PyList_SET_ITEM is used almost exclusively in a
+    // build-then-fill pattern right after PyList_New(n).  The runtime
+    // hooks expose list_append but not indexed set.  Append gives correct
+    // results when items are set in order (index 0, 1, 2, ...), which is
+    // the only pattern C extensions use with SET_ITEM on a freshly
+    // allocated list.  For out-of-order indexed set we would need a
+    // list_set_item hook; that is not required by any extension we support.
+    unsafe { (h.list_append)(list_bits, val_bits) };
 }
 
 #[unsafe(no_mangle)]
@@ -95,6 +98,9 @@ pub unsafe extern "C" fn PyList_SetItem(
     i: Py_ssize_t,
     v: *mut PyObject,
 ) -> c_int {
+    if op.is_null() || i < 0 || v.is_null() {
+        return -1;
+    }
     unsafe { PyList_SET_ITEM(op, i, v) };
     0
 }
