@@ -29427,7 +29427,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "slice_new",
-                        "args": [arg.name for arg in op.args],
+                        "args": [arg.name if arg is not None else "_molt_none" for arg in op.args],
                         "out": op.result.name,
                     }
                 )
