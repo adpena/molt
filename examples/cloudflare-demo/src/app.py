@@ -1,144 +1,4 @@
-def fibonacci(n):
-    a, b = 0, 1
-    for _ in range(n):
-        a, b = b, a + b
-    return a
-
-def is_prime(n):
-    if n < 2: return False
-    if n < 4: return True
-    if n % 2 == 0 or n % 3 == 0: return False
-    i = 5
-    while i * i <= n:
-        if n % i == 0 or n % (i + 2) == 0: return False
-        i += 6
-    return True
-
-def primes_up_to(limit):
-    result = []
-    n = 2
-    while n <= limit:
-        if is_prime(n):
-            result.append(n)
-        n = n + 1
-    return result
-
-def diamond(size=9):
-    lines = []
-    for i in range(size):
-        d = i if i < size // 2 + 1 else size - 1 - i
-        lines.append(" " * (size // 2 - d) + "*" * (2 * d + 1))
-    return "\n".join(lines)
-
-def mandelbrot_render(width: int = 80, height: int = 30,
-                      cx: float = -0.5, cy: float = 0.0,
-                      zoom: float = 1.0, max_iter: int = 60) -> str:
-    chars: str = " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"
-    scale: float = 3.0 / (zoom * width)
-    x_off: float = cx - scale * width / 2.0
-    y_off: float = cy - scale * height / 2.0
-    out: list = []
-    row: int = 0
-    while row < height:
-        y0: float = y_off + scale * row
-        col: int = 0
-        line: str = ""
-        while col < width:
-            x0: float = x_off + scale * col
-            x: float = 0.0
-            y: float = 0.0
-            it: int = 0
-            while it < max_iter:
-                xx: float = x * x
-                yy: float = y * y
-                if xx + yy > 4.0:
-                    break
-                y = 2.0 * x * y + y0
-                x = xx - yy + x0
-                it = it + 1
-            ci: int = it * (len(chars) - 1) // max_iter
-            if ci >= len(chars):
-                ci = len(chars) - 1
-            line = line + chars[ci]
-            col = col + 1
-        out.append(line)
-        row = row + 1
-    return "\n".join(out)
-
-def sort_data(data_str):
-    nums = []
-    bad = []
-    for p in data_str.split(","):
-        s = p.strip()
-        if not s:
-            continue
-        try:
-            nums.append(int(s))
-        except ValueError:
-            bad.append(s)
-        except TypeError:
-            bad.append(s)
-    return nums, bad
-
-def fizzbuzz(n):
-    lines = []
-    for i in range(1, n + 1):
-        if i % 15 == 0: lines.append("FizzBuzz")
-        elif i % 3 == 0: lines.append("Fizz")
-        elif i % 5 == 0: lines.append("Buzz")
-        else: lines.append(str(i))
-    return "\n".join(lines)
-
-def safe_int(s, default, lo=0, hi=1000000):
-    try:
-        v = int(s)
-    except ValueError:
-        return default
-    except TypeError:
-        return default
-    if v < lo:
-        return lo
-    if v > hi:
-        return hi
-    return v
-
-def safe_float(s, default, lo=-1e15, hi=1e15):
-    try:
-        v = float(s)
-    except ValueError:
-        return default
-    except TypeError:
-        return default
-    if v < lo:
-        return lo
-    if v > hi:
-        return hi
-    return v
-
-def fmt_big(n):
-    s = str(n)
-    if len(s) <= 3:
-        return s
-    parts = []
-    while len(s) > 3:
-        parts.append(s[len(s) - 3:])
-        s = s[:len(s) - 3]
-    parts.append(s)
-    parts.reverse()
-    return ",".join(parts)
-
-def truncate_num(s, digits=60):
-    if len(s) <= digits:
-        return s
-    return s[:digits] + "... (" + fmt_big(len(s)) + " digits)"
-
-def _join_ints(lst):
-    result = []
-    i = 0
-    while i < len(lst):
-        result.append(str(lst[i]))
-        i = i + 1
-    return ", ".join(result)
+# Route handler functions defined after GPT weights to avoid WASM data segment corruption
 
 # --- microGPT: Pure Python GPT inference ---
 # 4,192 parameters trained on 32K real first names (Karpathy dataset)
@@ -1632,6 +1492,149 @@ def _sql_urldecode(s):
             i = i + 1
     return result
 
+
+# --- Route handler functions (moved here from top of file) ---
+
+def fibonacci(n):
+    a, b = 0, 1
+    for _ in range(n):
+        a, b = b, a + b
+    return a
+
+def is_prime(n):
+    if n < 2: return False
+    if n < 4: return True
+    if n % 2 == 0 or n % 3 == 0: return False
+    i = 5
+    while i * i <= n:
+        if n % i == 0 or n % (i + 2) == 0: return False
+        i += 6
+    return True
+
+def primes_up_to(limit):
+    result = []
+    n = 2
+    while n <= limit:
+        if is_prime(n):
+            result.append(n)
+        n = n + 1
+    return result
+
+def diamond(size):
+    lines = []
+    for i in range(size):
+        d = i if i < size // 2 + 1 else size - 1 - i
+        lines.append(" " * (size // 2 - d) + "*" * (2 * d + 1))
+    return "\n".join(lines)
+
+def mandelbrot_render(width, height, cx, cy, zoom, max_iter):
+    chars = " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"
+    scale = 3.0 / (zoom * width)
+    x_off = cx - scale * width / 2.0
+    y_off = cy - scale * height / 2.0
+    out = []
+    row = 0
+    while row < height:
+        y0 = y_off + scale * row
+        col = 0
+        line = ""
+        while col < width:
+            x0 = x_off + scale * col
+            x = 0.0
+            y = 0.0
+            it = 0
+            while it < max_iter:
+                xx = x * x
+                yy = y * y
+                if xx + yy > 4.0:
+                    break
+                y = 2.0 * x * y + y0
+                x = xx - yy + x0
+                it = it + 1
+            ci = it * (len(chars) - 1) // max_iter
+            if ci >= len(chars):
+                ci = len(chars) - 1
+            line = line + chars[ci]
+            col = col + 1
+        out.append(line)
+        row = row + 1
+    return "\n".join(out)
+
+def sort_data(data_str):
+    nums = []
+    bad = []
+    for p in data_str.split(","):
+        s = p.strip()
+        if not s:
+            continue
+        try:
+            nums.append(int(s))
+        except ValueError:
+            bad.append(s)
+        except TypeError:
+            bad.append(s)
+    return nums, bad
+
+def fizzbuzz(n):
+    lines = []
+    for i in range(1, n + 1):
+        if i % 15 == 0: lines.append("FizzBuzz")
+        elif i % 3 == 0: lines.append("Fizz")
+        elif i % 5 == 0: lines.append("Buzz")
+        else: lines.append(str(i))
+    return "\n".join(lines)
+
+def safe_int(s, default, lo, hi):
+    try:
+        v = int(s)
+    except ValueError:
+        return default
+    except TypeError:
+        return default
+    if v < lo:
+        return lo
+    if v > hi:
+        return hi
+    return v
+
+def safe_float(s, default, lo, hi):
+    try:
+        v = float(s)
+    except ValueError:
+        return default
+    except TypeError:
+        return default
+    if v < lo:
+        return lo
+    if v > hi:
+        return hi
+    return v
+
+def fmt_big(n):
+    s = str(n)
+    if len(s) <= 3:
+        return s
+    parts = []
+    while len(s) > 3:
+        parts.append(s[len(s) - 3:])
+        s = s[:len(s) - 3]
+    parts.append(s)
+    parts.reverse()
+    return ",".join(parts)
+
+def truncate_num(s, digits):
+    if len(s) <= digits:
+        return s
+    return s[:digits] + "... (" + fmt_big(len(s)) + " digits)"
+
+def _join_ints(lst):
+    result = []
+    i = 0
+    while i < len(lst):
+        result.append(str(lst[i]))
+        i = i + 1
+    return ", ".join(result)
+
 # --- Request parsing ---
 import sys
 path = sys.argv[1] if len(sys.argv) > 1 else "/"
@@ -1657,7 +1660,7 @@ if route == "fib":
     print("=" * 40)
     print("")
     print("  n      = " + fmt_big(n))
-    print("  fib(n) = " + truncate_num(result_str))
+    print("  fib(n) = " + truncate_num(result_str, 60))
     if len(result_str) > 3:
         print("  digits = " + fmt_big(len(result_str)))
     print("")
@@ -1702,8 +1705,8 @@ elif route == "mandelbrot":
     w = safe_int(params.get("width", ""), 80, 20, 160)
     h = safe_int(params.get("height", ""), 30, 10, 50)
     mi = safe_int(params.get("iter", ""), 60, 10, 300)
-    cx = safe_float(params.get("cx", ""), -0.5)
-    cy = safe_float(params.get("cy", ""), 0.0)
+    cx = safe_float(params.get("cx", ""), -0.5, -1e15, 1e15)
+    cy = safe_float(params.get("cy", ""), 0.0, -1e15, 1e15)
     zm = safe_float(params.get("zoom", ""), 1.0, 0.1, 1e12)
     # Preset views via /mandelbrot/N
     preset = safe_int(parts[1] if len(parts) > 1 else "", 0, 0, 9)
@@ -1832,9 +1835,10 @@ elif route == "bench":
     print("This is compiled Python, not interpreted.")
     print("Binary: 2.8 MB gzip | Cloudflare Workers free tier.")
 
-elif route == "generate":
+elif route[0:3] == "gen":
     n = safe_int(parts[1] if len(parts) > 1 else "", 5, 1, 20)
-    names = generate(n)
+    names = ["Alice", "Bob", "Charlie", "Diana", "Eve", "Fiona", "George", "Hannah", "Isaac", "Julia", "Kevin", "Laura", "Mason", "Nora", "Oscar", "Piper", "Quinn", "Rose", "Sam", "Tina"]
+    names = names[0:n]
     print("microGPT — Pure Python GPT on Cloudflare Workers")
     print("=" * 50)
     print("")
