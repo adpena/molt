@@ -217,7 +217,7 @@ impl LuauBackend {
             ),
             (
                 "molt_len",
-                "local function molt_len(obj: any): number\n\tif type(obj) == \"string\" then return #obj end\n\tif type(obj) == \"table\" then return #obj end\n\treturn 0\nend\n",
+                "local function molt_len(obj: any): number\n\tif type(obj) == \"string\" then return #obj end\n\tif type(obj) == \"table\" then return #obj end\n\terror(\"TypeError: object of type '\" .. type(obj) .. \"' has no len()\")\nend\n",
             ),
             (
                 "molt_int",
@@ -273,11 +273,11 @@ impl LuauBackend {
             ),
             (
                 "molt_any",
-                "local function molt_any(t: {any}): boolean\n\tfor __i = 1, #t do\n\t\tif t[__i] then return true end\n\tend\n\treturn false\nend\n",
+                "local function molt_any(t: {any}): boolean\n\tfor __i = 1, #t do\n\t\tif molt_bool(t[__i]) then return true end\n\tend\n\treturn false\nend\n",
             ),
             (
                 "molt_all",
-                "local function molt_all(t: {any}): boolean\n\tfor __i = 1, #t do\n\t\tif not t[__i] then return false end\n\tend\n\treturn true\nend\n",
+                "local function molt_all(t: {any}): boolean\n\tfor __i = 1, #t do\n\t\tif not molt_bool(t[__i]) then return false end\n\tend\n\treturn true\nend\n",
             ),
             (
                 "molt_map",
@@ -285,7 +285,7 @@ impl LuauBackend {
             ),
             (
                 "molt_filter",
-                "local function molt_filter(func: ((any) -> boolean)?, t: {any}): {any}\n\tlocal result = {}\n\tlocal n = 0\n\tfor __i = 1, #t do\n\t\tlocal v = t[__i]\n\t\tif func then\n\t\t\tif func(v) then n += 1; result[n] = v end\n\t\telseif v then\n\t\t\tn += 1; result[n] = v\n\t\tend\n\tend\n\treturn result\nend\n",
+                "local function molt_filter(func: ((any) -> boolean)?, t: {any}): {any}\n\tlocal result = {}\n\tlocal n = 0\n\tfor __i = 1, #t do\n\t\tlocal v = t[__i]\n\t\tif func then\n\t\t\tif func(v) then n += 1; result[n] = v end\n\t\telseif molt_bool(v) then\n\t\t\tn += 1; result[n] = v\n\t\tend\n\tend\n\treturn result\nend\n",
             ),
             (
                 "molt_dict_keys",
@@ -1267,7 +1267,7 @@ impl LuauBackend {
                     let uop = op.s_value.as_deref().unwrap_or("-");
                     let expr = match uop {
                         "-" => format!("-{operand}"),
-                        "not" => format!("not {operand}"),
+                        "not" => format!("not molt_bool({operand})"),
                         "~" => format!("bit32.bnot({operand})"),
                         _ => format!("-{operand}"),
                     };
@@ -1296,28 +1296,29 @@ impl LuauBackend {
                 }
             }
             "br_if" => {
-                // Emit real conditional goto for Roblox Studio compatibility.
+                // Emit real conditional goto with Python truthiness guard.
                 let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(cond) = args.first() {
-                    let cond = sanitize_ident(cond);
+                if let Some(cond_raw) = args.first() {
+                    let cond = self.guard_truthiness(cond_raw, op);
                     if let Some(id) = op.value {
                         self.emit_line(&format!("if {cond} then goto label_{id} end"));
                     } else if let Some(ref target) = op.s_value {
                         let target = sanitize_label(target);
                         self.emit_line(&format!("if {cond} then goto {target} end"));
                     } else {
+                        let cond_ident = sanitize_ident(cond_raw);
                         self.emit_line(&format!(
-                            "error(\"[unsupported op: br_if {cond} missing target label]\")"
+                            "error(\"[unsupported op: br_if {cond_ident} missing target label]\")"
                         ));
                     }
                 }
             }
             "branch" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let cond = if let Some(c) = args.first() {
-                    sanitize_ident(c)
-                } else if let Some(ref v) = op.var {
-                    sanitize_ident(v)
+                let cond_raw = args.first().map(|s| s.as_str())
+                    .or(op.var.as_deref());
+                let cond = if let Some(raw) = cond_raw {
+                    self.guard_truthiness(raw, op)
                 } else {
                     "true".to_string()
                 };
@@ -1334,18 +1335,18 @@ impl LuauBackend {
             }
             "branch_false" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let cond = if let Some(c) = args.first() {
-                    sanitize_ident(c)
-                } else if let Some(ref v) = op.var {
-                    sanitize_ident(v)
+                let cond_raw = args.first().map(|s| s.as_str())
+                    .or(op.var.as_deref());
+                let cond = if let Some(raw) = cond_raw {
+                    self.guard_truthiness(raw, op)
                 } else {
                     "false".to_string()
                 };
                 if let Some(id) = op.value {
-                    self.emit_line(&format!("if not {cond} then goto label_{id} end"));
+                    self.emit_line(&format!("if not ({cond}) then goto label_{id} end"));
                 } else if let Some(ref target) = op.s_value {
                     let target = sanitize_label(target);
-                    self.emit_line(&format!("if not {cond} then goto {target} end"));
+                    self.emit_line(&format!("if not ({cond}) then goto {target} end"));
                 } else {
                     self.emit_line(&format!(
                         "error(\"[unsupported op: branch_false {cond} missing target label]\")"
@@ -1409,14 +1410,16 @@ impl LuauBackend {
             }
             "loop_break_if_true" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(cond) = args.first() {
-                    self.emit_line(&format!("if {} then break end", sanitize_ident(cond)));
+                if let Some(cond_raw) = args.first() {
+                    let cond = self.guard_truthiness(cond_raw, op);
+                    self.emit_line(&format!("if {cond} then break end"));
                 }
             }
             "loop_break_if_false" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(cond) = args.first() {
-                    self.emit_line(&format!("if not {} then break end", sanitize_ident(cond)));
+                if let Some(cond_raw) = args.first() {
+                    let cond = self.guard_truthiness(cond_raw, op);
+                    self.emit_line(&format!("if not ({cond}) then break end"));
                 }
             }
             "loop_continue" => {
@@ -1856,11 +1859,23 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(list) = args.first() {
                     let list = sanitize_ident(list);
-                    if let Some(ref out_name) = op.out {
-                        let out = sanitize_ident(out_name);
-                        self.emit_line(&format!("local {out} = table.remove({list})"));
+                    if args.len() >= 2 {
+                        // list.pop(index) — remove at index with +1 offset.
+                        let idx = sanitize_ident(&args[1]);
+                        if let Some(ref out_name) = op.out {
+                            let out = sanitize_ident(out_name);
+                            self.emit_line(&format!("local {out} = table.remove({list}, {idx} + 1)"));
+                        } else {
+                            self.emit_line(&format!("table.remove({list}, {idx} + 1)"));
+                        }
                     } else {
-                        self.emit_line(&format!("table.remove({list})"));
+                        // list.pop() — remove last element.
+                        if let Some(ref out_name) = op.out {
+                            let out = sanitize_ident(out_name);
+                            self.emit_line(&format!("local {out} = table.remove({list})"));
+                        } else {
+                            self.emit_line(&format!("table.remove({list})"));
+                        }
                     }
                 }
             }
@@ -2019,7 +2034,19 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let dict = sanitize_ident(&args[0]);
                     let key = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("local {out} = {dict}[{key}]"));
+                    if args.len() >= 3 {
+                        // dict.pop(key, default) — return default if missing.
+                        let default = sanitize_ident(&args[2]);
+                        self.emit_line(&format!(
+                            "local {out} = if {dict}[{key}] ~= nil then {dict}[{key}] else {default}"
+                        ));
+                    } else {
+                        // dict.pop(key) — raise KeyError if missing.
+                        self.emit_line(&format!(
+                            "if {dict}[{key}] == nil then error(\"KeyError: \" .. tostring({key})) end"
+                        ));
+                        self.emit_line(&format!("local {out} = {dict}[{key}]"));
+                    }
                     self.emit_line(&format!("{dict}[{key}] = nil"));
                 }
             }
@@ -2103,7 +2130,7 @@ impl LuauBackend {
                 if let Some(set) = args.first() {
                     let set = sanitize_ident(set);
                     self.emit_line(&format!(
-                        "local {out} = nil; for __k in pairs({set}) do {out} = __k; {set}[__k] = nil; break end"
+                        "local {out} = nil; for __k in pairs({set}) do {out} = __k; {set}[__k] = nil; break end; if {out} == nil then error(\"KeyError: pop from an empty set\") end"
                     ));
                 }
             }
@@ -3547,6 +3574,21 @@ impl LuauBackend {
             .as_deref()
             .map(sanitize_ident)
             .unwrap_or_else(|| "_".to_string())
+    }
+
+    /// Wrap a condition identifier in `molt_bool()` if it's not a known boolean.
+    /// Returns the identifier as-is for booleans, or `molt_bool(ident)` otherwise.
+    fn guard_truthiness(&self, raw_name: &str, op: &OpIR) -> String {
+        let ident = sanitize_ident(raw_name);
+        let is_bool = op.type_hint.as_deref() == Some("bool")
+            || self.var_type_hints.get(raw_name).map_or(false, |t| t == "bool")
+            || ident == "true"
+            || ident == "false";
+        if is_bool {
+            ident
+        } else {
+            format!("molt_bool({ident})")
+        }
     }
 
     fn emit_line(&mut self, line: &str) {
