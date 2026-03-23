@@ -14002,6 +14002,7 @@ def _execute_backend_compile(
     molt_root: Path,
     backend_cargo_profile: str,
     _ensure_backend_ir_bytes: Callable[[], bytes],
+    _get_backend_ir_fmt: Callable[[], str],
     cache_hit: bool,
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
@@ -14187,7 +14188,7 @@ def _execute_backend_compile(
                 cmd.extend(["--target-triple", target_triple])
             cmd_with_output = cmd + ["--output", str(backend_output)]
             ir_bytes = _ensure_backend_ir_bytes()
-            ir_fmt = backend_ir_fmt
+            ir_fmt = _get_backend_ir_fmt()
             if ir_fmt != "json":
                 cmd_with_output.extend(["--ir-format", ir_fmt])
             ir_file_path: str | None = None
@@ -14353,6 +14354,7 @@ def _prepare_backend_compile(
     artifacts_root: Path,
     ir: Mapping[str, Any],
     _ensure_backend_ir_bytes: Callable[[], bytes],
+    _get_backend_ir_fmt: Callable[[], str],
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
     backend_daemon_health: dict[str, Any] | None,
@@ -14455,6 +14457,7 @@ def _prepare_backend_compile(
                 molt_root=molt_root,
                 backend_cargo_profile=backend_cargo_profile,
                 _ensure_backend_ir_bytes=_ensure_backend_ir_bytes,
+                _get_backend_ir_fmt=_get_backend_ir_fmt,
                 cache_hit=cache_hit,
                 backend_daemon_cached=backend_daemon_cached,
                 backend_daemon_cache_tier=backend_daemon_cache_tier,
@@ -14724,6 +14727,7 @@ def _run_backend_pipeline(
         artifacts_root=artifacts_root,
         ir=ir,
         _ensure_backend_ir_bytes=_ensure_backend_ir_bytes,
+        _get_backend_ir_fmt=lambda: backend_ir_fmt,
         backend_daemon_cached=prepared_build_preamble.backend_daemon_cached,
         backend_daemon_cache_tier=prepared_build_preamble.backend_daemon_cache_tier,
         backend_daemon_health=prepared_build_preamble.backend_daemon_health,
