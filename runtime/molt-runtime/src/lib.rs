@@ -354,20 +354,26 @@ pub(crate) use crate::object::memoryview::{
 pub(crate) use crate::object::ops::HashSecret;
 pub use crate::object::ops::*;
 pub use crate::object::ops_bytes::*;
+pub use crate::object::ops_dict::*;
 pub use crate::object::ops_heapq::*;
+pub use crate::object::ops_set::*;
+pub use crate::object::ops_string::*;
 #[allow(unused_imports)]
 pub(crate) use crate::object::ops::{
     DecodeTextError, class_break_cycles, decode_bytes_text, decode_string_list, decode_value_list,
     dict_clear_in_place, dict_clear_method, dict_copy_method, dict_del_in_place, dict_find_entry,
     dict_find_entry_kv_in_place, dict_fromkeys_method, dict_get_in_place, dict_get_method,
     dict_items_method, dict_keys_method, dict_pop_method, dict_popitem_method, dict_set_in_place,
-    dict_setdefault_method, dict_table_capacity, dict_update_apply, dict_update_method,
-    dict_update_set_in_place, dict_update_set_via_store, dict_values_method, format_obj,
+    dict_setdefault_method, dict_table_capacity, dict_update_method,
+    dict_update_set_via_store, dict_values_method, format_obj,
     format_obj_str, frozenset_from_iter_bits, hash_slice_bits, is_truthy, list_from_iter_bits,
     obj_eq, set_add_in_place, set_del_in_place, set_find_entry, set_replace_entries,
-    set_table_capacity, tuple_from_isize_slice, tuple_from_iter_bits, type_name, utf8_cache_remove,
-    utf8_codepoint_count_cached,
+    set_table_capacity, tuple_from_isize_slice, tuple_from_iter_bits, type_name,
 };
+#[allow(unused_imports)]
+pub(crate) use crate::object::ops_dict::{dict_update_apply, dict_update_set_in_place};
+#[allow(unused_imports)]
+pub(crate) use crate::object::ops_string::{utf8_cache_remove, utf8_codepoint_count_cached};
 pub(crate) use crate::object::type_ids::*;
 pub(crate) use crate::object::weakref::weakref_clear_for_ptr;
 pub use crate::object::weakref::{
