@@ -856,7 +856,7 @@ fn main() -> io::Result<()> {
         let max_gb: u64 = std::env::var("MOLT_BACKEND_MAX_RSS_GB")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(8);
+            .unwrap_or(4);
         let max_bytes = max_gb * 1024 * 1024 * 1024;
         unsafe {
             let rlim = libc::rlimit {
@@ -934,21 +934,28 @@ fn main() -> io::Result<()> {
                     }
                 }
             }
-        } else {
-            let mut buffer = String::new();
-            if let Some(ir_path) = ir_file_path {
-                std::fs::File::open(ir_path)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?
-                    .read_to_string(&mut buffer)?;
-            } else {
-                io::stdin().read_to_string(&mut buffer)?;
+        } else if let Some(ir_path) = ir_file_path {
+            // Stream JSON directly from file — never holds raw JSON string in memory.
+            let file = std::fs::File::open(ir_path)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?;
+            let reader = io::BufReader::with_capacity(1 << 20, file);
+            match serde_json::from_reader::<_, SimpleIR>(reader) {
+                Ok(ir) => ir,
+                Err(err) => {
+                    eprintln!("invalid IR JSON: {err}");
+                    std::process::exit(1);
+                }
             }
-            let result = SimpleIR::from_json_str(&buffer);
-            drop(buffer); // free JSON string before handling result
+        } else {
+            // Stdin: read into string then deserialize directly (skips DOM intermediate).
+            let mut buffer = String::new();
+            io::stdin().read_to_string(&mut buffer)?;
+            let result = serde_json::from_str::<SimpleIR>(&buffer);
+            drop(buffer);
             match result {
                 Ok(ir) => ir,
                 Err(err) => {
-                    eprintln!("{err}");
+                    eprintln!("invalid IR JSON: {err}");
                     std::process::exit(1);
                 }
             }
@@ -1035,7 +1042,7 @@ fn main() -> io::Result<()> {
             let batch_size: usize = std::env::var("MOLT_BACKEND_BATCH_SIZE")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(256);
+                .unwrap_or(64);
 
             if func_count <= batch_size || batch_size == 0 {
                 // Small IR: compile everything in one shot
