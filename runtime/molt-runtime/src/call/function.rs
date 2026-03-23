@@ -78,7 +78,18 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = function_trampoline_ptr(func_ptr);
         #[cfg(target_arch = "wasm32")]
-        let debug_enabled = std::env::var("MOLT_WASM_CALL_DEBUG").as_deref() == Ok("1");
+        let debug_enabled = {
+            use std::sync::atomic::{AtomicU8, Ordering};
+            static CACHED: AtomicU8 = AtomicU8::new(2); // 2 = unchecked
+            let c = CACHED.load(Ordering::Relaxed);
+            if c == 2 {
+                let v = std::env::var("MOLT_WASM_CALL_DEBUG").as_deref() == Ok("1");
+                CACHED.store(v as u8, Ordering::Relaxed);
+                v
+            } else {
+                c == 1
+            }
+        };
         #[cfg(target_arch = "wasm32")]
         let debug_name = if debug_enabled {
             let name_bits = function_name_bits(_py, func_ptr);
