@@ -1830,7 +1830,11 @@ fn utf8_count_cache_upgrade_prefix(
 }
 
 fn utf8_count_cache_tls_remove(key: usize) {
-    UTF8_COUNT_TLS.with(|cell| {
+    // Use try_with to avoid panicking during TLS destruction.
+    // When thread-locals are being torn down (e.g., in ThreadLocalGuard::drop),
+    // dec_ref on cached strings can reach this function after UTF8_COUNT_TLS
+    // is already destroyed.
+    let _ = UTF8_COUNT_TLS.try_with(|cell| {
         let mut guard = cell.borrow_mut();
         if guard.as_ref().is_some_and(|entry| entry.key == key) {
             *guard = None;
