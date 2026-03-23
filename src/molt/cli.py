@@ -13438,7 +13438,11 @@ def _prepare_backend_dispatch(
                     json_output,
                     command="build",
                 )
-        if runtime_wasm is not None and runtime_wasm.exists():
+        if (
+            "MOLT_WASM_DATA_BASE" not in backend_env
+            and runtime_wasm is not None
+            and runtime_wasm.exists()
+        ):
             data_base_candidates: list[int] = []
             data_end = _read_wasm_data_end(runtime_wasm)
             if data_end is not None:
