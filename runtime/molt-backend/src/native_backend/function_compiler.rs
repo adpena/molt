@@ -335,7 +335,12 @@ impl SimpleBackend {
             &[],
             &[types::I64],
         );
-        let mut exc_flag_ptr_val: Option<cranelift_codegen::ir::Value> = None;
+        let exc_flag_ptr_var: Option<Variable> = if function_exception_label_id.is_some() {
+            let var = builder.declare_var(types::I64);
+            Some(var)
+        } else {
+            None
+        };
         let exc_flag_ptr_fn = if function_exception_label_id.is_some() {
             Some(import_func_ref(
                 &mut self.module,
@@ -441,6 +446,17 @@ impl SimpleBackend {
             let call = builder.ins().call(local_profile_enabled, &[]);
             builder.inst_results(call)[0]
         });
+
+        // Fetch the exception flag pointer in the entry block and store it
+        // in a Cranelift Variable.  Using a Variable (instead of a raw Value)
+        // lets the SSA system propagate the definition across state-dispatch
+        // blocks in stateful (generator/async) functions, avoiding dominator
+        // errors like "uses value from non-dominating inst".
+        if let (Some(var), Some(fn_ref)) = (exc_flag_ptr_var, exc_flag_ptr_fn) {
+            let call = builder.ins().call(fn_ref, &[]);
+            let ptr_val = builder.inst_results(call)[0];
+            builder.def_var(var, ptr_val);
+        }
 
         builder.seal_block(entry_block);
         sealed_blocks.insert(entry_block);
@@ -10762,19 +10778,13 @@ impl SimpleBackend {
                     // Inline exception check: load the pending flag byte directly
                     // instead of calling molt_exception_pending_fast() for each
                     // check_exception site.  The flag pointer is fetched once per
-                    // function (exc_flag_ptr_val) and the byte load is ~1 cycle
-                    // vs ~15-40 cycles for the function call.
+                    // function via a Cranelift Variable and the byte load is ~1
+                    // cycle vs ~15-40 cycles for the function call.
                     let fallthrough = builder.create_block();
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough);
-                    // Lazily fetch the flag pointer on first check_exception.
-                    if exc_flag_ptr_val.is_none() {
-                        if let Some(fn_ref) = exc_flag_ptr_fn {
-                            let call = builder.ins().call(fn_ref, &[]);
-                            exc_flag_ptr_val = Some(builder.inst_results(call)[0]);
-                        }
-                    }
-                    if let Some(flag_ptr) = exc_flag_ptr_val {
+                    if let Some(var) = exc_flag_ptr_var {
+                        let flag_ptr = builder.use_var(var);
                         // Fast path: inline byte load from flag address
                         let pending_byte = builder.ins().load(
                             types::I8,
