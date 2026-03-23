@@ -24395,12 +24395,90 @@ def _ensure_cli_hash_seed() -> None:
     os.execvpe(sys.executable, [sys.executable, *sys.argv], env)
 
 
+class _MoltHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Custom formatter that groups subcommands by category in --help."""
+
+    def _format_action(self, action: argparse.Action) -> str:
+        if isinstance(action, argparse._SubParsersAction):
+            parts: list[str] = []
+            _core = ["build", "run", "test", "bench", "check", "deploy"]
+            _package = ["package", "publish", "deps", "vendor"]
+            _toolchain = ["clean", "doctor", "config", "completion"]
+            _dev = [
+                "compare", "diff", "parity-run", "profile",
+                "lint", "extension", "verify",
+            ]
+
+            groups = [
+                ("Core commands:", _core),
+                ("Package commands:", _package),
+                ("Toolchain commands:", _toolchain),
+                ("Development commands:", _dev),
+            ]
+
+            for title, names in groups:
+                section_actions = []
+                for subaction in action._get_subactions():
+                    if subaction.dest in names:
+                        section_actions.append(subaction)
+                if not section_actions:
+                    continue
+                parts.append(f"\n  {title}")
+                for sa in section_actions:
+                    help_text = sa.help or ""
+                    parts.append(f"    {sa.dest:<22s}{help_text}")
+
+            listed: set[str] = set()
+            for _, names in groups:
+                listed.update(names)
+            extras = []
+            for subaction in action._get_subactions():
+                if subaction.dest not in listed and subaction.help != argparse.SUPPRESS:
+                    extras.append(subaction)
+            if extras:
+                parts.append("\n  Other commands:")
+                for sa in extras:
+                    help_text = sa.help or ""
+                    parts.append(f"    {sa.dest:<22s}{help_text}")
+
+            return "\n".join(parts) + "\n"
+        return super()._format_action(action)
+
+
 def main() -> int:
     _ensure_cli_hash_seed()
-    parser = argparse.ArgumentParser(prog="molt")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(
+        prog="molt",
+        description="The Molt Python compiler",
+        formatter_class=_MoltHelpFormatter,
+        epilog=(
+            "Run 'molt <command> --help' for more information on a command.\n"
+            "\n"
+            "Examples:\n"
+            "  molt build app.py                  Build a Python program\n"
+            "  molt run app.py                    Build and run\n"
+            "  molt run app.py --release          Build optimized and run\n"
+            "  molt build app.py --target wasm    Build for WebAssembly\n"
+            "  molt deploy cloudflare app.py      Deploy to Cloudflare Workers\n"
+            "  molt test                          Run test suites\n"
+        ),
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True, title="commands")
 
-    build_parser = subparsers.add_parser("build", help="Compile a Python file")
+    build_parser = subparsers.add_parser(
+        "build",
+        help="Build a Python program",
+        description="Compile a Python file to a native binary, WASM module, or Luau script.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt build app.py                      Build with default settings\n"
+            "  molt build app.py --release             Optimized release build\n"
+            "  molt build app.py --target wasm         Build for WebAssembly\n"
+            "  molt build app.py --target luau         Build for Luau/Roblox\n"
+            "  molt build --module mypackage           Build a package by module name\n"
+        ),
+    )
     build_parser.add_argument("file", nargs="?", help="Path to Python source")
     build_parser.add_argument(
         "--module",
@@ -24409,7 +24487,16 @@ def main() -> int:
     build_parser.add_argument(
         "--target",
         default=None,
-        help="Target backend: native, wasm, luau, or a target triple.",
+        help=(
+            "Build target: native (default), wasm, luau, or a target triple "
+            "(e.g., aarch64-unknown-linux-gnu, x86_64-unknown-linux-musl)."
+        ),
+    )
+    build_parser.add_argument(
+        "--release",
+        action="store_true",
+        default=False,
+        help="Optimized release build (alias for --build-profile release).",
     )
     build_parser.add_argument(
         "--codec",
@@ -24799,7 +24886,7 @@ def main() -> int:
     )
 
     check_parser = subparsers.add_parser(
-        "check", help="Generate a type facts artifact (ty-backed when available)"
+        "check", help="Type-check without compiling"
     )
     check_parser.add_argument("path", help="Python file or package directory")
     check_parser.add_argument(
@@ -24832,7 +24919,21 @@ def main() -> int:
     )
 
     run_parser = subparsers.add_parser(
-        "run", help="Compile with Molt and run the native binary"
+        "run",
+        help="Build and run a Python program",
+        description=(
+            "Compile a Python file with Molt and execute it.\n"
+            "Supports native, WASM (via wasmtime), and Luau (via lune) targets."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt run app.py                       Build and run natively\n"
+            "  molt run app.py --release              Optimized build and run\n"
+            "  molt run app.py --target wasm          Build and run with wasmtime\n"
+            "  molt run app.py --target luau          Build and run with lune\n"
+            "  molt run app.py -- --arg1 val          Pass args to your script\n"
+        ),
     )
     run_parser.add_argument("file", nargs="?", help="Path to Python source")
     run_parser.add_argument(
@@ -24843,9 +24944,15 @@ def main() -> int:
         "--target",
         default=None,
         help=(
-            "Target backend: native (default), wasm (build + run with wasmtime), "
-            "or luau (build + run with lune)."
+            "Build target: native (default), wasm (build + run with wasmtime), "
+            "luau (build + run with lune), or a target triple."
         ),
+    )
+    run_parser.add_argument(
+        "--release",
+        action="store_true",
+        default=False,
+        help="Optimized release build (alias for --build-profile release).",
     )
     run_parser.add_argument(
         "--build-arg",
@@ -24981,7 +25088,7 @@ def main() -> int:
         help="Arguments passed to the script (use -- to separate).",
     )
 
-    test_parser = subparsers.add_parser("test", help="Run Molt test suites")
+    test_parser = subparsers.add_parser("test", help="Discover and run tests")
     test_parser.add_argument(
         "--suite",
         choices=["dev", "diff", "pytest"],
@@ -25045,7 +25152,7 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
-    bench_parser = subparsers.add_parser("bench", help="Run benchmark suites")
+    bench_parser = subparsers.add_parser("bench", help="Run benchmarks")
     bench_parser.add_argument(
         "--wasm", action="store_true", help="Use the WASM bench harness."
     )
