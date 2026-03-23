@@ -37,6 +37,10 @@ pub struct LuauBackend {
     /// True when we are inside a pcall body (between pcall_wrap_begin and
     /// pcall_wrap_end). exception_last should return nil in this zone.
     inside_pcall_body: bool,
+    /// Variables known to hold non-negative integer constants.  Populated from
+    /// `const` / `const_int` ops with `value >= 0`.  Used to skip the negative
+    /// index ternary in get_item / set_item / del_item / string index paths.
+    nonneg_consts: BTreeSet<String>,
 }
 
 impl LuauBackend {
@@ -51,6 +55,7 @@ impl LuauBackend {
             try_depth_counter: Vec::new(),
             pcall_counter: 0,
             inside_pcall_body: false,
+            nonneg_consts: BTreeSet::new(),
         }
     }
 
@@ -563,6 +568,7 @@ impl LuauBackend {
         self.try_depth_counter.clear();
         self.pcall_counter = 0;
         self.inside_pcall_body = false;
+        self.nonneg_consts.clear();
 
         // Seed var_type_hints from param_types so that parameters annotated
         // as list/dict/str carry their type hints into codegen.  Without this,
@@ -615,6 +621,20 @@ impl LuauBackend {
             }
             for var in &closure_slots {
                 self.emit_line(&format!("local {var}"));
+            }
+        }
+
+        // Pre-scan: collect variables defined by const/const_int with non-negative values.
+        for op in &ops {
+            match op.kind.as_str() {
+                "const" | "const_int" => {
+                    if let (Some(out_name), Some(v)) = (&op.out, op.value) {
+                        if v >= 0 {
+                            self.nonneg_consts.insert(out_name.clone());
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -2347,13 +2367,24 @@ impl LuauBackend {
                         || self.var_type_hints.get(&args[0])
                             .map_or(false, |h| h == "str" || h == "string");
 
+                    // Fast-path: when the key is a known non-negative constant,
+                    // skip the negative-index ternary entirely.
+                    let key_known_nonneg = self.nonneg_consts.contains(&args[1])
+                        || (op.fast_int == Some(true) && op.value.map_or(false, |v| v >= 0));
+
                     if container_is_str {
                         // Luau does not support string[index]; use string.sub.
                         // Python uses 0-based indexing, Luau uses 1-based.
-                        // Handle negative indexing for strings too.
-                        self.emit_line(&format!(
-                            "local {out} = if {key} >= 0 then string.sub({container}, {key} + 1, {key} + 1) else string.sub({container}, #{container} + {key} + 1, #{container} + {key} + 1)"
-                        ));
+                        if key_known_nonneg {
+                            self.emit_line(&format!(
+                                "local {out} = string.sub({container}, {key} + 1, {key} + 1)"
+                            ));
+                        } else {
+                            // Handle negative indexing for strings too.
+                            self.emit_line(&format!(
+                                "local {out} = if {key} >= 0 then string.sub({container}, {key} + 1, {key} + 1) else string.sub({container}, #{container} + {key} + 1, #{container} + {key} + 1)"
+                            ));
+                        }
                         // Propagate str type to output.
                         if let Some(ref out_name) = op.out {
                             self.var_type_hints.insert(out_name.clone(), "str".to_string());
@@ -2376,7 +2407,12 @@ impl LuauBackend {
                                 self.var_type_hints.insert(out_name.clone(), "list".to_string());
                             }
                         }
-                        if key_is_int {
+                        if key_known_nonneg {
+                            // Known non-negative: skip negative index ternary.
+                            self.emit_line(&format!(
+                                "local {out} = {container}[{key} + 1]"
+                            ));
+                        } else if key_is_int {
                             // Handle negative indexing: Python a[-1] = last element.
                             self.emit_line(&format!(
                                 "local {out} = {container}[if {key} >= 0 then {key} + 1 else #{container} + {key} + 1]"
@@ -2398,7 +2434,13 @@ impl LuauBackend {
                     let key_is_int = op.fast_int == Some(true)
                         || op.raw_int == Some(true)
                         || matches!(op.type_hint.as_deref(), Some("int"));
-                    if key_is_int {
+                    let key_known_nonneg = self.nonneg_consts.contains(&args[1])
+                        || (op.fast_int == Some(true) && op.value.map_or(false, |v| v >= 0));
+                    if key_known_nonneg {
+                        self.emit_line(&format!(
+                            "{container}[{key} + 1] = {value}"
+                        ));
+                    } else if key_is_int {
                         self.emit_line(&format!(
                             "{container}[if {key} >= 0 then {key} + 1 else #{container} + {key} + 1] = {value}"
                         ));
@@ -2421,7 +2463,13 @@ impl LuauBackend {
                     let key_is_int = op.fast_int == Some(true)
                         || op.raw_int == Some(true)
                         || matches!(op.type_hint.as_deref(), Some("int"));
-                    if key_is_int {
+                    let key_known_nonneg = self.nonneg_consts.contains(&args[1])
+                        || (op.fast_int == Some(true) && op.value.map_or(false, |v| v >= 0));
+                    if key_known_nonneg {
+                        self.emit_line(&format!(
+                            "table.remove({container}, {key} + 1)"
+                        ));
+                    } else if key_is_int {
                         self.emit_line(&format!(
                             "table.remove({container}, if {key} >= 0 then {key} + 1 else #{container} + {key} + 1)"
                         ));
@@ -4095,6 +4143,65 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
     if !ops.iter().any(|op| op.kind == "try_start") {
         return (ops.to_vec(), BTreeSet::new());
     }
+
+    // Pre-scan: identify try/finally-only blocks.  For each try_start,
+    // count how many try_end ops belong to it.  The first try_end at
+    // matching depth closes the body; any subsequent try_end at that
+    // same (restored) depth closes the handler.  If exactly one try_end
+    // matches a given try_start, it is a try/finally-only block that
+    // can skip pcall wrapping.
+    let finally_only: BTreeSet<u32> = {
+        let mut set = BTreeSet::new();
+        let mut pre_counter: u32 = 0;
+        let mut pre_stack: Vec<(u32, i32)> = Vec::new();
+        let mut pre_depth: i32 = 0;
+        // Map from try-id to number of try_end ops attributed to it.
+        let mut end_counts: BTreeMap<u32, u32> = BTreeMap::new();
+        // Track IDs that were recently popped (body-closed) so the
+        // handler-closing try_end can be attributed correctly.
+        let mut recently_popped: Vec<u32> = Vec::new();
+        for op in ops {
+            match op.kind.as_str() {
+                "try_start" => {
+                    let n = pre_counter;
+                    pre_counter += 1;
+                    end_counts.insert(n, 0);
+                    pre_stack.push((n, pre_depth));
+                    pre_depth += 1;
+                }
+                "try_end" => {
+                    if let Some(&(n, pd)) = pre_stack.last() {
+                        if pre_depth == pd + 1 {
+                            // Body-closing try_end.
+                            pre_depth -= 1;
+                            pre_stack.pop();
+                            *end_counts.entry(n).or_insert(0) += 1;
+                            recently_popped.push(n);
+                        } else {
+                            // Handler-closing try_end — attribute to the
+                            // most recently popped try_start at this level.
+                            if let Some(popped_n) = recently_popped.pop() {
+                                *end_counts.entry(popped_n).or_insert(0) += 1;
+                            }
+                        }
+                    } else {
+                        // No stack — attribute to most recently popped.
+                        if let Some(popped_n) = recently_popped.pop() {
+                            *end_counts.entry(popped_n).or_insert(0) += 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (id, count) in &end_counts {
+            if *count == 1 {
+                set.insert(*id);
+            }
+        }
+        set
+    };
+
     let mut result: Vec<OpIR> = Vec::with_capacity(ops.len());
     let mut counter: u32 = 0;
     let mut try_stack: Vec<(u32, i32)> = Vec::new();
@@ -4118,30 +4225,48 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
                 counter += 1;
                 try_stack.push((n, depth));
                 depth += 1;
-                let start_idx = result.len();
-                result.push(OpIR {
-                    kind: "pcall_wrap_begin".to_string(),
-                    value: Some(n as i64),
-                    ..OpIR::default()
-                });
-                pcall_ranges.push((start_idx, 0, n));
+                if finally_only.contains(&n) {
+                    // try/finally fast-path: no pcall closure needed.
+                    result.push(OpIR {
+                        kind: "nop".to_string(),
+                        s_value: Some(format!("try/finally fast-path begin (n={n})")),
+                        ..OpIR::default()
+                    });
+                } else {
+                    let start_idx = result.len();
+                    result.push(OpIR {
+                        kind: "pcall_wrap_begin".to_string(),
+                        value: Some(n as i64),
+                        ..OpIR::default()
+                    });
+                    pcall_ranges.push((start_idx, 0, n));
+                }
             }
             "try_end" => {
                 if let Some(&(n, pre_depth)) = try_stack.last() {
                     if depth == pre_depth + 1 {
                         depth -= 1;
                         try_stack.pop();
-                        let end_idx = result.len();
-                        result.push(OpIR {
-                            kind: "pcall_wrap_end".to_string(),
-                            value: Some(n as i64),
-                            ..OpIR::default()
-                        });
-                        suppress_jumps = true;
-                        if let Some(range) =
-                            pcall_ranges.iter_mut().rev().find(|r| r.2 == n)
-                        {
-                            range.1 = end_idx;
+                        if finally_only.contains(&n) {
+                            // try/finally fast-path: no pcall closure to close.
+                            result.push(OpIR {
+                                kind: "nop".to_string(),
+                                s_value: Some(format!("try/finally fast-path end (n={n})")),
+                                ..OpIR::default()
+                            });
+                        } else {
+                            let end_idx = result.len();
+                            result.push(OpIR {
+                                kind: "pcall_wrap_end".to_string(),
+                                value: Some(n as i64),
+                                ..OpIR::default()
+                            });
+                            suppress_jumps = true;
+                            if let Some(range) =
+                                pcall_ranges.iter_mut().rev().find(|r| r.2 == n)
+                            {
+                                range.1 = end_idx;
+                            }
                         }
                     } else {
                         result.push(OpIR {
