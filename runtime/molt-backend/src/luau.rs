@@ -34,6 +34,9 @@ pub struct LuauBackend {
     try_depth_counter: Vec<u32>,
     /// Monotonically increasing counter for generating unique pcall variable names.
     pcall_counter: u32,
+    /// True when we are inside a pcall body (between pcall_wrap_begin and
+    /// pcall_wrap_end). exception_last should return nil in this zone.
+    inside_pcall_body: bool,
 }
 
 impl LuauBackend {
@@ -47,6 +50,7 @@ impl LuauBackend {
             var_type_hints: BTreeMap::new(),
             try_depth_counter: Vec::new(),
             pcall_counter: 0,
+            inside_pcall_body: false,
         }
     }
 
@@ -347,7 +351,7 @@ impl LuauBackend {
         }
 
         // Exception handling helpers — only emit if pcall-based try/except is used.
-        if used_call("molt_exception_kind") {
+        if used_call("molt_exception_kind") || used_call("molt_exception_match") {
             self.output.push_str(concat!(
                 "local molt_exception_hierarchy = {\n",
                 "\tZeroDivisionError = \"ArithmeticError\",\n",
@@ -558,6 +562,7 @@ impl LuauBackend {
         self.var_type_hints.clear();
         self.try_depth_counter.clear();
         self.pcall_counter = 0;
+        self.inside_pcall_body = false;
 
         // Seed var_type_hints from param_types so that parameters annotated
         // as list/dict/str carry their type hints into codegen.  Without this,
@@ -1108,26 +1113,40 @@ impl LuauBackend {
             }
             "sub" | "inplace_sub" => self.emit_binary_op(op, "-"),
             "mul" | "inplace_mul" => self.emit_binary_op(op, "*"),
-            "div" => self.emit_binary_op(op, "/"),
-            "mod" => {
-                // Python % and Luau % are both floor-mod (result sign matches divisor).
-                // Direct % is optimal — single LOP_MOD or LOP_MODK opcode.
+            "div" => {
+                // Luau 1/0 = inf (IEEE 754), Python raises ZeroDivisionError.
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let lhs = sanitize_ident(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "if {rhs} == 0 then error({{__type=\"ZeroDivisionError\", __msg=\"division by zero\"}}) end"
+                    ));
+                    self.emit_line(&format!("local {out} = {lhs} / {rhs}"));
+                }
+            }
+            "mod" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let lhs = sanitize_ident(&args[0]);
+                    let rhs = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "if {rhs} == 0 then error({{__type=\"ZeroDivisionError\", __msg=\"integer modulo by zero\"}}) end"
+                    ));
                     self.emit_line(&format!("local {out} = {lhs} % {rhs}"));
                 }
             }
             "floordiv" => {
-                // Luau // operator maps to dedicated LOP_IDIV opcode — 2-3x faster
-                // than math.floor(a/b) which goes through FASTCALL.
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let lhs = sanitize_ident(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "if {rhs} == 0 then error({{__type=\"ZeroDivisionError\", __msg=\"integer division or modulo by zero\"}}) end"
+                    ));
                     self.emit_line(&format!("local {out} = {lhs} // {rhs}"));
                 }
             }
@@ -1268,7 +1287,7 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let lhs = sanitize_ident(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("local {out} = {lhs} == {rhs}"));
+                    self.emit_line(&format!("local {out} = ({lhs} == {rhs})"));
                     if let Some(ref out_name) = op.out {
                         self.var_type_hints.insert(out_name.clone(), "bool".to_string());
                     }
@@ -2648,11 +2667,13 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let obj = sanitize_ident(&args[0]);
                     let cls = sanitize_ident(&args[1]);
-                    // Check if the object's type matches the class, or if it's a table
-                    // with matching metatable. For builtins: string→str, number→int/float, etc.
+                    // Use molt_exception_match for exception objects (table with __type
+                    // or string errors), fall back to type comparison for others.
                     self.emit_line(&format!(
-                        "local {out} = (type({obj}) == \"table\" and type({cls}) == \"table\") or \
-                         (type({obj}) == \"number\" and ({cls} == \"int\" or {cls} == \"float\" or {cls} == \"number\")) or \
+                        "local {out} = if type({cls}) == \"string\" then \
+                         molt_exception_match({obj}, {cls}) else \
+                         (type({obj}) == \"table\" and type({cls}) == \"table\") or \
+                         (type({obj}) == \"number\" and ({cls} == \"int\" or {cls} == \"float\")) or \
                          (type({obj}) == \"string\" and ({cls} == \"str\" or {cls} == \"string\")) or \
                          (type({obj}) == \"boolean\" and {cls} == \"bool\")"
                     ));
@@ -3059,8 +3080,16 @@ impl LuauBackend {
             | "exception_set_cause"
             | "exception_context_set"
             | "exception_stack_set_depth"
-            | "exception_clear" => {
+            => {
                 // Exception bookkeeping — no Luau equivalent.
+            }
+            "exception_clear" => {
+                // Clear the pcall error so subsequent exception_last returns nil.
+                if !self.inside_pcall_body {
+                    if let Some(&n) = self.try_depth_counter.last() {
+                        self.emit_line(&format!("__err_{n} = nil"));
+                    }
+                }
             }
             "exception_new" | "exception_new_from_class" => {
                 let out = self.out_var(op);
@@ -3087,13 +3116,20 @@ impl LuauBackend {
             }
             "exception_last" => {
                 let out = self.out_var(op);
-                if let Some(&n) = self.try_depth_counter.last() {
-                    self.emit_line(&format!("local {out} = __err_{n}"));
+                if !self.inside_pcall_body {
+                    if let Some(&n) = self.try_depth_counter.last() {
+                        // After pcall — read the captured error.
+                        self.emit_line(&format!("local {out} = __err_{n}"));
+                    } else {
+                        self.emit_line(&format!("local {out} = nil -- [exception_last]"));
+                    }
                 } else {
+                    // Inside pcall body — no exception yet, return nil.
                     self.emit_line(&format!("local {out} = nil -- [exception_last]"));
                 }
             }
-            "exception_kind" | "exception_class" => {
+            "exception_kind" => {
+                // exception_kind extracts the type from an exception object.
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(exc_var) = args.first() {
@@ -3101,12 +3137,20 @@ impl LuauBackend {
                     self.emit_line(&format!(
                         "local {out} = molt_exception_kind({exc})"
                     ));
-                } else if let Some(&n) = self.try_depth_counter.last() {
-                    self.emit_line(&format!(
-                        "local {out} = molt_exception_kind(__err_{n})"
-                    ));
                 } else {
-                    self.emit_line(&format!("local {out} = nil -- [{kind}]", kind = op.kind));
+                    self.emit_line(&format!("local {out} = nil"));
+                }
+            }
+            "exception_class" => {
+                // exception_class returns the class name for isinstance matching.
+                // args[0] is already the class name string — pass it through.
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(class_var) = args.first() {
+                    let cls = sanitize_ident(class_var);
+                    self.emit_line(&format!("local {out} = {cls}"));
+                } else {
+                    self.emit_line(&format!("local {out} = nil"));
                 }
             }
             "exception_message" => {
@@ -3631,17 +3675,16 @@ impl LuauBackend {
                 self.emit_line(&format!("local __ok_{n}, __err_{n}"));
                 self.emit_line(&format!("__ok_{n}, __err_{n} = pcall(function()"));
                 self.push_indent();
-                // Push counter — it stays on the stack through the handler
-                // code so that exception_last can read __err_N.
                 self.try_depth_counter.push(n);
+                self.inside_pcall_body = true;
             }
             "pcall_wrap_end" => {
                 self.pop_indent();
                 self.emit_line("end)");
+                self.inside_pcall_body = false;
                 // Do NOT pop try_depth_counter here — the handler code
                 // after pcall_wrap_end needs to reference __err_N via
-                // exception_last. The counter is popped by the nop that
-                // represents the handler-closing try_end.
+                // exception_last.
             }
 
             // ================================================================
@@ -3750,7 +3793,16 @@ impl LuauBackend {
         if args.len() >= 2 {
             let lhs = sanitize_ident(&args[0]);
             let rhs = sanitize_ident(&args[1]);
-            self.emit_line(&format!("local {out} = {lhs} {operator} {rhs}"));
+            // Parenthesize comparison/boolean results to prevent precedence
+            // issues when the sink pass inlines into `not` expressions.
+            // Without parens: `not a == b` → `(not a) == b` (wrong).
+            // With parens: `not (a == b)` (correct).
+            let needs_parens = matches!(operator, "==" | "~=" | "<" | "<=" | ">" | ">=" | "and" | "or");
+            if needs_parens {
+                self.emit_line(&format!("local {out} = ({lhs} {operator} {rhs})"));
+            } else {
+                self.emit_line(&format!("local {out} = {lhs} {operator} {rhs}"));
+            }
         }
     }
 
