@@ -24395,6 +24395,31 @@ def _ensure_cli_hash_seed() -> None:
     os.execvpe(sys.executable, [sys.executable, *sys.argv], env)
 
 
+_BUILD_ESSENTIAL_FLAGS = frozenset({
+    "file", "module", "target", "release", "output", "out_dir",
+    "verbose", "json", "rebuild", "profile", "platform", "help",
+})
+
+
+class _BuildHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Formatter for `molt build` that hides advanced flags.
+
+    Shows only essential flags by default. Advanced flags still work
+    but are hidden from --help to reduce noise for new users.
+    """
+
+    def _format_action(self, action):
+        if action.option_strings:
+            dest = action.dest
+            if dest not in _BUILD_ESSENTIAL_FLAGS:
+                return ""
+        return super()._format_action(action)
+
+    def _format_usage(self, usage, actions, groups, prefix):
+        filtered = [a for a in actions if not a.option_strings or a.dest in _BUILD_ESSENTIAL_FLAGS]
+        return super()._format_usage(usage, filtered, groups, prefix)
+
+
 class _MoltHelpFormatter(argparse.RawDescriptionHelpFormatter):
     """Custom formatter that groups subcommands by category in --help."""
 
@@ -24416,11 +24441,13 @@ class _MoltHelpFormatter(argparse.RawDescriptionHelpFormatter):
                 ("Development commands:", _dev),
             ]
 
+            # Build a lookup from dest -> subaction for ordered iteration
+            _action_map: dict[str, argparse.Action] = {}
+            for subaction in action._get_subactions():
+                _action_map[subaction.dest] = subaction
+
             for title, names in groups:
-                section_actions = []
-                for subaction in action._get_subactions():
-                    if subaction.dest in names:
-                        section_actions.append(subaction)
+                section_actions = [_action_map[n] for n in names if n in _action_map]
                 if not section_actions:
                     continue
                 parts.append(f"\n  {title}")
@@ -24449,6 +24476,7 @@ def main() -> int:
     _ensure_cli_hash_seed()
     parser = argparse.ArgumentParser(
         prog="molt",
+        usage="molt [-h] <command> [options]",
         description="The Molt Python compiler",
         formatter_class=_MoltHelpFormatter,
         epilog=(
@@ -24469,7 +24497,7 @@ def main() -> int:
         "build",
         help="Build a Python program",
         description="Compile a Python file to a native binary, WASM module, or Luau script.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        formatter_class=_BuildHelpFormatter,
         epilog=(
             "Examples:\n"
             "  molt build app.py                      Build with default settings\n"
@@ -25210,7 +25238,7 @@ def main() -> int:
     )
 
     package_parser = subparsers.add_parser(
-        "package", help="Bundle a Molt package artifact"
+        "package", help="Bundle a distributable package"
     )
     package_parser.add_argument("artifact", help="Path to the package artifact.")
     package_parser.add_argument(
@@ -25292,7 +25320,7 @@ def main() -> int:
     )
 
     publish_parser = subparsers.add_parser(
-        "publish", help="Publish a Molt package to a registry path or URL"
+        "publish", help="Publish to registry"
     )
     publish_parser.add_argument("package", help="Path to the .moltpkg file.")
     publish_parser.add_argument(
@@ -25449,7 +25477,7 @@ def main() -> int:
     )
 
     deps_parser = subparsers.add_parser(
-        "deps", help="Show dependency compatibility info"
+        "deps", help="Show dependency info"
     )
     deps_parser.add_argument(
         "--include-dev", action="store_true", help="Include dev dependencies"
@@ -25587,7 +25615,25 @@ def main() -> int:
     # --- deploy command ---
     deploy_parser = subparsers.add_parser(
         "deploy",
-        help="Build and deploy to a target platform (cloudflare, roblox)",
+        help="Build and deploy to a platform",
+        description=(
+            "Build and deploy a Python program to a target platform.\n"
+            "Automatically sets the correct build target and optimization defaults."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt deploy cloudflare src/app.py      Deploy to Cloudflare Workers\n"
+            "  molt deploy roblox src/game.py          Deploy to Roblox Studio\n"
+            "  molt deploy cloudflare app.py --release  Optimized production deploy\n"
+            "  molt deploy roblox app.py --roblox-project ./my-game\n"
+            "                                          Deploy and copy to Roblox project\n"
+            "  molt deploy cloudflare app.py --dry-run  Build only, skip wrangler\n"
+            "\n"
+            "Platforms:\n"
+            "  cloudflare    Build as WASM with --split-runtime, deploy via wrangler\n"
+            "  roblox        Build as Luau, optionally copy to a Roblox project dir\n"
+        ),
     )
     deploy_parser.add_argument(
         "platform",
@@ -25598,6 +25644,12 @@ def main() -> int:
     deploy_parser.add_argument(
         "--module",
         help="Entry module name (uses pkg.__main__ when present).",
+    )
+    deploy_parser.add_argument(
+        "--release",
+        action="store_true",
+        default=False,
+        help="Optimized release build (alias for --build-profile release).",
     )
     deploy_parser.add_argument(
         "--build-profile",
