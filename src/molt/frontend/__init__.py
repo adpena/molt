@@ -5525,7 +5525,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self, module_name: str | None, func_id: str, node: ast.Call
     ) -> list[MoltValue] | None:
         if node.keywords:
-            raise NotImplementedError("Call keywords are not supported")
+            # Keywords (including **kwargs) cannot be resolved at compile time
+            # for direct calls — return None so the caller falls back to the
+            # generic CALL_BIND / CALL_INDIRECT path which handles them at runtime.
+            return None
         args = self._emit_call_args(node.args)
         return self._apply_direct_call_defaults(module_name, func_id, args, node)
 
@@ -5536,7 +5539,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         func_obj: MoltValue | None = None,
     ) -> tuple[list[MoltValue] | None, MoltValue | None]:
         if node.keywords:
-            raise NotImplementedError("Call keywords are not supported")
+            # Keywords (including **kwargs) cannot be resolved at compile time
+            # for direct calls — return None so the caller falls back to the
+            # generic CALL_BIND / CALL_INDIRECT path which handles them at runtime.
+            return None, func_obj
         args = self._emit_call_args(node.args)
         info = self.func_default_specs.get(func_symbol)
         if info is None:
@@ -5575,15 +5581,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if any(kw.arg is None for kw in node.keywords):
             # Try to resolve **kwargs spreads from module-level constant dicts
             expanded: list[ast.keyword] = []
+            all_resolved = True
             for kw in node.keywords:
                 if kw.arg is None and isinstance(kw.value, ast.Name) and kw.value.id in self.module_const_dicts:
                     for dk, dv in self.module_const_dicts[kw.value.id].items():
                         expanded.append(ast.keyword(arg=dk, value=ast.Constant(value=dv)))
                 elif kw.arg is None:
-                    raise NotImplementedError("field does not support **kwargs")
+                    # Dynamic **kwargs — cannot resolve at compile time.
+                    # Fall through to emit CALLARGS_EXPAND_KWSTAR at runtime.
+                    all_resolved = False
+                    break
                 else:
                     expanded.append(kw)
-            node.keywords = expanded
+            if all_resolved:
+                node.keywords = expanded
         if node.args:
             raise NotImplementedError("field does not support positional arguments")
         func_val = self._emit_module_attr_get_on(module_name, "field")
