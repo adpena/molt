@@ -29,6 +29,23 @@ from molt.type_facts import normalize_type_hint
 if TYPE_CHECKING:
     from molt.type_facts import TypeFacts
 
+# ---------------------------------------------------------------------------
+# Inline cache (IC) site index allocator
+# ---------------------------------------------------------------------------
+# Each GETATTR_GENERIC_PTR site gets a unique IC index so the runtime can
+# map it to a slot in the lock-free InlineCache table (4096 entries).
+# The counter wraps around at the table capacity.
+
+_IC_TABLE_CAPACITY = 4096
+_ic_counter: list[int] = [0]  # mutable counter in list for closure capture
+
+
+def _next_ic_index() -> int:
+    """Return a monotonically increasing IC site index (mod table capacity)."""
+    idx = _ic_counter[0] % _IC_TABLE_CAPACITY
+    _ic_counter[0] += 1
+    return idx
+
 
 @dataclass
 class MoltValue:
@@ -9271,6 +9288,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, attr],
                     result=res,
+                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             return res
@@ -9283,6 +9301,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         kind="GETATTR_GENERIC_PTR",
                         args=[obj, attr],
                         result=res,
+                        metadata={"ic_index": _next_ic_index()},
                     )
                 )
                 return res
@@ -9311,6 +9330,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, attr],
                     result=res,
+                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             return res
@@ -9547,6 +9567,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, fallback_attr],
                     result=slow_val,
+                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
@@ -9588,6 +9609,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 kind="GETATTR_GENERIC_PTR",
                 args=[obj, fallback_attr],
                 result=slow_val,
+                metadata={"ic_index": _next_ic_index()},
             )
         )
         self.emit(
@@ -9628,6 +9650,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, attr],
                     result=slow_val,
+                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
@@ -9659,6 +9682,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 kind="GETATTR_GENERIC_PTR",
                 args=[obj, attr],
                 result=slow_val,
+                metadata={"ic_index": _next_ic_index()},
             )
         )
         self.emit(
@@ -13381,6 +13405,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 kind="GETATTR_GENERIC_PTR",
                                 args=[prop_val, update_kind],
                                 result=prop_attr,
+                                metadata={"ic_index": _next_ic_index()},
                             )
                         )
                         callargs = MoltValue(self.next_var(), type_hint="callargs")
@@ -19435,6 +19460,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         kind="GETATTR_GENERIC_PTR",
                         args=[obj, node.attr],
                         result=res,
+                        metadata={"ic_index": _next_ic_index()},
                     )
                 )
                 return res
@@ -19570,6 +19596,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, node.attr],
                     result=res,
+                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             return res
@@ -19581,6 +19608,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, node.attr],
                     result=res,
+                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             return res
@@ -19591,6 +19619,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, node.attr],
                     result=res,
+                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             return res
@@ -28333,12 +28362,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             }
                         )
                     else:
+                        _ic = (
+                            op.metadata["ic_index"]
+                            if op.metadata and "ic_index" in op.metadata
+                            else _next_ic_index()
+                        )
                         json_ops.append(
                             {
                                 "kind": "get_attr_generic_ptr",
                                 "args": [obj.name],
                                 "s_value": attr,
                                 "out": op.result.name,
+                                "metadata": {"ic_index": _ic},
                             }
                         )
                 else:
@@ -28367,12 +28402,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             }
                         )
                     else:
+                        _ic = (
+                            op.metadata["ic_index"]
+                            if op.metadata and "ic_index" in op.metadata
+                            else _next_ic_index()
+                        )
                         json_ops.append(
                             {
                                 "kind": "get_attr_generic_ptr",
                                 "args": [obj.name],
                                 "s_value": attr,
                                 "out": op.result.name,
+                                "metadata": {"ic_index": _ic},
                             }
                         )
                 else:
@@ -28387,14 +28428,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         }
                     )
             elif op.kind == "GETATTR_GENERIC_PTR":
-                json_ops.append(
-                    {
-                        "kind": "get_attr_generic_ptr",
-                        "args": [op.args[0].name],
-                        "s_value": op.args[1],
-                        "out": op.result.name,
-                    }
-                )
+                ptr_entry: dict[str, Any] = {
+                    "kind": "get_attr_generic_ptr",
+                    "args": [op.args[0].name],
+                    "s_value": op.args[1],
+                    "out": op.result.name,
+                }
+                if op.metadata and "ic_index" in op.metadata:
+                    ptr_entry["metadata"] = {"ic_index": op.metadata["ic_index"]}
+                json_ops.append(ptr_entry)
             elif op.kind == "GETATTR_GENERIC_OBJ":
                 json_ops.append(
                     {
