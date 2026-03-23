@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use crate::intrinsics::generated::{INTRINSICS, resolve_symbol};
 use crate::{
     MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING, alloc_dict_with_pairs,
@@ -18,6 +18,37 @@ const RUNTIME_FLAG: &str = "_molt_runtime";
 /// Uses `AtomicPtr` so that concurrent calls on native multi-threaded targets
 /// cannot race on the null check (on wasm32 single-threaded atomics are no-ops).
 static BUILTINS_MODULE_PTR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Per-app intrinsic manifest for WASM tree shaking.
+static INTRINSIC_MANIFEST_PTR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+static INTRINSIC_MANIFEST_LEN: AtomicU32 = AtomicU32::new(0);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_set_intrinsic_manifest(ptr: u64, len: u64) -> u64 {
+    INTRINSIC_MANIFEST_PTR.store(ptr as u32 as *mut u8, Ordering::Release);
+    INTRINSIC_MANIFEST_LEN.store(len as u32, Ordering::Release);
+    0
+}
+
+#[cfg(target_arch = "wasm32")]
+fn parse_manifest() -> Option<std::collections::BTreeSet<&'static str>> {
+    let ptr = INTRINSIC_MANIFEST_PTR.load(Ordering::Acquire);
+    let len = INTRINSIC_MANIFEST_LEN.load(Ordering::Acquire) as usize;
+    if ptr.is_null() || len == 0 {
+        return None;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
+    let mut set = std::collections::BTreeSet::new();
+    for chunk in bytes.split(|&b| b == 0) {
+        if let Ok(name) = core::str::from_utf8(chunk) {
+            if !name.is_empty() {
+                set.insert(name);
+            }
+        }
+    }
+    Some(set)
+}
+
 
 pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
     if module_ptr.is_null() {
@@ -93,19 +124,28 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
 
     #[cfg(target_arch = "wasm32")]
     {
-        eprintln!("MOLT_INTRINSICS: wasm32 eager registration starting ({} intrinsics)", INTRINSICS.len());
+        let manifest = parse_manifest();
+        let total = INTRINSICS.len();
+        if let Some(ref m) = manifest {
+            eprintln!("MOLT_INTRINSICS: manifest-filtered ({} of {total})", m.len());
+        } else {
+            eprintln!("MOLT_INTRINSICS: eager registration ({total} intrinsics)");
+        }
         let mut count = 0u32;
+        let mut skipped = 0u32;
         for spec in INTRINSICS {
+            if let Some(ref m) = manifest {
+                if !m.contains(spec.name) {
+                    skipped += 1;
+                    continue;
+                }
+            }
             let Some(fn_ptr) = resolve_symbol(spec.symbol) else {
-                // Feature-gated intrinsics may be absent in micro builds.
                 continue;
             };
             let Some(func_bits) = build_intrinsic_func(_py, fn_ptr, spec.arity) else {
                 continue;
             };
-            // dict_set_in_place inc-refs on each successful insert.
-            // We must dec-ref once for the build_intrinsic_func allocation,
-            // and the dict holds its own references independently.
             set_intrinsic_entry(_py, registry_ptr, spec.name, func_bits);
             if let Some(alias) = alias_name(spec.name) {
                 set_intrinsic_entry(_py, registry_ptr, &alias, func_bits);
@@ -113,7 +153,11 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
             dec_ref_bits(_py, func_bits);
             count += 1;
         }
-        eprintln!("MOLT_INTRINSICS: wasm32 eager registration done ({count} resolved)");
+        if manifest.is_some() {
+            eprintln!("MOLT_INTRINSICS: done ({count} resolved, {skipped} skipped)");
+        } else {
+            eprintln!("MOLT_INTRINSICS: done ({count} resolved)");
+        }
     }
 
     dec_ref_bits(_py, registry_bits);
