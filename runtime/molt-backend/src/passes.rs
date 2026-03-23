@@ -1411,9 +1411,11 @@ pub(crate) fn compute_rc_coalesce_skips(
     last_use: &BTreeMap<String, usize>,
 ) -> (HashSet<usize>, HashSet<String>) {
     const CONTROL_FLOW: &[&str] = &[
-        "if", "else", "end_if", "jump", "label", "state_transition",
+        "if", "else", "end_if", "jump", "br_if", "label",
+        "check_exception", "state_transition",
         "state_yield", "state_switch", "state_label", "exception_push",
         "exception_pop", "chan_send_yield", "chan_recv_yield",
+        "ret", "ret_void",
     ];
     let cf_set: HashSet<&str> = CONTROL_FLOW.iter().copied().collect();
     let mut skip_ops: HashSet<usize> = HashSet::new();
