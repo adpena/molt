@@ -141,6 +141,15 @@ impl LuauBackend {
         sink_single_use_locals(&mut func_body);
         rehoist_escaped_locals(&mut func_body);
 
+        // Phase 2d: Convert goto/label pairs to structured control flow.
+        // Standard Luau does NOT support goto or ::label:: syntax.
+        // This must run last, after all other cleanup has removed dead gotos.
+        eliminate_goto_labels(&mut func_body);
+
+        // Phase 2e: Strip dead code after terminators (break, return, error).
+        // Luau rejects unreachable statements after control flow terminators.
+        strip_dead_code_after_terminators(&mut func_body);
+
         // Phase 3: Emit prelude with only the helpers that survive optimization.
         self.emit_prelude_conditional(&func_body);
 
@@ -7400,6 +7409,274 @@ fn strip_dead_gotos_and_labels(source: &mut String) {
     }
     *source = result;
     eprintln!("[molt-luau] Stripped {} dead gotos/labels", remove.len());
+}
+
+/// Eliminate goto/label pairs from emitted Luau.
+///
+/// Standard Luau does NOT support `goto` or `::label::` syntax (unlike Lua 5.2+).
+/// This pass converts all goto/label patterns to structured control flow:
+///
+/// 1. **Dead gotos** (immediately after `error(...)`) are removed — `error()` throws
+///    so the goto is unreachable.
+/// 2. **Trivial forward gotos** where the target label is the next non-label,
+///    non-empty line are removed (jump to immediately next statement).
+/// 3. **Remaining forward gotos** are replaced with a skip-flag pattern:
+///    ```
+///    local _molt_skip_N = false
+///    ...
+///    _molt_skip_N = true  -- replaces: goto label_N
+///    if not _molt_skip_N then
+///      ... code between goto and label ...
+///    end
+///    -- (label removed)
+///    ```
+/// 4. All `::label_N::` lines are removed.
+fn eliminate_goto_labels(source: &mut String) {
+    let lines: Vec<String> = source.lines().map(|l| l.to_string()).collect();
+    if lines.is_empty() { return; }
+
+    // Phase 1: Collect label positions and goto positions.
+    let mut label_positions: BTreeMap<String, usize> = BTreeMap::new();
+    let mut goto_positions: Vec<(usize, String)> = Vec::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if t.starts_with("::") && t.ends_with("::") && t.len() > 4 {
+            let label = t[2..t.len()-2].to_string();
+            label_positions.insert(label, i);
+        }
+        // Standalone goto
+        if t.starts_with("goto ") && !t.contains("then goto") {
+            let target = t[5..].trim().to_string();
+            goto_positions.push((i, target));
+        }
+        // Inline goto in if block: `if ... then goto label_N end`
+        if let Some(pos) = t.find("then goto ") {
+            let after = &t[pos + 10..];
+            if let Some(end_pos) = after.find(' ') {
+                let target = after[..end_pos].to_string();
+                goto_positions.push((i, target));
+            }
+        }
+    }
+
+    if goto_positions.is_empty() && label_positions.is_empty() {
+        return;
+    }
+
+    // Phase 2: Classify gotos.
+    let mut remove: BTreeSet<usize> = BTreeSet::new();
+    let mut live_gotos: Vec<(usize, String, usize)> = Vec::new();
+
+    for (goto_line, label_name) in &goto_positions {
+        let goto_line = *goto_line;
+        let t = lines[goto_line].trim().to_string();
+
+        let is_inline = t.contains("then goto ") && t.ends_with(" end");
+
+        // Check if previous non-empty line is error() — dead code after throw.
+        let mut dead = false;
+        if !is_inline {
+            let mut prev = if goto_line > 0 { goto_line - 1 } else { 0 };
+            while prev > 0 && lines[prev].trim().is_empty() {
+                prev -= 1;
+            }
+            if lines[prev].trim().starts_with("error(") {
+                dead = true;
+            }
+        }
+
+        if dead {
+            remove.insert(goto_line);
+            continue;
+        }
+
+        if let Some(&label_line) = label_positions.get(label_name) {
+            if label_line <= goto_line {
+                remove.insert(goto_line);
+                continue;
+            }
+
+            // Check if goto jumps to immediately next non-label, non-empty line.
+            if !is_inline {
+                let mut next = goto_line + 1;
+                while next < lines.len() {
+                    let nt = lines[next].trim();
+                    if nt.is_empty() || (nt.starts_with("::") && nt.ends_with("::")) {
+                        next += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if next >= label_line {
+                    remove.insert(goto_line);
+                    continue;
+                }
+            }
+
+            live_gotos.push((goto_line, label_name.clone(), label_line));
+        } else {
+            remove.insert(goto_line);
+        }
+    }
+
+    // Phase 3: Remove all label lines.
+    for (_, &line_idx) in &label_positions {
+        remove.insert(line_idx);
+    }
+
+    // Phase 4: For live gotos, generate flag-based structured control flow.
+    let mut gotos_by_label: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (goto_line, label_name, _label_line) in &live_gotos {
+        gotos_by_label.entry(label_name.clone()).or_default().push(*goto_line);
+    }
+
+    let mut insert_before: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    let mut replacements: BTreeMap<usize, String> = BTreeMap::new();
+    let mut insert_after: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+
+    for (label_name, goto_lines) in &gotos_by_label {
+        if let Some(&label_line) = label_positions.get(label_name) {
+            let flag_name = format!("_molt_skip_{}", label_name.replace("label_", ""));
+
+            let first_goto = goto_lines[0];
+            let indent = lines[first_goto].len() - lines[first_goto].trim_start().len();
+            let indent_str: String = lines[first_goto][..indent].to_string();
+
+            insert_before.entry(first_goto).or_default().push(
+                format!("{indent_str}local {flag_name} = false")
+            );
+
+            for &goto_line in goto_lines {
+                let t = lines[goto_line].trim();
+                let goto_indent = lines[goto_line].len() - lines[goto_line].trim_start().len();
+                let goto_indent_str: String = lines[goto_line][..goto_indent].to_string();
+
+                if t.starts_with("goto ") {
+                    replacements.insert(goto_line, format!("{goto_indent_str}{flag_name} = true"));
+                    remove.remove(&goto_line);
+                } else if t.contains("then goto ") && t.ends_with(" end") {
+                    let replaced = t.replace(
+                        &format!("goto {label_name}"),
+                        &format!("{flag_name} = true"),
+                    );
+                    replacements.insert(goto_line, format!("{goto_indent_str}{replaced}"));
+                    remove.remove(&goto_line);
+                }
+            }
+
+            let last_goto = *goto_lines.iter().max().unwrap();
+            let wrap_start = last_goto + 1;
+            let wrap_end = label_line;
+
+            let has_code = (wrap_start..wrap_end).any(|i| {
+                let t = lines[i].trim();
+                !t.is_empty() && !(t.starts_with("::") && t.ends_with("::"))
+            });
+
+            if has_code {
+                insert_after.entry(last_goto).or_default().push(
+                    format!("{indent_str}if not {flag_name} then")
+                );
+                insert_before.entry(wrap_end).or_default().push(
+                    format!("{indent_str}end")
+                );
+            }
+        }
+    }
+
+    // Phase 5: Rebuild the source.
+    let mut result = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(inserts) = insert_before.get(&i) {
+            for ins in inserts {
+                result.push_str(ins);
+                result.push('\n');
+            }
+        }
+
+        if remove.contains(&i) {
+            // Skip removed line.
+        } else if let Some(replacement) = replacements.get(&i) {
+            result.push_str(replacement);
+            result.push('\n');
+        } else {
+            result.push_str(line);
+            result.push('\n');
+        }
+
+        if let Some(inserts) = insert_after.get(&i) {
+            for ins in inserts {
+                result.push_str(ins);
+                result.push('\n');
+            }
+        }
+    }
+
+    *source = result;
+    let total_gotos = goto_positions.len();
+    let live_count = live_gotos.len();
+    let dead_count = total_gotos - live_count;
+    eprintln!(
+        "[molt-luau] Eliminated goto/labels: {} dead, {} converted to structured flow, {} labels removed",
+        dead_count, live_count, label_positions.len()
+    );
+}
+
+/// Strip dead code after terminators (`break`, `return`, `error(...)`, `continue`).
+///
+/// In Luau, statements after `break`/`return`/`error()` within the same block
+/// are unreachable and the parser rejects them.  This pass removes lines between
+/// a terminator and the next `end`/`else`/`elseif`/`until` at the same or lower
+/// indent level.
+fn strip_dead_code_after_terminators(source: &mut String) {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut remove: BTreeSet<usize> = BTreeSet::new();
+
+    for i in 0..lines.len() {
+        let t = lines[i].trim();
+        let is_terminator = t == "break"
+            || t == "continue"
+            || t.starts_with("return")
+            || (t.starts_with("error(") && t.ends_with(")"));
+
+        if !is_terminator { continue; }
+
+        let term_indent = lines[i].len() - lines[i].trim_start().len();
+
+        let mut j = i + 1;
+        while j < lines.len() {
+            let tj = lines[j].trim();
+            if tj.is_empty() {
+                j += 1;
+                continue;
+            }
+            let j_indent = lines[j].len() - lines[j].trim_start().len();
+            if j_indent <= term_indent
+                && (tj == "end" || tj == "else" || tj.starts_with("elseif ")
+                    || tj.starts_with("until "))
+            {
+                break;
+            }
+            if j_indent <= term_indent && !tj.starts_with("local ") && !tj.contains(" = ") {
+                break;
+            }
+            remove.insert(j);
+            j += 1;
+        }
+    }
+
+    if remove.is_empty() { return; }
+
+    let mut result = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if !remove.contains(&i) {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    *source = result;
+    eprintln!("[molt-luau] Stripped {} dead-code-after-terminator lines", remove.len());
 }
 
 fn freeze_constant_tables(source: &mut String) {
