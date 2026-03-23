@@ -11,7 +11,7 @@
 //! - Loop control: `loop_break`, `loop_break_if_true`, `loop_break_if_false`, `loop_continue`
 
 use crate::ir::OpIR;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -86,8 +86,8 @@ fn is_conditional_branch(kind: &str) -> bool {
 }
 
 /// Build a map from label-id → op-index for all `label` / `state_label` ops.
-fn build_label_map(ops: &[OpIR]) -> BTreeMap<i64, usize> {
-    let mut map = BTreeMap::new();
+fn build_label_map(ops: &[OpIR]) -> HashMap<i64, usize> {
+    let mut map = HashMap::new();
     for (idx, op) in ops.iter().enumerate() {
         if matches!(op.kind.as_str(), "label" | "state_label") {
             if let Some(id) = op.value {
@@ -139,7 +139,7 @@ fn block_containing(blocks: &[BasicBlock], op_idx: usize) -> Option<usize> {
 // Phase 1: identify basic-block boundaries (leaders)
 // ---------------------------------------------------------------------------
 
-fn find_leaders(ops: &[OpIR], label_map: &BTreeMap<i64, usize>) -> BTreeSet<usize> {
+fn find_leaders(ops: &[OpIR], label_map: &HashMap<i64, usize>) -> BTreeSet<usize> {
     let mut leaders = BTreeSet::new();
     if ops.is_empty() {
         return leaders;
@@ -191,9 +191,9 @@ fn find_leaders(ops: &[OpIR], label_map: &BTreeMap<i64, usize>) -> BTreeSet<usiz
 /// Build maps for structured if/else/end_if:
 /// - `if` op-index → (`else` op-index or None, `end_if` op-index)
 /// - `else` op-index → `end_if` op-index
-fn build_if_else_maps(ops: &[OpIR]) -> (BTreeMap<usize, (Option<usize>, usize)>, BTreeMap<usize, usize>) {
-    let mut if_map = BTreeMap::new();
-    let mut else_map = BTreeMap::new();
+fn build_if_else_maps(ops: &[OpIR]) -> (HashMap<usize, (Option<usize>, usize)>, HashMap<usize, usize>) {
+    let mut if_map = HashMap::new();
+    let mut else_map = HashMap::new();
     let mut stack: Vec<(usize, Option<usize>)> = Vec::new(); // (if_idx, else_idx)
     for (idx, op) in ops.iter().enumerate() {
         match op.kind.as_str() {
@@ -220,7 +220,7 @@ fn build_if_else_maps(ops: &[OpIR]) -> (BTreeMap<usize, (Option<usize>, usize)>,
 fn build_edges(
     ops: &[OpIR],
     blocks: &[BasicBlock],
-    label_map: &BTreeMap<i64, usize>,
+    label_map: &HashMap<i64, usize>,
 ) -> (Vec<Vec<usize>>, Vec<Vec<usize>>) {
     let n = blocks.len();
     let mut successors: Vec<Vec<usize>> = vec![vec![]; n];
@@ -497,9 +497,7 @@ fn compute_loop_depth(
                 // h is a loop header; find the natural loop body.
                 // Use the pre-computed predecessor list (O(1) lookup per node)
                 // instead of scanning all successors (which was O(N) per lookup).
-                let body = natural_loop_body(h, b, blocks.len(), |bid| {
-                    predecessors[bid].clone()
-                });
+                let body = natural_loop_body(h, b, predecessors);
                 for &member in &body {
                     depth[member] += 1;
                 }
@@ -529,12 +527,11 @@ fn dominates(idom: &[Option<usize>], a: usize, b: usize, entry: usize) -> bool {
     }
 }
 
-/// Compute the natural loop body for back-edge b → h (header).
-fn natural_loop_body<F>(header: usize, tail: usize, _n: usize, predecessors_of: F) -> Vec<usize>
-where
-    F: Fn(usize) -> Vec<usize>,
-{
-    let mut body = BTreeSet::new();
+/// Compute the natural loop body for back-edge tail → header.
+/// Uses pre-computed predecessor lists (zero allocations per predecessor lookup)
+/// and HashSet for O(1) membership test.
+fn natural_loop_body(header: usize, tail: usize, predecessors: &[Vec<usize>]) -> Vec<usize> {
+    let mut body = HashSet::new();
     body.insert(header);
     if header == tail {
         return body.into_iter().collect();
@@ -543,7 +540,7 @@ where
     let mut worklist = VecDeque::new();
     worklist.push_back(tail);
     while let Some(node) = worklist.pop_front() {
-        for pred in predecessors_of(node) {
+        for &pred in &predecessors[node] {
             if body.insert(pred) {
                 worklist.push_back(pred);
             }
