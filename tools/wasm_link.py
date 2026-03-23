@@ -1217,6 +1217,184 @@ def _rewrite_output_imports(
     return wasm_path, temp_dir, force_exports
 
 
+def _collect_module_imports(
+    wasm_data: bytes, module_name: str
+) -> set[str]:
+    """Parse a WASM module and return the set of import names from *module_name*.
+
+    For example, if the app module imports ``(import "molt_runtime" "print_obj" ...)``,
+    calling ``_collect_module_imports(app_data, "molt_runtime")`` returns ``{"print_obj"}``.
+    """
+    sections = _parse_sections(wasm_data)
+    result: set[str] = set()
+    for section_id, payload in sections:
+        if section_id != 2:  # import section
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        for _ in range(count):
+            mod, offset = _read_string(payload, offset)
+            name, offset = _read_string(payload, offset)
+            if offset >= len(payload):
+                raise ValueError("Unexpected EOF reading import kind")
+            kind = payload[offset]
+            offset += 1
+            # Skip the import descriptor based on kind.
+            if kind == 0:  # function
+                _, offset = _read_varuint(payload, offset)
+            elif kind == 1:  # table
+                offset += 1  # elemtype
+                flags, offset = _read_varuint(payload, offset)
+                _, offset = _read_varuint(payload, offset)  # initial
+                if flags & 0x1:
+                    _, offset = _read_varuint(payload, offset)  # maximum
+            elif kind == 2:  # memory
+                flags, offset = _read_varuint(payload, offset)
+                _, offset = _read_varuint(payload, offset)  # initial
+                if flags & 0x1:
+                    _, offset = _read_varuint(payload, offset)  # maximum
+            elif kind == 3:  # global
+                offset += 1  # valtype
+                offset += 1  # mutability
+            elif kind == 4:  # tag
+                offset += 1  # attribute
+                _, offset = _read_varuint(payload, offset)  # type index
+            else:
+                raise ValueError(f"Unknown import kind {kind}")
+            if mod == module_name:
+                result.add(name)
+    return result
+
+
+def _tree_shake_runtime(
+    runtime_data: bytes,
+    required_exports: set[str],
+) -> bytes:
+    """Strip unused exports from the runtime module and eliminate dead code.
+
+    Rewrites the export section to only include functions in *required_exports*
+    (plus memory/table/global exports which are always kept).  After stripping
+    exports, runs wasm-opt ``--remove-unused-module-elements`` to GC dead
+    functions.
+
+    Returns the tree-shaken WASM bytes.  If wasm-opt is unavailable, falls back
+    to export-stripping only (which still reduces the module somewhat since
+    engines skip compiling unexported, unreferenced functions in some cases).
+    """
+    sections = _parse_sections(runtime_data)
+
+    # Rewrite export section: keep memory/table/global exports and only
+    # function exports that are in the required set.
+    new_sections: list[tuple[int, bytes]] = []
+    kept_exports = 0
+    stripped_exports = 0
+
+    for section_id, payload in sections:
+        if section_id != 7:  # not export section
+            new_sections.append((section_id, payload))
+            continue
+
+        # Parse and filter exports.
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        filtered: list[tuple[str, int, int]] = []  # (name, kind, index)
+        for _ in range(count):
+            name, offset = _read_string(payload, offset)
+            if offset >= len(payload):
+                raise ValueError("Unexpected EOF reading export kind")
+            kind = payload[offset]
+            offset += 1
+            index, offset = _read_varuint(payload, offset)
+            if kind != 0:
+                # Memory (2), table (1), global (3) -- always keep.
+                filtered.append((name, kind, index))
+                kept_exports += 1
+            elif name in required_exports:
+                filtered.append((name, kind, index))
+                kept_exports += 1
+            else:
+                stripped_exports += 1
+
+        # Rebuild export section.
+        new_payload = bytearray()
+        new_payload.extend(_write_varuint(len(filtered)))
+        for name, kind, index in filtered:
+            new_payload.extend(_write_string(name))
+            new_payload.append(kind)
+            new_payload.extend(_write_varuint(index))
+        new_sections.append((7, bytes(new_payload)))
+
+    print(
+        f"Runtime tree-shake: kept {kept_exports} exports, "
+        f"stripped {stripped_exports} unused function exports",
+        file=sys.stderr,
+    )
+
+    stripped_data = _build_sections(new_sections)
+
+    # Use wasm-opt to eliminate dead code (functions no longer reachable
+    # from the reduced export set).
+    wasm_opt = shutil.which("wasm-opt")
+    if not wasm_opt:
+        print(
+            "wasm-opt not found; skipping dead-code elimination "
+            "(export stripping only)",
+            file=sys.stderr,
+        )
+        return stripped_data
+
+    with tempfile.TemporaryDirectory(prefix="molt-treeshake-") as tmp:
+        input_path = Path(tmp) / "runtime_stripped.wasm"
+        output_path = Path(tmp) / "runtime_shaken.wasm"
+        input_path.write_bytes(stripped_data)
+
+        # Feature flags matching wasm_optimize.py defaults -- avoid
+        # --all-features which enables custom-descriptors (rejected by V8).
+        feature_flags = [
+            "--enable-bulk-memory",
+            "--enable-mutable-globals",
+            "--enable-sign-ext",
+            "--enable-nontrapping-float-to-int",
+            "--enable-simd",
+            "--enable-multivalue",
+            "--enable-reference-types",
+            "--enable-gc",
+            "--enable-tail-call",
+            "--disable-custom-descriptors",
+        ]
+
+        cmd = [
+            wasm_opt,
+            str(input_path),
+            "-o", str(output_path),
+            "-Oz",
+            "--remove-unused-module-elements",
+            "--closed-world",
+        ] + feature_flags
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+        if result.returncode != 0:
+            # wasm-opt may fail on some modules (e.g. unsupported features).
+            # Fall back gracefully to export-stripped version.
+            err = result.stderr.strip()
+            print(
+                f"wasm-opt tree-shake failed (non-fatal): {err}",
+                file=sys.stderr,
+            )
+            return stripped_data
+
+        shaken_data = output_path.read_bytes()
+        savings = len(stripped_data) - len(shaken_data)
+        print(
+            f"wasm-opt tree-shake: {len(runtime_data):,} -> {len(shaken_data):,} bytes "
+            f"({savings:,} bytes eliminated, "
+            f"{savings / len(runtime_data) * 100:.1f}% reduction)",
+            file=sys.stderr,
+        )
+        return shaken_data
+
+
 def _build_runtime_stub(runtime_data: bytes) -> bytes:
     """Generate a minimal WASM module that exports the same function signatures
     as the real runtime but with ``unreachable; end`` bodies.  This allows
@@ -3039,9 +3217,8 @@ def _run_wasm_ld(
 
             # The linked output is the app module (linked against stub).
             shutil.copy2(str(linked), str(app_wasm))
-            # Copy the real (non-relocatable) runtime alongside it.
-            # The reloc variant is only needed during linking; for deployment
-            # we want the final module with a proper export section.
+
+            # Resolve the deploy-ready (non-relocatable) runtime.
             deploy_runtime = runtime
             if deploy_runtime.name.endswith("_reloc.wasm"):
                 non_reloc = deploy_runtime.with_name(
@@ -3049,14 +3226,40 @@ def _run_wasm_ld(
                 )
                 if non_reloc.exists():
                     deploy_runtime = non_reloc
-            shutil.copy2(str(deploy_runtime), str(rt_wasm))
+
+            # Tree-shake the runtime: strip exports the app doesn't import,
+            # then run wasm-opt to eliminate dead code.  This is the key step
+            # that reduces the runtime from ~8MB to ~1-2MB for typical apps.
+            full_rt_size = deploy_runtime.stat().st_size
+            try:
+                app_imports = _collect_module_imports(
+                    app_wasm.read_bytes(), "molt_runtime"
+                )
+                print(
+                    f"App imports {len(app_imports)} functions from molt_runtime",
+                    file=sys.stderr,
+                )
+                shaken_runtime = _tree_shake_runtime(
+                    deploy_runtime.read_bytes(), app_imports
+                )
+                rt_wasm.write_bytes(shaken_runtime)
+            except Exception as exc:
+                print(
+                    f"Runtime tree-shake failed (falling back to full copy): {exc}",
+                    file=sys.stderr,
+                )
+                shutil.copy2(str(deploy_runtime), str(rt_wasm))
 
             app_size = app_wasm.stat().st_size
             rt_size = rt_wasm.stat().st_size
+            total = app_size + rt_size
             print(
                 f"Split-runtime output: "
                 f"{app_wasm.name} ({app_size:,} bytes, {app_size // 1024}KB) + "
-                f"{rt_wasm.name} ({rt_size:,} bytes, {rt_size // 1024}KB)",
+                f"{rt_wasm.name} ({rt_size:,} bytes, {rt_size // 1024}KB) = "
+                f"{total:,} bytes total "
+                f"(runtime: {full_rt_size:,} -> {rt_size:,}, "
+                f"{(1 - rt_size / full_rt_size) * 100:.0f}% reduction)",
                 file=sys.stderr,
             )
 

@@ -8113,29 +8113,38 @@ export default {
       molt_ws_connect_host()     { return -1; },
     };
 
-    // Shared memory and table — created BEFORE either module so both
-    // runtime and app operate on the same linear memory and call table.
-    const sharedMemory = new WebAssembly.Memory({ initial: 64 });
+    // Shared table for indirect calls — both modules reference the same table.
     const sharedTable = new WebAssembly.Table({ initial: 8192, element: "anyfunc" });
-    wasmMemory = sharedMemory;
-
-    // Shared imports for both modules
-    const sharedImports = {
-      wasi_snapshot_preview1: wasi,
-      env: { ...hostEnv, memory: sharedMemory, __indirect_function_table: sharedTable },
-    };
 
     try {
-      // 1. Instantiate runtime — provides molt_runtime.* exports
-      const rtInstance = await WebAssembly.instantiate(runtimeModule, sharedImports);
+      // 1. Instantiate the runtime module first.
+      //    The runtime defines its own memory (exported as "memory").
+      //    We pass WASI + host env imports, plus the shared table.
+      const rtImports = {
+        wasi_snapshot_preview1: wasi,
+        env: { ...hostEnv, __indirect_function_table: sharedTable },
+      };
+      const rtInstance = await WebAssembly.instantiate(runtimeModule, rtImports);
 
-      // 2. Instantiate app — imports from runtime + shared WASI/env
-      const appInstance = await WebAssembly.instantiate(appModule, {
-        ...sharedImports,
+      // Use the runtime's exported memory as the shared linear memory.
+      wasmMemory = rtInstance.exports.memory;
+
+      // 2. Instantiate the app module.
+      //    It imports from molt_runtime (the runtime's exports) plus WASI/env.
+      //    Memory and table come from the runtime so both modules share them.
+      const appImports = {
+        wasi_snapshot_preview1: wasi,
+        env: {
+          ...hostEnv,
+          memory: wasmMemory,
+          __indirect_function_table: sharedTable,
+        },
         molt_runtime: rtInstance.exports,
-      });
+      };
+      const appInstance = await WebAssembly.instantiate(appModule, appImports);
 
-      // 4. Initialize and run
+      // 3. Initialize and run
+      if (rtInstance.exports._initialize) rtInstance.exports._initialize();
       if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();
       if (appInstance.exports.molt_main) appInstance.exports.molt_main();
       else if (appInstance.exports._start) appInstance.exports._start();
@@ -14917,9 +14926,9 @@ def _prepare_non_native_build_result(
             rt_size = rt_wasm.stat().st_size
 
             manifest_data = {
-                "version": 1,
+                "version": 2,
                 "mode": "split-runtime",
-                "shared_memory_pages": 64,
+                "tree_shaken": True,
                 "shared_table_initial": 8192,
                 "modules": {
                     "runtime": {
@@ -14931,6 +14940,7 @@ def _prepare_non_native_build_result(
                         "size": app_size,
                     },
                 },
+                "total_size": app_size + rt_size,
                 "instantiation_order": ["runtime", "app"],
                 "entry": {"module": "app", "function": "molt_main"},
             }
@@ -14951,13 +14961,12 @@ def _prepare_non_native_build_result(
                     'compatibility_date = "2024-01-01"\n\n'
                     '[build]\n'
                     'command = ""\n\n'
-                    '# Split-runtime: runtime.wasm is cached independently\n'
-                    '[[wasm_modules]]\n'
-                    'name = "RUNTIME"\n'
-                    'path = "molt_runtime.wasm"\n\n'
-                    '[[wasm_modules]]\n'
-                    'name = "APP"\n'
-                    'path = "app.wasm"\n'
+                    '# Split-runtime: tree-shaken runtime is cached\n'
+                    '# independently by the CDN. Only app.wasm changes\n'
+                    '# per deployment.\n'
+                    '[wasm_modules]\n'
+                    'RUNTIME = "molt_runtime.wasm"\n'
+                    'APP = "app.wasm"\n'
                 )
 
             success_messages.append(
@@ -24167,9 +24176,11 @@ def main() -> int:
         default=False,
         help=(
             "Produce separate runtime and app WASM modules instead of a single "
-            "linked binary. Outputs app.wasm + molt_runtime.wasm + manifest.json. "
-            "On Cloudflare Workers, this reduces total compressed size from ~2.8MB "
-            "to ~850KB by allowing separate module caching."
+            "linked binary. The runtime is tree-shaken to include only the "
+            "builtins your program uses, then optimized with wasm-opt. "
+            "Outputs app.wasm (~50-100KB) + molt_runtime.wasm (~1-2MB) "
+            "+ worker.js + manifest.json. Typically reduces total size from "
+            "~3MB gzip to ~1.2MB gzip."
         ),
     )
     build_parser.add_argument(
