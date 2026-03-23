@@ -977,6 +977,8 @@ fn emit_sparse_state_remap_lookup(
 pub enum WasmProfile {
     Full,
     Pure,
+    /// Scan IR to include only imports that are actually used (plus a generous core set).
+    Auto,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1011,7 +1013,8 @@ impl Default for WasmCompileOptions {
             native_eh_enabled: !matches!(std::env::var("MOLT_WASM_NATIVE_EH").as_deref(), Ok("0")),
             wasm_profile: match std::env::var("MOLT_WASM_PROFILE").as_deref() {
                 Ok("pure") => WasmProfile::Pure,
-                _ => WasmProfile::Full,
+                Ok("full") => WasmProfile::Full,
+                _ => WasmProfile::Auto,
             },
         }
     }
@@ -1283,6 +1286,273 @@ impl WasmBackend {
                 has_any_ret && all_rets_ok
             })
             .collect()
+    }
+
+    /// Scan the IR to determine which host imports are actually referenced.
+    /// Returns a BTreeSet of import names that must be registered. Used by
+    /// `WasmProfile::Auto` to skip unreferenced imports (sentinel u32::MAX).
+    fn collect_required_imports(ir: &SimpleIR) -> BTreeSet<String> {
+        let mut required: BTreeSet<String> = BTreeSet::new();
+
+        // CORE IMPORTS: always required by structural codegen regardless of IR content.
+        for name in [
+            // Runtime lifecycle
+            "runtime_init", "runtime_shutdown", "sys_set_version_info",
+            // Output
+            "print_obj", "print_newline",
+            // Memory / allocation
+            "alloc", "alloc_class", "alloc_class_trusted", "alloc_class_static",
+            // Reference counting
+            "inc_ref_obj", "dec_ref_obj",
+            // Object model
+            "handle_resolve",
+            "get_attr_generic", "get_attr_ptr", "get_attr_object", "get_attr_object_ic",
+            "get_attr_special", "set_attr_generic", "set_attr_ptr", "set_attr_object",
+            "del_attr_generic", "del_attr_ptr", "del_attr_object",
+            "get_attr_name", "get_attr_name_default", "has_attr_name",
+            "set_attr_name", "del_attr_name",
+            "object_field_get", "object_field_get_ptr",
+            "object_field_set", "object_field_set_ptr",
+            "object_field_init", "object_field_init_ptr",
+            "guard_type", "guard_layout_ptr",
+            "guarded_field_get_ptr", "guarded_field_set_ptr", "guarded_field_init_ptr",
+            "closure_load", "closure_store",
+            // Truthiness / comparison
+            "is_truthy", "not", "contains", "is", "eq", "ne", "lt", "le", "gt", "ge", "string_eq",
+            // Arithmetic
+            "add", "sub", "mul", "div", "floordiv", "mod", "pow", "pow_mod", "round", "trunc",
+            "inplace_add", "inplace_sub", "inplace_mul",
+            "bit_or", "bit_and", "bit_xor", "invert",
+            "inplace_bit_or", "inplace_bit_and", "inplace_bit_xor",
+            "lshift", "rshift", "matmul", "abs_builtin",
+            // Function construction / dispatch
+            "func_new", "func_new_closure", "func_new_builtin",
+            "bound_method_new", "classmethod_new", "staticmethod_new", "property_new",
+            "is_function_obj", "function_default_kind", "function_closure_bits",
+            "function_is_generator", "function_is_coroutine", "function_set_builtin",
+            "call_arity_error", "is_bound_method", "is_callable",
+            "call_bind", "call_bind_ic", "call_indirect_ic", "invoke_ffi_ic",
+            "call_func_dispatch",
+            "callargs_new", "callargs_push_pos", "callargs_push_kw",
+            "callargs_expand_star", "callargs_expand_kwstar",
+            // String operations (core)
+            "string_from_bytes", "bytes_from_bytes", "bigint_from_str",
+            "str_from_obj", "repr_from_obj", "repr_builtin", "format_builtin",
+            // Iterators
+            "iter", "iter_next", "iter_sentinel",
+            // Collections: list
+            "list_builder_new", "list_builder_append", "list_builder_finish", "tuple_builder_finish",
+            "list_append", "list_pop", "list_extend", "list_insert", "list_remove",
+            "list_clear", "list_copy", "list_reverse", "list_sort",
+            "list_count", "list_index", "list_index_range",
+            "tuple_from_list", "tuple_count", "tuple_index", "list_from_range",
+            // Collections: dict
+            "dict_new", "dict_from_obj", "dict_set", "dict_get", "dict_inc", "dict_str_int_inc",
+            "dict_pop", "dict_setdefault", "dict_setdefault_empty_list",
+            "dict_update", "dict_clear", "dict_copy", "dict_popitem", "dict_update_kwstar",
+            "dict_keys", "dict_values", "dict_items",
+            // Collections: set
+            "set_new", "set_add", "set_discard", "set_remove", "set_pop",
+            "set_update", "set_intersection_update", "set_difference_update", "set_symdiff_update",
+            "frozenset_new", "frozenset_add",
+            // Indexing / slicing
+            "index", "store_index", "del_index", "slice", "slice_new", "range_new",
+            // Exception handling
+            "exception_push", "exception_pop", "exception_stack_clear",
+            "exception_last", "exception_active",
+            "exception_new", "exception_new_from_class",
+            "exceptiongroup_match", "exceptiongroup_combine",
+            "exception_clear", "exception_pending",
+            "exception_kind", "exception_class", "exception_message",
+            "exception_set_cause", "exception_set_value",
+            "exception_context_set", "exception_set_last",
+            "raise", "bridge_unavailable",
+            // Module system
+            "module_new", "module_cache_get", "module_import", "module_cache_set",
+            "module_get_attr", "module_get_global", "module_del_global",
+            "module_get_name", "module_set_attr", "module_import_star",
+            // Class construction
+            "class_new", "class_set_base", "class_apply_set_name",
+            "super_new", "builtin_type", "type_of",
+            "class_layout_version", "class_set_layout_version",
+            "isinstance", "issubclass", "object_new", "object_set_class",
+            "dataclass_new", "dataclass_get", "dataclass_set", "dataclass_set_class",
+            // Singletons
+            "missing", "pending", "not_implemented", "ellipsis",
+            // Generators / coroutines
+            "generator_send", "generator_throw", "generator_close", "is_generator",
+            "task_new", "task_register_token_owned",
+            // Code objects / tracing
+            "code_new", "code_slot_set", "code_slots_init", "fn_ptr_code_set",
+            "trace_enter_slot", "trace_set_line", "trace_exit",
+            "frame_locals_set", "recursion_guard_enter", "recursion_guard_exit",
+            // Builtins
+            "len", "id", "hash_builtin", "ord", "chr",
+            "ascii_from_obj", "bin_builtin", "oct_builtin", "hex_builtin",
+            "callable_builtin", "int_from_obj", "float_from_obj", "complex_from_obj",
+            "divmod_builtin", "round_builtin", "enumerate_builtin",
+            "next_builtin", "any_builtin", "all_builtin", "sum_builtin",
+            "min_builtin", "max_builtin", "sorted_builtin",
+            "map_builtin", "filter_builtin", "zip_builtin", "reversed_builtin",
+            "getattr_builtin", "dir_builtin", "vars_builtin",
+            "anext_builtin", "print_builtin", "super_builtin",
+            // Context managers
+            "context_null", "context_enter", "context_exit",
+            "context_unwind", "context_depth", "context_unwind_to", "context_closing",
+            // System
+            "getargv", "sys_version_info", "sys_version", "sys_hexversion",
+            "sys_api_version", "sys_abiflags", "sys_implementation_payload",
+            "sys_stdin", "sys_stdout", "sys_stderr", "sys_executable", "sys_platform",
+            "getrecursionlimit", "setrecursionlimit",
+            "getpid", "getframe", "getcwd", "errno_constants", "os_name",
+            "env_get", "env_snapshot",
+            // String methods
+            "string_join", "string_split", "string_split_max",
+            "string_lower", "string_upper", "string_capitalize",
+            "string_strip", "string_lstrip", "string_rstrip", "string_replace",
+            "string_find", "string_find_slice", "string_format",
+            "string_startswith", "string_startswith_slice",
+            "string_endswith", "string_endswith_slice",
+            "string_count", "string_count_slice",
+            "string_split_ws_dict_inc", "string_split_sep_dict_inc", "taq_ingest_line",
+            // Bytes methods
+            "bytes_from_obj", "bytearray_from_obj", "bytes_from_str", "bytearray_from_str",
+            "bytes_split", "bytes_split_max", "bytearray_split", "bytearray_split_max",
+            "bytes_replace", "bytearray_replace",
+            "bytes_find", "bytes_find_slice", "bytearray_find", "bytearray_find_slice",
+            "bytes_startswith", "bytes_startswith_slice",
+            "bytearray_startswith", "bytearray_startswith_slice",
+            "bytes_endswith", "bytes_endswith_slice",
+            "bytearray_endswith", "bytearray_endswith_slice",
+            "bytes_count", "bytes_count_slice", "bytearray_count", "bytearray_count_slice",
+            // Memoryview / intarray
+            "memoryview_new", "memoryview_tobytes", "memoryview_cast", "intarray_from_seq",
+            // Weakref
+            "weakref_register", "weakref_get", "weakref_drop",
+            // Buffer2d
+            "buffer2d_new", "buffer2d_get", "buffer2d_set", "buffer2d_matmul",
+            // Statistics
+            "statistics_mean_slice", "statistics_stdev_slice",
+            // Heapq
+            "heapq_heapify", "heapq_heappush", "heapq_heappop",
+            "heapq_heapreplace", "heapq_heappushpop",
+            // Enumerate
+            "enumerate",
+            // Async iterators (core)
+            "aiter", "anext",
+            // Math
+            "math_log", "math_log2", "math_exp", "math_sin", "math_cos", "math_acos", "math_lgamma",
+            // Compile builtin
+            "compile_builtin",
+            // Json / msgpack / cbor
+            "json_parse_scalar", "json_parse_scalar_obj",
+            "msgpack_parse_scalar", "msgpack_parse_scalar_obj",
+            "cbor_parse_scalar", "cbor_parse_scalar_obj",
+            // Vec operations
+            "vec_sum_int", "vec_sum_int_trusted",
+            "vec_sum_int_range_iter", "vec_sum_int_range_iter_trusted",
+            "vec_sum_int_range", "vec_sum_int_range_trusted",
+            "vec_sum_float", "vec_sum_float_trusted",
+            "vec_sum_float_range_iter", "vec_sum_float_range_iter_trusted",
+            "vec_sum_float_range", "vec_sum_float_range_trusted",
+            "vec_prod_int", "vec_prod_int_trusted",
+            "vec_prod_int_range", "vec_prod_int_range_trusted",
+            "vec_min_int", "vec_min_int_trusted",
+            "vec_min_int_range", "vec_min_int_range_trusted",
+            "vec_max_int", "vec_max_int_trusted",
+            "vec_max_int_range", "vec_max_int_range_trusted",
+            // Sleep / async runtime
+            "sleep_register", "block_on",
+        ] {
+            required.insert(name.to_string());
+        }
+
+        // Scan IR ops for additional import references beyond the core set.
+        for func_ir in &ir.functions {
+            for op in &func_ir.ops {
+                match op.kind.as_str() {
+                    "builtin_func" => {
+                        if let Some(name) = op.s_value.as_ref() {
+                            let import_name = name.strip_prefix("molt_").unwrap_or(name.as_str());
+                            required.insert(import_name.to_string());
+                        }
+                    }
+                    "async_sleep" => { required.insert("async_sleep".into()); }
+                    "yield_await" | "yield_send" => { required.insert("future_poll".into()); }
+                    "asyncgen_new" | "async_generator_yield" => {
+                        for n in ["asyncgen_new", "asyncgen_shutdown", "asyncgen_hooks_get",
+                                  "asyncgen_hooks_set", "asyncgen_locals", "asyncgen_locals_register"] {
+                            required.insert(n.into());
+                        }
+                    }
+                    "gen_locals_register" => {
+                        required.insert("gen_locals".into());
+                        required.insert("gen_locals_register".into());
+                    }
+                    "promise_new" | "promise_set_result" | "promise_set_exception"
+                    | "anext_default_poll" | "asyncgen_poll" | "promise_poll"
+                    | "future_poll" | "future_cancel" | "future_cancel_msg" | "future_cancel_clear"
+                    | "spawn" | "open_builtin" => {
+                        required.insert(op.kind.clone());
+                    }
+                    "io_wait" | "io_wait_new" => {
+                        required.insert("io_wait".into());
+                        required.insert("io_wait_new".into());
+                    }
+                    k if k.starts_with("ws_") => {
+                        for n in ["ws_wait", "ws_wait_new", "ws_connect", "ws_pair", "ws_send",
+                                  "ws_connect_obj", "ws_pair_obj", "ws_send_obj",
+                                  "ws_recv", "ws_close", "ws_drop"] {
+                            required.insert(n.into());
+                        }
+                    }
+                    "thread_submit" | "thread_spawn" => {
+                        required.insert(op.kind.clone());
+                        required.insert("thread_poll".into());
+                    }
+                    k if k.starts_with("thread_") => { required.insert(k.into()); }
+                    "process_spawn" => {
+                        required.insert("process_spawn".into());
+                        required.insert("process_poll".into());
+                    }
+                    k if k.starts_with("process_") => { required.insert(k.into()); }
+                    k if k.starts_with("socket_") || k == "socketpair" => { required.insert(k.into()); }
+                    k if k.starts_with("file_") => { required.insert(k.into()); }
+                    k if k.starts_with("stream_") => { required.insert(k.into()); }
+                    k if k.starts_with("lock_") || k.starts_with("rlock_") => { required.insert(k.into()); }
+                    "chan_new" | "chan_send" | "chan_send_blocking" | "chan_try_send"
+                    | "chan_recv" | "chan_recv_blocking" | "chan_try_recv" | "chan_drop" => {
+                        required.insert(op.kind.clone());
+                    }
+                    k if k.starts_with("cancel_token_") || k == "cancelled" || k == "cancel_current" => {
+                        required.insert(k.into());
+                    }
+                    k if k.starts_with("db_") => { required.insert(k.into()); }
+                    k if k.starts_with("os_") => { required.insert(k.into()); }
+                    k if k.starts_with("path_") => { required.insert(k.into()); }
+                    k if k.starts_with("time_") => { required.insert(k.into()); }
+                    k if k.starts_with("struct_") => { required.insert(k.into()); }
+                    k if k.starts_with("importlib_") => { required.insert(k.into()); }
+                    k if k.starts_with("asyncio_") => { required.insert(k.into()); }
+                    k if k.starts_with("contextlib_async") => { required.insert(k.into()); }
+                    _ => {}
+                }
+            }
+            // Scan poll functions for poll import references
+            if func_ir.name.ends_with("_poll") {
+                for op in &func_ir.ops {
+                    if (op.kind == "call_func" || op.kind == "invoke_ffi")
+                        && let Some(s) = op.s_value.as_ref()
+                        && s.ends_with("_poll")
+                    {
+                        let import_name = s.strip_prefix("molt_").unwrap_or(s.as_str());
+                        required.insert(import_name.to_string());
+                    }
+                }
+            }
+        }
+
+        required
     }
 
     pub fn compile(mut self, ir: SimpleIR) -> Vec<u8> {
@@ -1657,6 +1927,14 @@ impl WasmBackend {
         // In pure mode, IO/ASYNC/TIME imports are omitted entirely. Any code path
         // that references a skipped import will trigger a clear compile-time panic.
         let is_pure = self.options.wasm_profile == WasmProfile::Pure;
+        let is_auto = self.options.wasm_profile == WasmProfile::Auto;
+
+        // In Auto mode, scan the IR to determine which imports are actually used.
+        let auto_required: Option<BTreeSet<String>> = if is_auto {
+            Some(Self::collect_required_imports(&ir))
+        } else {
+            None
+        };
         let skipped_import_prefixes: &[&str] = if is_pure {
             &[
                 // IO
@@ -1751,6 +2029,13 @@ impl WasmBackend {
                 // succeed (no panic), and `emit_call` emits `unreachable`.
                 ids.insert(name.to_string(), u32::MAX);
                 return;
+            }
+            // In auto mode, skip imports not in the required set.
+            if let Some(ref required) = auto_required {
+                if !required.contains(name) {
+                    ids.insert(name.to_string(), u32::MAX);
+                    return;
+                }
             }
             self.imports
                 .import("molt_runtime", name, EntityType::Function(ty));
@@ -2029,6 +2314,7 @@ impl WasmBackend {
         add_import("module_cache_get", 2, &mut self.import_ids);
         add_import("module_import", 2, &mut self.import_ids);
         add_import("module_cache_set", 3, &mut self.import_ids);
+        add_import("set_intrinsic_manifest", 3, &mut self.import_ids);
         add_import("module_get_attr", 3, &mut self.import_ids);
         add_import("module_get_global", 3, &mut self.import_ids);
         add_import("module_del_global", 3, &mut self.import_ids);
@@ -2639,6 +2925,22 @@ impl WasmBackend {
             );
         }
         self.func_count = import_idx;
+
+        // Per-app intrinsic manifest: serialize used intrinsic names as a
+        // NUL-separated data segment so the runtime only registers these.
+        let manifest_bytes: Vec<u8> = {
+            let mut buf = Vec::new();
+            for (i, name) in builtin_trampoline_specs.keys().enumerate() {
+                if i > 0 {
+                    buf.push(0);
+                }
+                buf.extend_from_slice(name.as_bytes());
+            }
+            buf
+        };
+        let manifest_segment = self.add_data_segment(reloc_enabled, &manifest_bytes);
+        let manifest_offset = manifest_segment.offset;
+        let manifest_len = manifest_bytes.len();
 
         // Allocate a scratch buffer in linear memory for spilling call_func args.
         // Size: max(max_call_arity, 1) * 8 bytes (one i64 per arg).
@@ -3551,7 +3853,6 @@ impl WasmBackend {
         .into_iter()
         .collect();
         let mut builtin_wrapper_funcs: Vec<(String, String, usize)> = Vec::new();
-        let wrap_all_builtins = reloc_enabled;
         for (runtime_name, import_name, arity) in builtin_table_funcs
             .iter()
             .map(|(runtime_name, import_name, arity)| {
@@ -3563,12 +3864,11 @@ impl WasmBackend {
             })
             .chain(auto_builtin_table_funcs.iter().cloned())
         {
-            if wrap_all_builtins
-                || builtin_trampoline_specs.contains_key(runtime_name.as_str())
-                || void_builtin_imports.contains(import_name.as_str())
-                || builtin_i32_arg0_imports.contains(import_name.as_str())
-                || builtin_i32_return_imports.contains(import_name.as_str())
-            {
+            // Only generate wrappers for builtins that are actually referenced
+            // by user code (present in builtin_trampoline_specs). With table
+            // compaction, unreferenced builtins are omitted entirely — their
+            // wrappers would be dead code wasting space in the code section.
+            if builtin_trampoline_specs.contains_key(runtime_name.as_str()) {
                 builtin_wrapper_funcs.push((runtime_name, import_name, arity));
             }
         }
@@ -3793,40 +4093,45 @@ impl WasmBackend {
         let contextlib_async_exitstack_enter_context_poll_idx = *table_import_wrappers
             .get("contextlib_async_exitstack_enter_context_poll")
             .unwrap_or(&self.import_ids["contextlib_async_exitstack_enter_context_poll"]);
+        // Replace sentinel u32::MAX indices with sentinel_func_idx so the
+        // element section only contains valid function indices.
+        let safe_idx = |idx: u32| -> u32 {
+            if idx == u32::MAX { sentinel_func_idx } else { idx }
+        };
         let mut table_indices = vec![
             sentinel_func_idx,
-            async_sleep_idx,
-            anext_default_poll_idx,
-            asyncgen_poll_idx,
-            promise_poll_idx,
-            io_wait_idx,
-            thread_poll_idx,
-            process_poll_idx,
-            ws_wait_idx,
-            asyncio_wait_for_poll_idx,
-            asyncio_wait_poll_idx,
-            asyncio_gather_poll_idx,
-            asyncio_socket_reader_read_poll_idx,
-            asyncio_socket_reader_readline_poll_idx,
-            asyncio_stream_reader_read_poll_idx,
-            asyncio_stream_reader_readline_poll_idx,
-            asyncio_stream_send_all_poll_idx,
-            asyncio_sock_recv_poll_idx,
-            asyncio_sock_connect_poll_idx,
-            asyncio_sock_accept_poll_idx,
-            asyncio_sock_recv_into_poll_idx,
-            asyncio_sock_sendall_poll_idx,
-            asyncio_sock_recvfrom_poll_idx,
-            asyncio_sock_recvfrom_into_poll_idx,
-            asyncio_sock_sendto_poll_idx,
-            asyncio_timer_handle_poll_idx,
-            asyncio_fd_watcher_poll_idx,
-            asyncio_server_accept_loop_poll_idx,
-            asyncio_ready_runner_poll_idx,
-            contextlib_asyncgen_enter_poll_idx,
-            contextlib_asyncgen_exit_poll_idx,
-            contextlib_async_exitstack_exit_poll_idx,
-            contextlib_async_exitstack_enter_context_poll_idx,
+            safe_idx(async_sleep_idx),
+            safe_idx(anext_default_poll_idx),
+            safe_idx(asyncgen_poll_idx),
+            safe_idx(promise_poll_idx),
+            safe_idx(io_wait_idx),
+            safe_idx(thread_poll_idx),
+            safe_idx(process_poll_idx),
+            safe_idx(ws_wait_idx),
+            safe_idx(asyncio_wait_for_poll_idx),
+            safe_idx(asyncio_wait_poll_idx),
+            safe_idx(asyncio_gather_poll_idx),
+            safe_idx(asyncio_socket_reader_read_poll_idx),
+            safe_idx(asyncio_socket_reader_readline_poll_idx),
+            safe_idx(asyncio_stream_reader_read_poll_idx),
+            safe_idx(asyncio_stream_reader_readline_poll_idx),
+            safe_idx(asyncio_stream_send_all_poll_idx),
+            safe_idx(asyncio_sock_recv_poll_idx),
+            safe_idx(asyncio_sock_connect_poll_idx),
+            safe_idx(asyncio_sock_accept_poll_idx),
+            safe_idx(asyncio_sock_recv_into_poll_idx),
+            safe_idx(asyncio_sock_sendall_poll_idx),
+            safe_idx(asyncio_sock_recvfrom_poll_idx),
+            safe_idx(asyncio_sock_recvfrom_into_poll_idx),
+            safe_idx(asyncio_sock_sendto_poll_idx),
+            safe_idx(asyncio_timer_handle_poll_idx),
+            safe_idx(asyncio_fd_watcher_poll_idx),
+            safe_idx(asyncio_server_accept_loop_poll_idx),
+            safe_idx(asyncio_ready_runner_poll_idx),
+            safe_idx(contextlib_asyncgen_enter_poll_idx),
+            safe_idx(contextlib_asyncgen_exit_poll_idx),
+            safe_idx(contextlib_async_exitstack_exit_poll_idx),
+            safe_idx(contextlib_async_exitstack_enter_context_poll_idx),
         ];
         let mut func_to_table_idx = BTreeMap::new();
         let mut func_to_index = BTreeMap::new();
@@ -3908,8 +4213,10 @@ impl WasmBackend {
                     .get(&import_name)
                     .copied()
                     .unwrap_or(sentinel_func_idx);
-                func_to_index.insert(runtime_key, import_idx);
-                table_indices.push(import_idx);
+                // Replace sentinel u32::MAX with sentinel_func_idx for element section validity.
+                let safe = if import_idx == u32::MAX { sentinel_func_idx } else { import_idx };
+                func_to_index.insert(runtime_key, safe);
+                table_indices.push(safe);
             }
             compact_slot += 1;
         }
@@ -4071,8 +4378,13 @@ impl WasmBackend {
             let main_index = self
                 .molt_main_index
                 .unwrap_or_else(|| panic!("molt_main missing for table init wrapper"));
-            let wrapper_index =
-                self.compile_molt_main_wrapper(reloc_enabled, main_index, table_init_index);
+            let wrapper_index = self.compile_molt_main_wrapper(
+                reloc_enabled,
+                main_index,
+                table_init_index,
+                manifest_offset as u32,
+                manifest_len as u32,
+            );
             self.exports
                 .export("molt_main", ExportKind::Func, wrapper_index);
 
@@ -4593,11 +4905,21 @@ impl WasmBackend {
         reloc_enabled: bool,
         main_index: u32,
         table_init_index: u32,
+        manifest_offset: u32,
+        manifest_len: u32,
     ) -> u32 {
         let func_index = self.func_count;
         self.funcs.function(0);
         self.func_count += 1;
         let mut func = Function::new_with_locals_types(Vec::new());
+        // Set the intrinsic manifest BEFORE table init and module init.
+        // This tells the runtime which intrinsics this app actually uses.
+        if manifest_len > 0 {
+            func.instruction(&Instruction::I64Const(i64::from(manifest_offset)));
+            func.instruction(&Instruction::I64Const(i64::from(manifest_len)));
+            emit_call(&mut func, reloc_enabled, self.import_ids["set_intrinsic_manifest"]);
+            func.instruction(&Instruction::Drop);
+        }
         emit_call(&mut func, reloc_enabled, table_init_index);
         emit_call(&mut func, reloc_enabled, main_index);
         func.instruction(&Instruction::End);
