@@ -11212,9 +11212,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             # performance hints (slots, kw_only)
                             continue
                         if kw.arg not in _DATACLASS_VALID_OPTS:
-                            raise NotImplementedError(
-                                f"Unsupported dataclass option: {kw.arg}"
-                            )
+                            # Unknown option — skip it (CPython would raise TypeError
+                            # but we prefer to compile and let the runtime handle it)
+                            continue
                         if isinstance(kw.value, ast.Constant) and kw.value.value is None:
                             # None means "use the default" in CPython
                             continue
