@@ -117,20 +117,19 @@ impl InlineCacheTable {
     /// Return a reference to the IC entry at `index`.
     ///
     /// # Panics (debug) / UB (release)
-    /// The index is expected to be a compile-time constant in `0..IC_TABLE_CAPACITY`.
-    /// In release builds this is an unchecked access; callers must ensure `index`
-    /// is in range.
+    /// Get the inline cache entry at `index`.
+    /// Bounds-checked in all builds — the cost is one comparison per attribute
+    /// access site, which the branch predictor eliminates (always-taken).
+    /// Returns a no-op empty cache for out-of-bounds indices rather than panicking,
+    /// so a corrupt IC index degrades to a cache miss, not a crash.
     #[inline(always)]
     pub fn get(&self, index: usize) -> &InlineCache {
-        // Safety: callers guarantee index < IC_TABLE_CAPACITY (validated at
-        // compile time by the code generator).
-        #[cfg(debug_assertions)]
-        return &self.entries[index];
-
-        #[cfg(not(debug_assertions))]
-        // SAFETY: index validated at compile time by the emitter.
-        unsafe {
-            self.entries.get_unchecked(index)
+        static EMPTY: InlineCache = InlineCache::new();
+        if index < self.entries.len() {
+            &self.entries[index]
+        } else {
+            // Out of bounds: return empty cache (always misses, never UB)
+            &EMPTY
         }
     }
 }

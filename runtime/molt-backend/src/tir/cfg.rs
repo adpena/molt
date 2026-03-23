@@ -54,7 +54,7 @@ pub struct CFG {
 fn is_terminator(kind: &str) -> bool {
     matches!(
         kind,
-        "jump" | "goto" | "ret" | "ret_void" | "return" | "loop_break"
+        "jump" | "goto" | "ret" | "ret_void" | "return" | "loop_break" | "loop_continue"
     )
 }
 
@@ -269,6 +269,13 @@ fn build_edges(
 
             // Loop break — terminates block, no fall-through.
             "loop_break" => {}
+
+            // Loop continue — jump back to current loop header, no fall-through.
+            "loop_continue" => {
+                if let Some(&header_bid) = loop_header_stack.last() {
+                    add_edge(&mut successors, &mut predecessors, bid, header_bid);
+                }
+            }
 
             // Structured `if`: two successors — then-block (fall-through) and
             // else-block or end_if-block.
