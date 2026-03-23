@@ -784,6 +784,7 @@ class _BuildOutputLayout:
     is_wasm: bool
     is_wasm_freestanding: bool
     is_rust_transpile: bool
+    is_luau_transpile: bool
     linked: bool
     target_triple: str | None
     emit_mode: str
@@ -12364,6 +12365,7 @@ def _resolve_build_output_layout(
     is_wasm = target in {"wasm", "wasm-freestanding"}
     is_wasm_freestanding = target == "wasm-freestanding"
     is_rust_transpile = target == "rust"
+    is_luau_transpile = target == "luau"
     if trusted and is_wasm:
         raise ValueError("Trusted mode is not supported for wasm targets")
     if require_linked and not is_wasm:
@@ -12380,18 +12382,26 @@ def _resolve_build_output_layout(
         wasm_linked_env = os.environ.get("MOLT_WASM_LINKED", "1").strip().lower()
         if wasm_linked_env not in {"0", "false", "no", "off"}:
             linked = True
-    target_triple = None if target in {"native", "wasm", "wasm-freestanding", "rust"} else target
-    emit_mode = "bin" if is_rust_transpile else (emit or ("wasm" if is_wasm else "bin"))
-    if not is_rust_transpile and emit_mode not in {"bin", "obj", "wasm"}:
+    target_triple = None if target in {"native", "wasm", "wasm-freestanding", "rust", "luau"} else target
+    is_transpile = is_rust_transpile or is_luau_transpile
+    emit_mode = "bin" if is_transpile else (emit or ("wasm" if is_wasm else "bin"))
+    if not is_transpile and emit_mode not in {"bin", "obj", "wasm"}:
         raise ValueError(f"Invalid emit mode: {emit_mode}")
     if is_wasm and emit_mode != "wasm":
         raise ValueError(f"Invalid emit mode for wasm target: {emit_mode}")
-    if not is_wasm and not is_rust_transpile and emit_mode == "wasm":
+    if not is_wasm and not is_transpile and emit_mode == "wasm":
         raise ValueError("emit=wasm requires --target wasm")
 
     output_binary: Path | None = None
     linked_output_path: Path | None = None
-    if is_rust_transpile:
+    if is_luau_transpile:
+        output_artifact = _resolve_output_path(
+            output,
+            output_root / f"{output_base}.luau",
+            out_dir=out_dir_path,
+            project_root=project_root,
+        )
+    elif is_rust_transpile:
         output_artifact = _resolve_output_path(
             output,
             output_root / f"{output_base}.rs",
@@ -12449,6 +12459,7 @@ def _resolve_build_output_layout(
         is_wasm=is_wasm,
         is_wasm_freestanding=is_wasm_freestanding,
         is_rust_transpile=is_rust_transpile,
+        is_luau_transpile=is_luau_transpile,
         linked=linked,
         target_triple=target_triple,
         emit_mode=emit_mode,
@@ -13240,6 +13251,7 @@ def _prepare_frontend_execution(
 def _prepare_backend_setup(
     *,
     is_rust_transpile: bool,
+    is_luau_transpile: bool = False,
     is_wasm: bool,
     emit_mode: str,
     molt_root: Path,
@@ -13260,7 +13272,7 @@ def _prepare_backend_setup(
     stdlib_profile: str | None = None,
 ) -> tuple[_PreparedBackendSetup | None, dict[str, Any] | None]:
     runtime_state = _initialize_runtime_artifact_state(
-        is_rust_transpile=is_rust_transpile,
+        is_rust_transpile=is_rust_transpile or is_luau_transpile,
         is_wasm=is_wasm,
         emit_mode=emit_mode,
         molt_root=molt_root,
@@ -13365,6 +13377,7 @@ def _prepare_backend_runtime_context(
 def _prepare_backend_dispatch(
     *,
     is_rust_transpile: bool,
+    is_luau_transpile: bool = False,
     is_wasm: bool,
     linked: bool,
     deterministic: bool,
@@ -13384,8 +13397,10 @@ def _prepare_backend_dispatch(
     warnings: list[str],
 ) -> tuple[_PreparedBackendDispatch | None, dict[str, Any] | None]:
     backend_env = os.environ.copy() if is_wasm else None
-    if is_rust_transpile:
-        backend_features: tuple[str, ...] = ("rust-backend",)
+    if is_luau_transpile:
+        backend_features: tuple[str, ...] = ("luau-backend",)
+    elif is_rust_transpile:
+        backend_features = ("rust-backend",)
     elif is_wasm:
         backend_features = ("wasm-backend",)
     else:
@@ -13475,7 +13490,7 @@ def _prepare_backend_dispatch(
     daemon_socket: Path | None = None
     daemon_ready = False
     daemon_config_digest = backend_daemon_config_digest
-    if not is_rust_transpile and _backend_daemon_enabled():
+    if not is_rust_transpile and not is_luau_transpile and _backend_daemon_enabled():
         daemon_config_digest = _backend_daemon_config_digest(
             molt_root, backend_cargo_profile
         )
@@ -13529,6 +13544,7 @@ def _execute_backend_compile(
     function_cache_path: Path | None,
     artifacts_root: Path,
     is_rust_transpile: bool,
+    is_luau_transpile: bool = False,
     is_wasm: bool,
     diagnostics_enabled: bool,
     phase_starts: dict[str, float],
@@ -13726,7 +13742,9 @@ def _execute_backend_compile(
             if diagnostics_enabled and "backend_subprocess_compile" not in phase_starts:
                 phase_starts["backend_subprocess_compile"] = time.perf_counter()
             cmd = [str(backend_bin)]
-            if is_rust_transpile:
+            if is_luau_transpile:
+                cmd.extend(["--target", "luau"])
+            elif is_rust_transpile:
                 cmd.extend(["--target", "rust"])
             elif is_wasm:
                 cmd.extend(["--target", "wasm"])
@@ -13825,6 +13843,7 @@ def _prepare_backend_compile(
     project_root: Path,
     warnings: list[str],
     is_rust_transpile: bool,
+    is_luau_transpile: bool = False,
     is_wasm: bool,
     output_artifact: Path,
     linked: bool,
@@ -13889,6 +13908,7 @@ def _prepare_backend_compile(
             prepared_backend_dispatch, prepared_backend_dispatch_error = (
                 _prepare_backend_dispatch(
                     is_rust_transpile=is_rust_transpile,
+                    is_luau_transpile=is_luau_transpile,
                     is_wasm=is_wasm,
                     linked=linked,
                     deterministic=deterministic,
@@ -13919,6 +13939,7 @@ def _prepare_backend_compile(
                 function_cache_path=function_cache_path,
                 artifacts_root=artifacts_root,
                 is_rust_transpile=is_rust_transpile,
+                is_luau_transpile=is_luau_transpile,
                 is_wasm=is_wasm,
                 diagnostics_enabled=diagnostics_enabled,
                 phase_starts=phase_starts,
@@ -14144,6 +14165,7 @@ def _run_backend_pipeline(
 
     prepared_backend_setup, prepared_backend_setup_error = _prepare_backend_setup(
         is_rust_transpile=output_layout.is_rust_transpile,
+        is_luau_transpile=output_layout.is_luau_transpile,
         is_wasm=output_layout.is_wasm,
         emit_mode=output_layout.emit_mode,
         molt_root=prepared_build_roots.molt_root,
@@ -14191,6 +14213,7 @@ def _run_backend_pipeline(
         project_root=prepared_build_roots.project_root,
         warnings=prepared_build_preamble.warnings,
         is_rust_transpile=output_layout.is_rust_transpile,
+        is_luau_transpile=output_layout.is_luau_transpile,
         is_wasm=output_layout.is_wasm,
         output_artifact=output_layout.output_artifact,
         linked=output_layout.linked,
@@ -14237,12 +14260,13 @@ def _run_backend_pipeline(
 
     if (
         output_layout.is_rust_transpile
+        or output_layout.is_luau_transpile
         or output_layout.is_wasm
         or output_layout.emit_mode == "obj"
     ):
         prepared_non_native_result, prepared_non_native_result_error = (
             _prepare_non_native_build_result(
-                is_rust_transpile=output_layout.is_rust_transpile,
+                is_rust_transpile=output_layout.is_rust_transpile or output_layout.is_luau_transpile,
                 is_wasm=output_layout.is_wasm,
                 is_wasm_freestanding=output_layout.is_wasm_freestanding,
                 wasm_opt_level=wasm_opt_level,

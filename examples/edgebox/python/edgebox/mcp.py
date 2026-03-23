@@ -75,20 +75,21 @@ def _handle_initialize(request_id, params):
 # ---------------------------------------------------------------------------
 
 def _handle_tools_list(request_id, box):
-    """Return the list of tools registered on the box."""
+    """Return the list of tools registered on the box.
+
+    Merges Box-level tools and plugin tools into a single MCP list.
+    """
     raw_tools = box.list_tools()
     mcp_tools = []
     idx = 0
     while idx < len(raw_tools):
         t = raw_tools[idx]
         idx = idx + 1
+        schema = t.get("inputSchema", {"type": "object", "properties": {}})
         mcp_tools.append({
             "name": t["name"],
             "description": t.get("description", ""),
-            "inputSchema": {
-                "type": "object",
-                "properties": {},
-            },
+            "inputSchema": schema,
         })
 
     result = {"tools": mcp_tools}
@@ -100,16 +101,29 @@ def _handle_tools_list(request_id, box):
 # ---------------------------------------------------------------------------
 
 def _handle_tools_call(request_id, params, box):
-    """Invoke a named tool and return its result."""
+    """Invoke a named tool and return its result.
+
+    Checks both Box-level tools (@tool decorator on methods) and
+    plugin tools (registered via EdgeboxPlugin.tool decorator).
+    """
     tool_name = params.get("name", "")
     arguments = params.get("arguments", {})
 
+    # Check Box-level tools first
     handler = box._tools.get(tool_name)
+    plugin_tool = None
     if handler is None:
-        return _error_response(request_id, -32602, "Unknown tool: " + tool_name)
+        # Check plugin tools
+        plugin_tool = box._registry.get_tool(tool_name)
+        if plugin_tool is None:
+            return _error_response(request_id, -32602,
+                                   "Unknown tool: " + tool_name)
 
     try:
-        output = handler(**arguments)
+        if plugin_tool is not None:
+            output = plugin_tool.handler(box, **arguments)
+        else:
+            output = handler(**arguments)
     except Exception as exc:
         return _error_response(request_id, -32000, "Tool error: " + str(exc))
 
