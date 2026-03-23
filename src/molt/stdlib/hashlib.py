@@ -145,8 +145,10 @@ class _Hash:
         if options and "digest_size" in options:
             try:
                 digest_size = int(options["digest_size"])
-            except Exception:
-                pass
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"digest_size must be an integer, got {type(options['digest_size']).__name__}"
+                ) from exc
         self.digest_size = digest_size
         self.block_size = block_size
         self._is_xof = is_xof

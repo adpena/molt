@@ -74,8 +74,10 @@ def _parse_values(raw: Any) -> list[float]:
         return []
     try:
         return [float(value) for value in parts]
-    except Exception:
-        return []
+    except (TypeError, ValueError) as exc:
+        raise MoltInvalidInput(
+            f"Cannot parse values as floats: {exc}"
+        ) from exc
 
 
 def build_list_items_payload(request: Any) -> dict[str, Any]:

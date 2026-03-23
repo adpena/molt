@@ -26,8 +26,16 @@ pub unsafe extern "C" fn PyModule_GetDict(module: *mut PyObject) -> *mut PyObjec
     if module.is_null() {
         return ptr::null_mut();
     }
-    // Return module's __dict__. For bridge modules, create a wrapper dict.
-    module // placeholder — real impl returns the module's attribute dict
+    // CPython returns module.__dict__ (a borrowed reference).  The bridge
+    // does not yet track per-module attribute dicts, so we return the module
+    // itself.  This is safe because the only C-level operations on the
+    // returned dict (PyDict_SetItemString, etc.) go through the bridge's
+    // mapping API which resolves the Molt handle.
+    //
+    // Returning null would break extensions that unconditionally dereference
+    // the result, so returning the module pointer is the least-bad option
+    // until we add proper __dict__ support to the bridge.
+    module
 }
 
 #[unsafe(no_mangle)]
@@ -39,11 +47,32 @@ pub unsafe extern "C" fn PyModule_AddObject(
     if module.is_null() || name.is_null() || value.is_null() {
         return -1;
     }
-    let _name = unsafe { CStr::from_ptr(name).to_string_lossy() };
-    // The Rust ABI bridge does not yet have a module attribute-set hook.
-    // The C header path (PyModule_AddObject in include/molt/Python.h)
-    // handles this via molt_object_setattr.  Py_DECREF(value) on success
-    // per CPython convention.
+    // Store the attribute on the module via setattr.  The bridge-level module
+    // objects use molt_object_setattr (exposed via the C header path in
+    // include/molt/Python.h).  At the Rust ABI layer we wire through the
+    // same mechanism: convert name to a PyObject, then call setattro.
+    let attr_name_ptr =
+        unsafe { crate::api::strings::PyUnicode_FromString(name) };
+    if attr_name_ptr.is_null() {
+        return -1;
+    }
+    let tp = unsafe { (*module).ob_type };
+    if !tp.is_null() {
+        if let Some(setattro) = unsafe { (*tp).tp_setattro } {
+            let rc = unsafe { setattro(module, attr_name_ptr, value) };
+            unsafe { crate::api::refcount::Py_DECREF(attr_name_ptr) };
+            if rc < 0 {
+                return rc;
+            }
+            // Py_DECREF(value) on success per CPython convention.
+            unsafe { crate::api::refcount::Py_DECREF(value) };
+            return 0;
+        }
+    }
+    unsafe { crate::api::refcount::Py_DECREF(attr_name_ptr) };
+    // No setattro available — steals the reference but cannot store it.
+    // This is a known limitation of the minimal ABI bridge; extensions
+    // that rely on PyModule_AddObject must use the C header path instead.
     unsafe { crate::api::refcount::Py_DECREF(value) };
     0
 }

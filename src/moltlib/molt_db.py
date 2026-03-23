@@ -115,6 +115,7 @@ async def _collect_response(handle: Any) -> DbResponse:
         try:
             drop(handle)
         except Exception:
+            # Finalizer: handle cleanup must not raise (best-effort).
             pass
 
 

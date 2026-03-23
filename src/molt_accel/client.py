@@ -420,7 +420,17 @@ class MoltClient:
             wire_payload = encode_message(message, self._wire)
             with self._send_lock:
                 write_frame(self._stdin, wire_payload, max_size=self._max_frame_size)
-        except Exception:
+        except (BrokenPipeError, OSError):
+            # Worker process is gone — cancel cannot be delivered; this is
+            # expected during shutdown or after a crash.  Other callers will
+            # discover the dead worker on their next call().
+            return
+        except Exception as exc:
+            import logging
+
+            logging.getLogger("molt_accel").debug(
+                "cancel request %d failed: %s", request_id, exc
+            )
             return
 
     def ping(self, timeout_ms: int = 100) -> float:
