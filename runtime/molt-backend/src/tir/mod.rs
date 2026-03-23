@@ -6,6 +6,10 @@ pub mod cfg;
 pub mod function;
 pub mod ssa;
 pub mod lower_from_simple;
+pub mod printer;
+pub mod verify;
+pub mod lower_to_simple;
+pub mod type_refine;
 
 // Re-export primary types for convenience.
 pub use self::blocks::{BlockId, TirBlock, Terminator};
