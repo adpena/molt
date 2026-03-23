@@ -7130,6 +7130,7 @@ def _build_lock(project_root: Path, name: str):
         lock_timeout = parsed if parsed > 0 else None
     try:
         deadline = time.monotonic() + lock_timeout if lock_timeout is not None else None
+        stale_checked = False
         while True:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -7137,13 +7138,50 @@ def _build_lock(project_root: Path, name: str):
             except OSError as exc:
                 if exc.errno not in (errno.EACCES, errno.EAGAIN):
                     raise
+                # After 5s of waiting, check if the holding process is still alive.
+                # If no process holds the lock (stale), force-acquire it.
+                if not stale_checked and time.monotonic() - (deadline - lock_timeout if deadline else 0) > 5.0:
+                    stale_checked = True
+                    try:
+                        # Read PID from lock file (if written by holder)
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        pid_bytes = os.read(fd, 32)
+                        if pid_bytes:
+                            holder_pid = int(pid_bytes.strip())
+                            try:
+                                os.kill(holder_pid, 0)  # check if alive
+                            except ProcessLookupError:
+                                # Holder is dead — force unlock and reacquire
+                                fcntl.flock(fd, fcntl.LOCK_UN)
+                                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                                break
+                            except (PermissionError, OSError):
+                                pass  # process exists or can't check
+                    except (ValueError, OSError):
+                        pass  # no PID or read error — continue waiting
                 if deadline is not None and time.monotonic() >= deadline:
+                    # Last resort: force-remove the lock file and retry once
+                    try:
+                        os.unlink(lock_path)
+                        os.close(fd)
+                        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except OSError:
+                        pass
                     raise RuntimeError(
                         "Timed out waiting for build lock "
                         f"{lock_path} after {lock_timeout:.1f}s. "
                         "Check for stale molt build/backend helper processes."
                     ) from exc
                 time.sleep(0.05)
+        # Write our PID so stale-lock detection works for future waiters
+        try:
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, str(os.getpid()).encode())
+        except OSError:
+            pass
         yield
     finally:
         try:
