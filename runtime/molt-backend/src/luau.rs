@@ -1626,7 +1626,7 @@ impl LuauBackend {
                                     if args.len() > 1 {
                                         let idx = sanitize_ident(&args[1]);
                                         self.emit_line(&format!(
-                                            "local {out} = table.remove({obj}, {idx} + 1)"
+                                            "local {out} = table.remove({obj}, if {idx} >= 0 then {idx} + 1 else #{obj} + {idx} + 1)"
                                         ));
                                     } else {
                                         self.emit_line(&format!(
@@ -1636,7 +1636,7 @@ impl LuauBackend {
                                 } else if args.len() > 1 {
                                     let idx = sanitize_ident(&args[1]);
                                     self.emit_line(&format!(
-                                        "table.remove({obj}, {idx} + 1)"
+                                        "table.remove({obj}, if {idx} >= 0 then {idx} + 1 else #{obj} + {idx} + 1)"
                                     ));
                                 } else {
                                     self.emit_line(&format!("table.remove({obj})"));
@@ -1647,7 +1647,7 @@ impl LuauBackend {
                                     let idx = sanitize_ident(&args[1]);
                                     let val = sanitize_ident(&args[2]);
                                     self.emit_line(&format!(
-                                        "table.insert({obj}, {idx} + 1, {val})"
+                                        "table.insert({obj}, if {idx} >= 0 then {idx} + 1 else #{obj} + {idx} + 1, {val})"
                                     ));
                                 }
                             }
@@ -1875,13 +1875,17 @@ impl LuauBackend {
                 if let Some(list) = args.first() {
                     let list = sanitize_ident(list);
                     if args.len() >= 2 {
-                        // list.pop(index) — remove at index with +1 offset.
+                        // list.pop(index) — handle negative indexing.
                         let idx = sanitize_ident(&args[1]);
                         if let Some(ref out_name) = op.out {
                             let out = sanitize_ident(out_name);
-                            self.emit_line(&format!("local {out} = table.remove({list}, {idx} + 1)"));
+                            self.emit_line(&format!(
+                                "local {out} = table.remove({list}, if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1)"
+                            ));
                         } else {
-                            self.emit_line(&format!("table.remove({list}, {idx} + 1)"));
+                            self.emit_line(&format!(
+                                "table.remove({list}, if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1)"
+                            ));
                         }
                     } else {
                         // list.pop() — remove last element.
@@ -1910,7 +1914,9 @@ impl LuauBackend {
                     let list = sanitize_ident(&args[0]);
                     let idx = sanitize_ident(&args[1]);
                     let val = sanitize_ident(&args[2]);
-                    self.emit_line(&format!("table.insert({list}, {idx} + 1, {val})"));
+                    self.emit_line(&format!(
+                        "table.insert({list}, if {idx} >= 0 then {idx} + 1 else #{list} + {idx} + 1, {val})"
+                    ));
                 }
             }
             "list_remove" => {
