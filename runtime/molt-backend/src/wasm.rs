@@ -90,7 +90,7 @@ const TAG_EXCEPTION_INDEX: u32 = 0;
 // ---------------------------------------------------------------------------
 
 /// First dynamic type index; must equal the count of all statically-defined types.
-const STATIC_TYPE_COUNT: u32 = 35;
+const STATIC_TYPE_COUNT: u32 = 39;
 
 #[derive(Clone, Copy)]
 struct DataSegmentInfo {
@@ -1604,6 +1604,27 @@ impl WasmBackend {
             std::iter::repeat_n(ValType::I64, 2),
         );
 
+        // Type 35: (i64 * 9) -> i64 (high-arity builtins)
+        self.types.function(
+            std::iter::repeat_n(ValType::I64, 9),
+            std::iter::once(ValType::I64),
+        );
+        // Type 36: (i64 * 10) -> i64 (json_dumps_ex)
+        self.types.function(
+            std::iter::repeat_n(ValType::I64, 10),
+            std::iter::once(ValType::I64),
+        );
+        // Type 37: (i64 * 11) -> i64 (reserved high-arity)
+        self.types.function(
+            std::iter::repeat_n(ValType::I64, 11),
+            std::iter::once(ValType::I64),
+        );
+        // Type 38: (i64 * 12) -> i64 (reserved high-arity)
+        self.types.function(
+            std::iter::repeat_n(ValType::I64, 12),
+            std::iter::once(ValType::I64),
+        );
+
         // Build the set of import name prefixes to skip in "pure" profile mode.
         // In pure mode, IO/ASYNC/TIME imports are omitted entirely. Any code path
         // that references a skipped import will trigger a clear compile-time panic.
@@ -1719,6 +1740,10 @@ impl WasmBackend {
                 6 => 9,
                 7 => 10,
                 8 => 28,
+                9 => 35,
+                10 => 36,
+                11 => 37,
+                12 => 38,
                 _ => panic!("unsupported simple i64 import arity {arity}"),
             }
         };
@@ -2612,7 +2637,7 @@ impl WasmBackend {
             self.add_data_segment_mutable(reloc_enabled, &const_str_scratch_bytes);
 
         let mut user_type_map: BTreeMap<usize, u32> = BTreeMap::new();
-        // Types 0-34 are defined above (0-30 single-return, 31-34 multi-value);
+        // Types 0-38 are defined above (0-30 single-return, 31-34 multi-value, 35-38 high-arity);
         // start new dynamic signatures after them.
         let mut next_type_idx = STATIC_TYPE_COUNT;
         for func_ir in &ir.functions {
