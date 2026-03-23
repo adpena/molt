@@ -142,6 +142,9 @@ tungstenite = { version = "0.28", default-features = false, features = ["handsha
 os_pipe = "1.2"
 libloading = { version = "0.8.9", optional = true }
 
+[dev-dependencies]
+molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }
 
