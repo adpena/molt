@@ -4304,12 +4304,12 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                             j += 1;
                             continue;
                         }
-                        if k == "jump" {
+                        if k == "jump" || k == "label" {
                             if let Some(target_label) = ops[j].value {
                                 if let Some((ret_slot, ret_idx)) = return_labels.get(&target_label)
                                 {
                                     if slot == ret_slot && idx == ret_idx {
-                                        // Match! Replace store_index + jump with ret.
+                                        // Match! Replace store_index + boilerplate with ret.
                                         result.push(OpIR {
                                             kind: "ret".to_string(),
                                             out: None,
@@ -4327,8 +4327,12 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                                             type_hint: None,
                                             raw_int: None,
                                         });
-                                        // Skip past the jump and continue outer loop.
-                                        i = j + 1;
+                                        if k == "jump" {
+                                            i = j + 1;
+                                        } else {
+                                            // label fall-through: keep the label
+                                            i = j;
+                                        }
                                         continue 'outer;
                                     }
                                 }
