@@ -861,6 +861,7 @@ fn main() -> io::Result<()> {
     let is_wasm = args.contains(&"--target".to_string()) && args.contains(&"wasm".to_string());
     let is_rust = args.contains(&"--target".to_string()) && args.contains(&"rust".to_string());
     let is_luau = args.contains(&"--target".to_string()) && args.contains(&"luau".to_string());
+    #[allow(unused_variables)]
     let use_ir_pipeline = args.contains(&"--ir-pipeline".to_string());
     #[cfg_attr(not(feature = "native-backend"), allow(unused_variables))]
     let target_triple = args
