@@ -23,8 +23,18 @@ impl Nursery {
 
     /// Bump-allocate `size` bytes with `align` alignment.
     /// Returns None if nursery is full (caller falls back to heap).
+    ///
+    /// # Panics
+    /// Debug-asserts that `align` is a power of two and `size > 0`.
     #[inline(always)]
     pub fn alloc(&mut self, size: usize, align: usize) -> Option<*mut u8> {
+        debug_assert!(align.is_power_of_two(), "alignment must be a power of two, got {align}");
+        debug_assert!(size > 0, "zero-size allocations are not supported");
+        // Guard against align=0 in release builds (would cause !(align-1) = !usize::MAX = 0,
+        // making aligned = 0 regardless of cursor — incorrect but not UB).
+        if align == 0 || size == 0 {
+            return None;
+        }
         let aligned = (self.cursor + align - 1) & !(align - 1);
         let new_cursor = aligned + size;
         if new_cursor <= NURSERY_SIZE {
@@ -68,11 +78,21 @@ impl Nursery {
     }
 
     /// Copy a nursery object to the heap.
+    ///
+    /// # Safety
+    /// Returns null if heap allocation fails (OOM). Caller must handle null.
     fn promote(nursery_ptr: *mut u8, size: usize) -> *mut u8 {
+        if size == 0 {
+            return std::ptr::null_mut();
+        }
         unsafe {
-            let heap_ptr = std::alloc::alloc(
-                std::alloc::Layout::from_size_align(size, 8).unwrap()
-            );
+            let layout = std::alloc::Layout::from_size_align(size, 8)
+                .expect("invalid layout in nursery promote");
+            let heap_ptr = std::alloc::alloc(layout);
+            if heap_ptr.is_null() {
+                // OOM: call the global handler rather than UB from null deref
+                std::alloc::handle_alloc_error(layout);
+            }
             std::ptr::copy_nonoverlapping(nursery_ptr, heap_ptr, size);
             heap_ptr
         }
