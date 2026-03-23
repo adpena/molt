@@ -55,19 +55,28 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         }
     }
 
+    // Pre-compute op snapshots once (ops don't change during refinement,
+    // only the type environment does). Avoids O(ops × rounds) Vec allocations.
+    let ops_by_block: HashMap<BlockId, Vec<(OpCode, Vec<ValueId>, Vec<ValueId>)>> = block_order
+        .iter()
+        .map(|&bid| {
+            let ops = func.blocks[&bid]
+                .ops
+                .iter()
+                .map(|op| (op.opcode, op.operands.clone(), op.results.clone()))
+                .collect();
+            (bid, ops)
+        })
+        .collect();
+
     // Fixpoint iteration.
     for _round in 0..MAX_ROUNDS {
         let mut changed = false;
 
         for &block_id in &block_order {
-            // Infer types for each op in this block.
-            let ops_snapshot: Vec<(OpCode, Vec<ValueId>, Vec<ValueId>)> = func.blocks[&block_id]
-                .ops
-                .iter()
-                .map(|op| (op.opcode, op.operands.clone(), op.results.clone()))
-                .collect();
+            let ops_snapshot = &ops_by_block[&block_id];
 
-            for (opcode, operands, results) in &ops_snapshot {
+            for (opcode, operands, results) in ops_snapshot {
                 if results.is_empty() {
                     continue;
                 }
