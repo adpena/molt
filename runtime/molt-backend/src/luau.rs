@@ -15,6 +15,7 @@ use std::fmt::Write;
 /// Transpiles Molt `SimpleIR` into Luau source text.
 pub struct LuauBackend {
     output: String,
+    /// Current indentation level (number of tabs).
     indent: usize,
     uses_forward_decls: bool,
     /// Variables that have been pre-declared at function scope and should use
@@ -29,6 +30,10 @@ pub struct LuauBackend {
     /// record it here so that downstream `get_item` and `call_method` ops can
     /// emit more precise Luau code.
     var_type_hints: BTreeMap<String, String>,
+    /// Stack of pcall counter values for nested try/except blocks.
+    try_depth_counter: Vec<u32>,
+    /// Monotonically increasing counter for generating unique pcall variable names.
+    pcall_counter: u32,
 }
 
 impl LuauBackend {
@@ -40,6 +45,8 @@ impl LuauBackend {
             hoisted_vars: BTreeSet::new(),
             tuple_vars: BTreeSet::new(),
             var_type_hints: BTreeMap::new(),
+            try_depth_counter: Vec::new(),
+            pcall_counter: 0,
         }
     }
 
@@ -339,6 +346,59 @@ impl LuauBackend {
             }
         }
 
+        // Exception handling helpers — only emit if pcall-based try/except is used.
+        if used_call("molt_exception_kind") {
+            self.output.push_str(concat!(
+                "local molt_exception_hierarchy = {\n",
+                "\tZeroDivisionError = \"ArithmeticError\",\n",
+                "\tOverflowError = \"ArithmeticError\",\n",
+                "\tFloatingPointError = \"ArithmeticError\",\n",
+                "\tArithmeticError = \"Exception\",\n",
+                "\tValueError = \"Exception\",\n",
+                "\tTypeError = \"Exception\",\n",
+                "\tKeyError = \"LookupError\",\n",
+                "\tIndexError = \"LookupError\",\n",
+                "\tLookupError = \"Exception\",\n",
+                "\tAttributeError = \"Exception\",\n",
+                "\tNameError = \"Exception\",\n",
+                "\tRuntimeError = \"Exception\",\n",
+                "\tNotImplementedError = \"RuntimeError\",\n",
+                "\tRecursionError = \"RuntimeError\",\n",
+                "\tStopIteration = \"Exception\",\n",
+                "\tFileNotFoundError = \"OSError\",\n",
+                "\tPermissionError = \"OSError\",\n",
+                "\tOSError = \"Exception\",\n",
+                "\tIOError = \"OSError\",\n",
+                "\tImportError = \"Exception\",\n",
+                "\tModuleNotFoundError = \"ImportError\",\n",
+                "\tException = \"BaseException\",\n",
+                "\tBaseException = nil,\n",
+                "}\n\n",
+            ));
+            self.output.push_str(concat!(
+                "local function molt_exception_kind(e: any): string\n",
+                "\tif type(e) == \"table\" and e.__type then return e.__type end\n",
+                "\tif type(e) == \"string\" then\n",
+                "\t\tif string.find(e, \"attempt to perform arithmetic\") or string.find(e, \"divide by zero\") or string.find(e, \"division by zero\") then return \"ZeroDivisionError\" end\n",
+                "\t\tif string.find(e, \"attempt to index\") or string.find(e, \"is not a valid member\") then return \"AttributeError\" end\n",
+                "\t\tif string.find(e, \"invalid argument\") or string.find(e, \"expected\") then return \"TypeError\" end\n",
+                "\t\treturn \"Exception\"\n",
+                "\tend\n",
+                "\treturn \"Exception\"\n",
+                "end\n\n",
+            ));
+            self.output.push_str(concat!(
+                "local function molt_exception_match(e: any, class_name: string): boolean\n",
+                "\tlocal kind = molt_exception_kind(e)\n",
+                "\twhile kind do\n",
+                "\t\tif kind == class_name then return true end\n",
+                "\t\tkind = molt_exception_hierarchy[kind]\n",
+                "\tend\n",
+                "\treturn false\n",
+                "end\n\n",
+            ));
+        }
+
         // Infrastructure used by JSON serializer and math/bitwise ops.
         // math_floor is needed by the JSON prelude (serialize checks integer-ness).
         let needs_json = used("molt_json_dumps") || used("\"json\"");
@@ -427,6 +487,7 @@ impl LuauBackend {
         let ops = lower_early_returns(&func.ops);
         let ops = strip_dead_after_return(&ops);
         let ops = lower_iter_to_for(&ops);
+        let (ops, pcall_escaped_vars) = lower_try_to_pcall(&ops);
 
         // Build typed parameter list.  When `param_types` carries per-param
         // type hints from the frontend we emit Luau type annotations so the
@@ -470,6 +531,8 @@ impl LuauBackend {
         self.hoisted_vars.clear();
         self.tuple_vars.clear();
         self.var_type_hints.clear();
+        self.try_depth_counter.clear();
+        self.pcall_counter = 0;
 
         // Seed var_type_hints from param_types so that parameters annotated
         // as list/dict/str carry their type hints into codegen.  Without this,
@@ -572,7 +635,7 @@ impl LuauBackend {
 
             for op in &ops {
                 match op.kind.as_str() {
-                    "if" | "loop_start" | "for_range" | "for_iter" => {
+                    "if" | "loop_start" | "for_range" | "for_iter" | "pcall_wrap_begin" => {
                         depth += 1;
                         block_id += 1;
                     }
@@ -580,7 +643,7 @@ impl LuauBackend {
                         // else starts a new block at the same depth
                         block_id += 1;
                     }
-                    "end_if" | "loop_end" | "end_for" => {
+                    "end_if" | "loop_end" | "end_for" | "pcall_wrap_end" => {
                         depth -= 1;
                         block_id += 1;
                     }
@@ -617,6 +680,12 @@ impl LuauBackend {
                     }
                 }
             }
+        }
+
+        // Add pcall-escaped variables to hoisted set so they use assignment
+        // form instead of `local` inside the pcall closure.
+        for escaped_var in &pcall_escaped_vars {
+            self.hoisted_vars.insert(sanitize_ident(escaped_var));
         }
 
         // Emit pre-declarations for all hoisted variables.
@@ -2971,11 +3040,14 @@ impl LuauBackend {
             "exception_new" | "exception_new_from_class" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
+                let class_name = op.s_value.as_deref().unwrap_or("Exception");
                 let msg = args
                     .first()
                     .map(|a| sanitize_ident(a))
                     .unwrap_or_else(|| "\"error\"".to_string());
-                self.emit_line(&format!("local {out} = {msg}"));
+                self.emit_line(&format!(
+                    "local {out} = {{__type = \"{class_name}\", __msg = {msg}}}"
+                ));
             }
             "raise" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -2988,11 +3060,43 @@ impl LuauBackend {
             "check_exception" => {
                 // Suppress — exception handler jumps are no-ops in Luau.
             }
-            "exception_last"
-            | "exception_stack_depth"
-            | "exception_kind"
-            | "exception_class"
-            | "exception_message"
+            "exception_last" => {
+                let out = self.out_var(op);
+                if let Some(&n) = self.try_depth_counter.last() {
+                    self.emit_line(&format!("local {out} = __err_{n}"));
+                } else {
+                    self.emit_line(&format!("local {out} = nil -- [exception_last]"));
+                }
+            }
+            "exception_kind" | "exception_class" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(exc_var) = args.first() {
+                    let exc = sanitize_ident(exc_var);
+                    self.emit_line(&format!(
+                        "local {out} = molt_exception_kind({exc})"
+                    ));
+                } else if let Some(&n) = self.try_depth_counter.last() {
+                    self.emit_line(&format!(
+                        "local {out} = molt_exception_kind(__err_{n})"
+                    ));
+                } else {
+                    self.emit_line(&format!("local {out} = nil -- [{kind}]", kind = op.kind));
+                }
+            }
+            "exception_message" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(exc_var) = args.first() {
+                    let exc = sanitize_ident(exc_var);
+                    self.emit_line(&format!(
+                        "local {out} = (type({exc}) == \"table\" and {exc}.__msg or tostring({exc}))"
+                    ));
+                } else {
+                    self.emit_line(&format!("local {out} = nil -- [exception_message]"));
+                }
+            }
+            "exception_stack_depth"
             | "exceptiongroup_match"
             | "exceptiongroup_combine" => {
                 let out = self.out_var(op);
@@ -3490,11 +3594,29 @@ impl LuauBackend {
             // Try/except blocks
             // ================================================================
             "try_start" => {
-                // In Luau, use pcall for try blocks.
+                // Handled by lower_try_to_pcall — should not reach here.
                 self.emit_line("-- [try_start]");
             }
             "try_end" => {
+                // Handled by lower_try_to_pcall — should not reach here.
                 self.emit_line("-- [try_end]");
+            }
+            "pcall_wrap_begin" => {
+                let n = op.value.unwrap_or(0) as u32;
+                self.emit_line(&format!("local __ok_{n}, __err_{n}"));
+                self.emit_line(&format!("__ok_{n}, __err_{n} = pcall(function()"));
+                self.push_indent();
+                // Push counter — it stays on the stack through the handler
+                // code so that exception_last can read __err_N.
+                self.try_depth_counter.push(n);
+            }
+            "pcall_wrap_end" => {
+                self.pop_indent();
+                self.emit_line("end)");
+                // Do NOT pop try_depth_counter here — the handler code
+                // after pcall_wrap_end needs to reference __err_N via
+                // exception_last. The counter is popped by the nop that
+                // represents the handler-closing try_end.
             }
 
             // ================================================================
@@ -3570,7 +3692,15 @@ impl LuauBackend {
             // ================================================================
             // Phi nodes (SSA merge — no-op in sequential Luau) / nop
             // ================================================================
-            "phi" | "nop" => {}
+            "phi" => {}
+            "nop" => {
+                // Pop pcall counter when we see the handler-closing try_end nop.
+                if let Some(ref sv) = op.s_value {
+                    if sv.contains("try_end") && !self.try_depth_counter.is_empty() {
+                        self.try_depth_counter.pop();
+                    }
+                }
+            }
 
             // ================================================================
             // Default: unsupported op
@@ -3876,6 +4006,100 @@ fn sanitize_label(label: &str) -> String {
 ///   → if → break → end_if → get_item(result,0) [value] → body → loop_end
 ///
 /// We detect this pattern and collapse it to for_iter/end_for.
+
+/// Lower `try_start`/`try_end` pairs into `pcall_wrap_begin`/`pcall_wrap_end`.
+///
+/// Returns rewritten ops plus variables that escape pcall scope.
+fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
+    if !ops.iter().any(|op| op.kind == "try_start") {
+        return (ops.to_vec(), BTreeSet::new());
+    }
+    let mut result: Vec<OpIR> = Vec::with_capacity(ops.len());
+    let mut counter: u32 = 0;
+    let mut try_stack: Vec<(u32, i32)> = Vec::new();
+    let mut depth: i32 = 0;
+    let mut pcall_ranges: Vec<(usize, usize, u32)> = Vec::new();
+    for op in ops {
+        match op.kind.as_str() {
+            "try_start" => {
+                let n = counter;
+                counter += 1;
+                try_stack.push((n, depth));
+                depth += 1;
+                let start_idx = result.len();
+                result.push(OpIR {
+                    kind: "pcall_wrap_begin".to_string(),
+                    value: Some(n as i64),
+                    ..OpIR::default()
+                });
+                pcall_ranges.push((start_idx, 0, n));
+            }
+            "try_end" => {
+                if let Some(&(n, pre_depth)) = try_stack.last() {
+                    if depth == pre_depth + 1 {
+                        depth -= 1;
+                        try_stack.pop();
+                        let end_idx = result.len();
+                        result.push(OpIR {
+                            kind: "pcall_wrap_end".to_string(),
+                            value: Some(n as i64),
+                            ..OpIR::default()
+                        });
+                        if let Some(range) =
+                            pcall_ranges.iter_mut().rev().find(|r| r.2 == n)
+                        {
+                            range.1 = end_idx;
+                        }
+                    } else {
+                        result.push(OpIR {
+                            kind: "nop".to_string(),
+                            s_value: Some("try_end (handler close)".to_string()),
+                            ..OpIR::default()
+                        });
+                    }
+                } else {
+                    result.push(OpIR {
+                        kind: "nop".to_string(),
+                        s_value: Some("try_end (no matching start)".to_string()),
+                        ..OpIR::default()
+                    });
+                }
+            }
+            _ => {
+                result.push(op.clone());
+            }
+        }
+    }
+    // Find variables that escape pcall scope.
+    let mut escaped: BTreeSet<String> = BTreeSet::new();
+    let mut defined_in_pcall: BTreeMap<String, Vec<(usize, usize)>> = BTreeMap::new();
+    for &(start, end, _n) in &pcall_ranges {
+        if end == 0 { continue; }
+        for (idx, op) in result.iter().enumerate() {
+            if idx > start && idx < end {
+                if let Some(ref out_name) = op.out {
+                    if out_name != "none" && !op.kind.starts_with("nop") {
+                        defined_in_pcall.entry(out_name.clone()).or_default().push((start, end));
+                    }
+                }
+            }
+        }
+    }
+    for (idx, op) in result.iter().enumerate() {
+        let refs: Vec<&str> = op.args.as_deref().unwrap_or(&[]).iter()
+            .map(|s| s.as_str()).chain(op.var.as_deref()).collect();
+        for r in refs {
+            if let Some(ranges) = defined_in_pcall.get(r) {
+                let inside_any = ranges.iter().any(|&(s, e)| idx > s && idx < e);
+                if !inside_any {
+                    escaped.insert(r.to_string());
+                }
+            }
+        }
+    }
+    (result, escaped)
+}
+
 fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
     if ops.is_empty() {
         return ops.to_vec();
@@ -7773,5 +7997,80 @@ mod tests {
             !output.contains("xs:append"),
             "Must NOT emit method call for list.append(), got:\n{output}"
         );
+    }
+
+    #[test]
+    fn test_lower_try_to_pcall_basic() {
+        let ops = vec![
+            OpIR { kind: "try_start".into(), ..OpIR::default() },
+            OpIR { kind: "const_int".into(), value: Some(1), out: Some("v0".into()), ..OpIR::default() },
+            OpIR { kind: "try_end".into(), ..OpIR::default() },
+            OpIR { kind: "exception_last".into(), out: Some("v1".into()), ..OpIR::default() },
+            OpIR { kind: "try_end".into(), ..OpIR::default() },
+        ];
+        let (lowered, _) = lower_try_to_pcall(&ops);
+        assert!(lowered.iter().any(|op| op.kind == "pcall_wrap_begin"));
+        assert!(lowered.iter().any(|op| op.kind == "pcall_wrap_end"));
+        assert!(!lowered.iter().any(|op| op.kind == "try_start"));
+    }
+
+    #[test]
+    fn test_lower_try_to_pcall_escape_detection() {
+        let ops = vec![
+            OpIR { kind: "try_start".into(), ..OpIR::default() },
+            OpIR { kind: "const_int".into(), value: Some(42), out: Some("v0".into()), ..OpIR::default() },
+            OpIR { kind: "try_end".into(), ..OpIR::default() },
+            OpIR { kind: "call_function".into(), args: Some(vec!["print".into(), "v0".into()]), ..OpIR::default() },
+            OpIR { kind: "try_end".into(), ..OpIR::default() },
+        ];
+        let (_, escaped) = lower_try_to_pcall(&ops);
+        assert!(escaped.contains("v0"), "v0 should escape pcall scope: {:?}", escaped);
+    }
+
+    #[test]
+    fn test_pcall_try_except_compile() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "try_except_test".into(),
+                params: vec![],
+                param_types: None,
+                ops: vec![
+                    OpIR { kind: "try_start".into(), ..OpIR::default() },
+                    OpIR { kind: "const_int".into(), value: Some(1), out: Some("v0".into()), ..OpIR::default() },
+                    OpIR { kind: "const_int".into(), value: Some(0), out: Some("v1".into()), ..OpIR::default() },
+                    OpIR { kind: "binary_op".into(), s_value: Some("/".into()), args: Some(vec!["v0".into(), "v1".into()]), out: Some("v2".into()), ..OpIR::default() },
+                    OpIR { kind: "try_end".into(), ..OpIR::default() },
+                    OpIR { kind: "exception_last".into(), out: Some("v3".into()), ..OpIR::default() },
+                    OpIR { kind: "const_int".into(), value: Some(42), out: Some("v4".into()), ..OpIR::default() },
+                    OpIR { kind: "try_end".into(), ..OpIR::default() },
+                    OpIR { kind: "call_function".into(), s_value: Some("print".into()), args: Some(vec!["print".into(), "v4".into()]), out: Some("v5".into()), ..OpIR::default() },
+                    OpIR { kind: "ret_void".into(), ..OpIR::default() },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(output.contains("pcall(function()"), "Expected pcall wrapper, got:\n{output}");
+        assert!(output.contains("__ok_0") && output.contains("__err_0"), "Expected __ok_0/__err_0, got:\n{output}");
+        assert!(!output.contains("= nil -- [exception_last]"), "exception_last should NOT emit nil inside pcall, got:\n{output}");
+    }
+
+    #[test]
+    fn test_lower_try_to_pcall_nested() {
+        let ops = vec![
+            OpIR { kind: "try_start".into(), ..OpIR::default() },
+            OpIR { kind: "try_start".into(), ..OpIR::default() },
+            OpIR { kind: "const_int".into(), value: Some(1), out: Some("v0".into()), ..OpIR::default() },
+            OpIR { kind: "try_end".into(), ..OpIR::default() },
+            OpIR { kind: "try_end".into(), ..OpIR::default() },
+            OpIR { kind: "try_end".into(), ..OpIR::default() },
+            OpIR { kind: "try_end".into(), ..OpIR::default() },
+        ];
+        let (lowered, _) = lower_try_to_pcall(&ops);
+        let begin_count = lowered.iter().filter(|op| op.kind == "pcall_wrap_begin").count();
+        let end_count = lowered.iter().filter(|op| op.kind == "pcall_wrap_end").count();
+        assert_eq!(begin_count, 2, "should have 2 pcall_wrap_begin");
+        assert_eq!(end_count, 2, "should have 2 pcall_wrap_end");
     }
 }
