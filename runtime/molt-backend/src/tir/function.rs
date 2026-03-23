@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use super::blocks::{BlockId, TirBlock};
 use super::types::TirType;
 use super::values::ValueId;
+use crate::tir::passes::cha::ClassHierarchy;
 
 /// A function in TIR: a collection of basic blocks in SSA form.
 #[derive(Debug)]
@@ -85,6 +86,9 @@ impl TirFunction {
 pub struct TirModule {
     pub name: String,
     pub functions: Vec<TirFunction>,
+    /// Optional whole-program class hierarchy, populated after module analysis.
+    /// Starts as `None`; set by the CHA construction phase before devirtualization.
+    pub class_hierarchy: Option<ClassHierarchy>,
 }
 
 #[cfg(test)]
@@ -214,6 +218,7 @@ mod tests {
         let module = TirModule {
             name: "test_module".into(),
             functions: vec![f1, f2],
+            class_hierarchy: None,
         };
         assert_eq!(module.name, "test_module");
         assert_eq!(module.functions.len(), 2);
