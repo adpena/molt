@@ -7845,6 +7845,26 @@ def _backend_bin_path_cached(
     return target_root / profile_dir / f"molt-backend{exe_suffix}"
 
 
+
+
+def _codesign_binary(binary_path: Path) -> None:
+    """Ad-hoc codesign a binary on macOS.
+
+    macOS Gatekeeper may kill unsigned binaries with SIGKILL (exit 137).
+    After cargo build or binary copy, re-sign with an ad-hoc signature.
+    No-op on non-macOS platforms.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        subprocess.run(
+            ["codesign", "-f", "-s", "-", str(binary_path)],
+            capture_output=True, timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass  # codesign not available or failed — proceed optimistically
+
+
 def _backend_bin_path(
     project_root: Path,
     cargo_profile: str,
@@ -17049,6 +17069,8 @@ def _ensure_backend_binary(
                 cargo_output = cargo_output.with_suffix(exe_suffix)
             if cargo_output.exists() and cargo_output != backend_bin:
                 shutil.copy2(cargo_output, backend_bin)
+                _codesign_binary(backend_bin)
+        _codesign_binary(backend_bin)
         # -- Post-build feature probe (defense-in-depth) -----------------
         # Cargo's incremental cache may skip recompilation when only
         # features change, leaving a binary built for the wrong target.
@@ -17103,6 +17125,7 @@ def _ensure_backend_binary(
                 if backend_features != _DEFAULT_BACKEND_FEATURES:
                     if cargo_output.exists() and cargo_output != backend_bin:
                         shutil.copy2(cargo_output, backend_bin)
+                        _codesign_binary(backend_bin)
         except (subprocess.TimeoutExpired, OSError):
             pass  # Probe failed; proceed optimistically
         # -- End post-build feature probe --------------------------------
