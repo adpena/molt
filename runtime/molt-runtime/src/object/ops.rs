@@ -9,11 +9,6 @@ use crate::object::ops_bytes::{
     BytesCtorKind, bytes_ascii_space, bytes_hex_from_bits, bytes_item_to_u8,
     collect_bytearray_assign_bytes,
 };
-use crate::object::{dec_ref_ptr, inc_ref_ptr};
-use crate::object::utf8_cache::{
-    UTF8_CACHE_BLOCK, UTF8_CACHE_MIN_LEN, UTF8_COUNT_CACHE_SHARDS, UTF8_COUNT_PREFIX_MIN_LEN,
-    UTF8_COUNT_TLS, Utf8CountCache, Utf8CountCacheEntry, Utf8IndexCache,
-};
 use crate::randomness::{fill_os_random, os_random_supported};
 use crate::state::runtime_state::PythonVersionInfo;
 use crate::*;
@@ -30,10 +25,7 @@ use std::ffi::CStr;
 use std::ffi::CString;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::sync::{Arc, Mutex, OnceLock};
-use unicode_casefold::{Locale, UnicodeCaseFold, Variant};
-use unicode_ident::{is_xid_continue, is_xid_start};
-use wtf8::{CodePoint, Wtf8};
+use std::sync::{Mutex, OnceLock};
 
 use super::ops_string::{
     push_wtf8_codepoint, utf8_char_to_byte_index_cached, wtf8_codepoint_at, wtf8_from_bytes,
