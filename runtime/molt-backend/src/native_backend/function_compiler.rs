@@ -322,9 +322,10 @@ impl SimpleBackend {
             &[],
         );
 
-        // Inline exception check: import molt_exception_pending_fast for
-        // the validation fallback, and fetch the flag pointer once per
-        // function that contains a try block.
+        // Import the exception-pending function for check_exception.
+        // The inline flag load optimization is applied lazily at the
+        // first check_exception site to avoid Cranelift block ordering
+        // issues with the entry block.
         let local_exc_pending_fast = import_func_ref(
             &mut self.module,
             &mut self.import_ids,
@@ -334,22 +335,20 @@ impl SimpleBackend {
             &[],
             &[types::I64],
         );
-        let exc_flag_ptr_val: Option<cranelift_codegen::ir::Value> =
-            if function_exception_label_id.is_some() {
-                let flag_ptr_fn = import_func_ref(
-                    &mut self.module,
-                    &mut self.import_ids,
-                    &mut builder,
-                    &mut import_refs,
-                    "molt_exception_pending_flag_ptr",
-                    &[],
-                    &[types::I64],
-                );
-                let call = builder.ins().call(flag_ptr_fn, &[]);
-                Some(builder.inst_results(call)[0])
-            } else {
-                None
-            };
+        let mut exc_flag_ptr_val: Option<cranelift_codegen::ir::Value> = None;
+        let exc_flag_ptr_fn = if function_exception_label_id.is_some() {
+            Some(import_func_ref(
+                &mut self.module,
+                &mut self.import_ids,
+                &mut builder,
+                &mut import_refs,
+                "molt_exception_pending_flag_ptr",
+                &[],
+                &[types::I64],
+            ))
+        } else {
+            None
+        };
         let local_profile_struct = has_store.then(|| {
             import_func_ref(
                 &mut self.module,
@@ -10768,6 +10767,13 @@ impl SimpleBackend {
                     let fallthrough = builder.create_block();
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough);
+                    // Lazily fetch the flag pointer on first check_exception.
+                    if exc_flag_ptr_val.is_none() {
+                        if let Some(fn_ref) = exc_flag_ptr_fn {
+                            let call = builder.ins().call(fn_ref, &[]);
+                            exc_flag_ptr_val = Some(builder.inst_results(call)[0]);
+                        }
+                    }
                     if let Some(flag_ptr) = exc_flag_ptr_val {
                         // Fast path: inline byte load from flag address
                         let pending_byte = builder.ins().load(
