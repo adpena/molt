@@ -3073,7 +3073,7 @@ impl WasmBackend {
         let sentinel_func_idx = self.func_count;
         self.funcs.function(2);
         let mut sentinel = Function::new_with_locals_types(Vec::new());
-        sentinel.instruction(&Instruction::I64Const(0));
+        sentinel.instruction(&Instruction::Unreachable);
         sentinel.instruction(&Instruction::End);
         self.codes.function(&sentinel);
         self.func_count += 1;
