@@ -12364,7 +12364,7 @@ def _resolve_build_output_layout(
 ) -> _BuildOutputLayout:
     is_wasm = target in {"wasm", "wasm-freestanding"}
     is_wasm_freestanding = target == "wasm-freestanding"
-    is_rust_transpile = target == "rust"
+    is_rust_transpile = target in {"rust", "luau"}
     is_luau_transpile = target == "luau"
     if trusted and is_wasm:
         raise ValueError("Trusted mode is not supported for wasm targets")
