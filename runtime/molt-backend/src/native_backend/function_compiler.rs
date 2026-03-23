@@ -10662,17 +10662,29 @@ impl SimpleBackend {
                     reachable_blocks.insert(fallthrough);
                     brif_block(&mut builder, cond, target_block, &[], fallthrough, &[]);
                     switch_to_block_tracking(&mut builder, fallthrough, &mut is_block_filled);
+                    // Propagate remaining tracked objects to BOTH the fallthrough
+                    // and the exception handler. Without this, the exception handler
+                    // may access objects that were only passed to the fallthrough,
+                    // causing use-after-free when the exception handler dec-refs them.
                     if !carry_obj.is_empty() {
                         block_tracked_obj
                             .entry(fallthrough)
                             .or_default()
-                            .extend(carry_obj);
+                            .extend(carry_obj.clone());
+                        extend_unique_tracked(
+                            block_tracked_obj.entry(target_block).or_default(),
+                            carry_obj,
+                        );
                     }
                     if !carry_ptr.is_empty() {
                         block_tracked_ptr
                             .entry(fallthrough)
                             .or_default()
-                            .extend(carry_ptr);
+                            .extend(carry_ptr.clone());
+                        extend_unique_tracked(
+                            block_tracked_ptr.entry(target_block).or_default(),
+                            carry_ptr,
+                        );
                     }
                 }
                 "file_open" => {
