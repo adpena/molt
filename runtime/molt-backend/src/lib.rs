@@ -976,6 +976,7 @@ fn drain_cleanup_entry_tracked(
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "native-backend")]
+#[allow(dead_code)]
 const CONTROL_FLOW_OPS: &[&str] = &[
     "if", "else", "end_if", "loop_start", "loop_end", "loop_for_start",
     "loop_for_end", "label", "state_label", "jump", "return", "state_yield",
@@ -983,6 +984,7 @@ const CONTROL_FLOW_OPS: &[&str] = &[
 ];
 
 #[cfg(feature = "native-backend")]
+#[allow(dead_code)]
 pub(crate) fn compute_rc_coalesce_skips(
     ops: &[OpIR],
     last_use: &BTreeMap<String, usize>,

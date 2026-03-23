@@ -9,9 +9,8 @@ use molt_obj_model::MoltObject;
 
 use super::ops::{
     dict_clear_in_place, dict_del_in_place, dict_find_entry, dict_get_in_place,
-    dict_inc_in_place, dict_inc_prehashed_string_key_in_place, dict_insert_entry_with_hash,
-    dict_like_bits_from_ptr, dict_rebuild, dict_set_in_place, dict_table_capacity,
-    ensure_hashable, hash_string_bytes,
+    dict_inc_in_place, dict_inc_prehashed_string_key_in_place, dict_like_bits_from_ptr,
+    dict_rebuild, dict_set_in_place, dict_table_capacity, ensure_hashable,
 };
 
 #[unsafe(no_mangle)]
@@ -410,10 +409,6 @@ pub extern "C" fn molt_dict_str_int_inc(dict_bits: u64, key_bits: u64, delta_bit
             MoltObject::none().bits()
         }
     })
-}
-
-fn bits_as_int(bits: u64) -> Option<i64> {
-    obj_from_bits(bits).as_int()
 }
 
 #[unsafe(no_mangle)]
