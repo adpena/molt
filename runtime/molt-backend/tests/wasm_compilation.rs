@@ -1,0 +1,492 @@
+#![cfg(feature = "wasm-backend")]
+
+//! Tests for basic IR compilation: empty modules, single functions,
+//! string constants, arithmetic, function calls, and exception handling.
+
+use std::collections::HashMap;
+
+use molt_backend::wasm::WasmBackend;
+use molt_backend::{FunctionIR, OpIR, SimpleIR};
+use wasmparser::{Operator, Parser, Payload, TypeRef};
+
+fn op(kind: &str) -> OpIR {
+    OpIR {
+        kind: kind.to_string(),
+        ..OpIR::default()
+    }
+}
+
+fn compile_ir(ir: SimpleIR) -> Vec<u8> {
+    WasmBackend::new().compile(ir)
+}
+
+fn compile_single_function(ops: Vec<OpIR>, params: &[&str]) -> Vec<u8> {
+    compile_ir(SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_test_func".to_string(),
+            params: params.iter().map(|p| (*p).to_string()).collect(),
+            ops,
+            param_types: None,
+        }],
+        profile: None,
+    })
+}
+
+fn extract_exports(wasm: &[u8]) -> Vec<String> {
+    let mut exports = Vec::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::ExportSection(section) = payload.expect("valid payload") {
+            for export in section.into_iter() {
+                let export = export.expect("valid export");
+                exports.push(export.name.to_string());
+            }
+        }
+    }
+    exports
+}
+
+fn count_code_sections(wasm: &[u8]) -> u32 {
+    let mut count = 0;
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::CodeSectionEntry(_) = payload.expect("valid payload") {
+            count += 1;
+        }
+    }
+    count
+}
+
+fn import_call_counts(wasm: &[u8]) -> HashMap<String, usize> {
+    let mut imported_function_names: Vec<String> = Vec::new();
+    let mut counts: HashMap<String, usize> = HashMap::new();
+
+    for payload in Parser::new(0).parse_all(wasm) {
+        match payload.expect("valid wasm payload") {
+            Payload::ImportSection(section) => {
+                for import in section.into_imports() {
+                    let import = import.expect("valid wasm import");
+                    if matches!(import.ty, TypeRef::Func(_)) {
+                        imported_function_names.push(import.name.to_string());
+                    }
+                }
+            }
+            Payload::CodeSectionEntry(body) => {
+                let mut reader = body.get_operators_reader().expect("operators reader");
+                while !reader.eof() {
+                    if let Operator::Call { function_index } =
+                        reader.read().expect("valid wasm operator")
+                    {
+                        let idx = function_index as usize;
+                        if idx < imported_function_names.len() {
+                            let name = imported_function_names[idx].clone();
+                            *counts.entry(name).or_insert(0) += 1;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    counts
+}
+
+fn count_import(calls: &HashMap<String, usize>, name: &str) -> usize {
+    calls.get(name).copied().unwrap_or(0)
+}
+
+// -----------------------------------------------------------------------
+// Empty / minimal module tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn empty_module_compiles_to_valid_wasm() {
+    let wasm = compile_ir(SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec![],
+            ops: vec![op("ret_void")],
+            param_types: None,
+        }],
+        profile: None,
+    });
+
+    // Should start with WASM magic bytes
+    assert!(wasm.len() > 8, "WASM output too short");
+    assert_eq!(&wasm[0..4], b"\0asm", "missing WASM magic bytes");
+}
+
+#[test]
+fn empty_module_exports_molt_main() {
+    let wasm = compile_ir(SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec![],
+            ops: vec![op("ret_void")],
+            param_types: None,
+        }],
+        profile: None,
+    });
+
+    let exports = extract_exports(&wasm);
+    assert!(
+        exports.contains(&"molt_main".to_string()),
+        "should export molt_main, found: {:?}",
+        exports
+    );
+}
+
+#[test]
+fn empty_module_exports_memory() {
+    let wasm = compile_ir(SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec![],
+            ops: vec![op("ret_void")],
+            param_types: None,
+        }],
+        profile: None,
+    });
+
+    let exports = extract_exports(&wasm);
+    assert!(
+        exports.contains(&"molt_memory".to_string()),
+        "should export molt_memory, found: {:?}",
+        exports
+    );
+}
+
+#[test]
+fn single_function_produces_code_section() {
+    let wasm = compile_single_function(vec![op("ret_void")], &[]);
+    let code_count = count_code_sections(&wasm);
+    assert!(code_count > 0, "should have at least one code section entry");
+}
+
+// -----------------------------------------------------------------------
+// Constant compilation tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn const_int_compiles() {
+    let mut c = op("const");
+    c.value = Some(42);
+    c.out = Some("v0".to_string());
+
+    // Should not panic — the constant should be inlined as i64.const.
+    let wasm = compile_single_function(vec![c, op("ret_void")], &[]);
+    assert!(wasm.len() > 8);
+}
+
+#[test]
+fn const_float_compiles() {
+    let mut c = op("const_float");
+    c.f_value = Some(3.14);
+    c.out = Some("v0".to_string());
+
+    let wasm = compile_single_function(vec![c, op("ret_void")], &[]);
+    assert!(wasm.len() > 8);
+}
+
+#[test]
+fn const_none_compiles() {
+    let mut c = op("const_none");
+    c.out = Some("v0".to_string());
+
+    let wasm = compile_single_function(vec![c, op("ret_void")], &[]);
+    assert!(wasm.len() > 8);
+}
+
+#[test]
+fn const_bool_true_compiles() {
+    let mut c = op("const_bool");
+    c.value = Some(1);
+    c.out = Some("v0".to_string());
+
+    let wasm = compile_single_function(vec![c, op("ret_void")], &[]);
+    assert!(wasm.len() > 8);
+}
+
+#[test]
+fn const_bool_false_compiles() {
+    let mut c = op("const_bool");
+    c.value = Some(0);
+    c.out = Some("v0".to_string());
+
+    let wasm = compile_single_function(vec![c, op("ret_void")], &[]);
+    assert!(wasm.len() > 8);
+}
+
+#[test]
+fn const_str_compiles_and_calls_string_from_bytes() {
+    let mut c = op("const_str");
+    c.s_value = Some("hello".to_string());
+    c.out = Some("v0".to_string());
+
+    let wasm = compile_single_function(vec![c, op("ret_void")], &[]);
+    let calls = import_call_counts(&wasm);
+    assert!(
+        count_import(&calls, "string_from_bytes") > 0,
+        "const_str should call string_from_bytes"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Arithmetic compilation tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn add_op_calls_add_import() {
+    let mut add = op("add");
+    add.args = Some(vec!["p0".to_string(), "p1".to_string()]);
+    add.out = Some("v0".to_string());
+
+    let wasm = compile_single_function(vec![add, op("ret_void")], &["p0", "p1"]);
+    let calls = import_call_counts(&wasm);
+    assert!(
+        count_import(&calls, "add") > 0,
+        "add op should call add import"
+    );
+}
+
+#[test]
+fn sub_op_calls_sub_import() {
+    let mut sub = op("sub");
+    sub.args = Some(vec!["p0".to_string(), "p1".to_string()]);
+    sub.out = Some("v0".to_string());
+
+    let wasm = compile_single_function(vec![sub, op("ret_void")], &["p0", "p1"]);
+    let calls = import_call_counts(&wasm);
+    assert!(
+        count_import(&calls, "sub") > 0,
+        "sub op should call sub import"
+    );
+}
+
+#[test]
+fn mul_op_calls_mul_import() {
+    let mut mul = op("mul");
+    mul.args = Some(vec!["p0".to_string(), "p1".to_string()]);
+    mul.out = Some("v0".to_string());
+
+    let wasm = compile_single_function(vec![mul, op("ret_void")], &["p0", "p1"]);
+    let calls = import_call_counts(&wasm);
+    assert!(
+        count_import(&calls, "mul") > 0,
+        "mul op should call mul import"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Function call tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn call_func_uses_dispatch() {
+    // call_func args: [callee, arg0, arg1, ...] — first is the callee object.
+    // The WASM backend now outlines call_func via call_func_dispatch (spills
+    // args to linear memory instead of using callargs_new/call_bind_ic).
+    let mut call = op("call_func");
+    call.args = Some(vec!["p0".to_string(), "p1".to_string(), "p2".to_string()]);
+    call.out = Some("v0".to_string());
+
+    let wasm = compile_single_function(vec![call, op("ret_void")], &["p0", "p1", "p2"]);
+    let calls = import_call_counts(&wasm);
+    assert!(
+        count_import(&calls, "call_func_dispatch") > 0,
+        "call_func should use call_func_dispatch"
+    );
+}
+
+#[test]
+fn ret_with_value_compiles() {
+    let mut c = op("const");
+    c.value = Some(42);
+    c.out = Some("v0".to_string());
+
+    let mut ret = op("ret");
+    ret.args = Some(vec!["v0".to_string()]);
+
+    let wasm = compile_single_function(vec![c, ret], &[]);
+    assert!(wasm.len() > 8);
+}
+
+#[test]
+fn multiple_functions_compile() {
+    let ir = SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![op("ret_void")],
+                param_types: None,
+            },
+            FunctionIR {
+                name: "molt_helper".to_string(),
+                params: vec!["p0".to_string()],
+                ops: vec![{
+                    let mut ret = op("ret");
+                    ret.args = Some(vec!["p0".to_string()]);
+                    ret
+                }],
+                param_types: None,
+            },
+        ],
+        profile: None,
+    };
+    let wasm = compile_ir(ir);
+    assert!(wasm.len() > 8);
+}
+
+// -----------------------------------------------------------------------
+// Exception handling compilation tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn try_block_compiles() {
+    let mut dict_new = op("dict_new");
+    dict_new.out = Some("v0".to_string());
+    dict_new.args = Some(vec![]);
+
+    let wasm = compile_single_function(
+        vec![
+            op("try_start"),
+            dict_new,
+            op("check_exception"),
+            op("try_end"),
+            op("ret_void"),
+        ],
+        &[],
+    );
+    assert!(wasm.len() > 8);
+}
+
+#[test]
+fn nested_try_blocks_compile() {
+    let mut dict1 = op("dict_new");
+    dict1.out = Some("v0".to_string());
+    dict1.args = Some(vec![]);
+
+    let mut dict2 = op("dict_new");
+    dict2.out = Some("v1".to_string());
+    dict2.args = Some(vec![]);
+
+    let wasm = compile_single_function(
+        vec![
+            op("try_start"),
+            dict1,
+            op("check_exception"),
+            op("try_start"),
+            dict2,
+            op("check_exception"),
+            op("try_end"),
+            op("try_end"),
+            op("ret_void"),
+        ],
+        &[],
+    );
+    assert!(wasm.len() > 8);
+}
+
+// -----------------------------------------------------------------------
+// Collection operations compilation tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn dict_new_calls_dict_new_import() {
+    let mut d = op("dict_new");
+    d.out = Some("v0".to_string());
+    d.args = Some(vec![]);
+
+    let wasm = compile_single_function(vec![d, op("ret_void")], &[]);
+    let calls = import_call_counts(&wasm);
+    assert!(
+        count_import(&calls, "dict_new") > 0,
+        "dict_new op should call dict_new import"
+    );
+}
+
+#[test]
+fn list_new_compiles_using_builder_imports() {
+    // The "list_new" IR op uses list_builder_new + list_builder_append + list_builder_finish.
+    let mut list = op("list_new");
+    list.args = Some(vec!["p0".to_string(), "p1".to_string()]);
+    list.out = Some("v0".to_string());
+
+    let wasm = compile_single_function(vec![list, op("ret_void")], &["p0", "p1"]);
+    let calls = import_call_counts(&wasm);
+    assert!(
+        count_import(&calls, "list_builder_new") > 0,
+        "list_new should call list_builder_new"
+    );
+    assert!(
+        count_import(&calls, "list_builder_append") > 0,
+        "list_new should call list_builder_append"
+    );
+    assert!(
+        count_import(&calls, "list_builder_finish") > 0,
+        "list_new should call list_builder_finish"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Comparison operations
+// -----------------------------------------------------------------------
+
+#[test]
+fn comparison_ops_compile() {
+    for op_name in &["lt", "le", "gt", "ge", "eq", "ne"] {
+        let mut cmp = op(op_name);
+        cmp.args = Some(vec!["p0".to_string(), "p1".to_string()]);
+        cmp.out = Some("v0".to_string());
+
+        let wasm = compile_single_function(vec![cmp, op("ret_void")], &["p0", "p1"]);
+        let calls = import_call_counts(&wasm);
+        assert!(
+            count_import(&calls, op_name) > 0,
+            "{op_name} op should call {op_name} import"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// Singleton compilation tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn missing_singleton_compiles() {
+    let mut m = op("missing");
+    m.out = Some("v0".to_string());
+
+    let wasm = compile_single_function(vec![m, op("ret_void")], &[]);
+    let calls = import_call_counts(&wasm);
+    assert!(
+        count_import(&calls, "missing") > 0,
+        "missing op should call missing import"
+    );
+}
+
+#[test]
+fn not_implemented_singleton_compiles() {
+    let mut m = op("const_not_implemented");
+    m.out = Some("v0".to_string());
+
+    let wasm = compile_single_function(vec![m, op("ret_void")], &[]);
+    let calls = import_call_counts(&wasm);
+    assert!(
+        count_import(&calls, "not_implemented") > 0,
+        "const_not_implemented should call not_implemented import"
+    );
+}
+
+#[test]
+fn ellipsis_singleton_compiles() {
+    let mut m = op("const_ellipsis");
+    m.out = Some("v0".to_string());
+
+    let wasm = compile_single_function(vec![m, op("ret_void")], &[]);
+    let calls = import_call_counts(&wasm);
+    assert!(
+        count_import(&calls, "ellipsis") > 0,
+        "const_ellipsis should call ellipsis import"
+    );
+}
