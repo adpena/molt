@@ -353,6 +353,7 @@ pub(crate) use crate::object::memoryview::{
 };
 pub(crate) use crate::object::ops::HashSecret;
 pub use crate::object::ops::*;
+pub use crate::object::ops_heapq::*;
 #[allow(unused_imports)]
 pub(crate) use crate::object::ops::{
     DecodeTextError, class_break_cycles, decode_bytes_text, decode_string_list, decode_value_list,
