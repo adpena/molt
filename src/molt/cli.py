@@ -14131,8 +14131,32 @@ def _execute_backend_compile(
                         print(backend_stderr, end="", file=sys.stderr)
                     if backend_stdout:
                         print(backend_stdout, end="")
+                # Build a more informative error message
+                _fail_detail_parts = ["Backend compilation failed"]
+                _fail_detail_parts.append(
+                    f" (exit code {backend_process.returncode})"
+                )
+                if not backend_stderr and not backend_stdout:
+                    _fail_detail_parts.append(
+                        ".\nNo output from the backend. "
+                        "Run with --verbose for more details."
+                    )
+                elif json_output:
+                    # For JSON output, include stderr in the message since
+                    # we didn't print it above.
+                    _stderr_tail = (backend_stderr or "").strip()
+                    if _stderr_tail:
+                        # Include the last few lines of stderr for context
+                        _stderr_lines = _stderr_tail.splitlines()
+                        if len(_stderr_lines) > 10:
+                            _stderr_tail = "\n".join(
+                                ["...(truncated)"] + _stderr_lines[-10:]
+                            )
+                        _fail_detail_parts.append(f":\n{_stderr_tail}")
+                else:
+                    _fail_detail_parts.append(".")
                 return None, _fail(
-                    "Backend compilation failed",
+                    "".join(_fail_detail_parts),
                     json_output,
                     backend_process.returncode or 1,
                     command="build",
@@ -19642,6 +19666,339 @@ def build(
     )
 
 
+def _run_script_cross(
+    target: str,
+    file_path: str | None,
+    module: str | None,
+    script_args: list[str],
+    json_output: bool = False,
+    verbose: bool = False,
+    timing: bool = False,
+    trusted: bool = False,
+    capabilities: CapabilityInput | None = None,
+    build_args: list[str] | None = None,
+    build_profile: BuildProfile | None = None,
+) -> int:
+    """Build with a cross target (wasm or luau) and run with the appropriate runtime."""
+    if file_path and module:
+        return _fail("Use a file path or --module, not both.", json_output, command="run")
+    if not file_path and not module:
+        return _fail("Missing entry file or module.", json_output, command="run")
+
+    project_root = (
+        _find_project_root(Path(file_path).resolve())
+        if file_path
+        else _find_project_root(Path.cwd())
+    )
+    molt_root = _find_molt_root(project_root, Path.cwd())
+    env = _base_env(project_root, Path(file_path) if file_path else None, molt_root=molt_root)
+    if file_path:
+        env.update(_collect_env_overrides(file_path))
+
+    build_args = list(build_args or [])
+    if build_profile is not None and not _build_args_has_profile_flag(build_args):
+        build_args.extend(["--build-profile", build_profile])
+    if trusted and not _build_args_has_trusted_flag(build_args):
+        build_args.append("--trusted")
+
+    build_cmd = [sys.executable, "-m", "molt.cli", "build", *build_args]
+    if module:
+        build_cmd.extend(["--module", module])
+    else:
+        build_cmd.append(file_path)
+
+    if not json_output:
+        target_label = "WASM" if target == "wasm" else "Luau"
+        print(f"Building for {target_label}...", file=sys.stderr)
+
+    t_start = time.monotonic()
+    build_res = subprocess.run(
+        build_cmd,
+        env=env,
+        cwd=project_root,
+        capture_output=json_output,
+        text=json_output,
+    )
+    t_build = time.monotonic() - t_start
+
+    if build_res.returncode != 0:
+        if json_output:
+            data: dict[str, Any] = {"returncode": build_res.returncode}
+            if build_res.stdout:
+                data["build_stdout"] = build_res.stdout
+            if build_res.stderr:
+                data["build_stderr"] = build_res.stderr
+            payload = _json_payload("run", "error", data=data, errors=["build failed"])
+            _emit_json(payload, json_output=True)
+        return build_res.returncode
+
+    # Resolve the output artifact path
+    source_path = Path(file_path) if file_path else None
+    entry_module_name: str | None = None
+    if module:
+        cwd_root = _find_project_root(Path.cwd())
+        module_roots = _resolve_module_roots(project_root, cwd_root, respect_pythonpath=False)
+        resolved = _resolve_entry_module(module, module_roots)
+        if resolved is not None:
+            entry_module_name, source_path = resolved
+    if source_path is not None and entry_module_name is None:
+        cwd_root = _find_project_root(Path.cwd())
+        module_roots = _resolve_module_roots(project_root, cwd_root, respect_pythonpath=False)
+        module_roots.append(source_path.parent.resolve())
+        module_roots = list(dict.fromkeys(module_roots))
+        entry_module_name = _module_name_from_path(
+            source_path, module_roots, _stdlib_root_path()
+        )
+
+    if entry_module_name is None or source_path is None:
+        return _fail("Failed to resolve entry module.", json_output, command="run")
+
+    output_base = _output_base_for_entry(entry_module_name, source_path)
+    out_dir = _extract_out_dir_arg(build_args)
+    out_dir_path = _resolve_out_dir(project_root, out_dir)
+    _artifacts_root, bin_root, _output_root = _resolve_output_roots(
+        project_root, out_dir_path, output_base
+    )
+
+    if target == "wasm":
+        wasm_artifact = _resolve_output_path(
+            _extract_output_arg_str(build_args),
+            _output_root / f"{output_base}.wasm",
+            out_dir=out_dir_path,
+            project_root=project_root,
+        )
+        # Also check for linked wasm
+        linked_path = wasm_artifact.parent / f"{wasm_artifact.stem}_linked.wasm"
+        run_artifact = linked_path if linked_path.exists() else wasm_artifact
+        if not run_artifact.exists():
+            return _fail(
+                f"WASM artifact not found: {run_artifact}\n"
+                "Hint: the build may have succeeded but placed output elsewhere. "
+                "Try `molt build --target wasm --verbose` to see the output path.",
+                json_output,
+                command="run",
+            )
+        wasmtime = shutil.which("wasmtime")
+        if wasmtime is None:
+            return _fail(
+                "wasmtime not found on PATH. Install it: https://wasmtime.dev\n"
+                "Hint: curl https://wasmtime.dev/install.sh -sSf | bash",
+                json_output,
+                command="run",
+            )
+        run_cmd = [wasmtime, "run", str(run_artifact), "--", *script_args]
+    elif target == "luau":
+        luau_artifact = _resolve_output_path(
+            _extract_output_arg_str(build_args),
+            _output_root / f"{output_base}.luau",
+            out_dir=out_dir_path,
+            project_root=project_root,
+        )
+        if not luau_artifact.exists():
+            return _fail(
+                f"Luau artifact not found: {luau_artifact}\n"
+                "Hint: the build may have succeeded but placed output elsewhere. "
+                "Try `molt build --target luau --verbose` to see the output path.",
+                json_output,
+                command="run",
+            )
+        lune = shutil.which("lune")
+        if lune is None:
+            return _fail(
+                "lune not found on PATH. Install it: https://lune-org.github.io/docs/getting-started/installation\n"
+                "Hint: cargo install lune",
+                json_output,
+                command="run",
+            )
+        run_cmd = [lune, "run", str(luau_artifact), "--", *script_args]
+    else:
+        return _fail(f"Unsupported cross target: {target}", json_output, command="run")
+
+    if not json_output and verbose:
+        print(f"Running: {shlex.join(run_cmd)}", file=sys.stderr)
+
+    t_run_start = time.monotonic()
+    run_res = subprocess.run(run_cmd, env=env, cwd=project_root)
+    t_run = time.monotonic() - t_run_start
+
+    if timing and not json_output:
+        print(
+            f"\n--- timing: build {t_build:.3f}s | run {t_run:.3f}s | "
+            f"total {t_build + t_run:.3f}s ---",
+            file=sys.stderr,
+        )
+    return run_res.returncode
+
+
+def _extract_output_arg_str(build_args: list[str]) -> str | None:
+    """Extract --output value from build_args as a string (or None)."""
+    raw = _extract_output_arg(build_args)
+    return str(raw) if raw is not None else None
+
+
+def _deploy(
+    platform: str,
+    file_path: str | None,
+    module: str | None,
+    build_profile: str | None,
+    output: str | None,
+    out_dir: str | None,
+    roblox_project: str | None,
+    wrangler_args: str,
+    dry_run: bool,
+    build_args: list[str],
+    json_output: bool,
+    verbose: bool,
+) -> int:
+    """Build and deploy to the specified platform."""
+    if file_path and module:
+        return _fail("Use a file path or --module, not both.", json_output, command="deploy")
+    if not file_path and not module:
+        return _fail("Missing entry file or module.", json_output, command="deploy")
+
+    project_root = (
+        _find_project_root(Path(file_path).resolve())
+        if file_path
+        else _find_project_root(Path.cwd())
+    )
+    molt_root = _find_molt_root(project_root, Path.cwd())
+    env = _base_env(project_root, Path(file_path) if file_path else None, molt_root=molt_root)
+    if file_path:
+        env.update(_collect_env_overrides(file_path))
+
+    # Construct build command
+    build_cmd_args = list(build_args)
+
+    if platform == "cloudflare":
+        if not any(a.startswith("--target") for a in build_cmd_args):
+            build_cmd_args.extend(["--target", "wasm"])
+        if not any(a.startswith("--profile") or a.startswith("--platform") for a in build_cmd_args):
+            build_cmd_args.extend(["--profile", "cloudflare"])
+        if not any(a == "--split-runtime" for a in build_cmd_args):
+            build_cmd_args.append("--split-runtime")
+    elif platform == "roblox":
+        if not any(a.startswith("--target") for a in build_cmd_args):
+            build_cmd_args.extend(["--target", "luau"])
+
+    if build_profile and not _build_args_has_profile_flag(build_cmd_args):
+        build_cmd_args.extend(["--build-profile", build_profile])
+    if output:
+        build_cmd_args.extend(["--output", output])
+    if out_dir:
+        build_cmd_args.extend(["--out-dir", out_dir])
+    if verbose:
+        build_cmd_args.append("--verbose")
+    if json_output:
+        build_cmd_args.append("--json")
+
+    build_cmd = [sys.executable, "-m", "molt.cli", "build", *build_cmd_args]
+    if module:
+        build_cmd.extend(["--module", module])
+    else:
+        build_cmd.append(file_path)
+
+    if not json_output:
+        platform_label = "Cloudflare Workers" if platform == "cloudflare" else "Roblox"
+        print(f"Building for {platform_label}...", file=sys.stderr)
+        if verbose:
+            print(f"Build command: {shlex.join(build_cmd)}", file=sys.stderr)
+
+    build_res = subprocess.run(build_cmd, env=env, cwd=project_root)
+    if build_res.returncode != 0:
+        return _fail(
+            f"Build for {platform} failed (exit code {build_res.returncode}).\n"
+            "Run with --verbose for details.",
+            json_output,
+            code=build_res.returncode,
+            command="deploy",
+        )
+
+    if dry_run:
+        if not json_output:
+            print("Build succeeded (dry run, skipping deploy).", file=sys.stderr)
+        return 0
+
+    if platform == "cloudflare":
+        wrangler = shutil.which("wrangler")
+        if wrangler is None:
+            return _fail(
+                "wrangler not found on PATH. Install it:\n"
+                "  npm install -g wrangler\n"
+                "  # or: npx wrangler deploy",
+                json_output,
+                command="deploy",
+            )
+        deploy_cmd_parts = [wrangler, "deploy"]
+        if wrangler_args:
+            deploy_cmd_parts.extend(shlex.split(wrangler_args))
+        if not json_output:
+            print(f"Deploying with wrangler...", file=sys.stderr)
+            if verbose:
+                print(f"Deploy command: {shlex.join(deploy_cmd_parts)}", file=sys.stderr)
+        deploy_res = subprocess.run(deploy_cmd_parts, env=env, cwd=project_root)
+        return deploy_res.returncode
+
+    elif platform == "roblox":
+        if roblox_project is None:
+            if not json_output:
+                print(
+                    "Build succeeded. Use --roblox-project <dir> to auto-copy "
+                    "Luau output into your Roblox project.",
+                    file=sys.stderr,
+                )
+            return 0
+        roblox_dir = Path(roblox_project)
+        if not roblox_dir.is_dir():
+            return _fail(
+                f"Roblox project directory not found: {roblox_dir}",
+                json_output,
+                command="deploy",
+            )
+        # Find the Luau output
+        source_path = Path(file_path) if file_path else None
+        entry_module_name: str | None = None
+        if module:
+            cwd_root = _find_project_root(Path.cwd())
+            module_roots = _resolve_module_roots(project_root, cwd_root, respect_pythonpath=False)
+            resolved = _resolve_entry_module(module, module_roots)
+            if resolved is not None:
+                entry_module_name, source_path = resolved
+        if source_path is not None and entry_module_name is None:
+            cwd_root = _find_project_root(Path.cwd())
+            module_roots = _resolve_module_roots(project_root, cwd_root, respect_pythonpath=False)
+            module_roots.append(source_path.parent.resolve())
+            module_roots = list(dict.fromkeys(module_roots))
+            entry_module_name = _module_name_from_path(
+                source_path, module_roots, _stdlib_root_path()
+            )
+        if entry_module_name is None or source_path is None:
+            return _fail(
+                "Failed to resolve entry module for Roblox deploy.",
+                json_output,
+                command="deploy",
+            )
+        output_base = _output_base_for_entry(entry_module_name, source_path)
+        out_dir_path = _resolve_out_dir(project_root, out_dir)
+        _artifacts_root, _bin_root, output_root = _resolve_output_roots(
+            project_root, out_dir_path, output_base
+        )
+        luau_artifact = output_root / f"{output_base}.luau"
+        if not luau_artifact.exists():
+            return _fail(
+                f"Luau artifact not found at {luau_artifact}. "
+                "Build may have placed it elsewhere; check --verbose output.",
+                json_output,
+                command="deploy",
+            )
+        dest = roblox_dir / luau_artifact.name
+        shutil.copy2(luau_artifact, dest)
+        if not json_output:
+            print(f"Copied {luau_artifact.name} -> {dest}", file=sys.stderr)
+        return 0
+
+    return _fail(f"Unknown deploy platform: {platform}", json_output, command="deploy")
+
+
 def run_script(
     file_path: str | None,
     module: str | None,
@@ -24040,7 +24397,7 @@ def main() -> int:
     build_parser.add_argument(
         "--target",
         default=None,
-        help="Target backend: native, wasm, or a target triple.",
+        help="Target backend: native, wasm, luau, or a target triple.",
     )
     build_parser.add_argument(
         "--codec",
@@ -24210,9 +24567,10 @@ def main() -> int:
     )
     build_parser.add_argument(
         "--profile",
+        "--platform",
         choices=["cloudflare", "browser", "wasi", "fastly"],
         default=None,
-        help="Deployment profile (sets optimization defaults).",
+        help="Deployment platform/profile (sets optimization defaults for the target platform).",
     )
     build_parser.add_argument(
         "--deterministic",
@@ -24468,6 +24826,14 @@ def main() -> int:
     run_parser.add_argument(
         "--module",
         help="Entry module name (uses pkg.__main__ when present).",
+    )
+    run_parser.add_argument(
+        "--target",
+        default=None,
+        help=(
+            "Target backend: native (default), wasm (build + run with wasmtime), "
+            "or luau (build + run with lune)."
+        ),
     )
     run_parser.add_argument(
         "--build-arg",
@@ -25099,6 +25465,62 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
+    # --- deploy command ---
+    deploy_parser = subparsers.add_parser(
+        "deploy",
+        help="Build and deploy to a target platform (cloudflare, roblox)",
+    )
+    deploy_parser.add_argument(
+        "platform",
+        choices=["cloudflare", "roblox"],
+        help="Deployment target: cloudflare (WASM Workers) or roblox (Luau).",
+    )
+    deploy_parser.add_argument("file", nargs="?", help="Path to Python source")
+    deploy_parser.add_argument(
+        "--module",
+        help="Entry module name (uses pkg.__main__ when present).",
+    )
+    deploy_parser.add_argument(
+        "--build-profile",
+        choices=["dev", "release"],
+        default=None,
+        help="Build profile for backend/runtime (default: release).",
+    )
+    deploy_parser.add_argument(
+        "--output",
+        help="Output path for the build artifact.",
+    )
+    deploy_parser.add_argument(
+        "--out-dir",
+        help="Output directory for build artifacts.",
+    )
+    deploy_parser.add_argument(
+        "--roblox-project",
+        help="Path to the Roblox project directory to copy Luau output into.",
+    )
+    deploy_parser.add_argument(
+        "--wrangler-args",
+        default="",
+        help="Extra arguments passed to wrangler deploy (cloudflare only).",
+    )
+    deploy_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Build only; do not run wrangler deploy or copy to project.",
+    )
+    deploy_parser.add_argument(
+        "--build-arg",
+        action="append",
+        default=[],
+        help="Extra args passed to `molt build`.",
+    )
+    deploy_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+    deploy_parser.add_argument(
+        "--verbose", action="store_true", help="Emit verbose diagnostics."
+    )
+
     args = parser.parse_args()
 
     config_root = _find_project_root(Path.cwd())
@@ -25449,6 +25871,7 @@ def main() -> int:
         build_args = _strip_leading_double_dash(args.build_arg)
         if args.rebuild and not _build_args_has_cache_flag(build_args):
             build_args.append("--no-cache")
+        run_target = getattr(args, "target", None) or run_cfg.get("target") or "native"
         run_profile = (
             args.profile
             or run_cfg.get("profile")
@@ -25469,6 +25892,23 @@ def main() -> int:
         capabilities = (
             args.capabilities or run_cfg.get("capabilities") or cfg_capabilities
         )
+        if run_target in ("wasm", "luau"):
+            # Inject --target into build_args so run_script_cross handles it
+            if not any(a.startswith("--target") for a in build_args):
+                build_args.extend(["--target", run_target])
+            return _run_script_cross(
+                run_target,
+                args.file,
+                args.module,
+                _strip_leading_double_dash(args.script_args),
+                args.json,
+                args.verbose,
+                args.timing,
+                trusted,
+                capabilities,
+                build_args,
+                cast(BuildProfile | None, run_profile),
+            )
         return run_script(
             args.file,
             args.module,
@@ -25786,6 +26226,22 @@ def main() -> int:
         return show_config(config_root, config, args.json, args.verbose)
     if args.command == "completion":
         return completion(args.shell, args.json, args.verbose)
+
+    if args.command == "deploy":
+        return _deploy(
+            platform=args.platform,
+            file_path=args.file,
+            module=args.module,
+            build_profile=args.build_profile,
+            output=args.output,
+            out_dir=args.out_dir,
+            roblox_project=getattr(args, "roblox_project", None),
+            wrangler_args=getattr(args, "wrangler_args", ""),
+            dry_run=args.dry_run,
+            build_args=_strip_leading_double_dash(args.build_arg),
+            json_output=args.json,
+            verbose=args.verbose,
+        )
 
     return 2
 
