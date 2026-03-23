@@ -43,7 +43,7 @@ pub use crate::ir::{
 };
 #[cfg(feature = "native-backend")]
 use crate::native_backend::TrampolineKey;
-pub(crate) use crate::passes::{
+pub use crate::passes::{
     apply_profile_order, build_const_int_map, elide_dead_struct_allocs,
     eliminate_dead_functions, escape_analysis,
     fold_constants, fold_constants_cross_block, hoist_loop_invariants,
@@ -1197,10 +1197,21 @@ impl SimpleBackend {
     pub fn new_with_target(target: Option<&str>) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("is_pic", "true").unwrap();
-        flag_builder.set("opt_level", "speed").unwrap();
+        // Cranelift optimization level: "none", "speed", or "speed_and_size".
+        // Default to "speed" for production quality codegen.  Override with
+        // MOLT_BACKEND_OPT_LEVEL=none for fast dev-loop compilation (~3-5x
+        // faster compile times at the cost of ~30-50% slower generated code).
+        let opt_level = env_setting("MOLT_BACKEND_OPT_LEVEL")
+            .unwrap_or_else(|| "speed".to_string());
+        flag_builder.set("opt_level", &opt_level).unwrap_or_else(|err| {
+            panic!("invalid MOLT_BACKEND_OPT_LEVEL={opt_level:?}: {err:?}")
+        });
         let regalloc_algorithm =
             env_setting("MOLT_BACKEND_REGALLOC_ALGORITHM").unwrap_or_else(|| {
-                if cfg!(debug_assertions) {
+                // When opt_level=none, default to the fast single-pass
+                // allocator regardless of build profile — the user has
+                // explicitly asked for compile-time speed.
+                if cfg!(debug_assertions) || opt_level == "none" {
                     "single_pass".to_string()
                 } else {
                     "backtracking".to_string()

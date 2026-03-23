@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub(crate) fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
+pub fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_STRUCT_ELIDE").is_ok() {
         return;
     }
@@ -130,7 +130,7 @@ fn is_inlineable_with_limit(
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub(crate) fn inline_functions(ir: &mut SimpleIR) {
+pub fn inline_functions(ir: &mut SimpleIR) {
     if std::env::var("MOLT_DISABLE_INLINING").is_ok() {
         return;
     }
@@ -306,7 +306,7 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub(crate) fn apply_profile_order(ir: &mut SimpleIR) {
+pub fn apply_profile_order(ir: &mut SimpleIR) {
     let Some(profile) = ir.profile.as_ref() else {
         return;
     };
@@ -349,7 +349,7 @@ pub(crate) fn apply_profile_order(ir: &mut SimpleIR) {
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub(crate) fn fold_constants(ops: &mut Vec<OpIR>) {
+pub fn fold_constants(ops: &mut Vec<OpIR>) {
     // Map from variable name -> known constant integer value (raw, unboxed).
     let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();
     // Map from variable name -> known constant boolean value.
@@ -502,7 +502,7 @@ struct BranchSnapshot {
 }
 
 #[allow(dead_code)]
-pub(crate) fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
+pub fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
     let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();
     let mut const_bools: BTreeMap<String, bool> = BTreeMap::new();
 
@@ -733,7 +733,7 @@ pub(crate) fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub(crate) fn escape_analysis(func_ir: &mut FunctionIR) {
+pub fn escape_analysis(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_ESCAPE_ANALYSIS").is_ok() {
         return;
     }
@@ -952,7 +952,7 @@ const INT_PRODUCING_OPS: &[&str] = &[
     allow(dead_code)
 )]
 #[allow(dead_code)]
-pub(crate) fn propagate_loop_fast_int(func_ir: &mut FunctionIR) {
+pub fn propagate_loop_fast_int(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_LOOP_FAST_INT").is_ok() {
         return;
     }
@@ -1075,7 +1075,7 @@ pub(crate) fn propagate_loop_fast_int(func_ir: &mut FunctionIR) {
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub(crate) fn build_const_int_map(ops: &[OpIR]) -> BTreeMap<String, i64> {
+pub fn build_const_int_map(ops: &[OpIR]) -> BTreeMap<String, i64> {
     let mut map = BTreeMap::new();
     for op in ops {
         if op.kind == "const" {
@@ -1406,7 +1406,7 @@ mod tests {
 
 /// Identify pairs of `inc_ref`/`dec_ref` ops that cancel within a basic block.
 /// Returns: (set of op indices to skip, set of variable names whose dec_ref to skip).
-pub(crate) fn compute_rc_coalesce_skips(
+pub fn compute_rc_coalesce_skips(
     ops: &[OpIR],
     last_use: &BTreeMap<String, usize>,
 ) -> (HashSet<usize>, HashSet<String>) {
@@ -1516,7 +1516,7 @@ fn build_last_use_map(ops: &[OpIR]) -> BTreeMap<String, usize> {
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub(crate) fn rc_coalescing(func_ir: &mut FunctionIR) {
+pub fn rc_coalescing(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_RC_COALESCE").is_ok() {
         return;
     }
@@ -1570,7 +1570,7 @@ fn is_hoistable(op: &OpIR) -> bool {
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub(crate) fn hoist_loop_invariants(func_ir: &mut FunctionIR) {
+pub fn hoist_loop_invariants(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_LICM").is_ok() {
         return;
     }
@@ -1673,7 +1673,7 @@ pub(crate) fn hoist_loop_invariants(func_ir: &mut FunctionIR) {
 /// This pass runs after inlining — if a callee was fully inlined into all
 /// call sites, it becomes unreachable and will be eliminated here.
 /// Applies to both native and WASM backends.
-pub(crate) fn eliminate_dead_functions(ir: &mut SimpleIR) {
+pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
     if std::env::var("MOLT_DISABLE_DEAD_FUNC_ELIM").is_ok() {
         return;
     }
