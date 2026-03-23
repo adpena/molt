@@ -7035,6 +7035,21 @@ def _is_valid_cached_backend_artifact(path: Path, *, is_wasm: bool) -> bool:
         return False
 
 
+def _maybe_enable_native_cpu(env: dict[str, str]) -> None:
+    """Enable target-cpu=native for the Rust runtime compilation.
+
+    When MOLT_NATIVE_CPU=1 is set (or when building for the local machine
+    in release mode), add -C target-cpu=native to RUSTFLAGS.  This enables
+    AVX2/NEON/etc. in the compiled runtime for maximum performance.
+    Skipped for cross-compilation and WASM targets.
+    """
+    if env.get("MOLT_NATIVE_CPU", "").strip().lower() in ("1", "true", "yes"):
+        existing = env.get("CARGO_BUILD_RUSTFLAGS", env.get("RUSTFLAGS", ""))
+        if "target-cpu" not in existing:
+            flags = f"{existing} -C target-cpu=native".strip()
+            env["CARGO_BUILD_RUSTFLAGS"] = flags
+
+
 def _maybe_enable_sccache(env: dict[str, str]) -> None:
     if env.get("RUSTC_WRAPPER"):
         return
@@ -17308,6 +17323,7 @@ def _ensure_backend_binary(
             cmd.extend(["--features", ",".join(backend_features)])
         build_env = os.environ.copy()
         _maybe_enable_sccache(build_env)
+        _maybe_enable_native_cpu(build_env)
         try:
             build = _run_cargo_with_sccache_retry(
                 cmd,
