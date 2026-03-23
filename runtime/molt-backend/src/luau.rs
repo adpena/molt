@@ -104,6 +104,8 @@ impl LuauBackend {
         freeze_constant_tables(&mut func_body);
         optimize_multi_return(&mut func_body);
         fold_range_indices(&mut func_body);
+        strip_exception_cleanup_blocks(&mut func_body);
+        strip_dead_gotos_and_labels(&mut func_body);
 
         // Phase 3: Emit prelude with only the helpers that survive optimization.
         self.emit_prelude_conditional(&func_body);
@@ -149,6 +151,20 @@ impl LuauBackend {
         self.output
             .push_str("local molt_func_attrs: {[any]: {[string]: any}} = {}\n");
         self.output.push_str("local molt_module_cache: {[string]: any} = {\n\tmath = nil,\n\tjson = nil,\n\ttime = nil,\n\tos = nil,\n}\n\n");
+
+        // Runtime intrinsic stubs — bootstrap functions from the native
+        // runtime that are no-ops in Luau transpiled output.
+        for stub in &[
+            "molt_sys_set_version_info",
+            "molt_init_sys",
+            "molt_runtime_shutdown",
+            "molt_runtime_init",
+        ] {
+            if func_body.contains(stub) {
+                self.output
+                    .push_str(&format!("local function {stub}(...) end\n"));
+            }
+        }
 
         // Helper to check if a name is used in the function body.
         // We search for "name(" to match call sites, avoiding false positives
@@ -496,27 +512,40 @@ impl LuauBackend {
             }
 
             // Pass 2: find variables first declared inside if/else/loop
-            // blocks but used outside.  Track nesting depth and declaration
-            // sites.
+            // blocks but used outside, OR declared in one block and used
+            // in a different block at the same depth (e.g., two sequential
+            // while loops). Track (depth, block_id) pairs.
             let mut depth: i32 = 0;
-            let mut decl_depth: BTreeMap<String, i32> = BTreeMap::new();
+            let mut block_id: u32 = 0;
+            let mut decl_scope: BTreeMap<String, (i32, u32)> = BTreeMap::new();
             let param_set: BTreeSet<String> =
                 func.params.iter().map(|p| sanitize_ident(p)).collect();
 
             for op in &ops {
                 match op.kind.as_str() {
-                    "if" | "loop_start" | "for_range" | "for_iter" => depth += 1,
-                    "end_if" | "loop_end" | "end_for" => depth -= 1,
+                    "if" | "loop_start" | "for_range" | "for_iter" => {
+                        depth += 1;
+                        block_id += 1;
+                    }
+                    "else" => {
+                        // else starts a new block at the same depth
+                        block_id += 1;
+                    }
+                    "end_if" | "loop_end" | "end_for" => {
+                        depth -= 1;
+                        block_id += 1;
+                    }
                     _ => {}
                 }
-                // Record first declaration depth of each variable.
+                // Record first declaration site of each variable.
                 if let Some(ref out_name) = op.out {
                     if out_name != "none" && !op.kind.starts_with("nop") {
                         let var = sanitize_ident(out_name);
-                        decl_depth.entry(var).or_insert(depth);
+                        decl_scope.entry(var).or_insert((depth, block_id));
                     }
                 }
-                // Check if any referenced variable was declared at a deeper depth.
+                // Check if any referenced variable was declared at a deeper
+                // depth OR in a different block at the same depth.
                 let refs: Vec<&str> = op
                     .args
                     .as_deref()
@@ -530,8 +559,10 @@ impl LuauBackend {
                     if param_set.contains(&var) {
                         continue;
                     }
-                    if let Some(&dd) = decl_depth.get(&var) {
-                        if dd > depth {
+                    if let Some(&(dd, db)) = decl_scope.get(&var) {
+                        // Hoist if: declared deeper, OR declared at same
+                        // depth but in a different block (different loop/if).
+                        if dd > depth || (dd > 0 && dd == depth && db != block_id) {
                             self.hoisted_vars.insert(var);
                         }
                     }
@@ -3389,11 +3420,22 @@ fn python_type_to_luau(hint: &str) -> &'static str {
 fn sanitize_ident(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .map(|c| if c == '.' || c == '-' { '_' } else { c })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
 
+    if cleaned.is_empty() {
+        return "_empty".to_string();
+    }
     if is_luau_keyword(&cleaned) {
         format!("_m_{cleaned}")
+    } else if cleaned.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("_{cleaned}")
     } else {
         cleaned
     }
@@ -4124,6 +4166,20 @@ fn replace_whole_word(haystack: &str, needle: &str, replacement: &str) -> String
             let after_ok = pos + needle_bytes.len() >= bytes.len()
                 || !is_ident_char(bytes[pos + needle_bytes.len()]);
             if before_ok && after_ok {
+                // Don't replace at declaration positions with literals —
+                // `local vN` should never become `local "string"` or `local 42`.
+                let is_decl_pos = pos >= 6 && &bytes[pos - 6..pos] == b"local ";
+                let replacement_is_literal = replacement.starts_with('"')
+                    || replacement.starts_with('{')
+                    || replacement == "nil" || replacement == "true" || replacement == "false"
+                    || replacement.starts_with(|c: char| c.is_ascii_digit())
+                    || replacement.starts_with('-');
+                if is_decl_pos && replacement_is_literal {
+                    // Skip this replacement — keep the original variable name
+                    result.push_str(std::str::from_utf8(&bytes[pos..pos + needle_bytes.len()]).unwrap_or(""));
+                    pos += needle_bytes.len();
+                    continue;
+                }
                 result.push_str(replacement);
                 pos += needle_bytes.len();
                 continue;
@@ -4966,6 +5022,10 @@ fn simplify_return_chain(source: &mut String) {
 fn is_pure_expr(s: &str) -> bool {
     // Reject simple literals and variable refs — no point in CSE for those.
     if is_simple_literal(s) || is_simple_var_ref(s) {
+        return false;
+    }
+    // Table constructors create NEW mutable objects — CSE would alias them.
+    if s.starts_with('{') {
         return false;
     }
     // If the expression contains a parenthesised call, only allow known-pure
@@ -5891,6 +5951,181 @@ fn find_matching_paren(s: &str, open_pos: usize) -> Option<usize> {
 /// level 1 (function body top-level) is never mutated, insert `table.freeze(vN)`
 /// immediately after the declaration.  The Luau VM optimizes reads from frozen
 /// tables and prevents accidental mutation.
+/// Strip dead gotos (targets don't exist) and orphaned labels (no goto points to them).
+/// Also strips the containing if-block when the goto is the only statement inside.
+/// Strip exception-frame cleanup blocks: the pattern
+///   local vN = nil -- [exception_last]
+///   local vM = nil; vM = nil; local vP = vN == vM; local vQ = not vP;
+///   if vQ then error(vN); goto label_X; end; ::label_X::
+/// These are dead code in Luau and the goto-past-local causes syntax errors.
+fn strip_exception_cleanup_blocks(source: &mut String) {
+    let mut lines: Vec<String> = source.lines().map(|l| l.to_string()).collect();
+    let mut changed = true;
+    let mut total_removed = 0;
+
+    // Iterate until no more patterns found (handles consecutive blocks).
+    while changed {
+        changed = false;
+        let mut remove: BTreeSet<usize> = BTreeSet::new();
+
+        for i in 0..lines.len() {
+            let t = lines[i].trim().to_string();
+            // Match: `if vN then` or `if not vN then` where next line(s) contain error+goto
+            if (t.starts_with("if ") || t.starts_with("if not ")) && t.ends_with(" then") {
+                let mut j = i + 1;
+                let mut has_error = false;
+                let mut has_goto = false;
+                let mut goto_label = String::new();
+                while j < lines.len() {
+                    let tj = lines[j].trim().to_string();
+                    if tj.starts_with("error(") {
+                        has_error = true;
+                    } else if tj.starts_with("goto ") {
+                        has_goto = true;
+                        goto_label = tj[5..].to_string();
+                    } else if tj == "end" {
+                        if has_error && has_goto {
+                            // Found the pattern. Remove from i to j inclusive.
+                            for k in i..=j {
+                                remove.insert(k);
+                            }
+                            // Also remove the matching label if it follows.
+                            if j + 1 < lines.len() {
+                                let label_line = lines[j + 1].trim().to_string();
+                                if label_line == format!("::{goto_label}::") {
+                                    remove.insert(j + 1);
+                                }
+                            }
+                            // Also remove the comparison setup lines before the if
+                            // (local vP = vN == vM; local vQ = not vP)
+                            let mut k = i;
+                            while k > 0 {
+                                k -= 1;
+                                let tk = lines[k].trim();
+                                if tk.starts_with("local ") && (tk.contains(" == ") || tk.contains("not ")) {
+                                    remove.insert(k);
+                                } else if tk.contains("= nil") && !tk.contains("--") {
+                                    remove.insert(k);
+                                } else if tk.contains("-- [exception_last]") {
+                                    remove.insert(k);
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        break;
+                    } else if !tj.is_empty() && !tj.starts_with("--") {
+                        break; // Not our pattern
+                    }
+                    j += 1;
+                }
+            }
+        }
+
+        if !remove.is_empty() {
+            changed = true;
+            total_removed += remove.len();
+            let mut new_lines = Vec::with_capacity(lines.len());
+            for (i, line) in lines.iter().enumerate() {
+                if !remove.contains(&i) {
+                    new_lines.push(line.clone());
+                }
+            }
+            lines = new_lines;
+        }
+    }
+
+    if total_removed > 0 {
+        let mut result = String::with_capacity(source.len());
+        for line in &lines {
+            result.push_str(line);
+            result.push('\n');
+        }
+        *source = result;
+        eprintln!("[molt-luau] Stripped {} exception-cleanup lines", total_removed);
+    }
+}
+
+fn strip_dead_gotos_and_labels(source: &mut String) {
+    let lines: Vec<&str> = source.lines().collect();
+
+    // Collect all labels and goto targets.
+    let mut existing_labels: BTreeSet<String> = BTreeSet::new();
+    let mut goto_targets: BTreeSet<String> = BTreeSet::new();
+    for line in &lines {
+        let t = line.trim();
+        if t.starts_with("::") && t.ends_with("::") && t.len() > 4 {
+            existing_labels.insert(t[2..t.len()-2].to_string());
+        }
+        if t.starts_with("goto ") {
+            goto_targets.insert(t[5..].to_string());
+        }
+        // Inline gotos: `if ... then goto label_N end`
+        if let Some(pos) = t.find("then goto ") {
+            let after = &t[pos + 10..];
+            if let Some(end_pos) = after.find(' ') {
+                goto_targets.insert(after[..end_pos].to_string());
+            }
+        }
+    }
+
+    let mut remove: BTreeSet<usize> = BTreeSet::new();
+
+    // Remove gotos whose target label doesn't exist.
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if t.starts_with("goto ") {
+            let target = &t[5..];
+            if !existing_labels.contains(target) {
+                remove.insert(i);
+                // Also remove surrounding if/end block if the goto was the only statement.
+                if i > 0 && i + 1 < lines.len() {
+                    let prev = lines[i - 1].trim();
+                    let next = lines[i + 1].trim();
+                    if prev.ends_with(" then") && next == "end" {
+                        // Check there's an error() before the goto too
+                        if i >= 2 && lines[i - 2].trim().starts_with("error(") {
+                            remove.insert(i - 2); // error()
+                        }
+                        remove.insert(i - 1); // if ... then
+                        remove.insert(i + 1); // end
+                        // Also remove the comparison setup before the if
+                        if i >= 3 {
+                            let comp = lines[i - 3].trim();
+                            if comp.starts_with("if not ") && comp.ends_with(" then") {
+                                // This is the outer pattern, already captured
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Remove orphaned labels (no goto points to them).
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if t.starts_with("::") && t.ends_with("::") && t.len() > 4 {
+            let label = &t[2..t.len()-2];
+            if !goto_targets.contains(label) {
+                remove.insert(i);
+            }
+        }
+    }
+
+    if remove.is_empty() { return; }
+
+    let mut result = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if !remove.contains(&i) {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    *source = result;
+    eprintln!("[molt-luau] Stripped {} dead gotos/labels", remove.len());
+}
+
 fn freeze_constant_tables(source: &mut String) {
     let lines: Vec<&str> = source.lines().collect();
     let mut inserts: BTreeMap<usize, String> = BTreeMap::new();
@@ -5940,11 +6175,12 @@ fn freeze_constant_tables(source: &mut String) {
             }
             let ot = other_line.trim();
             // Check: `vN[...] = `, `vN.xxx = `, or bare `vN = ` (reassignment)
-            if ot.starts_with(&format!("{var}[")) && ot.contains(" = ") {
+            // Also check guarded stores: `if type(vN) == "table" then vN[...] = ... end`
+            if ot.contains(&format!("{var}[")) && ot.contains(" = ") {
                 mutated = true;
                 break;
             }
-            if ot.starts_with(&format!("{var}.")) && ot.contains(" = ") {
+            if ot.contains(&format!("{var}.")) && ot.contains(" = ") {
                 mutated = true;
                 break;
             }
