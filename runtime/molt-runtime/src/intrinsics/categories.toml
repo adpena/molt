@@ -1,0 +1,50 @@
+# Intrinsic categorization for tree shaking and canonicalization.
+#
+# Categories:
+#   builtin  — Always available without import (CPython builtins module)
+#   internal — Runtime machinery, not exposed to Python
+#   stdlib   — Standard library modules, loaded on demand
+#
+# This file is informational and used by tools/gen_intrinsics.py to
+# generate per-category import groups for WASM tree shaking.
+
+[builtin]
+# True Python builtins (always available, ~30 functions)
+prefixes = [
+    "molt_abs", "molt_all_builtin", "molt_any_builtin",
+    "molt_ascii_builtin", "molt_bin", "molt_bool",
+    "molt_chr", "molt_compile_builtin", "molt_dir_builtin",
+    "molt_divmod", "molt_enumerate", "molt_format_builtin",
+    "molt_globals_builtin", "molt_hasattr", "molt_hash_builtin",
+    "molt_hex", "molt_id_builtin", "molt_input_builtin",
+    "molt_isinstance", "molt_issubclass", "molt_iter_builtin",
+    "molt_len", "molt_locals_builtin", "molt_map_builtin",
+    "molt_max_builtin", "molt_min_builtin", "molt_next_builtin",
+    "molt_oct_builtin", "molt_open_builtin", "molt_ord",
+    "molt_pow", "molt_pow_mod", "molt_print_builtin",
+    "molt_repr_builtin", "molt_repr_from_obj",
+    "molt_reversed_builtin", "molt_round_builtin",
+    "molt_sorted_builtin", "molt_sum_builtin",
+    "molt_zip_builtin",
+]
+
+[internal]
+# Runtime machinery — not exposed to Python, always linked
+prefixes = [
+    "molt_alloc", "molt_class_new", "molt_class_set_base",
+    "molt_class_apply_set_name", "molt_module_new", "molt_module_import",
+    "molt_module_cache", "molt_exception_active", "molt_exception_clear",
+    "molt_exception_last", "molt_exception_pending",
+    "molt_trace_", "molt_gc_", "molt_capabilities_",
+    "molt_function_set_builtin", "molt_stdlib_probe",
+    "molt_import_smoke", "molt_types_bootstrap",
+    "molt_abc_bootstrap", "molt_collections_abc_runtime",
+    "molt_classmethod_new", "molt_staticmethod_new", "molt_property_new",
+    "molt_builtin_class_lookup",
+]
+
+[stdlib]
+# Everything else — loaded on demand by their respective modules.
+# This is the default category for any intrinsic not matching
+# builtin or internal prefixes.
+default = true
