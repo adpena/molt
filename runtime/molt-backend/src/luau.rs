@@ -1118,7 +1118,29 @@ impl LuauBackend {
             "le" => self.emit_binary_op(op, "<="),
             "gt" => self.emit_binary_op(op, ">"),
             "ge" => self.emit_binary_op(op, ">="),
-            "eq" | "string_eq" | "is" => self.emit_binary_op(op, "=="),
+            "eq" | "string_eq" => self.emit_binary_op(op, "=="),
+            "is" => {
+                // Python `is` checks identity, not equality.  For `x is None`
+                // this maps correctly to `x == nil`.  For non-None operands,
+                // Luau `==` checks value equality which differs from identity.
+                // Emit a perf-review marker so compile_checked can flag it.
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let lhs = sanitize_ident(&args[0]);
+                    let rhs = sanitize_ident(&args[1]);
+                    let is_none_check = rhs == "nil" || lhs == "nil"
+                        || rhs == "v_None" || lhs == "v_None"
+                        || op.s_value.as_deref() == Some("None");
+                    if is_none_check {
+                        self.emit_line(&format!("local {out} = {lhs} == {rhs}"));
+                    } else {
+                        self.emit_line(&format!(
+                            "local {out} = {lhs} == {rhs} -- [identity: is]"
+                        ));
+                    }
+                }
+            }
             "ne" => self.emit_binary_op(op, "~="),
 
             // ================================================================
@@ -2004,12 +2026,24 @@ impl LuauBackend {
                     self.emit_line(&format!("{set}[{val}] = true"));
                 }
             }
-            "set_discard" | "set_remove" => {
+            "set_discard" => {
+                // discard is silent if element is absent.
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let set = sanitize_ident(&args[0]);
                     let val = sanitize_ident(&args[1]);
                     self.emit_line(&format!("{set}[{val}] = nil"));
+                }
+            }
+            "set_remove" => {
+                // remove raises KeyError if element is absent.
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let set = sanitize_ident(&args[0]);
+                    let val = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "if {set}[{val}] == nil then error(\"KeyError: \" .. tostring({val})) end; {set}[{val}] = nil"
+                    ));
                 }
             }
             "set_pop" => {
@@ -3604,6 +3638,16 @@ pub fn review_luau_perf(source: &str) -> Vec<(usize, &'static str, String)> {
         // Unsupported ops that are still present.
         if trimmed.contains("-- [unsupported op:") {
             issues.push((ln, "unsupported", trimmed.to_string()));
+        }
+
+        // Python `is` on non-None operands maps to == which checks value
+        // equality, not identity.  Flag for manual review.
+        if trimmed.contains("-- [identity: is]") {
+            issues.push((
+                ln,
+                "identity",
+                "Python `is` on non-None operands — Luau == checks value, not identity".into(),
+            ));
         }
     }
     issues
@@ -5231,6 +5275,44 @@ fn is_simple_var_ref(s: &str) -> bool {
     } else {
         false
     }
+}
+
+/// Check if `s` matches the Molt IR variable pattern `v\d+`.
+fn is_molt_var(s: &str) -> bool {
+    s.starts_with('v') && s.len() > 1 && s[1..].chars().all(|c| c.is_ascii_digit())
+}
+
+/// Scan source lines and count whole-word references to `v\d+` variables.
+/// Returns a map from variable name → reference count.
+fn count_var_uses(lines: &[&str]) -> BTreeMap<String, usize> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for line in lines {
+        let bytes = line.as_bytes();
+        let mut pos = 0;
+        while pos < bytes.len() {
+            if bytes[pos] == b'v' {
+                let start = pos;
+                pos += 1;
+                while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+                    pos += 1;
+                }
+                if pos > start + 1 {
+                    // Check word boundaries.
+                    let left_ok = start == 0
+                        || !bytes[start - 1].is_ascii_alphanumeric() && bytes[start - 1] != b'_';
+                    let right_ok = pos >= bytes.len()
+                        || !bytes[pos].is_ascii_alphanumeric() && bytes[pos] != b'_';
+                    if left_ok && right_ok {
+                        let var = &line[start..pos];
+                        *counts.entry(var.to_string()).or_insert(0) += 1;
+                    }
+                }
+            } else {
+                pos += 1;
+            }
+        }
+    }
+    counts
 }
 
 /// Check if `line` contains a whole-word occurrence of `var`.
