@@ -4008,9 +4008,43 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
             }
 
             if found_pattern {
-                let _ls_idx = loop_start_idx.unwrap();
+                let ls_idx = loop_start_idx.unwrap();
                 let in_idx = iter_next_idx.unwrap();
                 let le_idx = loop_end_idx.unwrap();
+
+                // Collect all variables referenced by the loop body so we
+                // can hoist constant definitions that the body depends on.
+                let mut body_refs: std::collections::BTreeSet<String> =
+                    std::collections::BTreeSet::new();
+                for j in (in_idx + 1)..le_idx {
+                    if let Some(ref args) = ops[j].args {
+                        for a in args {
+                            body_refs.insert(a.clone());
+                        }
+                    }
+                    if let Some(ref v) = ops[j].var {
+                        body_refs.insert(v.clone());
+                    }
+                }
+
+                // Emit constant definitions from the skipped region between
+                // `iter` and `loop_start` that the body references.  The
+                // frontend hoists loop-invariant index constants and string
+                // keys before the loop, but collapsing the iter pattern to
+                // for_iter drops them.
+                for j in (i + 1)..ls_idx {
+                    if matches!(
+                        ops[j].kind.as_str(),
+                        "const" | "const_int" | "const_str" | "const_bool"
+                            | "const_float" | "list_new"
+                    ) {
+                        if let Some(ref out) = ops[j].out {
+                            if body_refs.contains(out) {
+                                result.push(ops[j].clone());
+                            }
+                        }
+                    }
+                }
 
                 // Emit for_iter op.
                 result.push(OpIR {
