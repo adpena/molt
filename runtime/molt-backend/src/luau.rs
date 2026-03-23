@@ -371,6 +371,31 @@ impl LuauBackend {
                 "\tIOError = \"OSError\",\n",
                 "\tImportError = \"Exception\",\n",
                 "\tModuleNotFoundError = \"ImportError\",\n",
+                "\tStopAsyncIteration = \"Exception\",\n",
+                "\tAssertionError = \"Exception\",\n",
+                "\tUnicodeError = \"ValueError\",\n",
+                "\tUnicodeDecodeError = \"UnicodeError\",\n",
+                "\tUnicodeEncodeError = \"UnicodeError\",\n",
+                "\tConnectionError = \"OSError\",\n",
+                "\tBrokenPipeError = \"ConnectionError\",\n",
+                "\tConnectionRefusedError = \"ConnectionError\",\n",
+                "\tConnectionResetError = \"ConnectionError\",\n",
+                "\tConnectionAbortedError = \"ConnectionError\",\n",
+                "\tTimeoutError = \"OSError\",\n",
+                "\tChildProcessError = \"OSError\",\n",
+                "\tProcessLookupError = \"OSError\",\n",
+                "\tBlockingIOError = \"OSError\",\n",
+                "\tInterruptedError = \"OSError\",\n",
+                "\tIsADirectoryError = \"OSError\",\n",
+                "\tNotADirectoryError = \"OSError\",\n",
+                "\tFileExistsError = \"OSError\",\n",
+                "\tEOFError = \"Exception\",\n",
+                "\tUnboundLocalError = \"NameError\",\n",
+                "\tSyntaxError = \"Exception\",\n",
+                "\tIndentationError = \"SyntaxError\",\n",
+                "\tSystemExit = \"BaseException\",\n",
+                "\tKeyboardInterrupt = \"BaseException\",\n",
+                "\tGeneratorExit = \"BaseException\",\n",
                 "\tException = \"BaseException\",\n",
                 "\tBaseException = nil,\n",
                 "}\n\n",
@@ -1870,7 +1895,7 @@ impl LuauBackend {
                     .join(", ");
                 self.emit_line(&format!("local {out} = {{{items}}}"));
             }
-            "unpack_sequence" | "unpack_ex" => {
+            "unpack_sequence" => {
                 // Destructure a tuple/list into individual variables.
                 // args[0] = source container, args[1..] = output variable names.
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -3693,12 +3718,11 @@ impl LuauBackend {
             // Phi nodes (SSA merge — no-op in sequential Luau) / nop
             // ================================================================
             "phi" => {}
-            "nop" => {
-                // Pop pcall counter when we see the handler-closing try_end nop.
-                if let Some(ref sv) = op.s_value {
-                    if sv.contains("try_end") && !self.try_depth_counter.is_empty() {
-                        self.try_depth_counter.pop();
-                    }
+            "nop" => {}
+            "pcall_handler_end" => {
+                // Pop pcall counter at the end of the handler dispatch zone.
+                if !self.try_depth_counter.is_empty() {
+                    self.try_depth_counter.pop();
                 }
             }
 
@@ -3761,14 +3785,19 @@ impl LuauBackend {
     /// Returns the identifier as-is for booleans, or `molt_bool(ident)` otherwise.
     fn guard_truthiness(&self, raw_name: &str, op: &OpIR) -> String {
         let ident = sanitize_ident(raw_name);
-        let is_bool = op.type_hint.as_deref() == Some("bool")
-            || self.var_type_hints.get(raw_name).map_or(false, |t| t == "bool")
-            || ident == "true"
-            || ident == "false";
-        if is_bool {
-            ident
-        } else {
-            format!("molt_bool({ident})")
+        let hint = op.type_hint.as_deref()
+            .or_else(|| self.var_type_hints.get(raw_name).map(|s| s.as_str()));
+        match hint {
+            Some("bool") => ident,
+            // Strength-reduce: type-specific truthiness checks avoid
+            // the multi-branch molt_bool() function call overhead.
+            Some("int") | Some("Int") => format!("({ident} ~= 0)"),
+            Some("float") | Some("Float") => format!("({ident} ~= 0)"),
+            Some("str") | Some("Str") | Some("string") => format!("({ident} ~= \"\")"),
+            Some("list") | Some("List") => format!("(#{ident} > 0)"),
+            Some("dict") | Some("Dict") => format!("(next({ident}) ~= nil)"),
+            _ if ident == "true" || ident == "false" => ident,
+            _ => format!("molt_bool({ident})"),
         }
     }
 
@@ -4064,8 +4093,7 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
                         }
                     } else {
                         result.push(OpIR {
-                            kind: "nop".to_string(),
-                            s_value: Some("try_end (handler close)".to_string()),
+                            kind: "pcall_handler_end".to_string(),
                             ..OpIR::default()
                         });
                     }
