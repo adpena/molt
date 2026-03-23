@@ -14,6 +14,7 @@ serde_json = "1.0"
 wasm-encoder = { version = "0.245.1", optional = true }
 wasmparser = { version = "0.245.1", optional = true }
 egg = { version = "0.9", optional = true }
+inkwell = { version = "0.8", features = ["llvm18-1"], optional = true }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 cranelift-codegen = { version = "0.130", optional = true, default-features = false, features = ["x86"] }
@@ -24,6 +25,7 @@ cranelift-codegen = { version = "0.130", optional = true, default-features = fal
 [features]
 default = ["native-backend"]
 egraphs = ["egg"]
+llvm = ["dep:inkwell"]
 luau-backend = []
 native-backend = [
     "dep:cranelift-codegen",
