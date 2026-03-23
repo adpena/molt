@@ -75,6 +75,7 @@ unicode-ident = "1.0"
 unicode-casefold = "0.2"
 wtf8 = "0.1"
 unicode_names2 = { version = "1.3", optional = true }
+mimalloc = { version = "0.1", default-features = false }
 
 # Crypto (all optional)
 blake2 = { version = "0.10", optional = true }
