@@ -1,14 +1,15 @@
 use crate::object::ops::string_obj_to_owned;
 use crate::{
     CALL_DISPATCH_COUNT, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN,
-    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED, PyToken, TYPE_ID_FUNCTION, ensure_function_code_bits,
-    frame_stack_pop, frame_stack_push, function_arity, function_attr_bits, function_closure_bits,
-    function_fn_ptr, function_name_bits, function_trampoline_ptr, header_from_obj_ptr,
-    intern_static_name, is_truthy, obj_from_bits, object_type_id, profile_hit, raise_exception,
-    recursion_guard_enter, recursion_guard_exit, runtime_state,
+    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED, PyToken, TYPE_ID_FUNCTION, TYPE_ID_TUPLE,
+    ensure_function_code_bits, frame_stack_pop, frame_stack_push, function_arity,
+    function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
+    function_trampoline_ptr, header_from_obj_ptr, intern_static_name, is_truthy,
+    molt_call_bind, molt_callargs_new, molt_callargs_push_pos,
+    obj_from_bits, object_type_id, profile_hit, raise_exception, recursion_guard_enter,
+    recursion_guard_exit, runtime_state, seq_vec_ref,
 };
 
-#[cfg(target_arch = "wasm32")]
 use crate::MoltObject;
 #[cfg(target_arch = "wasm32")]
 use crate::{
@@ -1595,7 +1596,64 @@ unsafe fn call_function_obj_trampoline(_py: &PyToken<'_>, func_bits: u64, args: 
         }
         let arity = function_arity(func_ptr);
         if arity != args.len() as u64 {
-            return raise_call_arity_mismatch(_py, func_ptr, arity, args.len() as u64);
+            // Arity mismatch: the caller provided a different number of args
+            // than the function's stored arity.  Instead of immediately
+            // erroring, try to resolve via __defaults__ (for too-few args) or
+            // fall back to the full argument-binding path (for too-many args
+            // or when defaults are insufficient).
+            //
+            // This handles the WASM dispatch case where a user function with
+            // keyword default arguments (e.g. `def f(a, b, lo=0, hi=100)`)
+            // is called through the trampoline path with only the required
+            // positional args — the previous code raised immediately without
+            // consulting __defaults__.
+            let n = args.len();
+            let a = arity as usize;
+            if n < a {
+                // Try to pad missing args from __defaults__ tuple.
+                let defaults_bits = function_attr_bits(
+                    _py,
+                    func_ptr,
+                    intern_static_name(
+                        _py,
+                        &runtime_state(_py).interned.defaults_name,
+                        b"__defaults__",
+                    ),
+                );
+                if let Some(dbits) = defaults_bits {
+                    if !obj_from_bits(dbits).is_none() {
+                        if let Some(def_ptr) = obj_from_bits(dbits).as_ptr() {
+                            if object_type_id(def_ptr) == TYPE_ID_TUPLE {
+                                let defaults = seq_vec_ref(def_ptr);
+                                let n_defaults = defaults.len();
+                                let missing = a - n;
+                                if missing <= n_defaults {
+                                    let mut padded = Vec::with_capacity(a);
+                                    padded.extend_from_slice(args);
+                                    let start = n_defaults - missing;
+                                    for i in start..n_defaults {
+                                        padded.push(defaults[i]);
+                                    }
+                                    // Recurse with the padded args — arity now matches.
+                                    return call_function_obj_trampoline(
+                                        _py, func_bits, &padded,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Could not resolve the mismatch via __defaults__.
+            // Fall back to the full argument-binding path (molt_call_bind)
+            // which handles varargs, kwonly, **kwargs, and complex defaults.
+            let pos_cap = MoltObject::from_int(n as i64).bits();
+            let kw_cap = MoltObject::from_int(0).bits();
+            let callargs_bits = molt_callargs_new(pos_cap, kw_cap);
+            for &arg in args {
+                molt_callargs_push_pos(callargs_bits, arg);
+            }
+            return molt_call_bind(func_bits, callargs_bits);
         }
         let tramp_ptr = function_trampoline_ptr(func_ptr);
         if tramp_ptr == 0 {
