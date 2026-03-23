@@ -176,9 +176,19 @@ fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirTyp
         OpCode::ConstNone => Some(TirType::None),
         OpCode::ConstBytes => Some(TirType::Bytes),
 
-        // Arithmetic: Add, Sub, Mul, Div, FloorDiv, Mod, Pow
-        OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Mod | OpCode::Pow => {
-            infer_arithmetic(operand_types)
+        // Add: numeric arithmetic + string concatenation + string/list repetition
+        OpCode::Add => match operand_types {
+            [TirType::Str, TirType::Str] => Some(TirType::Str),  // "a" + "b"
+            _ => infer_numeric_arithmetic(operand_types),
+        },
+        // Mul: numeric arithmetic + string/list repetition (str * int, int * str)
+        OpCode::Mul => match operand_types {
+            [TirType::Str, TirType::I64] | [TirType::I64, TirType::Str] => Some(TirType::Str),
+            _ => infer_numeric_arithmetic(operand_types),
+        },
+        // Sub, Mod, Pow: numeric only (str-str is TypeError in Python)
+        OpCode::Sub | OpCode::Mod | OpCode::Pow => {
+            infer_numeric_arithmetic(operand_types)
         }
         OpCode::Div => {
             // Python: division always produces float unless both are DynBox.
@@ -187,10 +197,10 @@ fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirTyp
                 | [TirType::F64, TirType::F64]
                 | [TirType::I64, TirType::F64]
                 | [TirType::F64, TirType::I64] => Some(TirType::F64),
-                _ => infer_arithmetic(operand_types),
+                _ => infer_numeric_arithmetic(operand_types),
             }
         }
-        OpCode::FloorDiv => infer_arithmetic(operand_types),
+        OpCode::FloorDiv => infer_numeric_arithmetic(operand_types),
 
         // Unary Neg/Pos
         OpCode::Neg | OpCode::Pos => match operand_types {
@@ -258,16 +268,15 @@ fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirTyp
     }
 }
 
-/// Infer the result type of an arithmetic binary operation.
-fn infer_arithmetic(operand_types: &[TirType]) -> Option<TirType> {
+/// Infer the result type of a numeric-only binary operation.
+/// Does NOT handle string concatenation or repetition — those are handled
+/// at the opcode level (Add for concat, Mul for repetition).
+fn infer_numeric_arithmetic(operand_types: &[TirType]) -> Option<TirType> {
     match operand_types {
         [TirType::I64, TirType::I64] => Some(TirType::I64),
         [TirType::F64, TirType::F64] => Some(TirType::F64),
-        // Python numeric promotion: int + float → float
+        // Python numeric promotion: int op float → float
         [TirType::I64, TirType::F64] | [TirType::F64, TirType::I64] => Some(TirType::F64),
-        // String concatenation for Add (caller handles restricting to Add only if needed,
-        // but Python's Str+Str is only valid for Add/Mul — keep it general here).
-        [TirType::Str, TirType::Str] => Some(TirType::Str),
         _ => None,
     }
 }

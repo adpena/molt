@@ -198,19 +198,9 @@ fn infer_return_type(
     result_type.unwrap_or(TirType::None)
 }
 
-/// Returns true for structural/control-flow-only ops that the SSA pass skips.
-/// Must match the logic in `ssa.rs`.
-fn is_structural(kind: &str) -> bool {
-    matches!(
-        kind,
-        "label" | "state_label" | "if" | "else" | "end_if"
-            | "loop_start" | "loop_end" | "loop_break"
-            | "jump" | "goto" | "br_if"
-            | "loop_break_if_true" | "loop_break_if_false"
-            | "ret" | "ret_void" | "return"
-            | "nop"
-    )
-}
+// Use shared is_structural from parent module (ensures SSA and lower_from_simple
+// always agree on which ops to skip).
+use super::is_structural;
 
 // ---------------------------------------------------------------------------
 // Tests
