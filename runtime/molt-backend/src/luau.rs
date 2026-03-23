@@ -643,6 +643,9 @@ impl LuauBackend {
         // if and else indices.
         let mut phi_inject_before_else: BTreeMap<usize, Vec<(String, String)>> = BTreeMap::new();
         let mut phi_inject_before_end_if: BTreeMap<usize, Vec<(String, String)>> = BTreeMap::new();
+        // For if-without-else + phi, we need to synthesize an else branch.
+        // Track: end_if_idx → Vec<(phi_var, false_val)>
+        let mut phi_synthesize_else: BTreeMap<usize, Vec<(String, String)>> = BTreeMap::new();
         if !phi_assignments.is_empty() {
             // Walk ops to find if/else/end_if triples.
             let mut if_stack: Vec<(usize, Option<usize>)> = Vec::new(); // (if_idx, else_idx)
@@ -657,7 +660,7 @@ impl LuauBackend {
                         }
                     }
                     "end_if" => {
-                        if let Some((_if_idx, else_idx)) = if_stack.pop() {
+                        if let Some((if_idx, else_idx)) = if_stack.pop() {
                             if let Some(phis) = phi_assignments.get(&idx) {
                                 for (phi_var, args) in phis {
                                     if let Some(else_i) = else_idx {
@@ -680,7 +683,10 @@ impl LuauBackend {
                                             .or_default()
                                             .push((phi_var.clone(), false_val));
                                     } else {
-                                        // No else branch — only true path sets value.
+                                        // No else branch — this is the `and` short-circuit
+                                        // pattern.  The true branch sets the phi from
+                                        // args[0].  When false, the phi should get the
+                                        // if-condition variable (the LHS of `and`).
                                         let true_val = args
                                             .first()
                                             .cloned()
@@ -689,6 +695,17 @@ impl LuauBackend {
                                             .entry(idx)
                                             .or_default()
                                             .push((phi_var.clone(), true_val));
+                                        // Extract the condition variable from the `if` op.
+                                        let cond_var = ops[if_idx]
+                                            .args
+                                            .as_deref()
+                                            .and_then(|a| a.first())
+                                            .map(|s| sanitize_ident(s))
+                                            .unwrap_or_else(|| "nil".to_string());
+                                        phi_synthesize_else
+                                            .entry(idx)
+                                            .or_default()
+                                            .push((phi_var.clone(), cond_var));
                                     }
                                 }
                             }
@@ -712,6 +729,18 @@ impl LuauBackend {
             if let Some(injects) = phi_inject_before_end_if.get(&i) {
                 for (var, val) in injects {
                     self.emit_line(&format!("{var} = {val}"));
+                }
+            }
+            // Synthesize else branch for if-without-else + phi (and pattern).
+            // This assigns the condition variable when the if body was skipped.
+            if ops[i].kind == "end_if" {
+                if let Some(synth) = phi_synthesize_else.get(&i) {
+                    self.pop_indent();
+                    self.emit_line("else");
+                    self.push_indent();
+                    for (var, cond_val) in synth {
+                        self.emit_line(&format!("{var} = {cond_val}"));
+                    }
                 }
             }
 
@@ -1085,11 +1114,15 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
                     let v = sanitize_ident(val);
-                    let is_bool = matches!(op.type_hint.as_deref(), Some("bool"));
+                    let is_bool = matches!(op.type_hint.as_deref(), Some("bool"))
+                        || self.var_type_hints.get(val).map_or(false, |t| t == "bool");
                     if is_bool {
                         self.emit_line(&format!("local {out} = not {v}"));
                     } else {
                         self.emit_line(&format!("local {out} = not molt_bool({v})"));
+                    }
+                    if let Some(ref out_name) = op.out {
+                        self.var_type_hints.insert(out_name.clone(), "bool".to_string());
                     }
                 }
             }
@@ -1114,34 +1147,40 @@ impl LuauBackend {
             // ================================================================
             // Comparison ops (real IR op kinds)
             // ================================================================
-            "lt" => self.emit_binary_op(op, "<"),
-            "le" => self.emit_binary_op(op, "<="),
-            "gt" => self.emit_binary_op(op, ">"),
-            "ge" => self.emit_binary_op(op, ">="),
-            "eq" | "string_eq" => self.emit_binary_op(op, "=="),
+            "lt" | "le" | "gt" | "ge" | "eq" | "string_eq" | "ne" => {
+                let operator = match op.kind.as_str() {
+                    "lt" => "<",
+                    "le" => "<=",
+                    "gt" => ">",
+                    "ge" => ">=",
+                    "eq" | "string_eq" => "==",
+                    "ne" => "~=",
+                    _ => unreachable!(),
+                };
+                self.emit_binary_op(op, operator);
+                // Mark output as boolean so `if` conditions can skip molt_bool().
+                if let Some(ref out_name) = op.out {
+                    self.var_type_hints.insert(out_name.clone(), "bool".to_string());
+                }
+            }
             "is" => {
                 // Python `is` checks identity, not equality.  For `x is None`
-                // this maps correctly to `x == nil`.  For non-None operands,
-                // Luau `==` checks value equality which differs from identity.
-                // Emit a perf-review marker so compile_checked can flag it.
+                // this maps correctly to `x == nil` (fine since nil is a
+                // singleton).  For non-None operands, `==` checks value
+                // equality which differs, but there's no Luau equivalent for
+                // identity.  This is an accepted semantic gap.
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let lhs = sanitize_ident(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
-                    let is_none_check = rhs == "nil" || lhs == "nil"
-                        || rhs == "v_None" || lhs == "v_None"
-                        || op.s_value.as_deref() == Some("None");
-                    if is_none_check {
-                        self.emit_line(&format!("local {out} = {lhs} == {rhs}"));
-                    } else {
-                        self.emit_line(&format!(
-                            "local {out} = {lhs} == {rhs} -- [identity: is]"
-                        ));
+                    self.emit_line(&format!("local {out} = {lhs} == {rhs}"));
+                    if let Some(ref out_name) = op.out {
+                        self.var_type_hints.insert(out_name.clone(), "bool".to_string());
                     }
                 }
             }
-            "ne" => self.emit_binary_op(op, "~="),
+
 
             // ================================================================
             // Logical ops — Python truthiness differs from Luau.
@@ -1320,7 +1359,19 @@ impl LuauBackend {
             "if" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(cond) = args.first() {
-                    self.emit_line(&format!("if {} then", sanitize_ident(cond)));
+                    let cond_ident = sanitize_ident(cond);
+                    // Python truthiness: 0, "", [], {} are falsy but Luau
+                    // treats them as truthy.  When the condition comes from a
+                    // comparison op (type_hint="bool") or is a literal bool,
+                    // use it directly.  Otherwise wrap in molt_bool().
+                    let is_bool = op.type_hint.as_deref() == Some("bool")
+                        || self.var_type_hints.get(cond).map_or(false, |t| t == "bool")
+                        || cond_ident == "true" || cond_ident == "false";
+                    if is_bool {
+                        self.emit_line(&format!("if {cond_ident} then"));
+                    } else {
+                        self.emit_line(&format!("if molt_bool({cond_ident}) then"));
+                    }
                     self.push_indent();
                 }
             }
@@ -3640,15 +3691,9 @@ pub fn review_luau_perf(source: &str) -> Vec<(usize, &'static str, String)> {
             issues.push((ln, "unsupported", trimmed.to_string()));
         }
 
-        // Python `is` on non-None operands maps to == which checks value
-        // equality, not identity.  Flag for manual review.
-        if trimmed.contains("-- [identity: is]") {
-            issues.push((
-                ln,
-                "identity",
-                "Python `is` on non-None operands — Luau == checks value, not identity".into(),
-            ));
-        }
+        // Note: Python `is` on non-None operands maps to == (value equality,
+        // not identity).  This is an accepted semantic gap — no inline marker
+        // is emitted because comments break when inlined by optimization passes.
     }
     issues
 }
