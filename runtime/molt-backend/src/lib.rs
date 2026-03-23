@@ -1597,10 +1597,11 @@ impl SimpleBackend {
         for func_ir in &mut ir.functions {
             propagate_loop_fast_int(func_ir);
         }
-        let mut ir_analysis = analyze_native_backend_ir(&ir);
-        if ir_analysis.needs_inlining {
-            inline_functions(&mut ir);
-            ir_analysis = analyze_native_backend_ir(&ir);
+        {
+            let analysis = analyze_native_backend_ir(&ir);
+            if analysis.needs_inlining {
+                inline_functions(&mut ir);
+            }
         }
         // Dead function elimination: remove functions that are unreachable from
         // the entry point after inlining.  This reduces code size for both the
@@ -1608,7 +1609,7 @@ impl SimpleBackend {
         eliminate_dead_functions(&mut ir);
         // Re-analyze after dead function elimination so defined_functions/
         // closure_functions reflect only the surviving functions.
-        ir_analysis = analyze_native_backend_ir(&ir);
+        let ir_analysis = analyze_native_backend_ir(&ir);
         // Conditional trace elimination: skip emitting trace_enter/trace_exit calls
         // when tracing is disabled. Each guarded call site emits 2 trace function calls
         // (enter + exit); eliminating them saves codegen work on cache misses and
