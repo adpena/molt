@@ -1,0 +1,27 @@
+# manifest.yaml -- GitHub plugin manifest
+#
+# Declares the plugin metadata and default configuration.
+# This is read by the edgebox loader when the plugin is installed.
+
+name: github
+verbose_name: GitHub Integration
+version: 1.0.0
+
+# Default configuration (overridable via box manifest or env vars)
+defaults:
+  webhook_verify: true
+  stale_days: 7
+  db_path: github_pr.db
+
+# Capabilities this plugin provides
+provides:
+  tools:
+    - get_timeline
+    - add_review_comment
+    - get_diff_summary
+    - query_timeline
+  handlers:
+    - POST /webhook
+  events:
+    - github.push
+    - github.opened

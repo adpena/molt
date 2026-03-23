@@ -1,0 +1,7 @@
+{
+  "name": "edgebox-cloudflare",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": { "deploy": "wrangler deploy" },
+  "devDependencies": { "@cloudflare/workers-types": "^4" }
+}
