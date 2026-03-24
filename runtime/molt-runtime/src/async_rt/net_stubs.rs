@@ -85,11 +85,10 @@ macro_rules! net_error {
 #[unsafe(no_mangle)] pub extern "C" fn molt_socketpair(_: u64, _: u64, _: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_getnameinfo(_: u64, _: u64) -> u64 { net_error!() }
 
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_detach(_: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_getsockopt(_: u64, _: u64, _: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_recv_fds(_: u64, _: u64, _: u64, _: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_send_fds(_: u64, _: u64, _: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_sendmsg_afalg(_: u64, _: u64, _: u64, _: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_sethostname(_: u64) -> u64 { net_error!() }
+
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_setsockopt(_: u64, _: u64, _: u64, _: u64) -> u64 { net_error!() }
+#[unsafe(no_mangle)] pub extern "C" fn molt_socket_detach(_: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_sendfile(_: u64, _: u64, _: u64, _: u64) -> u64 { net_error!() }
+#[unsafe(no_mangle)] pub extern "C" fn molt_socket_getsockopt(_: u64, _: u64, _: u64) -> u64 { net_error!() }
