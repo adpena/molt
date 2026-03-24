@@ -17,6 +17,8 @@ pub mod parallel;
 pub mod gpu;
 pub mod gpu_msl;
 pub mod gpu_wgsl;
+pub mod gpu_cuda;
+pub mod gpu_hip;
 pub mod mlir_compat;
 
 /// Returns true for SimpleIR ops that are purely structural control-flow
