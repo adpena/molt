@@ -8730,6 +8730,10 @@ impl SimpleBackend {
                                         )
                                     });
                                 builder.ins().call(local_dec_ref_obj, &[*val]);
+                                // Remove from entry_vars so exception-handler
+                                // and function-return cleanup paths do not
+                                // dec-ref this already-freed variable again.
+                                entry_vars.remove(&name);
                             }
                         }
                         if let Some(names) = block_tracked_ptr.get_mut(&block) {
@@ -8743,6 +8747,7 @@ impl SimpleBackend {
                                         )
                                     });
                                 builder.ins().call(local_dec_ref, &[*val]);
+                                entry_vars.remove(&name);
                             }
                         }
                     }
@@ -9016,6 +9021,27 @@ impl SimpleBackend {
                     }
                     for val in &arg_cleanup {
                         builder.ins().call(local_dec_ref_obj, &[*val]);
+                    }
+                    // Remove cleaned-up names from entry-tracked lists so the
+                    // function-return cleanup does not dec-ref them a second
+                    // time (the `call` op changes blocks, so the normal
+                    // entry-tracked drain no longer runs for these variables).
+                    if !arg_cleanup_names.is_empty() {
+                        tracked_obj_vars.retain(|n| !arg_cleanup_names.contains(n));
+                        tracked_vars.retain(|n| !arg_cleanup_names.contains(n));
+                        for name in &arg_cleanup_names {
+                            entry_vars.remove(name);
+                        }
+                    }
+                    for name in &origin_obj_cleanup {
+                        if !arg_cleanup_names.contains(name) {
+                            tracked_obj_vars.retain(|n| n != name);
+                            entry_vars.remove(name);
+                        }
+                    }
+                    for name in &origin_ptr_cleanup {
+                        tracked_vars.retain(|n| n != name);
+                        entry_vars.remove(name);
                     }
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
