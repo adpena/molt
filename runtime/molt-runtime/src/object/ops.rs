@@ -34143,3 +34143,30 @@ pub extern "C" fn molt_string_eq_fast(a: u64, b: u64) -> u64 {
     }
 }
 
+/// Unchecked list getitem — used when BCE (Bounds Check Elimination) has proven
+/// the index is in bounds.
+///
+/// # Safety
+/// The caller guarantees:
+///   - `list_bits` is a valid NaN-boxed heap pointer to a TYPE_ID_LIST object.
+///   - `0 <= index < len(list)` — no bounds check is performed.
+///   - The list is not mutated concurrently (GIL must be held by the caller).
+///
+/// Violating any of these preconditions causes undefined behaviour.
+#[unsafe(no_mangle)]
+#[inline(always)]
+pub extern "C" fn molt_list_getitem_unchecked(list_bits: u64, index: i64) -> u64 {
+    let list_obj = obj_from_bits(list_bits);
+    // Safety: caller guarantees list_bits is a valid list heap pointer.
+    let ptr = unsafe { list_obj.as_ptr().unwrap_unchecked() };
+    unsafe {
+        let elems = seq_vec_ref(ptr);
+        // Safety: caller guarantees 0 <= index < len.
+        let val = *elems.get_unchecked(index as usize);
+        crate::with_gil_entry!(_py, {
+            inc_ref_bits(_py, val);
+            val
+        })
+    }
+}
+
