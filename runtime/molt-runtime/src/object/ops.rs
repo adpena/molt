@@ -15035,6 +15035,7 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
             let mut fsum = start_val;
             let mut comp = 0.0_f64; // Neumaier compensation term
             let mut all_numeric = true;
+            let mut has_float = start_obj.as_float().is_some();
             loop {
                 let pair_bits = molt_iter_next(iter_obj);
                 let pair_obj = obj_from_bits(pair_bits);
@@ -15062,7 +15063,11 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                     if is_truthy(_py, obj_from_bits(done_bits)) {
                         if all_numeric {
                             let result = fsum + comp;
-                            return MoltObject::from_float(result).bits();
+                            if has_float {
+                                return MoltObject::from_float(result).bits();
+                            } else {
+                                return MoltObject::from_int(result as i64).bits();
+                            }
                         }
                         if !total_owned {
                             inc_ref_bits(_py, total_bits);
@@ -15073,6 +15078,7 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                     if all_numeric {
                         // Check if value is float-coercible and stay in compensated mode
                         let item_f = if let Some(f) = val_obj.as_float() {
+                            has_float = true;
                             Some(f)
                         } else if let Some(i) = to_i64(val_obj) {
                             Some(i as f64)
