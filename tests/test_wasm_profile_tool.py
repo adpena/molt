@@ -12,17 +12,14 @@ def test_wasm_profile_main_uses_current_bench_wasm_api(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    build_calls: list[tuple[bool, Path, str, bool, object | None]] = []
+    build_calls: list[tuple[bool, Path]] = []
 
     def _fake_build_runtime_wasm(
         *,
         reloc: bool,
         output: Path,
-        cargo_profile: str,
-        tty: bool,
-        log: object | None,
     ) -> bool:
-        build_calls.append((reloc, output, cargo_profile, tty, log))
+        build_calls.append((reloc, output))
         return True
 
     cleanup_state = {"called": False}
@@ -33,9 +30,19 @@ def test_wasm_profile_main_uses_current_bench_wasm_api(
 
     prepared_kwargs: dict[str, object] = {}
 
-    def _fake_prepare_wasm_binary(script: str, **kwargs: object):
+    def _fake_prepare_wasm_binary(
+        script: str,
+        *,
+        require_linked: bool = False,
+        tty: bool = False,
+        log: object | None = None,
+        keep_temp: bool = False,
+    ):
         prepared_kwargs["script"] = script
-        prepared_kwargs.update(kwargs)
+        prepared_kwargs["require_linked"] = require_linked
+        prepared_kwargs["tty"] = tty
+        prepared_kwargs["log"] = log
+        prepared_kwargs["keep_temp"] = keep_temp
         return SimpleNamespace(
             run_env={"MOLT_WASM_PATH": "/tmp/output.wasm"},
             linked_used=True,
@@ -78,14 +85,11 @@ def test_wasm_profile_main_uses_current_bench_wasm_api(
     wasm_profile.main()
 
     assert build_calls == [
-        (False, wasm_profile.bench_wasm.RUNTIME_WASM, "release", False, None),
-        (True, wasm_profile.bench_wasm.RUNTIME_WASM_RELOC, "release", False, None),
+        (False, wasm_profile.bench_wasm.RUNTIME_WASM),
+        (True, wasm_profile.bench_wasm.RUNTIME_WASM_RELOC),
     ]
     assert prepared_kwargs["script"] == "tests/benchmarks/bench_sum.py"
     assert prepared_kwargs["require_linked"] is False
-    assert prepared_kwargs["build_profile"] == "release"
-    assert prepared_kwargs["build_timeout_s"] == 300.0
-    assert prepared_kwargs["use_cache"] is True
     assert prepared_kwargs["tty"] is False
     assert prepared_kwargs["log"] is None
     assert prepared_kwargs["keep_temp"] is False

@@ -32,7 +32,10 @@ def extract_metric(bench_data: dict, metric: str) -> dict[str, float]:
     # Handle various benchmark JSON layouts
     benchmarks = bench_data.get("benchmarks", bench_data.get("results", []))
     if isinstance(benchmarks, dict):
-        benchmarks = list(benchmarks.values())
+        # Dict-keyed format: {"bench_a": {"molt_build_s": 1.0}, ...}
+        benchmarks = [
+            {**v, "name": k} for k, v in benchmarks.items()
+        ]
 
     for entry in benchmarks:
         name = entry.get("name", entry.get("benchmark", ""))
@@ -58,6 +61,19 @@ def extract_metric(bench_data: dict, metric: str) -> dict[str, float]:
     return results
 
 
+def _extract_benchmark_names(bench_data: dict) -> set[str]:
+    """Return the set of benchmark names present in the data (regardless of metrics)."""
+    names: set[str] = set()
+    benchmarks = bench_data.get("benchmarks", bench_data.get("results", []))
+    if isinstance(benchmarks, dict):
+        return set(benchmarks.keys())
+    for entry in benchmarks:
+        name = entry.get("name", entry.get("benchmark", ""))
+        if name:
+            names.add(name)
+    return names
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -79,6 +95,11 @@ def main() -> int:
         "--metric",
         default="molt_build_s",
         help="Metric to compare (default: molt_build_s)",
+    )
+    parser.add_argument(
+        "--allow-missing-metrics",
+        action="store_true",
+        help="Warn instead of failing when current is missing metrics for baseline benchmarks.",
     )
     args = parser.parse_args()
 
@@ -112,6 +133,35 @@ def main() -> int:
             file=sys.stderr,
         )
         return 0
+
+    # Detect benchmarks present in baseline but missing from current
+    missing_keys = sorted(set(baseline_metrics) - set(current_metrics))
+    if missing_keys:
+        # Check if these benchmarks exist in current data but are missing the metric
+        current_bench_names = _extract_benchmark_names(current_data)
+        missing_metrics = [k for k in missing_keys if k in current_bench_names]
+        missing_benchmarks = [k for k in missing_keys if k not in current_bench_names]
+
+        if missing_metrics:
+            msg = f"current missing metric '{args.metric}' for: {', '.join(missing_metrics)}"
+            if args.allow_missing_metrics:
+                print(f"WARNING: {msg}", file=sys.stderr)
+            else:
+                print(
+                    f"ERROR: {msg}\n"
+                    f"Missing metrics are a hard failure by default. "
+                    f"Use --allow-missing-metrics to downgrade to a warning.",
+                    file=sys.stderr,
+                )
+                return 1
+
+        if missing_benchmarks:
+            msg = f"current missing benchmark keys present in baseline metrics: {', '.join(missing_benchmarks)}"
+            if args.allow_missing_metrics:
+                print(f"WARNING: {msg}", file=sys.stderr)
+            else:
+                print(f"ERROR: {msg}", file=sys.stderr)
+                return 1
 
     # Compute per-benchmark regression
     regressions: list[float] = []
