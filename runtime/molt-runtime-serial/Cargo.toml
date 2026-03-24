@@ -1,11 +1,12 @@
 [package]
 name = "molt-runtime-serial"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
+num-bigint = "0.4"
 serde_json = { version = "1.0", optional = true }
 
 [features]

@@ -2800,6 +2800,7 @@ version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",
  "molt-runtime-core",
+ "num-bigint",
  "serde_json",
 ]
 
