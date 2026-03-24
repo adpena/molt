@@ -10,8 +10,10 @@ pub mod lower_from_simple;
 pub mod printer;
 pub mod verify;
 pub mod lower_to_simple;
+pub mod lower_to_wasm;
 pub mod type_refine;
 pub mod passes;
+pub mod parallel;
 
 /// Returns true for SimpleIR ops that are purely structural control-flow
 /// markers (if/else/end_if/loop_start/loop_end/label/state_label) and should
