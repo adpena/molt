@@ -2,7 +2,7 @@
 use molt_backend::luau::LuauBackend;
 #[cfg(feature = "native-backend")]
 use molt_backend::SimpleBackend;
-use molt_backend::SimpleIR;
+use molt_backend::{SimpleIR, OpIR};
 #[cfg(feature = "rust-backend")]
 use molt_backend::rust::RustBackend;
 #[cfg(feature = "wasm-backend")]
@@ -1050,27 +1050,15 @@ fn main() -> io::Result<()> {
         }
     };
 
-    // Strip __annotate__ typing stubs — they're metadata, not executable code.
-    // Done once here so all compilation paths (Luau, WASM, native, batched,
-    // incremental) see a clean IR without scattered per-path filters.
-    let annotate_names: std::collections::BTreeSet<String> = ir.functions
-        .iter()
-        .filter(|f| f.name.contains("__annotate__"))
-        .map(|f| f.name.clone())
-        .collect();
-    ir.functions.retain(|f| !f.name.contains("__annotate__"));
-    // Also strip ops in remaining functions that CALL __annotate__ functions.
-    // Without this, module_chunk functions reference undefined symbols.
-    if !annotate_names.is_empty() {
-        for func in &mut ir.functions {
-            func.ops.retain(|op| {
-                if let Some(ref s) = op.s_value {
-                    if annotate_names.contains(s) { return false; }
-                }
-                if let Some(ref args) = op.args {
-                    if args.iter().any(|a| annotate_names.contains(a)) { return false; }
-                }
-                true
+    // Replace __annotate__ typing stubs with trivial ret_void bodies.
+    // The symbols must exist (trampolines and module chunks reference them)
+    // but the bodies are typing metadata not needed at runtime.
+    for func in ir.functions.iter_mut() {
+        if func.name.contains("__annotate__") {
+            func.ops.clear();
+            func.ops.push(OpIR {
+                kind: "ret_void".to_string(),
+                ..OpIR::default()
             });
         }
     }
