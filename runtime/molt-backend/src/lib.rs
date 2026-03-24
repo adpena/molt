@@ -1675,7 +1675,10 @@ impl SimpleBackend {
         // Wrapped in catch_unwind: if TIR panics on a function, that function
         // falls back to unoptimized SimpleIR. Compilation continues — no silent
         // failures, no crashes. The panic is logged to stderr.
-        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
+        // TIR default OFF until back-conversion is fully validated.
+        // Set MOLT_TIR_OPT=1 to enable. Known issue: check_exception state_block
+        // IDs not preserved through TIR round-trip.
+        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
             let tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
             let tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
             let mut tir_cache = crate::tir::cache::CompilationCache::open(
