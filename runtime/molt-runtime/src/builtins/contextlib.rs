@@ -1572,9 +1572,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_enter_poll(obj_bits: u64) -> i
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<crate::MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 2 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -1584,7 +1582,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_enter_poll(obj_bits: u64) -> i
             }
             let payload_ptr = obj_ptr as *mut u64;
 
-            if (*header).state == 0 {
+            if crate::object::object_state(obj_ptr) == 0 {
                 let agen_bits = payload_slot(payload_ptr, ASYNCGEN_ENTER_SLOT_AGEN);
                 let await_bits = call_method0(_py, agen_bits, b"__anext__");
                 if exception_pending(_py) {
@@ -1603,7 +1601,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_enter_poll(obj_bits: u64) -> i
                     return rethrow_with_owned_exception(_py, raised_bits) as i64;
                 }
                 payload_replace_owned(_py, payload_ptr, ASYNCGEN_ENTER_SLOT_AWAIT, await_bits);
-                (*header).state = 1;
+                crate::object::object_set_state(obj_ptr, 1);
             }
 
             let await_bits = payload_slot(payload_ptr, ASYNCGEN_ENTER_SLOT_AWAIT);
@@ -1648,9 +1646,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i6
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<crate::MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 7 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -1660,7 +1656,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i6
             }
             let payload_ptr = obj_ptr as *mut u64;
 
-            if (*header).state == 0 {
+            if crate::object::object_state(obj_ptr) == 0 {
                 let agen_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_AGEN);
                 let exc_type_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_EXC_TYPE);
                 let exc_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_EXC);
@@ -1684,7 +1680,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i6
                         ASYNCGEN_EXIT_SLOT_MODE,
                         ASYNCGEN_EXIT_MODE_ANEXT,
                     );
-                    (*header).state = 1;
+                    crate::object::object_set_state(obj_ptr, 1);
                     return pending_bits_i64();
                 }
 
@@ -1716,7 +1712,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i6
                     ASYNCGEN_EXIT_SLOT_MODE,
                     ASYNCGEN_EXIT_MODE_THROW,
                 );
-                (*header).state = 1;
+                crate::object::object_set_state(obj_ptr, 1);
                 return pending_bits_i64();
             }
 
@@ -1777,9 +1773,7 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_enter_context_poll(obj_
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<crate::MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 3 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
@@ -1789,7 +1783,7 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_enter_context_poll(obj_
             }
             let payload_ptr = obj_ptr as *mut u64;
 
-            if (*header).state == 0 {
+            if crate::object::object_state(obj_ptr) == 0 {
                 let cm_bits = payload_slot(payload_ptr, ASYNC_EXITSTACK_ENTER_SLOT_CM);
                 let await_bits = call_method0(_py, cm_bits, b"__aenter__");
                 if exception_pending(_py) {
@@ -1811,7 +1805,7 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_enter_context_poll(obj_
                     ASYNC_EXITSTACK_ENTER_SLOT_AWAIT,
                     await_bits,
                 );
-                (*header).state = 1;
+                crate::object::object_set_state(obj_ptr, 1);
                 return pending_bits_i64();
             }
 
@@ -1887,9 +1881,7 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_exit_poll(obj_bits: u64
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<crate::MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 9 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,

@@ -29,6 +29,23 @@ from molt.type_facts import normalize_type_hint
 if TYPE_CHECKING:
     from molt.type_facts import TypeFacts
 
+# ---------------------------------------------------------------------------
+# Inline cache (IC) site index allocator
+# ---------------------------------------------------------------------------
+# Each GETATTR_GENERIC_PTR site gets a unique IC index so the runtime can
+# map it to a slot in the lock-free InlineCache table (4096 entries).
+# The counter wraps around at the table capacity.
+
+_IC_TABLE_CAPACITY = 4096
+_ic_counter: list[int] = [0]  # mutable counter in list for closure capture
+
+
+def _next_ic_index() -> int:
+    """Return a monotonically increasing IC site index (mod table capacity)."""
+    idx = _ic_counter[0] % _IC_TABLE_CAPACITY
+    _ic_counter[0] += 1
+    return idx
+
 
 @dataclass
 class MoltValue:
@@ -2086,6 +2103,53 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         ):
             return True
         return False
+
+    @staticmethod
+    def _is_gpu_kernel_decorator(deco: ast.expr) -> bool:
+        """Return True if the decorator is @gpu.kernel."""
+        # @gpu.kernel  (attribute form: gpu.kernel)
+        if (
+            isinstance(deco, ast.Attribute)
+            and isinstance(deco.value, ast.Name)
+            and deco.value.id == "gpu"
+            and deco.attr == "kernel"
+        ):
+            return True
+        # @kernel  (bare name after `from molt.gpu import kernel`)
+        if isinstance(deco, ast.Name) and deco.id == "kernel":
+            return True
+        return False
+
+    @staticmethod
+    def _is_gpu_intrinsic_call(node: ast.Call) -> str | None:
+        """If *node* is a gpu.thread_id() / gpu.block_id() / etc., return the
+        intrinsic name (e.g. ``"gpu_thread_id"``).  Otherwise return None."""
+        _GPU_INTRINSICS = {
+            "thread_id": "gpu_thread_id",
+            "block_id": "gpu_block_id",
+            "block_dim": "gpu_block_dim",
+            "grid_dim": "gpu_grid_dim",
+            "barrier": "gpu_barrier",
+        }
+        # gpu.thread_id()
+        if (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "gpu"
+            and node.func.attr in _GPU_INTRINSICS
+        ):
+            return _GPU_INTRINSICS[node.func.attr]
+        # bare thread_id() after `from molt.gpu import thread_id`
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id in _GPU_INTRINSICS
+        ):
+            return _GPU_INTRINSICS[node.func.id]
+        return None
+
+    def _has_gpu_kernel_decorator(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        """Return True if any decorator on *node* is @gpu.kernel."""
+        return any(self._is_gpu_kernel_decorator(d) for d in node.decorator_list)
 
     @staticmethod
     def _sanitize_module_name(name: str) -> str:
@@ -9271,6 +9335,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, attr],
                     result=res,
+                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             return res
@@ -9283,6 +9348,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         kind="GETATTR_GENERIC_PTR",
                         args=[obj, attr],
                         result=res,
+                        metadata={"ic_index": _next_ic_index()},
                     )
                 )
                 return res
@@ -9311,6 +9377,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, attr],
                     result=res,
+                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             return res
@@ -9547,6 +9614,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, fallback_attr],
                     result=slow_val,
+                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
@@ -9588,6 +9656,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 kind="GETATTR_GENERIC_PTR",
                 args=[obj, fallback_attr],
                 result=slow_val,
+                metadata={"ic_index": _next_ic_index()},
             )
         )
         self.emit(
@@ -9628,6 +9697,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, attr],
                     result=slow_val,
+                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
@@ -9659,6 +9729,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 kind="GETATTR_GENERIC_PTR",
                 args=[obj, attr],
                 result=slow_val,
+                metadata={"ic_index": _next_ic_index()},
             )
         )
         self.emit(
@@ -13381,6 +13452,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 kind="GETATTR_GENERIC_PTR",
                                 args=[prop_val, update_kind],
                                 result=prop_attr,
+                                metadata={"ic_index": _next_ic_index()},
                             )
                         )
                         callargs = MoltValue(self.next_var(), type_hint="callargs")
@@ -14125,6 +14197,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return res
 
     def visit_Call(self, node: ast.Call) -> Any:
+        # ── GPU intrinsics: gpu.thread_id(), gpu.block_id(), etc. ──
+        gpu_intrinsic = self._is_gpu_intrinsic_call(node)
+        if gpu_intrinsic is not None:
+            hint = "int" if gpu_intrinsic != "gpu_barrier" else "None"
+            res = MoltValue(self.next_var(), type_hint=hint)
+            self.emit(MoltOp(kind=gpu_intrinsic, args=[], result=res))
+            return res
+
         needs_bind = self._call_needs_bind(node)
         if isinstance(node.func, ast.Attribute):
             attr_node = node.func
@@ -19427,6 +19507,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         kind="GETATTR_GENERIC_PTR",
                         args=[obj, node.attr],
                         result=res,
+                        metadata={"ic_index": _next_ic_index()},
                     )
                 )
                 return res
@@ -19562,6 +19643,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, node.attr],
                     result=res,
+                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             return res
@@ -19573,6 +19655,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, node.attr],
                     result=res,
+                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             return res
@@ -19583,6 +19666,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, node.attr],
                     result=res,
+                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             return res
@@ -25435,6 +25519,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             docstring=ast.get_docstring(node),
             varnames=varnames,
         )
+        # ── @gpu.kernel: mark function IR so the backend routes through GPU pipeline ──
+        if self._has_gpu_kernel_decorator(node):
+            gpu_flag = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=gpu_flag))
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[func_val, "__molt_gpu_kernel__", gpu_flag],
+                    result=MoltValue("none"),
+                )
+            )
         if func_spill is not None:
             func_val = self._reload_async_value(func_spill, func_val.type_hint)
         self._emit_function_annotate(func_val, node)
@@ -28301,12 +28396,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             }
                         )
                     else:
+                        _ic = (
+                            op.metadata["ic_index"]
+                            if op.metadata and "ic_index" in op.metadata
+                            else _next_ic_index()
+                        )
                         json_ops.append(
                             {
                                 "kind": "get_attr_generic_ptr",
                                 "args": [obj.name],
                                 "s_value": attr,
                                 "out": op.result.name,
+                                "metadata": {"ic_index": _ic},
                             }
                         )
                 else:
@@ -28335,12 +28436,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             }
                         )
                     else:
+                        _ic = (
+                            op.metadata["ic_index"]
+                            if op.metadata and "ic_index" in op.metadata
+                            else _next_ic_index()
+                        )
                         json_ops.append(
                             {
                                 "kind": "get_attr_generic_ptr",
                                 "args": [obj.name],
                                 "s_value": attr,
                                 "out": op.result.name,
+                                "metadata": {"ic_index": _ic},
                             }
                         )
                 else:
@@ -28355,14 +28462,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         }
                     )
             elif op.kind == "GETATTR_GENERIC_PTR":
-                json_ops.append(
-                    {
-                        "kind": "get_attr_generic_ptr",
-                        "args": [op.args[0].name],
-                        "s_value": op.args[1],
-                        "out": op.result.name,
-                    }
-                )
+                ptr_entry: dict[str, Any] = {
+                    "kind": "get_attr_generic_ptr",
+                    "args": [op.args[0].name],
+                    "s_value": op.args[1],
+                    "out": op.result.name,
+                }
+                if op.metadata and "ic_index" in op.metadata:
+                    ptr_entry["metadata"] = {"ic_index": op.metadata["ic_index"]}
+                json_ops.append(ptr_entry)
             elif op.kind == "GETATTR_GENERIC_OBJ":
                 json_ops.append(
                     {
@@ -30164,6 +30272,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "args": [self_ptr, val.name],
                         "value": offset,
                     }
+                )
+            # ── GPU intrinsic ops ──
+            elif op.kind in (
+                "gpu_thread_id",
+                "gpu_block_id",
+                "gpu_block_dim",
+                "gpu_grid_dim",
+                "gpu_barrier",
+            ):
+                json_ops.append(
+                    {"kind": op.kind, "out": op.result.name}
                 )
 
         if ops and ops[-1].kind != "ret":
