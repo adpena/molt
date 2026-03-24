@@ -77,6 +77,7 @@ wasi_host = ["stdlib_fs_extra"]
 [dependencies]
 # Core runtime (always required)
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
+molt-runtime-core = { path = "../molt-runtime-core" }
 serde_json = "1.0"
 crossbeam-deque = "0.8"
 crossbeam-channel = "0.5"
