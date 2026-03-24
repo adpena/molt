@@ -46,6 +46,13 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     // Compute block visit order (reverse-postorder from entry).
     let rpo = reverse_postorder(func);
 
+    // Build a BlockId → label_id mapping. Blocks that have an original
+    // SimpleIR label value use that; others use the BlockId as a fallback.
+    // This ensures check_exception/jump/br_if targets match the emitted labels.
+    let block_label_id = |bid: &BlockId| -> i64 {
+        func.label_id_map.get(&bid.0).copied().unwrap_or(bid.0 as i64)
+    };
+
     // Collect block argument info for all blocks so we can generate
     // `store_var` assignments at branch sites.
     // Map: (source_block, target_block) → Vec<(arg_value, param_var_name)>
@@ -88,7 +95,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         if *bid != func.entry_block {
             out.push(OpIR {
                 kind: "label".to_string(),
-                value: Some(bid.0 as i64),
+                value: Some(block_label_id(bid)),
                 ..OpIR::default()
             });
 
@@ -119,7 +126,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         }
 
         // Emit terminator.
-        emit_terminator(block, &block_param_vars, &mut out);
+        emit_terminator(block, &block_param_vars, &block_label_id, &mut out);
     }
 
     out
@@ -254,8 +261,39 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         }),
 
         // Box/unbox — no-ops at SimpleIR level (type info discarded).
-        OpCode::BoxVal | OpCode::UnboxVal | OpCode::TypeGuard | OpCode::Copy => {
+        OpCode::BoxVal | OpCode::UnboxVal | OpCode::TypeGuard => {
             if let (Some(src), Some(dst)) = (op.operands.first(), op.results.first()) {
+                Some(OpIR {
+                    kind: "copy_var".to_string(),
+                    var: Some(value_var(*src)),
+                    out: Some(value_var(*dst)),
+                    ..OpIR::default()
+                })
+            } else {
+                None
+            }
+        }
+
+        // Copy: either a genuine copy_var or a passthrough for an unknown op
+        // whose original kind was preserved in attrs.
+        OpCode::Copy => {
+            if let Some(original_kind) = attr_str(&op.attrs, "_original_kind") {
+                // Passthrough: reconstruct the original SimpleIR op with all fields.
+                Some(OpIR {
+                    kind: original_kind,
+                    args: if op.operands.is_empty() { None } else { Some(operand_args(op)) },
+                    out: out_var,
+                    value: attr_int(&op.attrs, "value"),
+                    f_value: attr_float(&op.attrs, "f_value"),
+                    s_value: attr_str(&op.attrs, "s_value"),
+                    bytes: attr_bytes(&op.attrs, "bytes"),
+                    task_kind: attr_str(&op.attrs, "task_kind"),
+                    container_type: attr_str(&op.attrs, "container_type"),
+                    ic_index: attr_int(&op.attrs, "ic_index"),
+                    raw_int: attr_bool(&op.attrs, "raw_int"),
+                    ..OpIR::default()
+                })
+            } else if let (Some(src), Some(dst)) = (op.operands.first(), op.results.first()) {
                 Some(OpIR {
                     kind: "copy_var".to_string(),
                     var: Some(value_var(*src)),
@@ -435,6 +473,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
 fn emit_terminator(
     block: &TirBlock,
     block_param_vars: &HashMap<BlockId, Vec<String>>,
+    block_label_id: &dyn Fn(&BlockId) -> i64,
     out: &mut Vec<OpIR>,
 ) {
     match &block.terminator {
@@ -458,7 +497,7 @@ fn emit_terminator(
             emit_block_arg_stores(*target, args, block_param_vars, out);
             out.push(OpIR {
                 kind: "jump".to_string(),
-                value: Some(target.0 as i64),
+                value: Some(block_label_id(target)),
                 ..OpIR::default()
             });
         }
@@ -471,28 +510,22 @@ fn emit_terminator(
             else_args,
         } => {
             // Emit: br_if cond → then_block; else → else_block
-            // We use SimpleIR `if`/`else`/`end_if` for structured representation,
-            // or `br_if` + `jump` for unstructured. Use `br_if` here since we
-            // don't have structural nesting info.
             // Correct emission order for CondBranch:
             // 1. Store then-args (for the taken branch path)
             // 2. br_if → then_block label
             // 3. Store else-args (for the fallthrough path)
             // 4. jump → else_block label
-            //
-            // This ensures each path gets its block arguments stored
-            // before the branch that enters its target block.
             emit_block_arg_stores(*then_block, then_args, block_param_vars, out);
             out.push(OpIR {
                 kind: "br_if".to_string(),
                 args: Some(vec![value_var(*cond)]),
-                value: Some(then_block.0 as i64),
+                value: Some(block_label_id(then_block)),
                 ..OpIR::default()
             });
             emit_block_arg_stores(*else_block, else_args, block_param_vars, out);
             out.push(OpIR {
                 kind: "jump".to_string(),
-                value: Some(else_block.0 as i64),
+                value: Some(block_label_id(else_block)),
                 ..OpIR::default()
             });
         }
@@ -505,8 +538,6 @@ fn emit_terminator(
         } => {
             // Emit a chain of br_if checks for each case, then jump to default.
             for (case_val, target, case_args) in cases {
-                // Synthesize a temporary result for the comparison — this is a
-                // Phase 1 approximation; Phase 2 will use proper SSA values.
                 out.push(OpIR {
                     kind: "switch_case".to_string(),
                     args: Some(vec![value_var(*value)]),
@@ -516,14 +547,14 @@ fn emit_terminator(
                 emit_block_arg_stores(*target, case_args, block_param_vars, out);
                 out.push(OpIR {
                     kind: "jump".to_string(),
-                    value: Some(target.0 as i64),
+                    value: Some(block_label_id(target)),
                     ..OpIR::default()
                 });
             }
             emit_block_arg_stores(*default, default_args, block_param_vars, out);
             out.push(OpIR {
                 kind: "jump".to_string(),
-                value: Some(default.0 as i64),
+                value: Some(block_label_id(default)),
                 ..OpIR::default()
             });
         }

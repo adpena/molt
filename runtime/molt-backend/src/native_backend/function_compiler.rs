@@ -4969,9 +4969,16 @@ impl SimpleBackend {
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
+                        // fast_int: index is a known NaN-boxed int; use the
+                        // list-specific fast path which avoids full type dispatch.
+                        let fn_name = if op.fast_int.unwrap_or(false) {
+                            "molt_list_getitem_int_fast"
+                        } else {
+                            "molt_index"
+                        };
                         let callee = self
                             .module
-                            .declare_function("molt_index", Linkage::Import, &sig)
+                            .declare_function(fn_name, Linkage::Import, &sig)
                             .unwrap();
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*obj, *idx]);
@@ -6909,7 +6916,13 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op.fast_float.unwrap_or(false) {
+                        // Both operands known to be f64 — direct float equality.
+                        let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
+                        let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                        let cmp = builder.ins().fcmp(FloatCC::Equal, lhs_f, rhs_f);
+                        box_bool_value(&mut builder, cmp)
+                    } else if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
                         let cmp = builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val);
@@ -6960,7 +6973,13 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op.fast_float.unwrap_or(false) {
+                        // Both operands known to be f64 — direct float inequality.
+                        let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
+                        let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                        let cmp = builder.ins().fcmp(FloatCC::NotEqual, lhs_f, rhs_f);
+                        box_bool_value(&mut builder, cmp)
+                    } else if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
                         let cmp = builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val);
@@ -7015,9 +7034,10 @@ impl SimpleBackend {
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
+                    // Use the fast path: pointer-identity check before byte scan.
                     let callee = self
                         .module
-                        .declare_function("molt_string_eq", Linkage::Import, &sig)
+                        .declare_function("molt_string_eq_fast", Linkage::Import, &sig)
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
@@ -8886,13 +8906,7 @@ impl SimpleBackend {
                         let env_bits = builder.inst_results(extract_call)[0];
                         args.insert(0, env_bits);
                     }
-                    // --- Outlined guarded call via molt_guarded_call ---
-                    // Instead of generating 3 blocks + 4 function imports for
-                    // guard/trace ceremony at every call site, emit a single
-                    // call to the runtime helper molt_guarded_call(fn_ptr,
-                    // args_ptr, nargs, code_id).
-
-                    // Declare the target function to take its address.
+                    // Declare the target function.
                     // Use the previously-declared arity if available, so the
                     // Cranelift signature matches the definition even when the
                     // call site passes a different number of arguments (e.g.
@@ -8948,42 +8962,116 @@ impl SimpleBackend {
                         }
                     };
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let fn_ptr_val = builder.ins().func_addr(types::I64, local_callee);
 
-                    // Spill args to a stack slot for the outlined helper.
-                    let nargs_count = args.len();
-                    let slot_size = std::cmp::max(nargs_count, 1) * 8;
-                    let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        slot_size as u32,
-                        3, // align_shift: 2^3 = 8-byte alignment
-                    ));
-                    for (i, arg) in args.iter().enumerate() {
-                        builder.ins().stack_store(*arg, args_slot, (i * 8) as i32);
-                    }
-                    let args_ptr_val = builder.ins().stack_addr(types::I64, args_slot, 0);
-                    let nargs_val = builder.ins().iconst(types::I64, nargs_count as i64);
-                    let code_id_val = if emit_traces {
-                        builder.ins().iconst(types::I64, op.value.unwrap_or(0))
+                    // --- Fast path: direct call for known defined non-closure functions ---
+                    // When the target is a defined function in this module (not a closure),
+                    // emit a direct Cranelift call with a lightweight recursion guard.
+                    // This avoids: arg spill/reload, match-on-arity dispatch, indirect call.
+                    let use_direct_call = defined_functions.contains(target_name)
+                        && !closure_functions.contains(target_name.as_str())
+                        && args.len() == sig_arity
+                        && !emit_traces;
+
+                    let res = if use_direct_call {
+                        // Lightweight recursion guard (no GIL, just TLS counter).
+                        let enter_ref = import_func_ref(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            "molt_recursion_enter_fast",
+                            &[],
+                            &[types::I64],
+                        );
+                        let enter_call = builder.ins().call(enter_ref, &[]);
+                        let guard_ok = builder.inst_results(enter_call)[0];
+
+                        // Branch on recursion guard result.
+                        let call_block = builder.create_block();
+                        let error_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let is_ok = builder.ins().icmp(IntCC::NotEqual, guard_ok, zero);
+                        brif_block(&mut builder, is_ok, call_block, &[], error_block, &[]);
+
+                        // Error block: recursion limit exceeded (cold path).
+                        builder.switch_to_block(error_block);
+                        let raise_ref = import_func_ref(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            "molt_raise_recursion_error",
+                            &[],
+                            &[types::I64],
+                        );
+                        let raise_call = builder.ins().call(raise_ref, &[]);
+                        let err_val = builder.inst_results(raise_call)[0];
+                        jump_block(&mut builder, merge_block, &[err_val]);
+
+                        // Call block: direct call to the target function.
+                        builder.switch_to_block(call_block);
+                        let direct_call = builder.ins().call(local_callee, &args);
+                        let call_res = builder.inst_results(direct_call)[0];
+
+                        // Exit recursion guard (no GIL needed).
+                        let exit_ref = import_func_ref(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            "molt_recursion_exit_fast",
+                            &[],
+                            &[],
+                        );
+                        builder.ins().call(exit_ref, &[]);
+                        jump_block(&mut builder, merge_block, &[call_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.block_params(merge_block)[0]
                     } else {
-                        builder.ins().iconst(types::I64, -1i64)
-                    };
+                        // --- Outlined guarded call via molt_guarded_call ---
+                        // Fallback for imported functions, closures, arity mismatches,
+                        // or when tracing is enabled.
+                        let fn_ptr_val = builder.ins().func_addr(types::I64, local_callee);
 
-                    // Declare and call molt_guarded_call.
-                    let gc_local = import_func_ref(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        "molt_guarded_call",
-                        &[types::I64, types::I64, types::I64, types::I64],
-                        &[types::I64],
-                    );
-                    let gc_call = builder.ins().call(
-                        gc_local,
-                        &[fn_ptr_val, args_ptr_val, nargs_val, code_id_val],
-                    );
-                    let res = builder.inst_results(gc_call)[0];
+                        // Spill args to a stack slot for the outlined helper.
+                        let nargs_count = args.len();
+                        let slot_size = std::cmp::max(nargs_count, 1) * 8;
+                        let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            slot_size as u32,
+                            3, // align_shift: 2^3 = 8-byte alignment
+                        ));
+                        for (i, arg) in args.iter().enumerate() {
+                            builder.ins().stack_store(*arg, args_slot, (i * 8) as i32);
+                        }
+                        let args_ptr_val = builder.ins().stack_addr(types::I64, args_slot, 0);
+                        let nargs_val = builder.ins().iconst(types::I64, nargs_count as i64);
+                        let code_id_val = if emit_traces {
+                            builder.ins().iconst(types::I64, op.value.unwrap_or(0))
+                        } else {
+                            builder.ins().iconst(types::I64, -1i64)
+                        };
+
+                        // Declare and call molt_guarded_call.
+                        let gc_local = import_func_ref(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            "molt_guarded_call",
+                            &[types::I64, types::I64, types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let gc_call = builder.ins().call(
+                            gc_local,
+                            &[fn_ptr_val, args_ptr_val, nargs_val, code_id_val],
+                        );
+                        builder.inst_results(gc_call)[0]
+                    };
 
                     // Tracked-value cleanup (stays inline — varies per site).
                     // Re-attach surviving tracked values to the current block.

@@ -13756,6 +13756,31 @@ pub extern "C" fn molt_recursion_guard_exit() {
     })
 }
 
+/// Lightweight recursion guard for direct calls to known functions.
+/// Skips GIL acquisition since RECURSION_DEPTH/LIMIT are thread-local Cells.
+/// Returns 1 on success, 0 if the recursion limit is exceeded (caller must
+/// handle the error).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_recursion_enter_fast() -> i64 {
+    if recursion_guard_enter() { 1 } else { 0 }
+}
+
+/// Lightweight recursion guard exit — no GIL needed.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_recursion_exit_fast() {
+    recursion_guard_exit();
+}
+
+/// Cold-path: raise RecursionError. Only called when molt_recursion_enter_fast
+/// returns 0. Acquires the GIL to create the exception object.
+#[unsafe(no_mangle)]
+#[cold]
+pub extern "C" fn molt_raise_recursion_error() -> u64 {
+    crate::with_gil_entry!(_py, {
+        raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded")
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_code_slots_init(count: u64) -> u64 {
     crate::with_gil_entry!(_py, {

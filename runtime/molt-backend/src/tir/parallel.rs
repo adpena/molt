@@ -79,6 +79,7 @@ mod tests {
             next_block: 1,
             attrs: AttrDict::new(),
         has_exception_handling: false,
+            label_id_map: HashMap::new(),
         }
     }
 
@@ -116,6 +117,7 @@ mod tests {
             next_block: 1,
             attrs: AttrDict::new(),
         has_exception_handling: false,
+            label_id_map: HashMap::new(),
         }
     }
 

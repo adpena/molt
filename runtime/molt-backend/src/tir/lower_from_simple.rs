@@ -82,6 +82,27 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         })
     });
 
+    // Build label_id_map: for each CFG block that starts with a label/state_label,
+    // record the original label value so the back-conversion can emit labels
+    // with matching IDs for check_exception / jump / br_if targets.
+    let mut label_id_map = HashMap::new();
+    for (bid, bb) in cfg.blocks.iter().enumerate() {
+        // Scan the ops in this block for a leading label/state_label.
+        for op_idx in bb.start_op..bb.end_op {
+            let op = &ir.ops[op_idx];
+            if matches!(op.kind.as_str(), "label" | "state_label") {
+                if let Some(label_val) = op.value {
+                    label_id_map.insert(bid as u32, label_val);
+                }
+                break; // Only care about the first label in the block.
+            }
+            // If we hit a non-structural op before finding a label, stop.
+            if !is_structural(&op.kind) {
+                break;
+            }
+        }
+    }
+
     TirFunction {
         name: ir.name.clone(),
         param_types,
@@ -92,6 +113,7 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         next_block,
         attrs: super::ops::AttrDict::new(),
         has_exception_handling,
+        label_id_map,
     }
 }
 
