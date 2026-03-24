@@ -18,10 +18,12 @@ pub(crate) mod callable;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod compression_bridge;
 pub(crate) mod classes;
+#[cfg(not(feature = "stdlib_math"))]
 pub(crate) mod cmath_mod;
 pub(crate) mod codecs;
 pub(crate) mod codecs_ext;
 pub(crate) mod collections_ext;
+#[cfg(not(feature = "stdlib_math"))]
 pub(crate) mod colorsys;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod compression_common;

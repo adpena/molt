@@ -58,6 +58,11 @@ impl<T> ExceptionSentinel for Option<T> {
     }
 }
 
+impl ExceptionSentinel for () {
+    #[inline]
+    fn from_bits(_bits: u64) -> Self {}
+}
+
 // ---------------------------------------------------------------------------
 // Object allocation
 // ---------------------------------------------------------------------------

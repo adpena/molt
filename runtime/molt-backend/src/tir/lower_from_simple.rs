@@ -68,6 +68,20 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
 
     let next_block = block_map.len() as u32;
 
+    // Detect whether the function contains exception-handling ops.
+    let has_exception_handling = block_map.values().any(|block| {
+        block.ops.iter().any(|op| {
+            matches!(
+                op.opcode,
+                super::ops::OpCode::TryStart
+                    | super::ops::OpCode::TryEnd
+                    | super::ops::OpCode::StateBlockStart
+                    | super::ops::OpCode::StateBlockEnd
+                    | super::ops::OpCode::CheckException
+            )
+        })
+    });
+
     TirFunction {
         name: ir.name.clone(),
         param_types,
@@ -77,6 +91,7 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         next_value,
         next_block,
         attrs: super::ops::AttrDict::new(),
+        has_exception_handling,
     }
 }
 
