@@ -1807,6 +1807,15 @@ pub fn split_large_function(func: FunctionIR, max_ops: usize) -> Result<(Functio
         return Err(func);
     }
 
+    // Functions with exception handling cannot be safely split — check_exception
+    // ops act as conditional branches to labels that must stay in scope.
+    // Splitting them creates invalid control flow (orphan if/end_if, dangling labels).
+    // The incremental compilation cache handles large stdlib functions instead.
+    let has_exceptions = func.ops.iter().any(|op| op.kind == "check_exception");
+    if has_exceptions {
+        return Err(func);
+    }
+
     // ---------------------------------------------------------------
     // 1. Find safe split points (indices where depth == 0).
     //    A split point is the index of the *first* op of a new chunk,
