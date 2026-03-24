@@ -43,7 +43,27 @@ mod c_api;
 mod call;
 mod concurrency;
 mod constants;
+#[cfg(feature = "stdlib_crypto")]
+mod crypto_bridge;
+#[cfg(feature = "stdlib_math")]
+mod math_bridge;
+#[cfg(feature = "stdlib_serial")]
+mod serial_bridge;
+// Re-export extracted crates so their symbols are available at link time.
+#[cfg(feature = "stdlib_crypto")]
+pub use molt_runtime_crypto;
+#[cfg(feature = "stdlib_compression")]
+pub use molt_runtime_compression;
+#[cfg(feature = "stdlib_math")]
+pub use molt_runtime_math;
+#[cfg(feature = "stdlib_serial")]
+pub use molt_runtime_serial;
+#[cfg(feature = "stdlib_tk")]
 mod gui;
+#[cfg(feature = "stdlib_tk")]
+mod tk_bridge;
+#[cfg(feature = "stdlib_tk")]
+pub use molt_runtime_tk;
 mod intrinsics;
 #[cfg(target_arch = "wasm32")]
 mod libc_compat;
@@ -285,6 +305,7 @@ pub use crate::builtins::sys_ext::*;
 pub use crate::builtins::tarfile::*;
 #[cfg(feature = "stdlib_fs_extra")]
 pub use crate::builtins::tempfile_mod::*;
+#[cfg(feature = "stdlib_tk")]
 pub use crate::builtins::tkinter_core::*;
 pub(crate) use crate::builtins::type_ops::{
     class_bases_vec, class_mro_ref, class_mro_vec, isinstance_bits, isinstance_runtime,
@@ -315,6 +336,7 @@ pub(crate) use crate::call::function::{
 };
 pub(crate) use crate::call::lookup_call_attr;
 pub(crate) use crate::constants::*;
+#[cfg(feature = "stdlib_tk")]
 pub use crate::gui::tk::*;
 pub use crate::intrinsics::capabilities::*;
 pub(crate) use crate::object::accessors::{

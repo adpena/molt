@@ -227,42 +227,9 @@ if False:  # TYPE_CHECKING
     _molt_class_new: Callable[[object], object]
     _molt_class_set_base: Callable[[object, object], object]
     _molt_class_apply_set_name: Callable[[object], object]
-    _molt_os_name: Callable[[], str]
     _molt_sys_platform: Callable[[], str]
-    _molt_time_monotonic: Callable[[], float]
-    _molt_time_monotonic_ns: Callable[[], int]
-    _molt_time_time: Callable[[], float]
-    _molt_time_time_ns: Callable[[], int]
     _molt_getpid: Callable[[], int]
     _molt_getcwd: Callable[[], str]
-    _molt_os_close: Callable[[object], object]
-    _molt_os_dup: Callable[[object], object]
-    _molt_os_get_inheritable: Callable[[object], object]
-    _molt_os_set_inheritable: Callable[[object, object], object]
-    _molt_os_urandom: Callable[[object], object]
-    _molt_math_log: Callable[[object], object]
-    _molt_math_log2: Callable[[object], object]
-    _molt_math_exp: Callable[[object], object]
-    _molt_math_sin: Callable[[object], object]
-    _molt_math_cos: Callable[[object], object]
-    _molt_math_acos: Callable[[object], object]
-    _molt_math_lgamma: Callable[[object], object]
-    _molt_struct_pack: Callable[[object, object], object]
-    _molt_struct_unpack: Callable[[object, object], object]
-    _molt_struct_calcsize: Callable[[object], object]
-    _molt_codecs_decode: Callable[[object, object, object], object]
-    _molt_codecs_encode: Callable[[object, object, object], object]
-    _molt_deflate_raw: Callable[[object, object], object]
-    _molt_inflate_raw: Callable[[object], object]
-    _molt_env_get: Callable[..., object]
-    _molt_env_snapshot: Callable[[], object]
-    _molt_errno_constants: Callable[[], tuple[dict[str, int], dict[int, str]]]
-    _molt_path_exists: Callable[[object], bool]
-    _molt_path_listdir: Callable[[object], object]
-    _molt_path_mkdir: Callable[[object, object], object]
-    _molt_path_unlink: Callable[[object], None]
-    _molt_path_rmdir: Callable[[object], None]
-    _molt_path_chmod: Callable[[object, object], None]
     _molt_io_wait_new: Callable[[object, int, object], object]
     _molt_ws_wait_new: Callable[[object, int, object], object]
     molt_block_on: Callable[[object], object]
@@ -726,41 +693,8 @@ except Exception as _exc:  # noqa: BLE001
 _molt_class_new = _require_builtin_intrinsic("molt_class_new")
 _molt_class_set_base = _require_builtin_intrinsic("molt_class_set_base")
 _molt_class_apply_set_name = _require_builtin_intrinsic("molt_class_apply_set_name")
-_molt_os_name = _require_builtin_intrinsic("molt_os_name")
 _molt_sys_platform = _require_builtin_intrinsic("molt_sys_platform")
 if _molt_sys_platform() == "win32":
     WindowsError = OSError
-_molt_time_monotonic = _require_builtin_intrinsic("molt_time_monotonic")
-_molt_time_monotonic_ns = _require_builtin_intrinsic("molt_time_monotonic_ns")
-_molt_time_time = _require_builtin_intrinsic("molt_time_time")
-_molt_time_time_ns = _require_builtin_intrinsic("molt_time_time_ns")
 _molt_getpid = _require_builtin_intrinsic("molt_getpid")
 _molt_getcwd = _require_builtin_intrinsic("molt_getcwd")
-_molt_env_get = _require_builtin_intrinsic("molt_env_get")
-_molt_env_snapshot = _require_builtin_intrinsic("molt_env_snapshot")
-_molt_errno_constants = _require_builtin_intrinsic("molt_errno_constants")
-_molt_path_exists = _require_builtin_intrinsic("molt_path_exists")
-_molt_path_listdir = _require_builtin_intrinsic("molt_path_listdir")
-_molt_path_mkdir = _require_builtin_intrinsic("molt_path_mkdir")
-_molt_path_unlink = _require_builtin_intrinsic("molt_path_unlink")
-_molt_path_rmdir = _require_builtin_intrinsic("molt_path_rmdir")
-_molt_path_chmod = _require_builtin_intrinsic("molt_path_chmod")
-_molt_os_close = _require_builtin_intrinsic("molt_os_close")
-_molt_os_dup = _require_builtin_intrinsic("molt_os_dup")
-_molt_os_get_inheritable = _require_builtin_intrinsic("molt_os_get_inheritable")
-_molt_os_set_inheritable = _require_builtin_intrinsic("molt_os_set_inheritable")
-_molt_os_urandom = _require_builtin_intrinsic("molt_os_urandom")
-_molt_math_log = _require_builtin_intrinsic("molt_math_log")
-_molt_math_log2 = _require_builtin_intrinsic("molt_math_log2")
-_molt_math_exp = _require_builtin_intrinsic("molt_math_exp")
-_molt_math_sin = _require_builtin_intrinsic("molt_math_sin")
-_molt_math_cos = _require_builtin_intrinsic("molt_math_cos")
-_molt_math_acos = _require_builtin_intrinsic("molt_math_acos")
-_molt_math_lgamma = _require_builtin_intrinsic("molt_math_lgamma")
-_molt_struct_pack = _require_builtin_intrinsic("molt_struct_pack")
-_molt_struct_unpack = _require_builtin_intrinsic("molt_struct_unpack")
-_molt_struct_calcsize = _require_builtin_intrinsic("molt_struct_calcsize")
-_molt_codecs_decode = _require_builtin_intrinsic("molt_codecs_decode")
-_molt_codecs_encode = _require_builtin_intrinsic("molt_codecs_encode")
-_molt_deflate_raw = _require_builtin_intrinsic("molt_deflate_raw")
-_molt_inflate_raw = _require_builtin_intrinsic("molt_inflate_raw")
