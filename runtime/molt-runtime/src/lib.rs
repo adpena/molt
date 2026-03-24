@@ -132,6 +132,8 @@ pub use crate::async_rt::sockets::{
     molt_socket_getfqdn, molt_socket_gethostbyaddr,
     molt_socket_gethostbyname, molt_socket_gethostbyname_ex,
     molt_socket_htonl, molt_socket_htons, molt_socket_ntohl, molt_socket_ntohs,
+    molt_socket_if_indextoname, molt_socket_if_nametoindex, molt_socket_if_nameindex,
+    molt_socket_constants,
 };
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -16,8 +16,10 @@ impl IoPoller {
         Self { waiters: Mutex::new(HashMap::new()) }
     }
     pub(crate) fn start_worker(self: &std::sync::Arc<Self>) {}
-    pub(crate) fn wait_blocking(self: &std::sync::Arc<Self>, _py: &PyToken<'_>) {}
-    pub(crate) fn cancel_waiter(&self, _slot: PtrSlot) {}
+    pub(crate) fn wait_blocking(&self, _socket_ptr: *mut u8, _events: u32, _timeout: Option<std::time::Duration>) -> Result<u32, std::io::Error> {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "networking not available"))
+    }
+    pub(crate) fn cancel_waiter(&self, _slot: *mut u8) {}
     pub(crate) fn shutdown(&self) {}
 }
 
@@ -63,33 +65,7 @@ macro_rules! net_error {
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_setsockopt(_: u64, _: u64, _: u64, _: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_getsockopt(_: u64, _: u64, _: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_detach(_: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socketpair(_: u64, _: u64, _: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_getaddrinfo(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_getnameinfo(_: u64, _: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_gethostname() -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_getservbyname(_: u64, _: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_getservbyport(_: u64, _: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_getprotobyname(_: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_inet_pton(_: u64, _: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_inet_ntop(_: u64, _: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_has_ipv6() -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_has_dualstack_ipv6() -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_cmsg_len(_: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_cmsg_space(_: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_getfqdn(_: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_gethostbyaddr(_: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_gethostbyname(_: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_gethostbyname_ex(_: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_htonl(_: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_htons(_: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_ntohl(_: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_ntohs(_: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_if_indextoname(_: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_if_nameindex() -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_if_nametoindex(_: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_recv_fds(_: u64, _: u64, _: u64, _: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_send_fds(_: u64, _: u64, _: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_sendfile(_: u64, _: u64, _: u64, _: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_sendmsg_afalg(_: u64, _: u64, _: u64, _: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_sethostname(_: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_reader_new(_: u64) -> u64 { net_error!() }
@@ -109,3 +85,16 @@ macro_rules! net_error {
 #[unsafe(no_mangle)] pub extern "C" fn molt_asyncio_tls_client_from_fd_new(_: u64, _: u64, _: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_asyncio_tls_server_payload(_: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_asyncio_tls_server_from_fd_new(_: u64, _: u64, _: u64) -> u64 { net_error!() }
+#[unsafe(no_mangle)] pub extern "C" fn molt_socket_gethostname() -> u64 { net_error!() }
+#[unsafe(no_mangle)] pub extern "C" fn molt_socket_getprotobyname(_: u64) -> u64 { net_error!() }
+#[unsafe(no_mangle)] pub extern "C" fn molt_socket_getservbyname(_: u64, _: u64) -> u64 { net_error!() }
+#[unsafe(no_mangle)] pub extern "C" fn molt_socket_getservbyport(_: u64, _: u64) -> u64 { net_error!() }
+#[unsafe(no_mangle)] pub extern "C" fn molt_socket_has_dualstack_ipv6() -> u64 { net_error!() }
+#[unsafe(no_mangle)] pub extern "C" fn molt_socket_has_ipv6() -> u64 { net_error!() }
+#[unsafe(no_mangle)] pub extern "C" fn molt_socket_inet_ntop(_: u64, _: u64) -> u64 { net_error!() }
+#[unsafe(no_mangle)] pub extern "C" fn molt_socket_inet_pton(_: u64, _: u64) -> u64 { net_error!() }
+#[unsafe(no_mangle)] pub extern "C" fn molt_socket_send_fds(_: u64, _: u64, _: u64) -> u64 { net_error!() }
+#[unsafe(no_mangle)] pub extern "C" fn molt_socket_sendfile(_: u64, _: u64, _: u64, _: u64) -> u64 { net_error!() }
+#[unsafe(no_mangle)] pub extern "C" fn molt_socket_getaddrinfo(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 { net_error!() }
+#[unsafe(no_mangle)] pub extern "C" fn molt_socketpair(_: u64, _: u64, _: u64) -> u64 { net_error!() }
+#[unsafe(no_mangle)] pub extern "C" fn molt_socket_getnameinfo(_: u64, _: u64) -> u64 { net_error!() }
