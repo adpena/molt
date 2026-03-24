@@ -8,35 +8,23 @@ use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
 #[cfg(molt_has_net_io)]
 use socket2::{Domain, Protocol, SockAddr, SockAddrStorage, SockRef, Socket, Type};
-#[cfg(molt_has_net_io)]
-use std::collections::HashMap;
-#[cfg(target_arch = "wasm32")]
 use std::collections::HashMap;
 #[cfg(all(molt_has_net_io, not(unix)))]
 use std::collections::VecDeque;
-#[cfg(molt_has_net_io)]
 use std::ffi::{CStr, CString, OsString};
 use std::io::ErrorKind;
-#[cfg(target_arch = "wasm32")]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 #[cfg(molt_has_net_io)]
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
+use std::net::{SocketAddr, ToSocketAddrs};
 #[cfg(unix)]
 use std::os::fd::BorrowedFd;
-#[cfg(molt_has_net_io)]
 use std::os::raw::{c_int, c_void};
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, BorrowedSocket, FromRawSocket, IntoRawSocket, RawSocket};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
-#[cfg(molt_has_net_io)]
 use std::sync::{Mutex, OnceLock};
-#[cfg(target_arch = "wasm32")]
-use std::sync::{Mutex, OnceLock};
-#[cfg(molt_has_net_io)]
-use std::time::Duration;
-#[cfg(target_arch = "wasm32")]
 use std::time::Duration;
 
 // --- Sockets ---
@@ -84,10 +72,10 @@ struct MoltSocketReader {
 }
 
 #[cfg(molt_has_net_io)]
-#[cfg(unix)]
+#[cfg(all(unix, molt_has_net_io))]
 type SocketFd = RawFd;
 #[cfg(molt_has_net_io)]
-#[cfg(windows)]
+#[cfg(all(windows, molt_has_net_io))]
 type SocketFd = RawSocket;
 
 #[cfg(molt_has_net_io)]
@@ -189,7 +177,7 @@ pub(crate) fn socket_ptr_from_bits_or_fd(socket_bits: u64) -> *mut u8 {
         {
             return socket_ptr_from_fd(fd as RawFd).unwrap_or(std::ptr::null_mut());
         }
-        #[cfg(windows)]
+        #[cfg(all(windows, molt_has_net_io))]
         {
             return socket_ptr_from_fd(fd as RawSocket).unwrap_or(std::ptr::null_mut());
         }
@@ -209,11 +197,11 @@ impl MoltSocketInner {
             MoltSocketKind::TcpStream(stream) => Some(stream),
             MoltSocketKind::TcpListener(listener) => Some(listener),
             MoltSocketKind::UdpSocket(sock) => Some(sock),
-            #[cfg(unix)]
+            #[cfg(all(unix, molt_has_net_io))]
             MoltSocketKind::UnixStream(stream) => Some(stream),
-            #[cfg(unix)]
+            #[cfg(all(unix, molt_has_net_io))]
             MoltSocketKind::UnixListener(listener) => Some(listener),
-            #[cfg(unix)]
+            #[cfg(all(unix, molt_has_net_io))]
             MoltSocketKind::UnixDatagram(sock) => Some(sock),
             MoltSocketKind::Pending(_) => None,
         }
@@ -225,13 +213,13 @@ impl MoltSocketInner {
             MoltSocketKind::TcpStream(_)
             | MoltSocketKind::Pending(_)
             | MoltSocketKind::TcpListener(_) => true,
-            #[cfg(unix)]
+            #[cfg(all(unix, molt_has_net_io))]
             MoltSocketKind::UnixStream(_) | MoltSocketKind::UnixListener(_) => true,
             _ => false,
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, molt_has_net_io))]
     pub(crate) fn raw_fd(&self) -> Option<RawFd> {
         let fd = match &self.kind {
             MoltSocketKind::Pending(sock) => sock.as_raw_fd(),
@@ -246,7 +234,7 @@ impl MoltSocketInner {
         Some(fd)
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, molt_has_net_io))]
     pub(crate) fn raw_socket(&self) -> Option<RawSocket> {
         let sock = match &self.kind {
             MoltSocketKind::Pending(sock) => sock.as_raw_socket(),
@@ -1542,7 +1530,7 @@ fn unix_path_from_bits(_py: &PyToken<'_>, addr_bits: u64) -> Result<std::path::P
 #[cfg(molt_has_net_io)]
 fn sockaddr_from_bits(_py: &PyToken<'_>, addr_bits: u64, family: i32) -> Result<SockAddr, String> {
     if family == libc::AF_UNIX {
-        #[cfg(unix)]
+        #[cfg(all(unix, molt_has_net_io))]
         {
             let path = unix_path_from_bits(_py, addr_bits)?;
             return SockAddr::unix(path).map_err(|err| err.to_string());
@@ -1891,13 +1879,13 @@ fn socket_wait_ready(_py: &PyToken<'_>, handle: i64, events: u32) -> Result<(), 
     Err(std::io::Error::from_raw_os_error(-rc))
 }
 
-#[cfg(molt_has_net_io)]
+#[cfg(not(target_arch = "wasm32"))]
 fn os_string_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<OsString, String> {
     let path = path_from_bits(_py, bits)?;
     Ok(path.into_os_string())
 }
 
-#[cfg(molt_has_net_io)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn argv_from_bits(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<OsString>, String> {
     let obj = obj_from_bits(args_bits);
     if obj.is_none() {
@@ -1917,7 +1905,7 @@ pub(crate) fn argv_from_bits(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<Os
     Ok(vec![os_string_from_bits(_py, args_bits)?])
 }
 
-#[cfg(molt_has_net_io)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn env_from_bits(
     _py: &PyToken<'_>,
     env_bits: u64,
@@ -1949,16 +1937,16 @@ pub(crate) fn env_from_bits(
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, molt_has_net_io))]
 type LibcSocket = c_int;
-#[cfg(windows)]
+#[cfg(all(windows, molt_has_net_io))]
 type LibcSocket = libc::SOCKET;
 
-#[cfg(unix)]
+#[cfg(all(unix, molt_has_net_io))]
 fn libc_socket(fd: RawFd) -> LibcSocket {
     fd
 }
-#[cfg(windows)]
+#[cfg(all(windows, molt_has_net_io))]
 fn libc_socket(fd: RawSocket) -> LibcSocket {
     fd as LibcSocket
 }
@@ -1988,7 +1976,7 @@ fn sock_addr_from_storage(storage: libc::sockaddr_storage, len: libc::socklen_t)
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, molt_has_net_io))]
 fn socket_is_acceptor(socket: &Socket) -> bool {
     let fd = socket.as_raw_fd();
     let mut val: c_int = 0;
@@ -2005,7 +1993,7 @@ fn socket_is_acceptor(socket: &Socket) -> bool {
     ret == 0 && val != 0
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, molt_has_net_io))]
 fn socket_is_acceptor(_socket: &Socket) -> bool {
     false
 }
@@ -2020,7 +2008,7 @@ fn socket_relisten(fd: RawFd, backlog: i32) -> std::io::Result<()> {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, molt_has_net_io))]
 fn socket_relisten(socket: RawSocket, backlog: i32) -> std::io::Result<()> {
     let rc = unsafe { libc::listen(socket, backlog) };
     if rc == 0 {
@@ -2030,7 +2018,7 @@ fn socket_relisten(socket: RawSocket, backlog: i32) -> std::io::Result<()> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, molt_has_net_io))]
 fn with_sockref<T, F>(fd: RawFd, f: F) -> T
 where
     F: FnOnce(SockRef<'_>) -> T,
@@ -2040,7 +2028,7 @@ where
     f(sock_ref)
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, molt_has_net_io))]
 fn with_sockref<T, F>(socket: RawSocket, f: F) -> T
 where
     F: FnOnce(SockRef<'_>) -> T,
@@ -2055,7 +2043,7 @@ fn take_error_raw(fd: RawFd) -> std::io::Result<Option<std::io::Error>> {
     with_sockref(fd, |sock_ref| sock_ref.take_error())
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, molt_has_net_io))]
 fn take_error_raw(socket: RawSocket) -> std::io::Result<Option<std::io::Error>> {
     with_sockref(socket, |sock_ref| sock_ref.take_error())
 }
@@ -2065,7 +2053,7 @@ fn take_error_mio<T: AsRawFd>(sock: &T) -> std::io::Result<Option<std::io::Error
     take_error_raw(sock.as_raw_fd())
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, molt_has_net_io))]
 fn take_error_mio<T: AsRawSocket>(sock: &T) -> std::io::Result<Option<std::io::Error>> {
     take_error_raw(sock.as_raw_socket())
 }
@@ -2141,11 +2129,11 @@ pub extern "C" fn molt_socket_new(
                         "bad file descriptor",
                     );
                 }
-                #[cfg(unix)]
+                #[cfg(all(unix, molt_has_net_io))]
                 {
                     Socket::from_raw_fd(raw as RawFd)
                 }
-                #[cfg(windows)]
+                #[cfg(all(windows, molt_has_net_io))]
                 {
                     Socket::from_raw_socket(raw as RawSocket)
                 }
@@ -2194,7 +2182,7 @@ pub extern "C" fn molt_socket_new(
                 }
                 MoltSocketKind::UdpSocket(mio::net::UdpSocket::from_std(std_sock))
             }
-            #[cfg(not(unix))]
+            #[cfg(all(not(unix), molt_has_net_io))]
             {
                 let std_sock: std::net::UdpSocket = socket.into();
                 if let Err(err) = std_sock.set_nonblocking(true) {
@@ -2378,21 +2366,21 @@ pub unsafe extern "C" fn molt_socket_fileno(sock_bits: u64) -> u64 {
                 return MoltObject::from_int(-1).bits();
             }
             let guard = socket.inner.lock().unwrap();
-            #[cfg(unix)]
+            #[cfg(all(unix, molt_has_net_io))]
             let fd = match &guard.kind {
                 MoltSocketKind::Pending(sock) => sock.as_raw_fd() as i64,
                 MoltSocketKind::TcpStream(sock) => sock.as_raw_fd() as i64,
                 MoltSocketKind::TcpListener(sock) => sock.as_raw_fd() as i64,
                 MoltSocketKind::UdpSocket(sock) => sock.as_raw_fd() as i64,
-                #[cfg(unix)]
+                #[cfg(all(unix, molt_has_net_io))]
                 MoltSocketKind::UnixStream(sock) => sock.as_raw_fd() as i64,
-                #[cfg(unix)]
+                #[cfg(all(unix, molt_has_net_io))]
                 MoltSocketKind::UnixListener(sock) => sock.as_raw_fd() as i64,
-                #[cfg(unix)]
+                #[cfg(all(unix, molt_has_net_io))]
                 MoltSocketKind::UnixDatagram(sock) => sock.as_raw_fd() as i64,
                 MoltSocketKind::Closed => -1,
             };
-            #[cfg(windows)]
+            #[cfg(all(windows, molt_has_net_io))]
             let fd = match &guard.kind {
                 MoltSocketKind::Pending(sock) => sock.as_raw_socket() as i64,
                 MoltSocketKind::TcpStream(sock) => sock.as_raw_socket() as i64,
@@ -2529,15 +2517,15 @@ pub unsafe extern "C" fn molt_socket_bind(sock_bits: u64, addr_bits: u64) -> u64
                     let raw = sock.as_raw_socket();
                     with_sockref(raw, |sock_ref| sock_ref.bind(&sockaddr))
                 }
-                #[cfg(unix)]
+                #[cfg(all(unix, molt_has_net_io))]
                 MoltSocketKind::UnixStream(_) | MoltSocketKind::UnixListener(_) => Err(
                     std::io::Error::new(ErrorKind::InvalidInput, "socket already bound"),
                 ),
-                #[cfg(unix)]
+                #[cfg(all(unix, molt_has_net_io))]
                 MoltSocketKind::UnixDatagram(sock) => {
                     #[cfg(unix)]
                     let raw = sock.as_raw_fd();
-                    #[cfg(windows)]
+                    #[cfg(all(windows, molt_has_net_io))]
                     let raw = sock.as_raw_socket();
                     with_sockref(raw, |sock_ref| sock_ref.bind(&sockaddr))
                 }
@@ -2588,7 +2576,7 @@ pub unsafe extern "C" fn molt_socket_listen(sock_bits: u64, backlog_bits: u64) -
                                 mio::net::TcpListener::from_std(std_listener),
                             );
                         }
-                        #[cfg(not(unix))]
+                        #[cfg(all(not(unix), molt_has_net_io))]
                         {
                             let std_listener: std::net::TcpListener = sock.into();
                             std_listener.set_nonblocking(true)?;
@@ -2617,7 +2605,7 @@ pub unsafe extern "C" fn molt_socket_listen(sock_bits: u64, backlog_bits: u64) -
                     inner.kind = MoltSocketKind::TcpListener(listener);
                     res
                 }
-                #[cfg(unix)]
+                #[cfg(all(unix, molt_has_net_io))]
                 MoltSocketKind::UnixListener(listener) => {
                     let res = socket_relisten(listener.as_raw_fd(), backlog);
                     inner.kind = MoltSocketKind::UnixListener(listener);
@@ -2673,7 +2661,7 @@ pub unsafe extern "C" fn molt_socket_accept(sock_bits: u64) -> u64 {
                                 }
                             }
                         },
-                        #[cfg(unix)]
+                        #[cfg(all(unix, molt_has_net_io))]
                         MoltSocketKind::UnixListener(listener) => match listener.accept() {
                             Ok((stream, addr)) => {
                                 let addr_bits = if let Some(path) = addr.as_pathname() {
@@ -2797,7 +2785,7 @@ pub unsafe extern "C" fn molt_socket_connect(sock_bits: u64, addr_bits: u64) -> 
                                     mio::net::TcpStream::from_std(std_stream),
                                 );
                             }
-                            #[cfg(not(unix))]
+                            #[cfg(all(not(unix), molt_has_net_io))]
                             {
                                 let std_stream: std::net::TcpStream = sock.into();
                                 std_stream.set_nonblocking(true)?;
@@ -2828,7 +2816,7 @@ pub unsafe extern "C" fn molt_socket_connect(sock_bits: u64, addr_bits: u64) -> 
                                         mio::net::TcpStream::from_std(std_stream),
                                     );
                                 }
-                                #[cfg(not(unix))]
+                                #[cfg(all(not(unix), molt_has_net_io))]
                                 {
                                     let std_stream: std::net::TcpStream = sock.into();
                                     std_stream.set_nonblocking(true)?;
@@ -2846,7 +2834,7 @@ pub unsafe extern "C" fn molt_socket_connect(sock_bits: u64, addr_bits: u64) -> 
                     MoltSocketKind::UdpSocket(sock) => {
                         #[cfg(unix)]
                         let fd = sock.as_raw_fd();
-                        #[cfg(windows)]
+                        #[cfg(all(windows, molt_has_net_io))]
                         let fd = sock.as_raw_socket();
                         let res = connect_raw_socket(fd, &sockaddr);
                         inner.kind = MoltSocketKind::UdpSocket(sock);
@@ -2858,7 +2846,7 @@ pub unsafe extern "C" fn molt_socket_connect(sock_bits: u64, addr_bits: u64) -> 
                             Err(err) => Err(err),
                         }
                     }
-                    #[cfg(unix)]
+                    #[cfg(all(unix, molt_has_net_io))]
                     MoltSocketKind::UnixDatagram(sock) => {
                         let fd = sock.as_raw_fd();
                         let res = connect_raw_socket(fd, &sockaddr);
@@ -2902,7 +2890,7 @@ pub unsafe extern "C" fn molt_socket_connect(sock_bits: u64, addr_bits: u64) -> 
                         }
                         let err = with_socket_mut(socket_ptr, |inner| match &inner.kind {
                             MoltSocketKind::TcpStream(stream) => take_error_mio(stream),
-                            #[cfg(unix)]
+                            #[cfg(all(unix, molt_has_net_io))]
                             MoltSocketKind::UnixStream(stream) => take_error_mio(stream),
                             _ => Ok(None),
                         });
@@ -2940,7 +2928,7 @@ pub unsafe extern "C" fn molt_socket_connect(sock_bits: u64, addr_bits: u64) -> 
                             }
                             let err = with_socket_mut(socket_ptr, |inner| match &inner.kind {
                                 MoltSocketKind::TcpStream(stream) => take_error_mio(stream),
-                                #[cfg(unix)]
+                                #[cfg(all(unix, molt_has_net_io))]
                                 MoltSocketKind::UnixStream(stream) => take_error_mio(stream),
                                 _ => Ok(None),
                             });
@@ -2990,7 +2978,7 @@ pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) 
                 if inner.connect_pending {
                     let err = match &inner.kind {
                         MoltSocketKind::TcpStream(stream) => take_error_mio(stream),
-                        #[cfg(unix)]
+                        #[cfg(all(unix, molt_has_net_io))]
                         MoltSocketKind::UnixStream(stream) => take_error_mio(stream),
                         _ => Ok(None),
                     };
@@ -3040,7 +3028,7 @@ pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) 
                                     mio::net::TcpStream::from_std(std_stream),
                                 );
                             }
-                            #[cfg(not(unix))]
+                            #[cfg(all(not(unix), molt_has_net_io))]
                             {
                                 let std_stream: std::net::TcpStream = sock.into();
                                 std_stream.set_nonblocking(true)?;
@@ -3073,7 +3061,7 @@ pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) 
                                         mio::net::TcpStream::from_std(std_stream),
                                     );
                                 }
-                                #[cfg(not(unix))]
+                                #[cfg(all(not(unix), molt_has_net_io))]
                                 {
                                     let std_stream: std::net::TcpStream = sock.into();
                                     std_stream.set_nonblocking(true)?;
@@ -3092,7 +3080,7 @@ pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) 
                     MoltSocketKind::UdpSocket(sock) => {
                         #[cfg(unix)]
                         let fd = sock.as_raw_fd();
-                        #[cfg(windows)]
+                        #[cfg(all(windows, molt_has_net_io))]
                         let fd = sock.as_raw_socket();
                         let res = connect_raw_socket(fd, &sockaddr);
                         inner.kind = MoltSocketKind::UdpSocket(sock);
@@ -3103,7 +3091,7 @@ pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) 
                             )),
                         }
                     }
-                    #[cfg(unix)]
+                    #[cfg(all(unix, molt_has_net_io))]
                     MoltSocketKind::UnixDatagram(sock) => {
                         let fd = sock.as_raw_fd();
                         let res = connect_raw_socket(fd, &sockaddr);
@@ -3142,7 +3130,7 @@ pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) 
                     let err = with_socket_mut(socket_ptr, |inner| {
                         let err = match &inner.kind {
                             MoltSocketKind::TcpStream(stream) => take_error_mio(stream),
-                            #[cfg(unix)]
+                            #[cfg(all(unix, molt_has_net_io))]
                             MoltSocketKind::UnixStream(stream) => take_error_mio(stream),
                             _ => Ok(None),
                         };
@@ -4804,7 +4792,7 @@ pub unsafe extern "C" fn molt_socket_detach(sock_bits: u64) -> u64 {
             let raw = {
                 let mut guard = socket.inner.lock().unwrap();
                 let kind = std::mem::replace(&mut guard.kind, MoltSocketKind::Closed);
-                #[cfg(unix)]
+                #[cfg(all(unix, molt_has_net_io))]
                 {
                     match kind {
                         MoltSocketKind::Pending(sock) => sock.into_raw_fd() as i64,
@@ -4817,7 +4805,7 @@ pub unsafe extern "C" fn molt_socket_detach(sock_bits: u64) -> u64 {
                         MoltSocketKind::Closed => -1,
                     }
                 }
-                #[cfg(windows)]
+                #[cfg(all(windows, molt_has_net_io))]
                 {
                     match kind {
                         MoltSocketKind::Pending(sock) => sock.into_raw_socket() as i64,

@@ -57,7 +57,7 @@ pub(crate) fn int_subclass_value_bits_raw(obj_bits: u64) -> Option<u64> {
     }
 }
 
-#[inline]
+#[inline(always)]
 pub(crate) fn to_i64(obj: MoltObject) -> Option<i64> {
     if obj.is_int() {
         return Some(obj.as_int_unchecked());

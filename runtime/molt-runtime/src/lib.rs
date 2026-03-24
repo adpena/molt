@@ -100,19 +100,29 @@ pub(crate) use crate::state::RuntimeState;
 #[allow(unused_imports)]
 pub(crate) use molt_obj_model::MoltObject;
 
+#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
+pub use crate::async_rt::net_stubs::*;
 pub use crate::async_rt::cancellation::*;
 pub(crate) use crate::async_rt::channels::has_capability;
 pub use crate::async_rt::channels::*;
 pub use crate::async_rt::event_loop::*;
 #[allow(unused_imports)]
 pub use crate::async_rt::generators::*;
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) use crate::async_rt::io_poller::IoPoller;
+#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
+pub(crate) use crate::async_rt::net_stubs::IoPoller;
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub use crate::async_rt::io_poller::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use crate::async_rt::is_block_on_task;
 pub use crate::async_rt::process::*;
 pub(crate) use crate::async_rt::scheduler::BLOCK_ON_TASK;
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) use crate::async_rt::sockets::io_wait_release_socket;
+#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
+pub(crate) use crate::async_rt::net_stubs::io_wait_release_socket;
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub use crate::async_rt::sockets::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use crate::async_rt::sockets::{

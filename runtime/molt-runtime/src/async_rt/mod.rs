@@ -3,6 +3,8 @@ pub(crate) mod channels;
 pub(crate) mod event_loop;
 pub(crate) mod generators;
 pub(crate) mod io_poller;
+#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
+pub(crate) mod net_stubs;
 pub(crate) mod poll;
 pub(crate) mod process;
 pub(crate) mod scheduler;
