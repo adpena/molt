@@ -7436,14 +7436,14 @@ fn eliminate_goto_labels(source: &mut String) {
     if lines.is_empty() { return; }
 
     // Phase 1: Collect label positions and goto positions.
-    let mut label_positions: BTreeMap<String, usize> = BTreeMap::new();
+    let mut label_positions: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     let mut goto_positions: Vec<(usize, String)> = Vec::new();
 
     for (i, line) in lines.iter().enumerate() {
         let t = line.trim();
         if t.starts_with("::") && t.ends_with("::") && t.len() > 4 {
             let label = t[2..t.len()-2].to_string();
-            label_positions.insert(label, i);
+            label_positions.entry(label).or_default().push(i);
         }
         // Standalone goto
         if t.starts_with("goto ") && !t.contains("then goto") {
@@ -7491,12 +7491,15 @@ fn eliminate_goto_labels(source: &mut String) {
             continue;
         }
 
-        if let Some(&label_line) = label_positions.get(label_name) {
-            if label_line <= goto_line {
-                remove.insert(goto_line);
-                continue;
-            }
+        // Find the nearest forward label with this name (same name can
+        // appear in multiple functions; pick the closest one after the goto).
+        let nearest_forward = label_positions.get(label_name)
+            .and_then(|positions| positions.iter().copied().filter(|&p| p > goto_line).min());
+        let any_backward = label_positions.get(label_name)
+            .map(|positions| positions.iter().any(|&p| p <= goto_line))
+            .unwrap_or(false);
 
+        if let Some(label_line) = nearest_forward {
             // Check if goto jumps to immediately next non-label, non-empty line.
             if !is_inline {
                 let mut next = goto_line + 1;
@@ -7515,29 +7518,38 @@ fn eliminate_goto_labels(source: &mut String) {
             }
 
             live_gotos.push((goto_line, label_name.clone(), label_line));
+        } else if any_backward {
+            // Backward goto — remove as dead.
+            remove.insert(goto_line);
         } else {
+            // No matching label at all — orphan goto, remove.
             remove.insert(goto_line);
         }
     }
 
-    // Phase 3: Remove all label lines.
-    for (_, &line_idx) in &label_positions {
-        remove.insert(line_idx);
+    // Phase 3: Remove ALL label lines (all positions for all label names).
+    for (_, positions) in &label_positions {
+        for &line_idx in positions {
+            remove.insert(line_idx);
+        }
     }
 
     // Phase 4: For live gotos, generate flag-based structured control flow.
-    let mut gotos_by_label: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for (goto_line, label_name, _label_line) in &live_gotos {
-        gotos_by_label.entry(label_name.clone()).or_default().push(*goto_line);
+    // Use composite key "label_name@target_line" to distinguish same-named
+    // labels in different functions.
+    let mut gotos_by_target: BTreeMap<(String, usize), Vec<usize>> = BTreeMap::new();
+    for (goto_line, label_name, label_line) in &live_gotos {
+        gotos_by_target.entry((label_name.clone(), *label_line)).or_default().push(*goto_line);
     }
 
     let mut insert_before: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     let mut replacements: BTreeMap<usize, String> = BTreeMap::new();
     let mut insert_after: BTreeMap<usize, Vec<String>> = BTreeMap::new();
 
-    for (label_name, goto_lines) in &gotos_by_label {
-        if let Some(&label_line) = label_positions.get(label_name) {
-            let flag_name = format!("_molt_skip_{}", label_name.replace("label_", ""));
+    for ((label_name, label_line), goto_lines) in &gotos_by_target {
+        let label_line = *label_line;
+        {
+            let flag_name = format!("_molt_skip_{}_{}", label_name.replace("label_", ""), label_line);
 
             let first_goto = goto_lines[0];
             let indent = lines[first_goto].len() - lines[first_goto].trim_start().len();
@@ -7619,7 +7631,7 @@ fn eliminate_goto_labels(source: &mut String) {
     let dead_count = total_gotos - live_count;
     eprintln!(
         "[molt-luau] Eliminated goto/labels: {} dead, {} converted to structured flow, {} labels removed",
-        dead_count, live_count, label_positions.len()
+        dead_count, live_count, label_positions.values().map(|v| v.len()).sum::<usize>()
     );
 }
 
