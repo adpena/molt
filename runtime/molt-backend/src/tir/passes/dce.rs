@@ -196,6 +196,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         // Collect block ids to iterate (avoids borrow issues).
         let block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
 
+        // Note: removed_this_round is cumulative across all blocks in this round.
+        // The retain is harmless on blocks with no removals.
         let mut removed_this_round = 0usize;
 
         for bid in &block_ids {

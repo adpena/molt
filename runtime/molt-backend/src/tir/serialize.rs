@@ -27,6 +27,14 @@ use super::function::TirFunction;
 /// Not cryptographically strong — collision resistance is not required;
 /// only false-negative avoidance matters (i.e., a changed function must
 /// produce a different hash with overwhelming probability).
+///
+/// # Stability warning
+/// `DefaultHasher` is not guaranteed to produce the same output across
+/// different Rust versions. If the compiler is upgraded, existing on-disk
+/// cache entries may silently produce hash misses, causing full recompilation.
+/// For production use, replace `DefaultHasher` with a stable hasher such as
+/// FNV (`fnv` crate) or AHash with a fixed seed to ensure cross-version
+/// cache stability.
 pub fn content_hash(func: &TirFunction) -> u64 {
     let mut hasher = DefaultHasher::new();
     func.name.hash(&mut hasher);

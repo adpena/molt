@@ -15,7 +15,7 @@ Usage:
     a_gpu = gpu.to_device(a_host)
     b_gpu = gpu.to_device(b_host)
     c_gpu = gpu.alloc(n, float)
-    vector_add[grid=256, threads=256](a_gpu, b_gpu, c_gpu, n)
+    vector_add[256, 256](a_gpu, b_gpu, c_gpu, n)
     result = gpu.from_device(c_gpu)
 """
 
@@ -78,7 +78,7 @@ def to_device(data) -> Buffer:
     Accepts: list[int], list[float], array.array, bytes, or any sequence.
     """
     if isinstance(data, bytes):
-        return Buffer(data, int, len(data))
+        return Buffer(data, int, len(data) // 8)
     elif isinstance(data, array.array):
         raw = data.tobytes()
         return Buffer(raw, float if data.typecode in ('f', 'd') else int, len(data))

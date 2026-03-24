@@ -167,6 +167,10 @@ def _read_meta_value(f, version):
         return struct.unpack('<d', f.read(8))[0]
     elif vtype == GGUF_META_BOOL:
         return struct.unpack('<?', f.read(1))[0]
+    elif vtype == GGUF_META_UINT16:
+        return struct.unpack('<H', f.read(2))[0]
+    elif vtype == GGUF_META_INT16:
+        return struct.unpack('<h', f.read(2))[0]
     elif vtype == GGUF_META_UINT8:
         return struct.unpack('<B', f.read(1))[0]
     elif vtype == GGUF_META_INT8:
@@ -183,6 +187,10 @@ def _read_meta_value_by_type(f, vtype, version):
         return _read_string(f, version)
     elif vtype in (GGUF_META_UINT32, GGUF_META_INT32):
         return struct.unpack('<I' if vtype == GGUF_META_UINT32 else '<i', f.read(4))[0]
+    elif vtype == GGUF_META_UINT16:
+        return struct.unpack('<H', f.read(2))[0]
+    elif vtype == GGUF_META_INT16:
+        return struct.unpack('<h', f.read(2))[0]
     elif vtype == GGUF_META_FLOAT32:
         return struct.unpack('<f', f.read(4))[0]
     elif vtype == GGUF_META_BOOL:
