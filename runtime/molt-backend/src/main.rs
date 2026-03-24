@@ -1115,7 +1115,12 @@ fn main() -> io::Result<()> {
                 // Large IR: split into batches, compile each independently,
                 // then merge with ld -r (partial link).  This prevents OOM
                 // when compiling 1000+ stdlib functions into one ObjectModule.
-                let mut all_functions = ir.functions;
+                // Filter out __annotate__ stubs before batching — they're typing
+                // metadata that causes Cranelift linkage panics in batched compilation.
+                let mut all_functions: Vec<_> = ir.functions
+                    .into_iter()
+                    .filter(|f| !f.name.contains("__annotate__"))
+                    .collect();
                 let profile = ir.profile;
                 let total_batches = (all_functions.len() + batch_size - 1) / batch_size;
                 let mut batch_paths: Vec<std::path::PathBuf> = Vec::new();
