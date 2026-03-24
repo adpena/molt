@@ -970,6 +970,29 @@ fn main() -> io::Result<()> {
                     }
                 }
             }
+        } else if ir_format == "ndjson" {
+            // NDJSON streaming format — one function per line
+            if let Some(ir_path) = ir_file_path {
+                let file = std::fs::File::open(ir_path)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?;
+                let reader = io::BufReader::new(file);
+                match SimpleIR::from_ndjson_reader(reader) {
+                    Ok(ir) => ir,
+                    Err(err) => {
+                        eprintln!("invalid NDJSON IR: {err}");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                let reader = io::BufReader::new(io::stdin());
+                match SimpleIR::from_ndjson_reader(reader) {
+                    Ok(ir) => ir,
+                    Err(err) => {
+                        eprintln!("invalid NDJSON IR: {err}");
+                        std::process::exit(1);
+                    }
+                }
+            }
         } else if let Some(ir_path) = ir_file_path {
             // Stream JSON directly from file — never holds raw JSON string in memory.
             let file = std::fs::File::open(ir_path)
