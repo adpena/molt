@@ -26,6 +26,11 @@ pub fn bump_type_version() -> u64 {
     GLOBAL_TYPE_VERSION.fetch_add(1, AtomicOrdering::Relaxed) + 1
 }
 
+pub mod deopt;
+pub mod dict_compact;
+pub mod gil;
+pub mod inline_cache;
+pub mod nursery;
 pub(crate) mod accessors;
 pub(crate) mod buffer2d;
 pub(crate) mod builders;
@@ -39,6 +44,8 @@ pub(crate) mod ops_iter;
 pub(crate) mod ops_set;
 pub(crate) mod ops_string;
 pub(crate) mod refcount;
+pub mod string_intern;
+pub mod string_repr;
 pub(crate) mod type_ids;
 pub(crate) mod utf8_cache;
 pub(crate) mod weakref;
@@ -227,13 +234,13 @@ fn debug_alloc_object_type() -> Option<u32> {
 
 #[repr(C)]
 pub struct MoltHeader {
-    pub type_id: u32,
-    pub ref_count: MoltRefCount,
-    pub poll_fn: u64, // Function pointer for polling
-    pub state: i64,   // State machine state
-    pub size: usize,  // Total size of allocation
-    pub flags: u64,   // Header flags (object metadata)
+    pub type_id: u32,                // 4 bytes
+    pub ref_count: MoltRefCount,     // 4 bytes
+    pub flags: u32,                  // 4 bytes (bits 0-16 used)
+    pub size_class: u16,             // 2 bytes — index into SIZE_CLASS_TABLE
+    pub _pad: u16,                   // 2 bytes — alignment padding
 }
+// Total: 16 bytes (down from 40). poll_fn, state, extended_size live in MoltColdHeader.
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PtrSlot(pub(crate) *mut u8);
@@ -358,26 +365,124 @@ const OBJECT_POOL_MAX_BYTES: usize = 1024;
 const OBJECT_POOL_BUCKET_LIMIT: usize = 4096;
 const OBJECT_POOL_TLS_BUCKET_LIMIT: usize = 1024;
 pub(crate) const OBJECT_POOL_BUCKETS: usize = OBJECT_POOL_MAX_BYTES / 8 + 1;
-pub(crate) const HEADER_FLAG_HAS_PTRS: u64 = 1;
-pub(crate) const HEADER_FLAG_SKIP_CLASS_DECREF: u64 = 1 << 1;
-pub(crate) const HEADER_FLAG_GEN_RUNNING: u64 = 1 << 2;
-pub(crate) const HEADER_FLAG_GEN_STARTED: u64 = 1 << 3;
-pub(crate) const HEADER_FLAG_SPAWN_RETAIN: u64 = 1 << 4;
-pub(crate) const HEADER_FLAG_CANCEL_PENDING: u64 = 1 << 5;
-pub(crate) const HEADER_FLAG_BLOCK_ON: u64 = 1 << 6;
-pub(crate) const HEADER_FLAG_TASK_QUEUED: u64 = 1 << 7;
-pub(crate) const HEADER_FLAG_TASK_RUNNING: u64 = 1 << 8;
-pub(crate) const HEADER_FLAG_TASK_WAKE_PENDING: u64 = 1 << 9;
-pub(crate) const HEADER_FLAG_TASK_DONE: u64 = 1 << 10;
-pub(crate) const HEADER_FLAG_TRACEBACK_SUPPRESSED: u64 = 1 << 11;
-pub(crate) const HEADER_FLAG_COROUTINE: u64 = 1 << 12;
-pub(crate) const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN: u64 = 1 << 13;
-pub(crate) const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED: u64 = 1 << 14;
+pub(crate) const HEADER_FLAG_HAS_PTRS: u32 = 1;
+pub(crate) const HEADER_FLAG_SKIP_CLASS_DECREF: u32 = 1 << 1;
+pub(crate) const HEADER_FLAG_GEN_RUNNING: u32 = 1 << 2;
+pub(crate) const HEADER_FLAG_GEN_STARTED: u32 = 1 << 3;
+pub(crate) const HEADER_FLAG_SPAWN_RETAIN: u32 = 1 << 4;
+pub(crate) const HEADER_FLAG_CANCEL_PENDING: u32 = 1 << 5;
+pub(crate) const HEADER_FLAG_BLOCK_ON: u32 = 1 << 6;
+pub(crate) const HEADER_FLAG_TASK_QUEUED: u32 = 1 << 7;
+pub(crate) const HEADER_FLAG_TASK_RUNNING: u32 = 1 << 8;
+pub(crate) const HEADER_FLAG_TASK_WAKE_PENDING: u32 = 1 << 9;
+pub(crate) const HEADER_FLAG_TASK_DONE: u32 = 1 << 10;
+pub(crate) const HEADER_FLAG_TRACEBACK_SUPPRESSED: u32 = 1 << 11;
+pub(crate) const HEADER_FLAG_COROUTINE: u32 = 1 << 12;
+pub(crate) const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN: u32 = 1 << 13;
+pub(crate) const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED: u32 = 1 << 14;
 // CPython-like "immortal" objects: refcount ops are skipped and the object is never freed.
 // Use this only for runtime singletons/cached builtin callables.
-pub(crate) const HEADER_FLAG_IMMORTAL: u64 = 1 << 15;
+pub(crate) const HEADER_FLAG_IMMORTAL: u32 = 1 << 15;
 // Ensure __del__ runs at most once even if the object resurrects itself.
-pub(crate) const HEADER_FLAG_FINALIZER_RAN: u64 = 1 << 16;
+pub(crate) const HEADER_FLAG_FINALIZER_RAN: u32 = 1 << 16;
+// String content is an ASCII identifier stored in the global intern pool.
+// Objects with this flag are also immortal (never freed).
+pub(crate) const HEADER_FLAG_INTERNED: u32 = 1 << 17;
+
+// ---------------------------------------------------------------------------
+// Cold header pool — stores rarely-used per-object metadata (poll_fn, state,
+// extended_size) separately from the hot MoltHeader so that the hot header
+// can be kept small and cache-friendly.
+// ---------------------------------------------------------------------------
+
+/// Rarely-accessed per-object metadata, stored in a side pool keyed by the
+/// object's data pointer address.
+#[derive(Copy, Clone, Debug, Default)]
+pub(crate) struct MoltColdHeader {
+    /// Function pointer for polling (generators / async tasks).
+    pub(crate) poll_fn: u64,
+    /// State machine state (generators / async tasks / hash cache).
+    pub(crate) state: i64,
+    /// Exact allocation size for objects that exceed the size-class table.
+    pub(crate) extended_size: usize,
+}
+
+/// Global cold-header pool. Keyed by the object's *data* pointer (i.e. the
+/// pointer returned by `alloc_object`, NOT the header pointer).
+///
+/// Uses `OnceLock<Mutex<HashMap>>` — no `lazy_static` dependency.
+static COLD_HEADER_POOL: OnceLock<Mutex<HashMap<usize, MoltColdHeader>>> = OnceLock::new();
+
+fn cold_header_pool() -> &'static Mutex<HashMap<usize, MoltColdHeader>> {
+    COLD_HEADER_POOL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Allocate (or update) a cold header for the object at `data_ptr`.
+pub(crate) fn alloc_cold_header(data_ptr: *mut u8, cold: MoltColdHeader) {
+    let key = data_ptr as usize;
+    let mut pool = cold_header_pool().lock().unwrap();
+    pool.insert(key, cold);
+}
+
+/// Retrieve a **copy** of the cold header for the object at `data_ptr`.
+/// Returns `None` if no cold header was allocated for this pointer.
+pub(crate) fn get_cold_header(data_ptr: *mut u8) -> Option<MoltColdHeader> {
+    let key = data_ptr as usize;
+    let pool = cold_header_pool().lock().unwrap();
+    pool.get(&key).copied()
+}
+
+/// Free the cold header for the object at `data_ptr`.
+/// No-op if no cold header exists.
+pub(crate) fn free_cold_header(data_ptr: *mut u8) {
+    let key = data_ptr as usize;
+    let mut pool = cold_header_pool().lock().unwrap();
+    pool.remove(&key);
+}
+
+/// Derive the total allocation size from a header's `size_class`.
+/// For oversized objects (size_class == 0) the exact size is stored in
+/// the cold header's `extended_size`.
+#[inline]
+pub(crate) fn total_size_from_header(header: &MoltHeader, data_ptr: *mut u8) -> usize {
+    let sc = header.size_class as usize;
+    if sc != 0 && sc < SIZE_CLASS_TABLE.len() {
+        SIZE_CLASS_TABLE[sc]
+    } else {
+        // Oversized: look up cold header
+        get_cold_header(data_ptr)
+            .map(|c| c.extended_size)
+            .unwrap_or(0)
+    }
+}
+
+/// Get the poll_fn for an object. Returns 0 if no cold header exists.
+#[inline]
+pub(crate) fn object_poll_fn(data_ptr: *mut u8) -> u64 {
+    get_cold_header(data_ptr).map(|c| c.poll_fn).unwrap_or(0)
+}
+
+/// Set the poll_fn for an object, creating a cold header if needed.
+pub(crate) fn object_set_poll_fn(data_ptr: *mut u8, poll_fn: u64) {
+    let key = data_ptr as usize;
+    let mut pool = cold_header_pool().lock().unwrap();
+    let entry = pool.entry(key).or_insert_with(MoltColdHeader::default);
+    entry.poll_fn = poll_fn;
+}
+
+/// Get the state for an object. Returns 0 if no cold header exists.
+#[inline]
+pub(crate) fn object_state(data_ptr: *mut u8) -> i64 {
+    get_cold_header(data_ptr).map(|c| c.state).unwrap_or(0)
+}
+
+/// Set the state for an object, creating a cold header if needed.
+pub(crate) fn object_set_state(data_ptr: *mut u8, state: i64) {
+    let key = data_ptr as usize;
+    let mut pool = cold_header_pool().lock().unwrap();
+    let entry = pool.entry(key).or_insert_with(MoltColdHeader::default);
+    entry.state = state;
+}
 
 thread_local! {
     pub(crate) static OBJECT_POOL_TLS: RefCell<Vec<Vec<PtrSlot>>> =
@@ -522,12 +627,21 @@ pub(crate) fn alloc_object_zeroed_with_pool(
     profile_alloc_type_bytes(_py, type_id, total_size);
     unsafe {
         let header = header_ptr as *mut MoltHeader;
+        let sc = size_class_for(total_size);
         (*header).type_id = type_id;
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
-        (*header).poll_fn = 0;
-        (*header).state = 0;
-        (*header).size = total_size;
         (*header).flags = 0;
+        (*header).size_class = sc;
+        (*header)._pad = 0;
+        if sc == 0 {
+            // Oversized: store exact size in cold header
+            let data_ptr = header_ptr.add(std::mem::size_of::<MoltHeader>());
+            alloc_cold_header(data_ptr, MoltColdHeader {
+                poll_fn: 0,
+                state: 0,
+                extended_size: total_size,
+            });
+        }
         header_ptr.add(std::mem::size_of::<MoltHeader>())
     }
 }
@@ -551,12 +665,20 @@ pub(crate) fn alloc_object_zeroed(_py: &PyToken<'_>, total_size: usize, type_id:
         profile_alloc_type(_py, type_id);
         profile_alloc_type_bytes(_py, type_id, total_size);
         let header = ptr as *mut MoltHeader;
+        let sc = size_class_for(total_size);
         (*header).type_id = type_id;
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
-        (*header).poll_fn = 0;
-        (*header).state = 0;
-        (*header).size = total_size;
         (*header).flags = 0;
+        (*header).size_class = sc;
+        (*header)._pad = 0;
+        if sc == 0 {
+            let data_ptr = ptr.add(std::mem::size_of::<MoltHeader>());
+            alloc_cold_header(data_ptr, MoltColdHeader {
+                poll_fn: 0,
+                state: 0,
+                extended_size: total_size,
+            });
+        }
         ptr.add(std::mem::size_of::<MoltHeader>())
     }
 }
@@ -615,10 +737,19 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
         // object type allocates more space than it initializes.
         std::ptr::write_bytes(header_ptr, 0, total_size);
         let header = header_ptr as *mut MoltHeader;
+        let sc = size_class_for(total_size);
         (*header).type_id = type_id;
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
-        // poll_fn, state, size, flags are already 0 from write_bytes
-        (*header).size = total_size;
+        // flags, size_class, _pad are already 0 from write_bytes
+        (*header).size_class = sc;
+        if sc == 0 {
+            let data_ptr = header_ptr.add(std::mem::size_of::<MoltHeader>());
+            alloc_cold_header(data_ptr, MoltColdHeader {
+                poll_fn: 0,
+                state: 0,
+                extended_size: total_size,
+            });
+        }
         header_ptr.add(std::mem::size_of::<MoltHeader>())
     }
 }
@@ -659,7 +790,10 @@ pub(crate) unsafe fn object_type_id(ptr: *mut u8) -> u32 {
 }
 
 pub(crate) unsafe fn object_payload_size(ptr: *mut u8) -> usize {
-    unsafe { (*header_from_obj_ptr(ptr)).size - std::mem::size_of::<MoltHeader>() }
+    unsafe {
+        let header = &*header_from_obj_ptr(ptr);
+        total_size_from_header(header, ptr).saturating_sub(std::mem::size_of::<MoltHeader>())
+    }
 }
 
 pub(crate) unsafe fn instance_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
@@ -715,17 +849,13 @@ unsafe fn object_class_bits_from_state(state: i64) -> u64 {
 }
 
 pub(crate) unsafe fn object_class_bits(ptr: *mut u8) -> u64 {
-    unsafe {
-        let state = (*header_from_obj_ptr(ptr)).state;
-        object_class_bits_from_state(state)
-    }
+    let state = object_state(ptr);
+    unsafe { object_class_bits_from_state(state) }
 }
 
 pub(crate) unsafe fn object_set_class_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
-    unsafe {
-        crate::gil_assert();
-        (*header_from_obj_ptr(ptr)).state = bits as i64;
-    }
+    crate::gil_assert();
+    object_set_state(ptr, bits as i64);
 }
 
 pub(crate) unsafe fn object_mark_has_ptrs(_py: &PyToken<'_>, ptr: *mut u8) {
@@ -1008,7 +1138,7 @@ unsafe fn maybe_run_object_finalizer(
     if (header.flags & HEADER_FLAG_FINALIZER_RAN) != 0 {
         return false;
     }
-    let class_bits = unsafe { object_class_bits_from_state(header.state) };
+    let class_bits = unsafe { object_class_bits_from_state(object_state(ptr)) };
     if class_bits == 0 || obj_from_bits(class_bits).is_none() {
         return false;
     }
@@ -1580,7 +1710,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     }
                 }
                 TYPE_ID_OBJECT => {
-                    let poll_fn = header.poll_fn;
+                    let poll_fn = object_poll_fn(ptr);
                     if poll_fn == asyncio_wait_for_poll_fn_addr() {
                         asyncio_wait_for_task_drop(py, ptr);
                     } else if poll_fn == asyncio_wait_poll_fn_addr() {
@@ -1679,7 +1809,8 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 _ => {}
             }
             release_ptr(ptr);
-            let total_size = header.size;
+            let total_size = total_size_from_header(header, ptr);
+            free_cold_header(ptr);
             let should_pool = matches!(
                 header.type_id,
                 TYPE_ID_OBJECT | TYPE_ID_BOUND_METHOD | TYPE_ID_ITER
