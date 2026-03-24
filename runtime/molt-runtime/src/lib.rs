@@ -39,8 +39,12 @@ mod c_api;
 mod call;
 mod concurrency;
 mod constants;
+#[cfg(feature = "stdlib_crypto")]
+mod crypto_bridge;
 #[cfg(feature = "stdlib_tk")]
 mod gui;
+#[cfg(feature = "stdlib_tk")]
+mod tk_bridge;
 mod intrinsics;
 #[cfg(target_arch = "wasm32")]
 mod libc_compat;
