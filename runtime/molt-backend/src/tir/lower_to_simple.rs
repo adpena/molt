@@ -144,19 +144,19 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             ..OpIR::default()
         }),
         OpCode::ConstFloat => Some(OpIR {
-            kind: "const".to_string(),
+            kind: "const_float".to_string(),
             f_value: attr_float(&op.attrs, "f_value").or_else(|| attr_float(&op.attrs, "value")),
             out: out_var,
             ..OpIR::default()
         }),
         OpCode::ConstStr => Some(OpIR {
-            kind: "const".to_string(),
+            kind: "const_str".to_string(),
             s_value: attr_str(&op.attrs, "value"),
             out: out_var,
             ..OpIR::default()
         }),
         OpCode::ConstBool => Some(OpIR {
-            kind: "const".to_string(),
+            kind: "const_bool".to_string(),
             value: Some(if attr_bool(&op.attrs, "value").unwrap_or(false) { 1 } else { 0 }),
             out: out_var,
             ..OpIR::default()
@@ -167,7 +167,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             ..OpIR::default()
         }),
         OpCode::ConstBytes => Some(OpIR {
-            kind: "const".to_string(),
+            kind: "const_bytes".to_string(),
             bytes: attr_bytes(&op.attrs, "value"),
             out: out_var,
             ..OpIR::default()
@@ -454,37 +454,27 @@ fn emit_terminator(
             // We use SimpleIR `if`/`else`/`end_if` for structured representation,
             // or `br_if` + `jump` for unstructured. Use `br_if` here since we
             // don't have structural nesting info.
+            // Correct emission order for CondBranch:
+            // 1. Store then-args (for the taken branch path)
+            // 2. br_if → then_block label
+            // 3. Store else-args (for the fallthrough path)
+            // 4. jump → else_block label
+            //
+            // This ensures each path gets its block arguments stored
+            // before the branch that enters its target block.
+            emit_block_arg_stores(*then_block, then_args, block_param_vars, out);
             out.push(OpIR {
                 kind: "br_if".to_string(),
                 args: Some(vec![value_var(*cond)]),
                 value: Some(then_block.0 as i64),
                 ..OpIR::default()
             });
-            // Else path: store else_args and jump to else_block.
             emit_block_arg_stores(*else_block, else_args, block_param_vars, out);
             out.push(OpIR {
                 kind: "jump".to_string(),
                 value: Some(else_block.0 as i64),
                 ..OpIR::default()
             });
-            // Then landing: label + then_args stores are emitted at the start of
-            // then_block when it is visited in RPO.
-            // We must still store then_args. Since br_if falls through to the
-            // then-block label, store them right before the br_if.
-            // But we've already emitted br_if, so we insert before it.
-            // Simpler: emit then-arg stores before the br_if.
-            // Re-emit in correct order by patching: drain last 2 ops and
-            // re-emit with stores first.
-            let jump_op = out.pop().unwrap(); // jump to else
-            let brif_op = out.pop().unwrap(); // br_if
-
-            // Store then-args before the conditional branch.
-            emit_block_arg_stores(*then_block, then_args, block_param_vars, out);
-
-            out.push(brif_op);
-            // After the conditional takes the then path, else path follows:
-            emit_block_arg_stores(*else_block, else_args, block_param_vars, out);
-            out.push(jump_op);
         }
 
         Terminator::Switch {
