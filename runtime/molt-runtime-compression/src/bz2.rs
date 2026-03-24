@@ -58,7 +58,6 @@ fn return_bytes(_py: &PyToken, data: &[u8]) -> u64 {
 // ── One-shot compress / decompress ───────────────────────────────────────────
 
 /// `bz2.compress(data, compresslevel=9) -> bytes`
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_compress(data_bits: u64, compresslevel_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let data = match require_bytes_slice(_py, data_bits) {
@@ -82,7 +81,6 @@ pub extern "C" fn molt_bz2_compress(data_bits: u64, compresslevel_bits: u64) -> 
 }
 
 /// `bz2.decompress(data) -> bytes`
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_decompress(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let data = match require_bytes_slice(_py, data_bits) {
@@ -116,7 +114,6 @@ fn bz2_compressor_from_bits(bits: u64) -> Option<&'static mut Bz2CompressorHandl
 }
 
 /// `bz2.BZ2Compressor(compresslevel=9)` → handle
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_compressor_new(compresslevel_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let compression = match bz_compression_from_level(_py, compresslevel_bits) {
@@ -132,7 +129,6 @@ pub extern "C" fn molt_bz2_compressor_new(compresslevel_bits: u64) -> u64 {
 }
 
 /// `compressor.compress(data) -> bytes`
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_compressor_compress(handle_bits: u64, data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = bz2_compressor_from_bits(handle_bits) else {
@@ -160,7 +156,6 @@ pub extern "C" fn molt_bz2_compressor_compress(handle_bits: u64, data_bits: u64)
 }
 
 /// `compressor.flush() -> bytes`  (finalises the stream)
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_compressor_flush(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = bz2_compressor_from_bits(handle_bits) else {
@@ -176,8 +171,6 @@ pub extern "C" fn molt_bz2_compressor_flush(handle_bits: u64) -> u64 {
         return_bytes(_py, &out)
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_compressor_drop(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);
@@ -207,7 +200,6 @@ fn bz2_decompressor_from_bits(bits: u64) -> Option<&'static mut Bz2DecompressorH
 }
 
 /// `bz2.BZ2Decompressor()` → handle
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_decompressor_new() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let handle = Box::new(Bz2DecompressorHandle {
@@ -221,7 +213,6 @@ pub extern "C" fn molt_bz2_decompressor_new() -> u64 {
 }
 
 /// `decompressor.decompress(data, max_length=-1) -> bytes`
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_decompressor_decompress(
     handle_bits: u64,
     data_bits: u64,
@@ -277,7 +268,6 @@ pub extern "C" fn molt_bz2_decompressor_decompress(
 }
 
 /// `decompressor.eof` property
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_decompressor_eof(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = bz2_decompressor_from_bits(handle_bits) else {
@@ -288,7 +278,6 @@ pub extern "C" fn molt_bz2_decompressor_eof(handle_bits: u64) -> u64 {
 }
 
 /// `decompressor.needs_input` property
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_decompressor_needs_input(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = bz2_decompressor_from_bits(handle_bits) else {
@@ -297,8 +286,6 @@ pub extern "C" fn molt_bz2_decompressor_needs_input(handle_bits: u64) -> u64 {
         MoltObject::from_bool(handle.needs_input).bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_decompressor_drop(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);
@@ -315,7 +302,6 @@ pub extern "C" fn molt_bz2_decompressor_drop(handle_bits: u64) -> u64 {
 
 /// Returns the number of bytes written to the underlying stream so far.
 /// Matches `BZ2Compressor.unused_data` / `BZ2Decompressor.unused_data` concept.
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_decompressor_unused_data(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = bz2_decompressor_from_bits(handle_bits) else {
@@ -351,7 +337,6 @@ fn bz2_file_handle_from_bits(bits: u64) -> Option<&'static mut Bz2FileHandle> {
 }
 
 /// `bz2.open(filename, mode, compresslevel) -> handle`
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_file_open(
     filename_bits: u64,
     mode_bits: u64,
@@ -419,7 +404,6 @@ pub extern "C" fn molt_bz2_file_open(
 }
 
 /// `handle.read(size=-1) -> bytes`
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_file_read(handle_bits: u64, size_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = bz2_file_handle_from_bits(handle_bits) else {
@@ -461,7 +445,6 @@ pub extern "C" fn molt_bz2_file_read(handle_bits: u64, size_bits: u64) -> u64 {
 }
 
 /// `handle.write(data) -> int`
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_file_write(handle_bits: u64, data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = bz2_file_handle_from_bits(handle_bits) else {
@@ -485,7 +468,6 @@ pub extern "C" fn molt_bz2_file_write(handle_bits: u64, data_bits: u64) -> u64 {
 }
 
 /// `handle.close() -> None`  (finishes the bz2 stream)
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_file_close(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = bz2_file_handle_from_bits(handle_bits) else {
@@ -505,7 +487,6 @@ pub extern "C" fn molt_bz2_file_close(handle_bits: u64) -> u64 {
 }
 
 /// Free the handle.
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_file_drop(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);

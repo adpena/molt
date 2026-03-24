@@ -14128,8 +14128,6 @@ fn dispatch_next_pending_event(py: &PyToken, handle: i64) -> Result<bool, u64> {
     run_event_callback(py, handle, event)?;
     Ok(true)
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_available() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let gate = tk_gate_state(_py, TkOperation::AvailabilityProbe);
@@ -14137,8 +14135,6 @@ pub extern "C" fn molt_tk_available() -> u64 {
         MoltObject::from_bool(available).bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_app_new(_options_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
@@ -14167,8 +14163,6 @@ pub extern "C" fn molt_tk_app_new(_options_bits: u64) -> u64 {
         MoltObject::from_int(handle).bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_quit(app_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Quit) {
@@ -14186,8 +14180,6 @@ pub extern "C" fn molt_tk_quit(app_bits: u64) -> u64 {
         MoltObject::none().bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_mainloop(app_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Mainloop) {
@@ -14242,8 +14234,6 @@ pub extern "C" fn molt_tk_mainloop(app_bits: u64) -> u64 {
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_do_one_event(app_bits: u64, flags_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::DoOneEvent) {
@@ -14300,8 +14290,6 @@ pub extern "C" fn molt_tk_do_one_event(app_bits: u64, flags_bits: u64) -> u64 {
         MoltObject::from_bool(false).bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_after(app_bits: u64, delay_ms_bits: u64, callback_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::After) {
@@ -14387,8 +14375,6 @@ pub extern "C" fn molt_tk_after(app_bits: u64, delay_ms_bits: u64, callback_bits
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_after_idle(app_bits: u64, callback_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::AfterIdle) {
@@ -14467,8 +14453,6 @@ pub extern "C" fn molt_tk_after_idle(app_bits: u64, callback_bits: u64) -> u64 {
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_after_cancel(app_bits: u64, identifier_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::AfterCancel) {
@@ -14506,8 +14490,6 @@ pub extern "C" fn molt_tk_after_cancel(app_bits: u64, identifier_bits: u64) -> u
         MoltObject::none().bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_after_info(app_bits: u64, identifier_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::AfterInfo) {
@@ -14538,8 +14520,6 @@ pub extern "C" fn molt_tk_after_info(app_bits: u64, identifier_bits: u64) -> u64
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_call(app_bits: u64, argv_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
@@ -14563,8 +14543,6 @@ pub extern "C" fn molt_tk_call(app_bits: u64, argv_bits: u64) -> u64 {
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_trace_add(
     app_bits: u64,
     variable_name_bits: u64,
@@ -14630,8 +14608,6 @@ pub extern "C" fn molt_tk_trace_add(
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_trace_remove(
     app_bits: u64,
     variable_name_bits: u64,
@@ -14672,8 +14648,6 @@ pub extern "C" fn molt_tk_trace_remove(
         MoltObject::none().bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_trace_info(app_bits: u64, variable_name_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
@@ -14698,8 +14672,6 @@ pub extern "C" fn molt_tk_trace_info(app_bits: u64, variable_name_bits: u64) -> 
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_trace_clear(app_bits: u64, variable_name_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
@@ -14722,8 +14694,6 @@ pub extern "C" fn molt_tk_trace_clear(app_bits: u64, variable_name_bits: u64) ->
         MoltObject::none().bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_tkwait_variable(app_bits: u64, variable_name_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
@@ -14742,8 +14712,6 @@ pub extern "C" fn molt_tk_tkwait_variable(app_bits: u64, variable_name_bits: u64
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_tkwait_window(app_bits: u64, target_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
@@ -14762,8 +14730,6 @@ pub extern "C" fn molt_tk_tkwait_window(app_bits: u64, target_bits: u64) -> u64 
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_tkwait_visibility(app_bits: u64, target_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
@@ -14782,8 +14748,6 @@ pub extern "C" fn molt_tk_tkwait_visibility(app_bits: u64, target_bits: u64) -> 
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_bind_callback_register(
     app_bits: u64,
     target_bits: u64,
@@ -14859,8 +14823,6 @@ pub extern "C" fn molt_tk_bind_callback_register(
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_bind_callback_unregister(
     app_bits: u64,
     target_bits: u64,
@@ -14914,8 +14876,6 @@ pub extern "C" fn molt_tk_bind_callback_unregister(
         MoltObject::none().bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_widget_bind_callback_register(
     app_bits: u64,
     widget_path_bits: u64,
@@ -15003,8 +14963,6 @@ pub extern "C" fn molt_tk_widget_bind_callback_register(
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_widget_bind_callback_unregister(
     app_bits: u64,
     widget_path_bits: u64,
@@ -15075,8 +15033,6 @@ pub extern "C" fn molt_tk_widget_bind_callback_unregister(
         MoltObject::none().bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_text_tag_bind_callback_register(
     app_bits: u64,
     widget_path_bits: u64,
@@ -15164,8 +15120,6 @@ pub extern "C" fn molt_tk_text_tag_bind_callback_register(
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_text_tag_bind_callback_unregister(
     app_bits: u64,
     widget_path_bits: u64,
@@ -15237,8 +15191,6 @@ pub extern "C" fn molt_tk_text_tag_bind_callback_unregister(
         MoltObject::none().bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_treeview_tag_bind_callback_register(
     app_bits: u64,
     widget_path_bits: u64,
@@ -15319,8 +15271,6 @@ pub extern "C" fn molt_tk_treeview_tag_bind_callback_register(
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_treeview_tag_bind_callback_unregister(
     app_bits: u64,
     widget_path_bits: u64,
@@ -15398,8 +15348,6 @@ pub extern "C" fn molt_tk_treeview_tag_bind_callback_unregister(
         MoltObject::none().bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_bind_command(app_bits: u64, name_bits: u64, callback_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::BindCommand) {
@@ -15431,8 +15379,6 @@ pub extern "C" fn molt_tk_bind_command(app_bits: u64, name_bits: u64, callback_b
         MoltObject::none().bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_unbind_command(app_bits: u64, name_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::UnbindCommand) {
@@ -15465,8 +15411,6 @@ pub extern "C" fn molt_tk_unbind_command(app_bits: u64, name_bits: u64) -> u64 {
         app_tcl_error_locked(_py, app, format!("invalid command name \"{name}\""))
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_filehandler_create(
     app_bits: u64,
     fd_bits: u64,
@@ -15597,8 +15541,6 @@ pub extern "C" fn molt_tk_filehandler_create(
         MoltObject::none().bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_filehandler_delete(app_bits: u64, fd_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::FileHandlerDelete) {
@@ -15627,8 +15569,6 @@ pub extern "C" fn molt_tk_filehandler_delete(app_bits: u64, fd_bits: u64) -> u64
         MoltObject::none().bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_destroy_widget(app_bits: u64, widget_path_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::DestroyWidget) {
@@ -15680,8 +15620,6 @@ pub extern "C" fn molt_tk_destroy_widget(app_bits: u64, widget_path_bits: u64) -
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_last_error(app_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::LastError) {
@@ -15703,8 +15641,6 @@ pub extern "C" fn molt_tk_last_error(app_bits: u64) -> u64 {
         MoltObject::none().bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_getboolean(value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let obj = obj_from_bits(value_bits);
@@ -15729,8 +15665,6 @@ pub extern "C" fn molt_tk_getboolean(value_bits: u64) -> u64 {
         MoltObject::from_bool(is_truthy(_py, obj)).bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_getdouble(value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let obj = obj_from_bits(value_bits);
@@ -15751,8 +15685,6 @@ pub extern "C" fn molt_tk_getdouble(value_bits: u64) -> u64 {
         )
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_splitlist(value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let obj = obj_from_bits(value_bits);
@@ -15797,8 +15729,6 @@ pub extern "C" fn molt_tk_splitlist(value_bits: u64) -> u64 {
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_event_subst_parse(_widget_path_bits: u64, event_args_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(raw_args) = decode_value_list(obj_from_bits(event_args_bits)) else {
@@ -15841,8 +15771,6 @@ pub extern "C" fn molt_tk_event_subst_parse(_widget_path_bits: u64, event_args_b
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_bind_script_remove_command(
     script_bits: u64,
     command_name_bits: u64,
@@ -15861,8 +15789,6 @@ pub extern "C" fn molt_tk_bind_script_remove_command(
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_errorinfo_append(app_bits: u64, message_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
@@ -15904,8 +15830,6 @@ pub extern "C" fn molt_tk_errorinfo_append(app_bits: u64, message_bits: u64) -> 
         MoltObject::none().bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_dialog_show(
     app_bits: u64,
     master_path_bits: u64,
@@ -15998,8 +15922,6 @@ pub extern "C" fn molt_tk_dialog_show(
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_commondialog_show(
     app_bits: u64,
     master_path_bits: u64,
@@ -16048,8 +15970,6 @@ pub extern "C" fn molt_tk_commondialog_show(
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_messagebox_show(
     app_bits: u64,
     master_path_bits: u64,
@@ -16093,8 +16013,6 @@ pub extern "C" fn molt_tk_messagebox_show(
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_filedialog_show(
     app_bits: u64,
     master_path_bits: u64,
@@ -16140,8 +16058,6 @@ pub extern "C" fn molt_tk_filedialog_show(
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_simpledialog_query(
     app_bits: u64,
     parent_path_bits: u64,
