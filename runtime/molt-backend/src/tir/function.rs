@@ -29,6 +29,11 @@ pub struct TirFunction {
     /// optimization passes (DCE, SCCP, type refinement, type guard hoist)
     /// must be conservative around exception regions to preserve correctness.
     pub has_exception_handling: bool,
+    /// Mapping from TIR BlockId.0 → original SimpleIR label value.
+    /// Populated during forward conversion (SimpleIR → TIR) so the
+    /// back-conversion can emit labels with the original IDs that ops like
+    /// `check_exception`, `jump`, and `br_if` reference via `state_blocks`.
+    pub label_id_map: std::collections::HashMap<u32, i64>,
 }
 
 impl TirFunction {
@@ -73,6 +78,7 @@ impl TirFunction {
             next_block: 1,
             attrs: AttrDict::new(),
             has_exception_handling: false,
+            label_id_map: HashMap::new(),
         }
     }
 

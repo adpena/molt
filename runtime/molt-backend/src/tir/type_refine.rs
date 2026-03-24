@@ -442,6 +442,7 @@ mod tests {
             next_block: 1,
             attrs: AttrDict::new(),
         has_exception_handling: false,
+            label_id_map: HashMap::new(),
         }
     }
 
@@ -645,6 +646,7 @@ mod tests {
             next_block: 4,
             attrs: AttrDict::new(),
         has_exception_handling: false,
+            label_id_map: HashMap::new(),
         };
 
         let refined = refine_types(&mut func);
@@ -745,6 +747,7 @@ mod tests {
             next_block: 4,
             attrs: AttrDict::new(),
         has_exception_handling: false,
+            label_id_map: HashMap::new(),
         };
 
         let refined = refine_types(&mut func);
@@ -824,6 +827,7 @@ mod tests {
             next_block: 1,
             attrs: AttrDict::new(),
         has_exception_handling: false,
+            label_id_map: HashMap::new(),
         };
         let refined = refine_types(&mut func);
         assert_eq!(refined, 0);

@@ -462,8 +462,30 @@ impl<'a> SsaContext<'a> {
         if let Some(ref v) = op.bytes {
             attrs.insert("bytes".into(), AttrValue::Bytes(v.clone()));
         }
+        // Preserve additional SimpleIR metadata fields that the native backend
+        // reads on specific op kinds (task_kind, container_type, ic_index, var,
+        // raw_int). Without these, passthrough ops lose critical information.
+        if let Some(ref v) = op.task_kind {
+            attrs.insert("task_kind".into(), AttrValue::Str(v.clone()));
+        }
+        if let Some(ref v) = op.container_type {
+            attrs.insert("container_type".into(), AttrValue::Str(v.clone()));
+        }
+        if let Some(v) = op.ic_index {
+            attrs.insert("ic_index".into(), AttrValue::Int(v));
+        }
+        if op.raw_int == Some(true) {
+            attrs.insert("raw_int".into(), AttrValue::Bool(true));
+        }
 
         let opcode = kind_to_opcode(&op.kind);
+
+        // For ops that map to OpCode::Copy as a fallback (unknown ops),
+        // preserve the original kind string so the back-conversion can
+        // emit the correct SimpleIR op.
+        if opcode == OpCode::Copy && !matches!(op.kind.as_str(), "copy" | "store_var" | "load_var" | "copy_var") {
+            attrs.insert("_original_kind".into(), AttrValue::Str(op.kind.clone()));
+        }
 
         TirOp {
             dialect: Dialect::Molt,

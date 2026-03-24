@@ -107,6 +107,7 @@ fn clone_function(func: &TirFunction, new_name: String) -> TirFunction {
         next_block: func.next_block,
         attrs: func.attrs.clone(),
         has_exception_handling: func.has_exception_handling,
+        label_id_map: func.label_id_map.clone(),
     }
 }
 
