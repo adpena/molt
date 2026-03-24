@@ -247,6 +247,186 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
             Some(inkwell::module::Linkage::External),
         );
     }
+
+    // ── Method / Builtin call ──
+    // molt_call_method(receiver: u64, name: u64, args_builder: u64) -> u64
+    {
+        let fn_ty = i64_ty.fn_type(
+            &[i64_ty.into(), i64_ty.into(), i64_ty.into()],
+            false,
+        );
+        module.add_function(
+            "molt_call_method",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
+    // molt_call_builtin(name: u64, args_builder: u64) -> u64
+    {
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
+        module.add_function(
+            "molt_call_builtin",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
+
+    // ── Container builders ──
+    // molt_list_new(capacity: u64) -> u64
+    // molt_list_push(list: u64, item: u64) -> u64  (returns same list for chaining)
+    {
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+        module.add_function(
+            "molt_list_new",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+        let fn_ty2 = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
+        module.add_function(
+            "molt_list_push",
+            fn_ty2,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
+    // molt_tuple_new(capacity: u64) -> u64
+    // molt_tuple_push(tup: u64, item: u64) -> u64
+    {
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+        module.add_function(
+            "molt_tuple_new",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+        let fn_ty2 = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
+        module.add_function(
+            "molt_tuple_push",
+            fn_ty2,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
+    // molt_set_new already declared above; add molt_set_push
+    // molt_set_push(set: u64, item: u64) -> u64
+    {
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
+        module.add_function(
+            "molt_set_push",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
+    // molt_dict_set(dict: u64, key: u64, val: u64) -> u64
+    {
+        let fn_ty = i64_ty.fn_type(
+            &[i64_ty.into(), i64_ty.into(), i64_ty.into()],
+            false,
+        );
+        module.add_function(
+            "molt_dict_set",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
+
+    // ── Iteration (GetIter / ForIter) ──
+    // molt_get_iter(obj: u64) -> u64
+    // molt_for_iter(iter: u64) -> u64  (returns sentinel on exhaustion)
+    {
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+        module.add_function(
+            "molt_get_iter",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+        module.add_function(
+            "molt_for_iter",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
+
+    // ── Generator support ──
+    // molt_yield(value: u64) -> u64
+    // molt_yield_from(subiter: u64) -> u64
+    {
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+        module.add_function(
+            "molt_yield",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+        module.add_function(
+            "molt_yield_from",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
+
+    // ── Exception ──
+    // molt_check_exception() -> u64  (returns the current exception or None)
+    {
+        let fn_ty = i64_ty.fn_type(&[], false);
+        module.add_function(
+            "molt_check_exception",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
+
+    // ── Deopt ──
+    // molt_deopt_transfer(frame: u64) -> u64
+    {
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+        module.add_function(
+            "molt_deopt_transfer",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
+
+    // ── SCF dialect runtime helpers ──
+    // These are called when SCF ops survive lowering (not yet fully desugared).
+    // molt_scf_if(cond: u64, then_fn: u64, else_fn: u64) -> u64
+    {
+        let fn_ty = i64_ty.fn_type(
+            &[i64_ty.into(), i64_ty.into(), i64_ty.into()],
+            false,
+        );
+        module.add_function(
+            "molt_scf_if",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
+    // molt_scf_for(lb: u64, ub: u64, step: u64, body_fn: u64) -> u64
+    {
+        let fn_ty = i64_ty.fn_type(
+            &[i64_ty.into(), i64_ty.into(), i64_ty.into(), i64_ty.into()],
+            false,
+        );
+        module.add_function(
+            "molt_scf_for",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
+    // molt_scf_while(cond_fn: u64, body_fn: u64) -> u64
+    {
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
+        module.add_function(
+            "molt_scf_while",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
+    // molt_scf_yield(value: u64) -> u64
+    {
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+        module.add_function(
+            "molt_scf_yield",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
 }
 
 #[cfg(all(test, feature = "llvm"))]
