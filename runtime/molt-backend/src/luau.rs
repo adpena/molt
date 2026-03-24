@@ -154,14 +154,23 @@ impl LuauBackend {
         }
 
         if emit_funcs.len() > 1 || !extra_forward_decls.is_empty() {
-            self.uses_forward_decls = true;
-            self.emit_line("-- Forward declarations");
-            for func in &emit_funcs {
-                let name = sanitize_ident(&func.name);
-                self.emit_line(&format!("local {name}"));
-            }
-            for name in &extra_forward_decls {
-                self.emit_line(&format!("local {name}"));
+            let total_decls = emit_funcs.len() + extra_forward_decls.len();
+            if total_decls <= 180 {
+                // Small enough: use local forward declarations.
+                self.uses_forward_decls = true;
+                self.emit_line("-- Forward declarations");
+                for func in &emit_funcs {
+                    let name = sanitize_ident(&func.name);
+                    self.emit_line(&format!("local {name}"));
+                }
+                for name in &extra_forward_decls {
+                    self.emit_line(&format!("local {name}"));
+                }
+            } else {
+                // Too many functions for local declarations.  Skip forward
+                // declarations entirely — functions will be assigned as globals.
+                // This avoids the 200 local register limit.
+                self.uses_forward_decls = true;
             }
             self.output.push('\n');
         }
@@ -233,6 +242,9 @@ impl LuauBackend {
         // Phase 2e: Strip dead code after terminators (break, return, error).
         // Luau rejects unreachable statements after control flow terminators.
         strip_dead_code_after_terminators(&mut func_body);
+
+        // Phase 2f: Insert do/end blocks for functions exceeding the local limit.
+        spill_excess_locals(&mut func_body);
 
         // Phase 3: Emit prelude with only the helpers that survive optimization.
         self.emit_prelude_conditional(&func_body);
@@ -840,10 +852,20 @@ impl LuauBackend {
             self.hoisted_vars.insert(sanitize_ident(escaped_var));
         }
 
-        // Emit pre-declarations for all hoisted variables.
+        // Emit pre-declarations for hoisted variables.  Cap at 150 to stay
+        // within Luau's ~200 local register limit.  Variables beyond the cap
+        // are removed from hoisted_vars so they get `local` declarations
+        // inline (which Luau handles as new inner-scope bindings).
         if !self.hoisted_vars.is_empty() {
             let mut sorted: Vec<String> = self.hoisted_vars.iter().cloned().collect();
             sorted.sort();
+            let cap = 150;
+            if sorted.len() > cap {
+                let overflow: Vec<String> = sorted.drain(cap..).collect();
+                for var in &overflow {
+                    self.hoisted_vars.remove(var);
+                }
+            }
             for var in &sorted {
                 self.emit_line(&format!("local {var}"));
             }
@@ -965,30 +987,6 @@ impl LuauBackend {
                 }
             }
 
-            // Local spilling: when at the function's top scope and approaching
-            // Luau's 200 local register limit, close the current `do` scope and
-            // open a new one.  Only split between top-level ops (not inside
-            // if/for/while/pcall blocks).
-            if self.needs_local_spill && self.indent as u32 == self.func_body_indent {
-                let op_has_out = ops[i].out.is_some() && ops[i].out.as_deref() != Some("none");
-                if op_has_out {
-                    self.scope_local_count += 1;
-                }
-                if self.scope_local_count == 1 && !self.in_spill_do_block {
-                    // Open the first `do` block.
-                    self.emit_line("do");
-                    self.push_indent();
-                    self.in_spill_do_block = true;
-                } else if self.scope_local_count >= 170 && self.in_spill_do_block {
-                    // Close and reopen scope.
-                    self.pop_indent();
-                    self.emit_line("end");
-                    self.emit_line("do");
-                    self.push_indent();
-                    self.scope_local_count = 0;
-                }
-            }
-
             if ops[i].kind == "loop_start"
                 && i + 1 < ops.len()
                 && ops[i + 1].kind == "loop_index_start"
@@ -1012,12 +1010,7 @@ impl LuauBackend {
             }
         }
 
-        // Close the spill `do` block if open.
-        if self.in_spill_do_block {
-            self.pop_indent();
-            self.emit_line("end");
-            self.in_spill_do_block = false;
-        }
+
 
         self.pop_indent();
         self.emit_line("end");
@@ -6626,6 +6619,7 @@ fn sink_single_use_locals_once(source: &mut String) -> usize {
                     let rhs = rest[eq_pos + 3..].trim().to_string();
                     if rhs.len() <= 120
                         && !rhs.contains('\n')
+                        && !rhs.contains("--")
                         && !is_simple_literal(&rhs)
                         && !is_simple_var_ref(&rhs)
                     {
@@ -7369,6 +7363,14 @@ fn rehoist_escaped_locals(source: &mut String) {
             "\t"
         };
 
+        // Count existing top-scope locals to avoid exceeding Luau's 200 limit.
+        let existing_locals: usize = (func_start + 1..func_end).filter(|&li| {
+            let lt = lines[li].trim();
+            lt.starts_with("local ") && lines[li].starts_with(body_indent) && !lines[li].starts_with(&format!("{body_indent}\t"))
+        }).count();
+        let hoist_budget = if existing_locals >= 180 { 0usize } else { 180 - existing_locals };
+        let mut hoisted_count = 0usize;
+
         for (var, (decl_depth, decl_block, decl_line)) in &var_decl_scope {
             if *decl_depth == 0 { continue; }
             if let Some(uses) = var_uses.get(var) {
@@ -7376,7 +7378,8 @@ fn rehoist_escaped_locals(source: &mut String) {
                     (*ud < *decl_depth || (*ud == *decl_depth && *ub != *decl_block))
                     && *ul != *decl_line
                 );
-                if needs_hoist {
+                if needs_hoist && hoisted_count < hoist_budget {
+                    hoisted_count += 1;
                     // Add a `local vN` at function scope
                     insertions.entry(func_start + 1).or_default()
                         .push(format!("{body_indent}local {var}"));
@@ -7869,19 +7872,21 @@ fn strip_dead_code_after_terminators(source: &mut String) {
 /// The approach: scan each function body, count top-level `local` declarations,
 /// and wrap consecutive non-structural lines in `do...end` blocks.
 fn spill_excess_locals(source: &mut String) {
+    // Insert `do...end` scope blocks inside functions with >180 top-level
+    // locals.  Uses a robust indent-based heuristic: top-level lines are
+    // those at exactly body_indent.  We count `local` declarations at that
+    // indent level and insert scope breaks every 170 locals.
     let lines: Vec<&str> = source.lines().collect();
-    let mut result = String::with_capacity(source.len() + source.len() / 20);
+    let mut result = String::with_capacity(source.len() + 4096);
+    let mut total_blocks = 0u32;
     let mut i = 0;
-    let mut total_spilled = 0u32;
 
     while i < lines.len() {
         let trimmed = lines[i].trim();
-
-        // Detect function start: `NAME = function(...)` at column 0
         let is_func_start = !trimmed.starts_with("--")
             && trimmed.contains("= function(")
             && !trimmed.starts_with("local ")
-            && (lines[i].starts_with(char::is_alphabetic) || lines[i].starts_with('_'));
+            && (lines[i].starts_with(|c: char| c.is_alphabetic()) || lines[i].starts_with('_'));
 
         if !is_func_start {
             result.push_str(lines[i]);
@@ -7890,60 +7895,54 @@ fn spill_excess_locals(source: &mut String) {
             continue;
         }
 
-        // Found a function.  Scan its body to count locals.
-        let func_start = i;
+        // Emit function header.
         result.push_str(lines[i]);
         result.push('\n');
         i += 1;
 
-        // Determine the function indent (first non-blank body line).
+        // Determine body indent.
         let body_indent = if i < lines.len() {
-            let body_line = lines[i];
-            body_line.len() - body_line.trim_start().len()
-        } else {
-            1
-        };
+            lines[i].len() - lines[i].trim_start().len()
+        } else { 1 };
 
-        // Count locals at body_indent level (top of function scope).
-        let mut local_count = 0u32;
+        // Pre-scan: count locals at body_indent.
+        let mut total_locals = 0u32;
         let mut j = i;
-        let mut func_depth = 1i32;
-        while j < lines.len() && func_depth > 0 {
+        while j < lines.len() {
             let t = lines[j].trim();
-            let indent = lines[j].len() - lines[j].trim_start().len();
-            // Track function depth to find closing `end`.
-            if indent == body_indent && t == "end" && func_depth == 1 {
-                break;
+            let ind = lines[j].len() - lines[j].trim_start().len();
+            if ind == body_indent && t.starts_with("local ") {
+                total_locals += 1;
             }
-            if t.starts_with("local ") && indent == body_indent {
-                local_count += 1;
+            // Simple end-of-function detection: `end` at indent 0.
+            if ind == 0 && t == "end" {
+                break;
             }
             j += 1;
         }
+        let func_end = j;
 
-        if local_count <= 190 {
-            // No spilling needed; emit body as-is.
-            continue;
+        if total_locals <= 180 {
+            continue; // No spilling needed; emit body as-is via the outer loop.
         }
 
-        // Need to spill.  Re-scan the body, inserting `do` at the start
-        // and `end` every ~170 locals, then `do` again.
+        // Need to spill.  Track indent-based depth relative to body_indent.
+        // depth=0 means we're at the function's top scope.
         let indent_str = &lines[i][..body_indent.min(lines[i].len())];
         let mut scope_locals = 0u32;
-        let mut in_do_block = false;
-        let mut nested_depth = 0i32; // track nested blocks to avoid splitting mid-block
+        let mut in_do = false;
 
         while i < lines.len() {
             let t = lines[i].trim();
-            let indent = lines[i].len() - lines[i].trim_start().len();
+            let ind = lines[i].len() - lines[i].trim_start().len();
 
             // End of function?
-            if indent <= body_indent && t == "end" && nested_depth == 0 {
-                if in_do_block {
+            if i >= func_end {
+                if in_do {
                     result.push_str(indent_str);
                     result.push_str("end\n");
-                    in_do_block = false;
-                    total_spilled += 1;
+                    in_do = false;
+                    total_blocks += 1;
                 }
                 result.push_str(lines[i]);
                 result.push('\n');
@@ -7951,46 +7950,41 @@ fn spill_excess_locals(source: &mut String) {
                 break;
             }
 
-            // Track nested structured blocks.
-            if indent == body_indent {
-                if t.starts_with("if ") && t.contains(" then") && !t.ends_with("end") {
-                    nested_depth += 1;
-                } else if t.starts_with("for ") && t.contains(" do") {
-                    nested_depth += 1;
-                } else if t.starts_with("while ") && t.contains(" do") {
-                    nested_depth += 1;
-                } else if t == "end" || t == "end)" {
-                    if nested_depth > 0 {
-                        nested_depth -= 1;
-                    }
-                }
-            }
+            let at_body_indent = ind == body_indent;
 
             // Count locals at body_indent.
-            if t.starts_with("local ") && indent == body_indent {
+            if at_body_indent && t.starts_with("local ") {
                 scope_locals += 1;
             }
 
-            // If we've reached the limit and we're not inside a nested block,
-            // close the current `do` and open a new one.
-            if scope_locals >= 170 && nested_depth == 0 && in_do_block
-                && indent == body_indent && !t.starts_with("if ") && !t.starts_with("for ")
-                && !t.starts_with("while ") && t != "else" && t != "end" && t != "end)"
-            {
+            // Only split at body_indent on simple assignment/local lines
+            // (not structural openers like if/for/while).
+            let is_safe_split_point = at_body_indent
+                && !t.starts_with("if ")
+                && !t.starts_with("for ")
+                && !t.starts_with("while ")
+                && !t.starts_with("repeat")
+                && t != "else"
+                && t != "end"
+                && t != "end)"
+                && !t.starts_with("elseif ")
+                && !t.starts_with("--");
+
+            // Split when we've accumulated enough locals.
+            if scope_locals >= 50 && in_do && is_safe_split_point {
                 result.push_str(indent_str);
                 result.push_str("end\n");
                 result.push_str(indent_str);
                 result.push_str("do\n");
                 scope_locals = 0;
-                total_spilled += 1;
+                total_blocks += 1;
             }
 
-            // Open initial `do` block if needed.
-            if !in_do_block && scope_locals > 0 {
-                // Insert `do` before the current line.
+            // Open first do block.
+            if !in_do && scope_locals > 0 && is_safe_split_point {
                 result.push_str(indent_str);
                 result.push_str("do\n");
-                in_do_block = true;
+                in_do = true;
             }
 
             result.push_str(lines[i]);
@@ -7999,8 +7993,8 @@ fn spill_excess_locals(source: &mut String) {
         }
     }
 
-    if total_spilled > 0 {
-        eprintln!("[molt-luau] Spilled locals in {} function scope blocks", total_spilled);
+    if total_blocks > 0 {
+        eprintln!("[molt-luau] Inserted {} do/end spill blocks for local register limit", total_blocks);
         *source = result;
     }
 }
