@@ -1656,12 +1656,26 @@ impl SimpleBackend {
                 let func_name = func_ir.name.clone();
                 let original_ops = func_ir.ops.clone(); // backup for fallback
 
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let body_proxy = format!("{}", func_ir.ops.len());
-                    let content_hash =
-                        crate::tir::cache::CompilationCache::compute_hash(&func_ir.name, body_proxy.as_bytes());
-                    let _cached = tir_cache.get(&content_hash);
+                // Compute a stable content hash from the function name + a
+                // serialization of its input ops. This is the cache key.
+                let body_bytes = crate::tir::serialize::serialize_ops(&func_ir.ops);
+                let content_hash = crate::tir::cache::CompilationCache::compute_hash(
+                    &func_ir.name,
+                    &body_bytes,
+                );
 
+                // Cache hit: if we already have optimized ops for this function,
+                // restore them directly and skip the TIR pipeline entirely.
+                if let Some(cached_bytes) = tir_cache.get(&content_hash) {
+                    if let Some(cached_ops) =
+                        crate::tir::serialize::deserialize_ops(&cached_bytes)
+                    {
+                        func_ir.ops = cached_ops;
+                        continue;
+                    }
+                }
+
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
                     crate::tir::type_refine::refine_types(&mut tir_func);
                     let stats = crate::tir::passes::run_pipeline(&mut tir_func);
@@ -1676,13 +1690,15 @@ impl SimpleBackend {
                             );
                         }
                     }
-                    let optimized_ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
-                    tir_cache.put(&content_hash, &[], vec![]);
-                    optimized_ops
+                    crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func)
                 }));
 
                 match result {
                     Ok(optimized_ops) => {
+                        // Store the optimized ops in the cache for future runs.
+                        let serialized =
+                            crate::tir::serialize::serialize_ops(&optimized_ops);
+                        tir_cache.put(&content_hash, &serialized, vec![]);
                         func_ir.ops = optimized_ops;
                     }
                     Err(_panic) => {
@@ -1697,6 +1713,9 @@ impl SimpleBackend {
                     }
                 }
             }
+            // Persist the updated cache index so future runs benefit from
+            // the newly stored entries.
+            tir_cache.save_index();
         }
         // Post-TIR: analysis + inlining (from main)
         {
