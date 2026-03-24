@@ -22,6 +22,9 @@ pub mod gpu_hip;
 pub mod mlir_compat;
 pub mod deopt;
 pub mod gpu_runtime;
+pub mod gpu_metal;
+pub mod gpu_webgpu;
+pub mod gpu_dispatch;
 pub mod serialize;
 
 /// Returns true for SimpleIR ops that are purely structural control-flow
