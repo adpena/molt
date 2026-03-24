@@ -1929,7 +1929,26 @@ pub fn split_large_function(func: FunctionIR, max_ops: usize) -> Result<(Functio
     for i in 0..boundaries.len() - 1 {
         let start = boundaries[i];
         let end = boundaries[i + 1];
-        let chunk_ops: Vec<OpIR> = all_ops[start..end].to_vec();
+        let mut chunk_ops: Vec<OpIR> = all_ops[start..end].to_vec();
+
+        // Collect label IDs defined in THIS chunk.
+        let chunk_labels: std::collections::BTreeSet<i64> = chunk_ops
+            .iter()
+            .filter(|op| matches!(op.kind.as_str(), "label" | "state_label"))
+            .filter_map(|op| op.value)
+            .collect();
+
+        // Strip check_exception ops that reference labels NOT in this chunk.
+        // These are dead code — the target label is in another chunk.
+        chunk_ops.retain(|op| {
+            if op.kind == "check_exception" {
+                if let Some(target_id) = op.value {
+                    return chunk_labels.contains(&target_id);
+                }
+            }
+            true
+        });
+
         let chunk_name = format!("__molt_chunk_{sanitized_name}_{i}");
         chunks.push(FunctionIR {
             name: chunk_name,
