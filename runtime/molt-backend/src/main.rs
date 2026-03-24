@@ -849,7 +849,7 @@ fn run_daemon(_socket_path: &str) -> io::Result<()> {
 
 fn main() -> io::Result<()> {
     // Hard memory guard: set rlimit on virtual memory to prevent OOM
-    // from crashing the entire machine.  Default 8GB, override with
+    // from crashing the entire machine.  Default 4GB, override with
     // MOLT_BACKEND_MAX_RSS_GB env var.
     #[cfg(unix)]
     {
@@ -863,7 +863,11 @@ fn main() -> io::Result<()> {
                 rlim_cur: max_bytes,
                 rlim_max: max_bytes,
             };
-            libc::setrlimit(libc::RLIMIT_AS, &rlim);
+            if libc::setrlimit(libc::RLIMIT_AS, &rlim) != 0 {
+                eprintln!(
+                    "WARNING: failed to set memory limit (RLIMIT_AS={max_gb}GB).                      OOM guard not active."
+                );
+            }
         }
     }
 
@@ -1078,7 +1082,11 @@ fn main() -> io::Result<()> {
                         functions: batch_funcs,
                         profile: profile.clone(),
                     };
-                    let backend = SimpleBackend::new_with_target(target_triple);
+                    let mut backend = SimpleBackend::new_with_target(target_triple);
+                    // CRITICAL: skip IR-level passes (inline, dead func elim)
+                    // for batched compilation — those were already run on the
+                    // full IR above. Each batch only does Cranelift codegen.
+                    backend.skip_ir_passes = true;
                     let obj_bytes = backend.compile(batch_ir);
 
                     let batch_path = tmp_dir.join(format!("batch_{batch_idx}.o"));
@@ -1092,8 +1100,18 @@ fn main() -> io::Result<()> {
                 if batch_paths.len() == 1 {
                     std::fs::copy(&batch_paths[0], output_file)?;
                 } else {
-                    let mut cmd = std::process::Command::new("ld");
-                    cmd.arg("-r").arg("-o").arg(output_file);
+                    // Use the system linker for partial linking.
+                    // Respect CC/LD env vars for cross-compilation.
+                    let ld_bin = std::env::var("LD")
+                        .or_else(|_| std::env::var("CC"))
+                        .unwrap_or_else(|_| "ld".to_string());
+                    let mut cmd = std::process::Command::new(&ld_bin);
+                    if ld_bin.contains("clang") || ld_bin.contains("gcc") {
+                        // When using a compiler driver, pass -r via -Wl
+                        cmd.arg("-Wl,-r").arg("-o").arg(output_file);
+                    } else {
+                        cmd.arg("-r").arg("-o").arg(output_file);
+                    }
                     for p in &batch_paths {
                         cmd.arg(p);
                     }
