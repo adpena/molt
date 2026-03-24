@@ -4,6 +4,7 @@
 pub mod bce;
 pub mod cha;
 pub mod closure_spec;
+pub mod deforestation;
 pub mod fast_math;
 pub mod vectorize;
 pub mod dce;
