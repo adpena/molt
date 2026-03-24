@@ -131,6 +131,14 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
             get_ty,
             Some(inkwell::module::Linkage::External),
         );
+        // molt_getitem_unchecked(obj_bits: u64, key_bits: u64) -> u64
+        // Same signature as molt_getitem_method but skips bounds checking.
+        // Used when the BCE pass has proven the index is in-range.
+        module.add_function(
+            "molt_getitem_unchecked",
+            get_ty,
+            Some(inkwell::module::Linkage::External),
+        );
         let set_ty =
             i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false);
         module.add_function(
@@ -266,6 +274,17 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
         let fn_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
         module.add_function(
             "molt_call_builtin",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
+
+    // molt_call_0(callable: u64) -> u64
+    // Invoke a callable with zero arguments. Used by SCF desugaring.
+    {
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+        module.add_function(
+            "molt_call_0",
             fn_ty,
             Some(inkwell::module::Linkage::External),
         );
