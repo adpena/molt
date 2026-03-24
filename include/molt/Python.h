@@ -1439,6 +1439,191 @@ static inline int _molt_type_maybe_set_slot_callable(
     return 0;
 }
 
+/* ---- richcompare slot wrappers ----
+ * CPython's tp_richcompare signature: PyObject *(*)(PyObject *self, PyObject *other, int op)
+ * We create per-op thunk structures that store the original richcmpfunc pointer and the
+ * comparison op code, then register them as individual __eq__, __lt__, etc. dunders.
+ */
+
+typedef PyObject *(*_molt_richcmpfunc)(PyObject *, PyObject *, int);
+
+/* Per-op trampolines: each retrieves the stored richcmpfunc from the type object
+ * and calls it with the appropriate Py_XX comparison op constant. */
+
+static PyObject *_molt_richcmp_eq_trampoline(PyObject *self, PyObject *other);
+static PyObject *_molt_richcmp_ne_trampoline(PyObject *self, PyObject *other);
+static PyObject *_molt_richcmp_lt_trampoline(PyObject *self, PyObject *other);
+static PyObject *_molt_richcmp_le_trampoline(PyObject *self, PyObject *other);
+static PyObject *_molt_richcmp_gt_trampoline(PyObject *self, PyObject *other);
+static PyObject *_molt_richcmp_ge_trampoline(PyObject *self, PyObject *other);
+
+/* ---- hash slot wrapper ----
+ * CPython's tp_hash signature: Py_hash_t (*)(PyObject *self)
+ * We wrap it to return a PyObject* (Python int) so it works as __hash__. */
+
+typedef Py_hash_t (*_molt_hashfunc)(PyObject *);
+
+/* ---- dealloc slot storage ----
+ * CPython's tp_dealloc signature: void (*)(PyObject *self)
+ * We store it as __del__ on the type. When called from Python, it ignores return value. */
+
+typedef void (*_molt_deallocfunc)(PyObject *);
+
+/* Helper: install richcompare wrappers for all 6 comparison ops.
+ * The richcmpfunc pointer is stored as a __molt_tp_richcompare__ attribute on the type
+ * so trampolines can retrieve it. */
+static inline int _molt_type_install_richcompare(PyObject *type_obj, uintptr_t richcmp_ptr) {
+    /* Store the function pointer as an integer attribute for trampoline lookup */
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)richcmp_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_tp_richcompare__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+
+    /* Install each comparison dunder as a METH_O callable */
+    if (_molt_type_maybe_set_slot_callable(
+            type_obj, "__eq__", (uintptr_t)_molt_richcmp_eq_trampoline, (uint32_t)METH_O) < 0)
+        return -1;
+    if (_molt_type_maybe_set_slot_callable(
+            type_obj, "__ne__", (uintptr_t)_molt_richcmp_ne_trampoline, (uint32_t)METH_O) < 0)
+        return -1;
+    if (_molt_type_maybe_set_slot_callable(
+            type_obj, "__lt__", (uintptr_t)_molt_richcmp_lt_trampoline, (uint32_t)METH_O) < 0)
+        return -1;
+    if (_molt_type_maybe_set_slot_callable(
+            type_obj, "__le__", (uintptr_t)_molt_richcmp_le_trampoline, (uint32_t)METH_O) < 0)
+        return -1;
+    if (_molt_type_maybe_set_slot_callable(
+            type_obj, "__gt__", (uintptr_t)_molt_richcmp_gt_trampoline, (uint32_t)METH_O) < 0)
+        return -1;
+    if (_molt_type_maybe_set_slot_callable(
+            type_obj, "__ge__", (uintptr_t)_molt_richcmp_ge_trampoline, (uint32_t)METH_O) < 0)
+        return -1;
+
+    return 0;
+}
+
+/* Richcompare trampoline helper: retrieve the stored richcmpfunc from the type and call it */
+static inline PyObject *_molt_richcmp_call_for_op(PyObject *self, PyObject *other, int op) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_tp_richcompare__");
+    _molt_richcmpfunc func;
+    PyObject *result;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_richcmpfunc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt tp_richcompare slot");
+        return NULL;
+    }
+    result = func(self, other, op);
+    return result;
+}
+
+static PyObject *_molt_richcmp_eq_trampoline(PyObject *self, PyObject *other) {
+    return _molt_richcmp_call_for_op(self, other, Py_EQ);
+}
+static PyObject *_molt_richcmp_ne_trampoline(PyObject *self, PyObject *other) {
+    return _molt_richcmp_call_for_op(self, other, Py_NE);
+}
+static PyObject *_molt_richcmp_lt_trampoline(PyObject *self, PyObject *other) {
+    return _molt_richcmp_call_for_op(self, other, Py_LT);
+}
+static PyObject *_molt_richcmp_le_trampoline(PyObject *self, PyObject *other) {
+    return _molt_richcmp_call_for_op(self, other, Py_LE);
+}
+static PyObject *_molt_richcmp_gt_trampoline(PyObject *self, PyObject *other) {
+    return _molt_richcmp_call_for_op(self, other, Py_GT);
+}
+static PyObject *_molt_richcmp_ge_trampoline(PyObject *self, PyObject *other) {
+    return _molt_richcmp_call_for_op(self, other, Py_GE);
+}
+
+/* Hash slot wrapper: wraps Py_hash_t return into a PyObject* int.
+ * Stored on the type as __hash__ via a trampoline that retrieves the stored hashfunc. */
+static inline int _molt_type_install_hash(PyObject *type_obj, uintptr_t hash_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)hash_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_tp_hash__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return 0;
+}
+
+static PyObject *_molt_hash_trampoline(PyObject *self);
+
+static inline int _molt_type_install_hash_callable(PyObject *type_obj, uintptr_t hash_ptr) {
+    if (_molt_type_install_hash(type_obj, hash_ptr) < 0)
+        return -1;
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__hash__", (uintptr_t)_molt_hash_trampoline, (uint32_t)METH_NOARGS);
+}
+
+static PyObject *_molt_hash_trampoline(PyObject *self) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_tp_hash__");
+    _molt_hashfunc func;
+    Py_hash_t hash_val;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_hashfunc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt tp_hash slot");
+        return NULL;
+    }
+    hash_val = func(self);
+    if (hash_val == (Py_hash_t)-1 && molt_err_pending() != 0) {
+        return NULL;
+    }
+    return PyLong_FromLongLong((long long)hash_val);
+}
+
+/* Dealloc slot wrapper: wraps void(*)(PyObject*) into a no-return callable for __del__. */
+static PyObject *_molt_dealloc_trampoline(PyObject *self);
+
+static inline int _molt_type_install_dealloc(PyObject *type_obj, uintptr_t dealloc_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)dealloc_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_tp_dealloc__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__del__", (uintptr_t)_molt_dealloc_trampoline, (uint32_t)METH_NOARGS);
+}
+
+static PyObject *_molt_dealloc_trampoline(PyObject *self) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_tp_dealloc__");
+    _molt_deallocfunc func;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_deallocfunc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt tp_dealloc slot");
+        return NULL;
+    }
+    func(self);
+    Py_RETURN_NONE;
+}
+
 static inline int _molt_type_add_getset(PyObject *type_obj, PyGetSetDef *getset) {
     PyGetSetDef *entry;
     if (getset == NULL) {
@@ -1629,6 +1814,10 @@ static inline PyObject *PyType_FromSpecWithBases(PyType_Spec *spec, PyObject *ba
     uintptr_t slot_tp_iternext = 0;
     uintptr_t slot_tp_repr = 0;
     uintptr_t slot_tp_str = 0;
+    uintptr_t slot_tp_dealloc = 0;
+    uintptr_t slot_tp_init = 0;
+    uintptr_t slot_tp_hash = 0;
+    uintptr_t slot_tp_richcompare = 0;
     uintptr_t slot_nb_add = 0;
     uintptr_t slot_nb_subtract = 0;
     uintptr_t slot_nb_multiply = 0;
@@ -1645,6 +1834,10 @@ static inline PyObject *PyType_FromSpecWithBases(PyType_Spec *spec, PyObject *ba
     int saw_tp_iternext = 0;
     int saw_tp_repr = 0;
     int saw_tp_str = 0;
+    int saw_tp_dealloc = 0;
+    int saw_tp_init = 0;
+    int saw_tp_hash = 0;
+    int saw_tp_richcompare = 0;
     int saw_nb_add = 0;
     int saw_nb_subtract = 0;
     int saw_nb_multiply = 0;
@@ -1797,6 +1990,38 @@ static inline PyObject *PyType_FromSpecWithBases(PyType_Spec *spec, PyObject *ba
                 }
                 saw_sq_concat = 1;
                 slot_sq_concat = (uintptr_t)slot->pfunc;
+                break;
+            case Py_tp_dealloc:
+                if (saw_tp_dealloc) {
+                    PyErr_SetString(PyExc_TypeError, "duplicate Py_tp_dealloc slot");
+                    return NULL;
+                }
+                saw_tp_dealloc = 1;
+                slot_tp_dealloc = (uintptr_t)slot->pfunc;
+                break;
+            case Py_tp_init:
+                if (saw_tp_init) {
+                    PyErr_SetString(PyExc_TypeError, "duplicate Py_tp_init slot");
+                    return NULL;
+                }
+                saw_tp_init = 1;
+                slot_tp_init = (uintptr_t)slot->pfunc;
+                break;
+            case Py_tp_hash:
+                if (saw_tp_hash) {
+                    PyErr_SetString(PyExc_TypeError, "duplicate Py_tp_hash slot");
+                    return NULL;
+                }
+                saw_tp_hash = 1;
+                slot_tp_hash = (uintptr_t)slot->pfunc;
+                break;
+            case Py_tp_richcompare:
+                if (saw_tp_richcompare) {
+                    PyErr_SetString(PyExc_TypeError, "duplicate Py_tp_richcompare slot");
+                    return NULL;
+                }
+                saw_tp_richcompare = 1;
+                slot_tp_richcompare = (uintptr_t)slot->pfunc;
                 break;
             default:
                 PyErr_Format(
@@ -1984,6 +2209,30 @@ static inline PyObject *PyType_FromSpecWithBases(PyType_Spec *spec, PyObject *ba
         && _molt_type_maybe_set_slot_callable(
                type_obj, "__add__", slot_sq_concat, (uint32_t)METH_O)
             < 0) {
+        Py_DECREF(type_obj);
+        return NULL;
+    }
+    /* --- tp_init: __init__(self, *args, **kwargs) --- */
+    if (_molt_type_maybe_set_slot_callable(
+            type_obj, "__init__", slot_tp_init,
+            (uint32_t)(METH_VARARGS | METH_KEYWORDS))
+        < 0) {
+        Py_DECREF(type_obj);
+        return NULL;
+    }
+    /* --- tp_dealloc: stored as __del__ via trampoline --- */
+    if (slot_tp_dealloc != 0 && _molt_type_install_dealloc(type_obj, slot_tp_dealloc) < 0) {
+        Py_DECREF(type_obj);
+        return NULL;
+    }
+    /* --- tp_hash: stored as __hash__ via trampoline (Py_hash_t -> PyObject*) --- */
+    if (slot_tp_hash != 0 && _molt_type_install_hash_callable(type_obj, slot_tp_hash) < 0) {
+        Py_DECREF(type_obj);
+        return NULL;
+    }
+    /* --- tp_richcompare: installs __eq__, __ne__, __lt__, __le__, __gt__, __ge__ --- */
+    if (slot_tp_richcompare != 0
+        && _molt_type_install_richcompare(type_obj, slot_tp_richcompare) < 0) {
         Py_DECREF(type_obj);
         return NULL;
     }
