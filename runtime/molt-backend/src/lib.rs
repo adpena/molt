@@ -1642,6 +1642,35 @@ impl SimpleBackend {
         for func_ir in &mut ir.functions {
             propagate_loop_fast_int(func_ir);
         }
+        // ── GPU kernel detection ──
+        // Functions containing GPU intrinsic ops (gpu_thread_id, gpu_block_id,
+        // etc.) are GPU kernels.  Flag them in metadata so the GPU pipeline can
+        // handle them separately.  For now we log detection and skip TIR
+        // optimization on these functions — the GPU pipeline handles lowering.
+        let mut gpu_kernel_names: Vec<String> = Vec::new();
+        for func_ir in &ir.functions {
+            let is_gpu = func_ir.ops.iter().any(|op| {
+                matches!(
+                    op.kind.as_str(),
+                    "gpu_thread_id"
+                        | "gpu_block_id"
+                        | "gpu_block_dim"
+                        | "gpu_grid_dim"
+                        | "gpu_barrier"
+                )
+            });
+            if is_gpu {
+                gpu_kernel_names.push(func_ir.name.clone());
+            }
+        }
+        if !gpu_kernel_names.is_empty() {
+            eprintln!(
+                "[molt-gpu] Detected {} GPU kernel function(s): {:?}",
+                gpu_kernel_names.len(),
+                gpu_kernel_names
+            );
+        }
+
         // ── TIR optimization pipeline (default: ON, set MOLT_TIR_OPT=0 to disable) ──
         // Wrapped in catch_unwind: if TIR panics on a function, that function
         // falls back to unoptimized SimpleIR. Compilation continues — no silent
@@ -1653,6 +1682,12 @@ impl SimpleBackend {
                 std::path::PathBuf::from(".molt-cache"),
             );
             for func_ir in &mut ir.functions {
+                // GPU kernel functions are handled by the GPU pipeline — skip
+                // normal TIR optimization to avoid lowering GPU intrinsic ops
+                // that the standard passes do not understand.
+                if gpu_kernel_names.contains(&func_ir.name) {
+                    continue;
+                }
                 let func_name = func_ir.name.clone();
                 let original_ops = func_ir.ops.clone(); // backup for fallback
 
