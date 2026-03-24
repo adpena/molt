@@ -19,7 +19,7 @@ stdlib_full = [
     "stdlib_crypto", "stdlib_compression", "stdlib_serialization",
     "stdlib_archive", "stdlib_ast", "stdlib_fs_extra", "stdlib_unicode_names",
     "stdlib_tk", "stdlib_net", "stdlib_asyncio", "stdlib_email",
-    "stdlib_decimal", "stdlib_logging", "stdlib_concurrent",
+    "stdlib_math", "stdlib_decimal", "stdlib_logging", "stdlib_concurrent",
     "stdlib_dbm", "stdlib_importlib_extra", "stdlib_csv",
     "stdlib_signal", "stdlib_select",
     "builtin_set", "builtin_complex", "builtin_memoryview",
@@ -50,7 +50,8 @@ stdlib_tk = ["dep:molt-runtime-tk"]
 stdlib_net = ["dep:molt-runtime-net"]
 stdlib_asyncio = ["dep:molt-runtime-asyncio"]
 stdlib_email = []
-stdlib_decimal = ["dep:molt-runtime-math"]
+stdlib_math = ["dep:molt-runtime-math"]
+stdlib_decimal = ["stdlib_math"]
 stdlib_logging = []
 stdlib_concurrent = []
 stdlib_dbm = []

@@ -1,10 +1,15 @@
-//! molt-runtime-math: math/numeric module group (decimal, fractions, cmath, statistics)
+//! `molt-runtime-math` — Math/numeric module group for the Molt runtime.
 //!
-//! Extracted from molt-runtime to allow tree-shaking the extended numeric
-//! libraries when not needed.
+//! Isolates the `math`, `cmath`, `fractions`, `colorsys`, `random`, and
+//! `decimal` Python modules into a dedicated crate.
+//!
+//! This crate is an optional dependency of `molt-runtime`, gated behind the
+//! `stdlib_math` feature flag.  When the feature is disabled the linker
+//! can strip all math code from the final binary.
 
-// TODO: migrate from molt-runtime/src/builtins/
-// pub mod decimal;
-// pub mod fractions;
-// pub mod cmath_mod;
-// pub mod math;
+/// FFI bridge to molt-runtime internal functions (resolved at link time).
+pub mod bridge;
+
+pub mod colorsys;
+pub mod cmath_mod;
+pub mod fractions;
