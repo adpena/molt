@@ -1624,6 +1624,779 @@ static PyObject *_molt_dealloc_trampoline(PyObject *self) {
     Py_RETURN_NONE;
 }
 
+/* ---- nb_bool trampoline ----
+ * CPython signature: int (*)(PyObject *)
+ * We wrap to return Python bool. */
+typedef int (*_molt_inquiry)(PyObject *);
+
+static PyObject *_molt_nb_bool_trampoline(PyObject *self) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_nb_bool__");
+    _molt_inquiry func;
+    int result;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_inquiry)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt nb_bool slot");
+        return NULL;
+    }
+    result = func(self);
+    if (result == -1 && molt_err_pending() != 0) {
+        return NULL;
+    }
+    if (result) {
+        Py_RETURN_TRUE;
+    }
+    Py_RETURN_FALSE;
+}
+
+static inline int _molt_type_install_nb_bool(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_nb_bool__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__bool__", (uintptr_t)_molt_nb_bool_trampoline, (uint32_t)METH_NOARGS);
+}
+
+/* ---- nb_power trampoline ----
+ * CPython signature: PyObject *(*)(PyObject *, PyObject *, PyObject *)
+ * __pow__ takes (self, other[, mod]). We install as METH_VARARGS. */
+typedef PyObject *(*_molt_ternaryfunc)(PyObject *, PyObject *, PyObject *);
+
+static PyObject *_molt_nb_power_trampoline(PyObject *self, PyObject *args) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_nb_power__");
+    _molt_ternaryfunc func;
+    PyObject *other = NULL;
+    PyObject *mod = NULL;
+    Py_ssize_t nargs;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_ternaryfunc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt nb_power slot");
+        return NULL;
+    }
+    nargs = PyTuple_Size(args);
+    if (nargs < 1 || nargs > 2) {
+        PyErr_SetString(PyExc_TypeError, "__pow__ takes 1 or 2 arguments");
+        return NULL;
+    }
+    other = PyTuple_GetItem(args, 0);
+    if (nargs == 2) {
+        mod = PyTuple_GetItem(args, 1);
+    } else {
+        mod = Py_None;
+    }
+    return func(self, other, mod);
+}
+
+static inline int _molt_type_install_nb_power(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_nb_power__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__pow__", (uintptr_t)_molt_nb_power_trampoline, (uint32_t)METH_VARARGS);
+}
+
+/* ---- nb_inplace_power trampoline ---- */
+static PyObject *_molt_nb_ipower_trampoline(PyObject *self, PyObject *args) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_nb_ipower__");
+    _molt_ternaryfunc func;
+    PyObject *other = NULL;
+    PyObject *mod = NULL;
+    Py_ssize_t nargs;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_ternaryfunc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt nb_inplace_power slot");
+        return NULL;
+    }
+    nargs = PyTuple_Size(args);
+    if (nargs < 1 || nargs > 2) {
+        PyErr_SetString(PyExc_TypeError, "__ipow__ takes 1 or 2 arguments");
+        return NULL;
+    }
+    other = PyTuple_GetItem(args, 0);
+    if (nargs == 2) {
+        mod = PyTuple_GetItem(args, 1);
+    } else {
+        mod = Py_None;
+    }
+    return func(self, other, mod);
+}
+
+static inline int _molt_type_install_nb_ipower(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_nb_ipower__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__ipow__", (uintptr_t)_molt_nb_ipower_trampoline, (uint32_t)METH_VARARGS);
+}
+
+/* ---- sq_length / mp_length trampoline ----
+ * CPython signature: Py_ssize_t (*)(PyObject *)
+ * Wraps to return Python int. */
+typedef Py_ssize_t (*_molt_lenfunc)(PyObject *);
+
+static inline PyObject *_molt_lenfunc_trampoline_impl(PyObject *self, const char *attr) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, attr);
+    _molt_lenfunc func;
+    Py_ssize_t result;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_lenfunc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt length slot");
+        return NULL;
+    }
+    result = func(self);
+    if (result == -1 && molt_err_pending() != 0) {
+        return NULL;
+    }
+    return PyLong_FromLongLong((long long)result);
+}
+
+static PyObject *_molt_sq_length_trampoline(PyObject *self) {
+    return _molt_lenfunc_trampoline_impl(self, "__molt_sq_length__");
+}
+
+static PyObject *_molt_mp_length_trampoline(PyObject *self) {
+    return _molt_lenfunc_trampoline_impl(self, "__molt_mp_length__");
+}
+
+static inline int _molt_type_install_sq_length(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_sq_length__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__len__", (uintptr_t)_molt_sq_length_trampoline, (uint32_t)METH_NOARGS);
+}
+
+static inline int _molt_type_install_mp_length(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_mp_length__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__len__", (uintptr_t)_molt_mp_length_trampoline, (uint32_t)METH_NOARGS);
+}
+
+/* ---- sq_item trampoline ----
+ * CPython signature: PyObject *(*)(PyObject *, Py_ssize_t)
+ * We wrap to accept a Python int index. */
+typedef PyObject *(*_molt_ssizeargfunc)(PyObject *, Py_ssize_t);
+
+static PyObject *_molt_sq_item_trampoline(PyObject *self, PyObject *index_obj) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_sq_item__");
+    _molt_ssizeargfunc func;
+    Py_ssize_t index;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_ssizeargfunc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt sq_item slot");
+        return NULL;
+    }
+    index = (Py_ssize_t)PyLong_AsLongLong(index_obj);
+    if (index == -1 && molt_err_pending() != 0) {
+        return NULL;
+    }
+    return func(self, index);
+}
+
+static inline int _molt_type_install_sq_item(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_sq_item__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__getitem__", (uintptr_t)_molt_sq_item_trampoline, (uint32_t)METH_O);
+}
+
+/* ---- sq_ass_item trampoline ----
+ * CPython signature: int (*)(PyObject *, Py_ssize_t, PyObject *)
+ * Wraps as __setitem__(self, index, value) or __delitem__(self, index) if value==NULL. */
+typedef int (*_molt_ssizeobjargproc)(PyObject *, Py_ssize_t, PyObject *);
+
+static PyObject *_molt_sq_ass_item_trampoline(PyObject *self, PyObject *args) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_sq_ass_item__");
+    _molt_ssizeobjargproc func;
+    PyObject *index_obj;
+    PyObject *value = NULL;
+    Py_ssize_t index;
+    int result;
+    Py_ssize_t nargs;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_ssizeobjargproc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt sq_ass_item slot");
+        return NULL;
+    }
+    nargs = PyTuple_Size(args);
+    if (nargs < 1 || nargs > 2) {
+        PyErr_SetString(PyExc_TypeError, "__setitem__/__delitem__ takes 1 or 2 arguments");
+        return NULL;
+    }
+    index_obj = PyTuple_GetItem(args, 0);
+    index = (Py_ssize_t)PyLong_AsLongLong(index_obj);
+    if (index == -1 && molt_err_pending() != 0) {
+        return NULL;
+    }
+    if (nargs == 2) {
+        value = PyTuple_GetItem(args, 1);
+    }
+    result = func(self, index, value);
+    if (result == -1 && molt_err_pending() != 0) {
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static inline int _molt_type_install_sq_ass_item(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_sq_ass_item__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__setitem__", (uintptr_t)_molt_sq_ass_item_trampoline, (uint32_t)METH_VARARGS);
+}
+
+/* ---- sq_contains trampoline ----
+ * CPython signature: int (*)(PyObject *, PyObject *)
+ * Wraps to return Python bool. */
+typedef int (*_molt_objobjproc)(PyObject *, PyObject *);
+
+static PyObject *_molt_sq_contains_trampoline(PyObject *self, PyObject *value) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_sq_contains__");
+    _molt_objobjproc func;
+    int result;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_objobjproc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt sq_contains slot");
+        return NULL;
+    }
+    result = func(self, value);
+    if (result == -1 && molt_err_pending() != 0) {
+        return NULL;
+    }
+    if (result) {
+        Py_RETURN_TRUE;
+    }
+    Py_RETURN_FALSE;
+}
+
+static inline int _molt_type_install_sq_contains(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_sq_contains__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__contains__", (uintptr_t)_molt_sq_contains_trampoline, (uint32_t)METH_O);
+}
+
+/* ---- sq_repeat / sq_inplace_repeat trampoline ----
+ * CPython signature: PyObject *(*)(PyObject *, Py_ssize_t)
+ * Wraps to accept a Python int. */
+static PyObject *_molt_sq_repeat_trampoline(PyObject *self, PyObject *count_obj) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_sq_repeat__");
+    _molt_ssizeargfunc func;
+    Py_ssize_t count;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_ssizeargfunc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt sq_repeat slot");
+        return NULL;
+    }
+    count = (Py_ssize_t)PyLong_AsLongLong(count_obj);
+    if (count == -1 && molt_err_pending() != 0) {
+        return NULL;
+    }
+    return func(self, count);
+}
+
+static inline int _molt_type_install_sq_repeat(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_sq_repeat__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__mul__", (uintptr_t)_molt_sq_repeat_trampoline, (uint32_t)METH_O);
+}
+
+static PyObject *_molt_sq_irepeat_trampoline(PyObject *self, PyObject *count_obj) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_sq_irepeat__");
+    _molt_ssizeargfunc func;
+    Py_ssize_t count;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_ssizeargfunc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt sq_inplace_repeat slot");
+        return NULL;
+    }
+    count = (Py_ssize_t)PyLong_AsLongLong(count_obj);
+    if (count == -1 && molt_err_pending() != 0) {
+        return NULL;
+    }
+    return func(self, count);
+}
+
+static inline int _molt_type_install_sq_irepeat(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_sq_irepeat__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__imul__", (uintptr_t)_molt_sq_irepeat_trampoline, (uint32_t)METH_O);
+}
+
+/* ---- mp_ass_subscript trampoline ----
+ * CPython signature: int (*)(PyObject *, PyObject *, PyObject *)
+ * __setitem__(self, key, value) or __delitem__(self, key) if value==NULL. */
+typedef int (*_molt_objobjargproc)(PyObject *, PyObject *, PyObject *);
+
+static PyObject *_molt_mp_ass_subscript_trampoline(PyObject *self, PyObject *args) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_mp_ass_subscript__");
+    _molt_objobjargproc func;
+    PyObject *key;
+    PyObject *value = NULL;
+    int result;
+    Py_ssize_t nargs;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_objobjargproc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt mp_ass_subscript slot");
+        return NULL;
+    }
+    nargs = PyTuple_Size(args);
+    if (nargs < 1 || nargs > 2) {
+        PyErr_SetString(PyExc_TypeError, "__setitem__/__delitem__ takes 1 or 2 arguments");
+        return NULL;
+    }
+    key = PyTuple_GetItem(args, 0);
+    if (nargs == 2) {
+        value = PyTuple_GetItem(args, 1);
+    }
+    result = func(self, key, value);
+    if (result == -1 && molt_err_pending() != 0) {
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static inline int _molt_type_install_mp_ass_subscript(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_mp_ass_subscript__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__setitem__", (uintptr_t)_molt_mp_ass_subscript_trampoline, (uint32_t)METH_VARARGS);
+}
+
+/* ---- tp_descr_get trampoline ----
+ * CPython signature: PyObject *(*)(PyObject *, PyObject *, PyObject *)
+ * __get__(self, obj, type) */
+static PyObject *_molt_descr_get_trampoline(PyObject *self, PyObject *args) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_tp_descr_get__");
+    _molt_ternaryfunc func;
+    PyObject *obj;
+    PyObject *type_arg;
+    Py_ssize_t nargs;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_ternaryfunc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt tp_descr_get slot");
+        return NULL;
+    }
+    nargs = PyTuple_Size(args);
+    if (nargs != 2) {
+        PyErr_SetString(PyExc_TypeError, "__get__ takes exactly 2 arguments");
+        return NULL;
+    }
+    obj = PyTuple_GetItem(args, 0);
+    type_arg = PyTuple_GetItem(args, 1);
+    return func(self, obj, type_arg);
+}
+
+static inline int _molt_type_install_descr_get(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_tp_descr_get__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__get__", (uintptr_t)_molt_descr_get_trampoline, (uint32_t)METH_VARARGS);
+}
+
+/* ---- tp_descr_set trampoline ----
+ * CPython signature: int (*)(PyObject *, PyObject *, PyObject *)
+ * __set__(self, obj, value) / __delete__(self, obj) if value==NULL. */
+static PyObject *_molt_descr_set_trampoline(PyObject *self, PyObject *args) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_tp_descr_set__");
+    _molt_objobjargproc func;
+    PyObject *obj;
+    PyObject *value = NULL;
+    int result;
+    Py_ssize_t nargs;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_objobjargproc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt tp_descr_set slot");
+        return NULL;
+    }
+    nargs = PyTuple_Size(args);
+    if (nargs < 1 || nargs > 2) {
+        PyErr_SetString(PyExc_TypeError, "__set__/__delete__ takes 1 or 2 arguments");
+        return NULL;
+    }
+    obj = PyTuple_GetItem(args, 0);
+    if (nargs == 2) {
+        value = PyTuple_GetItem(args, 1);
+    }
+    result = func(self, obj, value);
+    if (result == -1 && molt_err_pending() != 0) {
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static inline int _molt_type_install_descr_set(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_tp_descr_set__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__set__", (uintptr_t)_molt_descr_set_trampoline, (uint32_t)METH_VARARGS);
+}
+
+/* ---- tp_del / tp_finalize trampoline ----
+ * CPython signature: void (*)(PyObject *)
+ * Same as dealloc but for __del__ / __finalize__. */
+static PyObject *_molt_tp_del_trampoline(PyObject *self) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_tp_del__");
+    _molt_deallocfunc func;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_deallocfunc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt tp_del slot");
+        return NULL;
+    }
+    func(self);
+    Py_RETURN_NONE;
+}
+
+static inline int _molt_type_install_tp_del(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_tp_del__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__del__", (uintptr_t)_molt_tp_del_trampoline, (uint32_t)METH_NOARGS);
+}
+
+static PyObject *_molt_tp_finalize_trampoline(PyObject *self) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_tp_finalize__");
+    _molt_deallocfunc func;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_deallocfunc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt tp_finalize slot");
+        return NULL;
+    }
+    func(self);
+    Py_RETURN_NONE;
+}
+
+static inline int _molt_type_install_tp_finalize(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_tp_finalize__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__del__", (uintptr_t)_molt_tp_finalize_trampoline, (uint32_t)METH_NOARGS);
+}
+
+/* ---- nb_divmod trampoline ----
+ * CPython signature: PyObject *(*)(PyObject *, PyObject *)
+ * __divmod__(self, other) — same as METH_O, can use direct slot. */
+
+/* ---- tp_getattr trampoline ----
+ * CPython signature: PyObject *(*)(PyObject *, char *)
+ * Deprecated in favor of tp_getattro. We accept and store it. */
+typedef PyObject *(*_molt_getattrfunc)(PyObject *, char *);
+
+static PyObject *_molt_tp_getattr_trampoline(PyObject *self, PyObject *name_obj) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_tp_getattr__");
+    _molt_getattrfunc func;
+    const char *name;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_getattrfunc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt tp_getattr slot");
+        return NULL;
+    }
+    name = PyUnicode_AsUTF8(name_obj);
+    if (name == NULL) {
+        return NULL;
+    }
+    return func(self, (char *)name);
+}
+
+static inline int _molt_type_install_tp_getattr(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_tp_getattr__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__getattr__", (uintptr_t)_molt_tp_getattr_trampoline, (uint32_t)METH_O);
+}
+
+/* ---- tp_setattr trampoline ----
+ * CPython signature: int (*)(PyObject *, char *, PyObject *)
+ * Deprecated in favor of tp_setattro. */
+typedef int (*_molt_setattrfunc)(PyObject *, char *, PyObject *);
+
+static PyObject *_molt_tp_setattr_trampoline(PyObject *self, PyObject *args) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_tp_setattr__");
+    _molt_setattrfunc func;
+    PyObject *name_obj;
+    PyObject *value = NULL;
+    const char *name;
+    int result;
+    Py_ssize_t nargs;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_setattrfunc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt tp_setattr slot");
+        return NULL;
+    }
+    nargs = PyTuple_Size(args);
+    if (nargs < 1 || nargs > 2) {
+        PyErr_SetString(PyExc_TypeError, "__setattr__/__delattr__ takes 1 or 2 arguments");
+        return NULL;
+    }
+    name_obj = PyTuple_GetItem(args, 0);
+    name = PyUnicode_AsUTF8(name_obj);
+    if (name == NULL) {
+        return NULL;
+    }
+    if (nargs == 2) {
+        value = PyTuple_GetItem(args, 1);
+    }
+    result = func(self, (char *)name, value);
+    if (result == -1 && molt_err_pending() != 0) {
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static inline int _molt_type_install_tp_setattr(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_tp_setattr__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__setattr__", (uintptr_t)_molt_tp_setattr_trampoline, (uint32_t)METH_VARARGS);
+}
+
+/* ---- tp_setattro trampoline ----
+ * CPython signature: int (*)(PyObject *, PyObject *, PyObject *)
+ * __setattr__(self, name, value) / __delattr__(self, name) */
+static PyObject *_molt_tp_setattro_trampoline(PyObject *self, PyObject *args) {
+    PyObject *type_obj = (PyObject *)Py_TYPE(self);
+    PyObject *ptr_obj = PyObject_GetAttrString(type_obj, "__molt_tp_setattro__");
+    _molt_objobjargproc func;
+    PyObject *name_arg;
+    PyObject *value = NULL;
+    int result;
+    Py_ssize_t nargs;
+    if (ptr_obj == NULL) {
+        return NULL;
+    }
+    func = (_molt_objobjargproc)(uintptr_t)PyLong_AsUnsignedLongLong(ptr_obj);
+    Py_DECREF(ptr_obj);
+    if (func == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "corrupt tp_setattro slot");
+        return NULL;
+    }
+    nargs = PyTuple_Size(args);
+    if (nargs < 1 || nargs > 2) {
+        PyErr_SetString(PyExc_TypeError, "__setattr__/__delattr__ takes 1 or 2 arguments");
+        return NULL;
+    }
+    name_arg = PyTuple_GetItem(args, 0);
+    if (nargs == 2) {
+        value = PyTuple_GetItem(args, 1);
+    }
+    result = func(self, name_arg, value);
+    if (result == -1 && molt_err_pending() != 0) {
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static inline int _molt_type_install_tp_setattro(PyObject *type_obj, uintptr_t func_ptr) {
+    PyObject *ptr_obj = PyLong_FromUnsignedLongLong((unsigned long long)func_ptr);
+    if (ptr_obj == NULL) {
+        return -1;
+    }
+    if (PyObject_SetAttrString(type_obj, "__molt_tp_setattro__", ptr_obj) < 0) {
+        Py_DECREF(ptr_obj);
+        return -1;
+    }
+    Py_DECREF(ptr_obj);
+    return _molt_type_maybe_set_slot_callable(
+        type_obj, "__setattr__", (uintptr_t)_molt_tp_setattro_trampoline, (uint32_t)METH_VARARGS);
+}
+
 static inline int _molt_type_add_getset(PyObject *type_obj, PyGetSetDef *getset) {
     PyGetSetDef *entry;
     if (getset == NULL) {
@@ -1809,6 +2582,7 @@ static inline PyObject *PyType_FromSpecWithBases(PyType_Spec *spec, PyObject *ba
     PyObject *slot_bases = NULL;
     const char *type_doc = NULL;
     void *type_new = NULL;
+    /* -- tp_ protocol slots -- */
     uintptr_t slot_tp_call = 0;
     uintptr_t slot_tp_iter = 0;
     uintptr_t slot_tp_iternext = 0;
@@ -1818,10 +2592,76 @@ static inline PyObject *PyType_FromSpecWithBases(PyType_Spec *spec, PyObject *ba
     uintptr_t slot_tp_init = 0;
     uintptr_t slot_tp_hash = 0;
     uintptr_t slot_tp_richcompare = 0;
+    uintptr_t slot_tp_alloc = 0;
+    uintptr_t slot_tp_free = 0;
+    uintptr_t slot_tp_del = 0;
+    uintptr_t slot_tp_finalize = 0;
+    uintptr_t slot_tp_traverse = 0;
+    uintptr_t slot_tp_clear = 0;
+    uintptr_t slot_tp_is_gc = 0;
+    uintptr_t slot_tp_getattr = 0;
+    uintptr_t slot_tp_getattro = 0;
+    uintptr_t slot_tp_setattr = 0;
+    uintptr_t slot_tp_setattro = 0;
+    uintptr_t slot_tp_descr_get = 0;
+    uintptr_t slot_tp_descr_set = 0;
+    /* -- nb_ number protocol slots -- */
     uintptr_t slot_nb_add = 0;
     uintptr_t slot_nb_subtract = 0;
     uintptr_t slot_nb_multiply = 0;
+    uintptr_t slot_nb_remainder = 0;
+    uintptr_t slot_nb_divmod = 0;
+    uintptr_t slot_nb_power = 0;
+    uintptr_t slot_nb_negative = 0;
+    uintptr_t slot_nb_positive = 0;
+    uintptr_t slot_nb_absolute = 0;
+    uintptr_t slot_nb_bool = 0;
+    uintptr_t slot_nb_invert = 0;
+    uintptr_t slot_nb_lshift = 0;
+    uintptr_t slot_nb_rshift = 0;
+    uintptr_t slot_nb_and = 0;
+    uintptr_t slot_nb_xor = 0;
+    uintptr_t slot_nb_or = 0;
+    uintptr_t slot_nb_int = 0;
+    uintptr_t slot_nb_float = 0;
+    uintptr_t slot_nb_floor_divide = 0;
+    uintptr_t slot_nb_true_divide = 0;
+    uintptr_t slot_nb_index = 0;
+    uintptr_t slot_nb_inplace_add = 0;
+    uintptr_t slot_nb_inplace_subtract = 0;
+    uintptr_t slot_nb_inplace_multiply = 0;
+    uintptr_t slot_nb_inplace_remainder = 0;
+    uintptr_t slot_nb_inplace_power = 0;
+    uintptr_t slot_nb_inplace_lshift = 0;
+    uintptr_t slot_nb_inplace_rshift = 0;
+    uintptr_t slot_nb_inplace_and = 0;
+    uintptr_t slot_nb_inplace_xor = 0;
+    uintptr_t slot_nb_inplace_or = 0;
+    uintptr_t slot_nb_inplace_floor_divide = 0;
+    uintptr_t slot_nb_inplace_true_divide = 0;
+    uintptr_t slot_nb_matrix_multiply = 0;
+    uintptr_t slot_nb_inplace_matrix_multiply = 0;
+    /* -- sq_ sequence protocol slots -- */
     uintptr_t slot_sq_concat = 0;
+    uintptr_t slot_sq_length = 0;
+    uintptr_t slot_sq_item = 0;
+    uintptr_t slot_sq_ass_item = 0;
+    uintptr_t slot_sq_contains = 0;
+    uintptr_t slot_sq_repeat = 0;
+    uintptr_t slot_sq_inplace_concat = 0;
+    uintptr_t slot_sq_inplace_repeat = 0;
+    /* -- mp_ mapping protocol slots -- */
+    uintptr_t slot_mp_length = 0;
+    uintptr_t slot_mp_subscript = 0;
+    uintptr_t slot_mp_ass_subscript = 0;
+    /* -- bf_ buffer protocol slots -- */
+    uintptr_t slot_bf_getbuffer = 0;
+    uintptr_t slot_bf_releasebuffer = 0;
+    /* -- am_ async protocol slots -- */
+    uintptr_t slot_am_await = 0;
+    uintptr_t slot_am_aiter = 0;
+    uintptr_t slot_am_anext = 0;
+    uintptr_t slot_am_send = 0;
     int saw_methods = 0;
     int saw_getset = 0;
     int saw_members = 0;
@@ -1829,19 +2669,6 @@ static inline PyObject *PyType_FromSpecWithBases(PyType_Spec *spec, PyObject *ba
     int saw_bases = 0;
     int saw_doc = 0;
     int saw_new = 0;
-    int saw_tp_call = 0;
-    int saw_tp_iter = 0;
-    int saw_tp_iternext = 0;
-    int saw_tp_repr = 0;
-    int saw_tp_str = 0;
-    int saw_tp_dealloc = 0;
-    int saw_tp_init = 0;
-    int saw_tp_hash = 0;
-    int saw_tp_richcompare = 0;
-    int saw_nb_add = 0;
-    int saw_nb_subtract = 0;
-    int saw_nb_multiply = 0;
-    int saw_sq_concat = 0;
     PyObject *name_obj = NULL;
     PyObject *namespace_obj = NULL;
     PyObject *type_obj = NULL;
@@ -1862,7 +2689,18 @@ static inline PyObject *PyType_FromSpecWithBases(PyType_Spec *spec, PyObject *ba
 
     if (spec->slots != NULL) {
         for (slot = spec->slots; slot->slot != 0; slot++) {
+            /* Macro to reduce boilerplate for uintptr_t slot storage with duplicate detection */
+            #define _MOLT_STORE_SLOT(slot_id, dest_var, label) \
+                case slot_id: \
+                    if (dest_var != 0) { \
+                        PyErr_SetString(PyExc_TypeError, "duplicate " label " slot"); \
+                        return NULL; \
+                    } \
+                    dest_var = (uintptr_t)slot->pfunc; \
+                    break
+
             switch (slot->slot) {
+            /* ---- tp_ type protocol (special handling) ---- */
             case Py_tp_doc:
                 if (saw_doc) {
                     PyErr_SetString(PyExc_TypeError, "duplicate Py_tp_doc slot");
@@ -1919,110 +2757,93 @@ static inline PyObject *PyType_FromSpecWithBases(PyType_Spec *spec, PyObject *ba
                 saw_members = 1;
                 type_members = (PyMemberDef *)slot->pfunc;
                 break;
-            case Py_tp_call:
-                if (saw_tp_call) {
-                    PyErr_SetString(PyExc_TypeError, "duplicate Py_tp_call slot");
-                    return NULL;
-                }
-                saw_tp_call = 1;
-                slot_tp_call = (uintptr_t)slot->pfunc;
-                break;
-            case Py_tp_iter:
-                if (saw_tp_iter) {
-                    PyErr_SetString(PyExc_TypeError, "duplicate Py_tp_iter slot");
-                    return NULL;
-                }
-                saw_tp_iter = 1;
-                slot_tp_iter = (uintptr_t)slot->pfunc;
-                break;
-            case Py_tp_iternext:
-                if (saw_tp_iternext) {
-                    PyErr_SetString(PyExc_TypeError, "duplicate Py_tp_iternext slot");
-                    return NULL;
-                }
-                saw_tp_iternext = 1;
-                slot_tp_iternext = (uintptr_t)slot->pfunc;
-                break;
-            case Py_tp_repr:
-                if (saw_tp_repr) {
-                    PyErr_SetString(PyExc_TypeError, "duplicate Py_tp_repr slot");
-                    return NULL;
-                }
-                saw_tp_repr = 1;
-                slot_tp_repr = (uintptr_t)slot->pfunc;
-                break;
-            case Py_tp_str:
-                if (saw_tp_str) {
-                    PyErr_SetString(PyExc_TypeError, "duplicate Py_tp_str slot");
-                    return NULL;
-                }
-                saw_tp_str = 1;
-                slot_tp_str = (uintptr_t)slot->pfunc;
-                break;
-            case Py_nb_add:
-                if (saw_nb_add) {
-                    PyErr_SetString(PyExc_TypeError, "duplicate Py_nb_add slot");
-                    return NULL;
-                }
-                saw_nb_add = 1;
-                slot_nb_add = (uintptr_t)slot->pfunc;
-                break;
-            case Py_nb_subtract:
-                if (saw_nb_subtract) {
-                    PyErr_SetString(PyExc_TypeError, "duplicate Py_nb_subtract slot");
-                    return NULL;
-                }
-                saw_nb_subtract = 1;
-                slot_nb_subtract = (uintptr_t)slot->pfunc;
-                break;
-            case Py_nb_multiply:
-                if (saw_nb_multiply) {
-                    PyErr_SetString(PyExc_TypeError, "duplicate Py_nb_multiply slot");
-                    return NULL;
-                }
-                saw_nb_multiply = 1;
-                slot_nb_multiply = (uintptr_t)slot->pfunc;
-                break;
-            case Py_sq_concat:
-                if (saw_sq_concat) {
-                    PyErr_SetString(PyExc_TypeError, "duplicate Py_sq_concat slot");
-                    return NULL;
-                }
-                saw_sq_concat = 1;
-                slot_sq_concat = (uintptr_t)slot->pfunc;
-                break;
-            case Py_tp_dealloc:
-                if (saw_tp_dealloc) {
-                    PyErr_SetString(PyExc_TypeError, "duplicate Py_tp_dealloc slot");
-                    return NULL;
-                }
-                saw_tp_dealloc = 1;
-                slot_tp_dealloc = (uintptr_t)slot->pfunc;
-                break;
-            case Py_tp_init:
-                if (saw_tp_init) {
-                    PyErr_SetString(PyExc_TypeError, "duplicate Py_tp_init slot");
-                    return NULL;
-                }
-                saw_tp_init = 1;
-                slot_tp_init = (uintptr_t)slot->pfunc;
-                break;
-            case Py_tp_hash:
-                if (saw_tp_hash) {
-                    PyErr_SetString(PyExc_TypeError, "duplicate Py_tp_hash slot");
-                    return NULL;
-                }
-                saw_tp_hash = 1;
-                slot_tp_hash = (uintptr_t)slot->pfunc;
-                break;
-            case Py_tp_richcompare:
-                if (saw_tp_richcompare) {
-                    PyErr_SetString(PyExc_TypeError, "duplicate Py_tp_richcompare slot");
-                    return NULL;
-                }
-                saw_tp_richcompare = 1;
-                slot_tp_richcompare = (uintptr_t)slot->pfunc;
-                break;
+
+            /* ---- tp_ callable/protocol slots ---- */
+            _MOLT_STORE_SLOT(Py_tp_call, slot_tp_call, "Py_tp_call");
+            _MOLT_STORE_SLOT(Py_tp_iter, slot_tp_iter, "Py_tp_iter");
+            _MOLT_STORE_SLOT(Py_tp_iternext, slot_tp_iternext, "Py_tp_iternext");
+            _MOLT_STORE_SLOT(Py_tp_repr, slot_tp_repr, "Py_tp_repr");
+            _MOLT_STORE_SLOT(Py_tp_str, slot_tp_str, "Py_tp_str");
+            _MOLT_STORE_SLOT(Py_tp_dealloc, slot_tp_dealloc, "Py_tp_dealloc");
+            _MOLT_STORE_SLOT(Py_tp_init, slot_tp_init, "Py_tp_init");
+            _MOLT_STORE_SLOT(Py_tp_hash, slot_tp_hash, "Py_tp_hash");
+            _MOLT_STORE_SLOT(Py_tp_richcompare, slot_tp_richcompare, "Py_tp_richcompare");
+            _MOLT_STORE_SLOT(Py_tp_alloc, slot_tp_alloc, "Py_tp_alloc");
+            _MOLT_STORE_SLOT(Py_tp_free, slot_tp_free, "Py_tp_free");
+            _MOLT_STORE_SLOT(Py_tp_del, slot_tp_del, "Py_tp_del");
+            _MOLT_STORE_SLOT(Py_tp_finalize, slot_tp_finalize, "Py_tp_finalize");
+            _MOLT_STORE_SLOT(Py_tp_traverse, slot_tp_traverse, "Py_tp_traverse");
+            _MOLT_STORE_SLOT(Py_tp_clear, slot_tp_clear, "Py_tp_clear");
+            _MOLT_STORE_SLOT(Py_tp_is_gc, slot_tp_is_gc, "Py_tp_is_gc");
+            _MOLT_STORE_SLOT(Py_tp_getattr, slot_tp_getattr, "Py_tp_getattr");
+            _MOLT_STORE_SLOT(Py_tp_getattro, slot_tp_getattro, "Py_tp_getattro");
+            _MOLT_STORE_SLOT(Py_tp_setattr, slot_tp_setattr, "Py_tp_setattr");
+            _MOLT_STORE_SLOT(Py_tp_setattro, slot_tp_setattro, "Py_tp_setattro");
+            _MOLT_STORE_SLOT(Py_tp_descr_get, slot_tp_descr_get, "Py_tp_descr_get");
+            _MOLT_STORE_SLOT(Py_tp_descr_set, slot_tp_descr_set, "Py_tp_descr_set");
+
+            /* ---- nb_ number protocol ---- */
+            _MOLT_STORE_SLOT(Py_nb_add, slot_nb_add, "Py_nb_add");
+            _MOLT_STORE_SLOT(Py_nb_subtract, slot_nb_subtract, "Py_nb_subtract");
+            _MOLT_STORE_SLOT(Py_nb_multiply, slot_nb_multiply, "Py_nb_multiply");
+            _MOLT_STORE_SLOT(Py_nb_remainder, slot_nb_remainder, "Py_nb_remainder");
+            _MOLT_STORE_SLOT(Py_nb_divmod, slot_nb_divmod, "Py_nb_divmod");
+            _MOLT_STORE_SLOT(Py_nb_power, slot_nb_power, "Py_nb_power");
+            _MOLT_STORE_SLOT(Py_nb_negative, slot_nb_negative, "Py_nb_negative");
+            _MOLT_STORE_SLOT(Py_nb_positive, slot_nb_positive, "Py_nb_positive");
+            _MOLT_STORE_SLOT(Py_nb_absolute, slot_nb_absolute, "Py_nb_absolute");
+            _MOLT_STORE_SLOT(Py_nb_bool, slot_nb_bool, "Py_nb_bool");
+            _MOLT_STORE_SLOT(Py_nb_invert, slot_nb_invert, "Py_nb_invert");
+            _MOLT_STORE_SLOT(Py_nb_lshift, slot_nb_lshift, "Py_nb_lshift");
+            _MOLT_STORE_SLOT(Py_nb_rshift, slot_nb_rshift, "Py_nb_rshift");
+            _MOLT_STORE_SLOT(Py_nb_and, slot_nb_and, "Py_nb_and");
+            _MOLT_STORE_SLOT(Py_nb_xor, slot_nb_xor, "Py_nb_xor");
+            _MOLT_STORE_SLOT(Py_nb_or, slot_nb_or, "Py_nb_or");
+            _MOLT_STORE_SLOT(Py_nb_int, slot_nb_int, "Py_nb_int");
+            _MOLT_STORE_SLOT(Py_nb_float, slot_nb_float, "Py_nb_float");
+            _MOLT_STORE_SLOT(Py_nb_floor_divide, slot_nb_floor_divide, "Py_nb_floor_divide");
+            _MOLT_STORE_SLOT(Py_nb_true_divide, slot_nb_true_divide, "Py_nb_true_divide");
+            _MOLT_STORE_SLOT(Py_nb_index, slot_nb_index, "Py_nb_index");
+            _MOLT_STORE_SLOT(Py_nb_inplace_add, slot_nb_inplace_add, "Py_nb_inplace_add");
+            _MOLT_STORE_SLOT(Py_nb_inplace_subtract, slot_nb_inplace_subtract, "Py_nb_inplace_subtract");
+            _MOLT_STORE_SLOT(Py_nb_inplace_multiply, slot_nb_inplace_multiply, "Py_nb_inplace_multiply");
+            _MOLT_STORE_SLOT(Py_nb_inplace_remainder, slot_nb_inplace_remainder, "Py_nb_inplace_remainder");
+            _MOLT_STORE_SLOT(Py_nb_inplace_power, slot_nb_inplace_power, "Py_nb_inplace_power");
+            _MOLT_STORE_SLOT(Py_nb_inplace_lshift, slot_nb_inplace_lshift, "Py_nb_inplace_lshift");
+            _MOLT_STORE_SLOT(Py_nb_inplace_rshift, slot_nb_inplace_rshift, "Py_nb_inplace_rshift");
+            _MOLT_STORE_SLOT(Py_nb_inplace_and, slot_nb_inplace_and, "Py_nb_inplace_and");
+            _MOLT_STORE_SLOT(Py_nb_inplace_xor, slot_nb_inplace_xor, "Py_nb_inplace_xor");
+            _MOLT_STORE_SLOT(Py_nb_inplace_or, slot_nb_inplace_or, "Py_nb_inplace_or");
+            _MOLT_STORE_SLOT(Py_nb_inplace_floor_divide, slot_nb_inplace_floor_divide, "Py_nb_inplace_floor_divide");
+            _MOLT_STORE_SLOT(Py_nb_inplace_true_divide, slot_nb_inplace_true_divide, "Py_nb_inplace_true_divide");
+            _MOLT_STORE_SLOT(Py_nb_matrix_multiply, slot_nb_matrix_multiply, "Py_nb_matrix_multiply");
+            _MOLT_STORE_SLOT(Py_nb_inplace_matrix_multiply, slot_nb_inplace_matrix_multiply, "Py_nb_inplace_matrix_multiply");
+
+            /* ---- sq_ sequence protocol ---- */
+            _MOLT_STORE_SLOT(Py_sq_concat, slot_sq_concat, "Py_sq_concat");
+            _MOLT_STORE_SLOT(Py_sq_length, slot_sq_length, "Py_sq_length");
+            _MOLT_STORE_SLOT(Py_sq_item, slot_sq_item, "Py_sq_item");
+            _MOLT_STORE_SLOT(Py_sq_ass_item, slot_sq_ass_item, "Py_sq_ass_item");
+            _MOLT_STORE_SLOT(Py_sq_contains, slot_sq_contains, "Py_sq_contains");
+            _MOLT_STORE_SLOT(Py_sq_repeat, slot_sq_repeat, "Py_sq_repeat");
+            _MOLT_STORE_SLOT(Py_sq_inplace_concat, slot_sq_inplace_concat, "Py_sq_inplace_concat");
+            _MOLT_STORE_SLOT(Py_sq_inplace_repeat, slot_sq_inplace_repeat, "Py_sq_inplace_repeat");
+
+            /* ---- mp_ mapping protocol ---- */
+            _MOLT_STORE_SLOT(Py_mp_length, slot_mp_length, "Py_mp_length");
+            _MOLT_STORE_SLOT(Py_mp_subscript, slot_mp_subscript, "Py_mp_subscript");
+            _MOLT_STORE_SLOT(Py_mp_ass_subscript, slot_mp_ass_subscript, "Py_mp_ass_subscript");
+
+            /* ---- bf_ buffer protocol ---- */
+            _MOLT_STORE_SLOT(Py_bf_getbuffer, slot_bf_getbuffer, "Py_bf_getbuffer");
+            _MOLT_STORE_SLOT(Py_bf_releasebuffer, slot_bf_releasebuffer, "Py_bf_releasebuffer");
+
+            /* ---- am_ async protocol ---- */
+            _MOLT_STORE_SLOT(Py_am_await, slot_am_await, "Py_am_await");
+            _MOLT_STORE_SLOT(Py_am_aiter, slot_am_aiter, "Py_am_aiter");
+            _MOLT_STORE_SLOT(Py_am_anext, slot_am_anext, "Py_am_anext");
+            _MOLT_STORE_SLOT(Py_am_send, slot_am_send, "Py_am_send");
+
             default:
                 PyErr_Format(
                     PyExc_RuntimeError,
@@ -2031,6 +2852,7 @@ static inline PyObject *PyType_FromSpecWithBases(PyType_Spec *spec, PyObject *ba
                     full_name);
                 return NULL;
             }
+            #undef _MOLT_STORE_SLOT
         }
     }
 
@@ -2154,88 +2976,132 @@ static inline PyObject *PyType_FromSpecWithBases(PyType_Spec *spec, PyObject *ba
         Py_DECREF(type_obj);
         return NULL;
     }
-    if (_molt_type_maybe_set_slot_callable(
-            type_obj,
-            "__call__",
-            slot_tp_call,
-            (uint32_t)(METH_VARARGS | METH_KEYWORDS))
-        < 0) {
-        Py_DECREF(type_obj);
-        return NULL;
+    /* ================================================================
+     * Install all slot callables on the type.
+     *
+     * Macro _MOLT_INSTALL_SIMPLE installs a slot as a dunder method
+     * using _molt_type_maybe_set_slot_callable (no-op if ptr==0).
+     * Macro _MOLT_INSTALL_TRAMPOLINE calls a custom installer that
+     * stores the pointer and sets up a trampoline (only if ptr!=0).
+     * ================================================================ */
+    #define _MOLT_INSTALL_SIMPLE(dunder, slot_var, flags) \
+        if (_molt_type_maybe_set_slot_callable( \
+                type_obj, dunder, slot_var, (uint32_t)(flags)) < 0) { \
+            Py_DECREF(type_obj); \
+            return NULL; \
+        }
+    #define _MOLT_INSTALL_TRAMPOLINE(slot_var, installer) \
+        if (slot_var != 0 && installer(type_obj, slot_var) < 0) { \
+            Py_DECREF(type_obj); \
+            return NULL; \
+        }
+
+    /* ---- tp_ type protocol ---- */
+    _MOLT_INSTALL_SIMPLE("__call__", slot_tp_call, METH_VARARGS | METH_KEYWORDS)
+    _MOLT_INSTALL_SIMPLE("__iter__", slot_tp_iter, METH_NOARGS)
+    _MOLT_INSTALL_SIMPLE("__next__", slot_tp_iternext, METH_NOARGS)
+    _MOLT_INSTALL_SIMPLE("__repr__", slot_tp_repr, METH_NOARGS)
+    _MOLT_INSTALL_SIMPLE("__str__", slot_tp_str, METH_NOARGS)
+    _MOLT_INSTALL_SIMPLE("__init__", slot_tp_init, METH_VARARGS | METH_KEYWORDS)
+    _MOLT_INSTALL_SIMPLE("__getattribute__", slot_tp_getattro, METH_O)
+    _MOLT_INSTALL_TRAMPOLINE(slot_tp_dealloc, _molt_type_install_dealloc)
+    _MOLT_INSTALL_TRAMPOLINE(slot_tp_hash, _molt_type_install_hash_callable)
+    _MOLT_INSTALL_TRAMPOLINE(slot_tp_richcompare, _molt_type_install_richcompare)
+    _MOLT_INSTALL_TRAMPOLINE(slot_tp_del, _molt_type_install_tp_del)
+    _MOLT_INSTALL_TRAMPOLINE(slot_tp_finalize, _molt_type_install_tp_finalize)
+    _MOLT_INSTALL_TRAMPOLINE(slot_tp_getattr, _molt_type_install_tp_getattr)
+    _MOLT_INSTALL_TRAMPOLINE(slot_tp_setattr, _molt_type_install_tp_setattr)
+    _MOLT_INSTALL_TRAMPOLINE(slot_tp_setattro, _molt_type_install_tp_setattro)
+    _MOLT_INSTALL_TRAMPOLINE(slot_tp_descr_get, _molt_type_install_descr_get)
+    _MOLT_INSTALL_TRAMPOLINE(slot_tp_descr_set, _molt_type_install_descr_set)
+    /* tp_alloc, tp_free, tp_traverse, tp_clear, tp_is_gc are GC/memory management
+     * slots. We accept them silently (for ABI compat) but they are no-ops in Molt
+     * since Molt uses its own GC. */
+    (void)slot_tp_alloc;
+    (void)slot_tp_free;
+    (void)slot_tp_traverse;
+    (void)slot_tp_clear;
+    (void)slot_tp_is_gc;
+
+    /* ---- nb_ number protocol ---- */
+    _MOLT_INSTALL_SIMPLE("__add__", slot_nb_add, METH_O)
+    _MOLT_INSTALL_SIMPLE("__sub__", slot_nb_subtract, METH_O)
+    _MOLT_INSTALL_SIMPLE("__mul__", slot_nb_multiply, METH_O)
+    _MOLT_INSTALL_SIMPLE("__mod__", slot_nb_remainder, METH_O)
+    _MOLT_INSTALL_SIMPLE("__divmod__", slot_nb_divmod, METH_O)
+    _MOLT_INSTALL_SIMPLE("__neg__", slot_nb_negative, METH_NOARGS)
+    _MOLT_INSTALL_SIMPLE("__pos__", slot_nb_positive, METH_NOARGS)
+    _MOLT_INSTALL_SIMPLE("__abs__", slot_nb_absolute, METH_NOARGS)
+    _MOLT_INSTALL_SIMPLE("__invert__", slot_nb_invert, METH_NOARGS)
+    _MOLT_INSTALL_SIMPLE("__int__", slot_nb_int, METH_NOARGS)
+    _MOLT_INSTALL_SIMPLE("__float__", slot_nb_float, METH_NOARGS)
+    _MOLT_INSTALL_SIMPLE("__index__", slot_nb_index, METH_NOARGS)
+    _MOLT_INSTALL_SIMPLE("__lshift__", slot_nb_lshift, METH_O)
+    _MOLT_INSTALL_SIMPLE("__rshift__", slot_nb_rshift, METH_O)
+    _MOLT_INSTALL_SIMPLE("__and__", slot_nb_and, METH_O)
+    _MOLT_INSTALL_SIMPLE("__xor__", slot_nb_xor, METH_O)
+    _MOLT_INSTALL_SIMPLE("__or__", slot_nb_or, METH_O)
+    _MOLT_INSTALL_SIMPLE("__floordiv__", slot_nb_floor_divide, METH_O)
+    _MOLT_INSTALL_SIMPLE("__truediv__", slot_nb_true_divide, METH_O)
+    _MOLT_INSTALL_SIMPLE("__matmul__", slot_nb_matrix_multiply, METH_O)
+    /* inplace number ops */
+    _MOLT_INSTALL_SIMPLE("__iadd__", slot_nb_inplace_add, METH_O)
+    _MOLT_INSTALL_SIMPLE("__isub__", slot_nb_inplace_subtract, METH_O)
+    _MOLT_INSTALL_SIMPLE("__imul__", slot_nb_inplace_multiply, METH_O)
+    _MOLT_INSTALL_SIMPLE("__imod__", slot_nb_inplace_remainder, METH_O)
+    _MOLT_INSTALL_SIMPLE("__ilshift__", slot_nb_inplace_lshift, METH_O)
+    _MOLT_INSTALL_SIMPLE("__irshift__", slot_nb_inplace_rshift, METH_O)
+    _MOLT_INSTALL_SIMPLE("__iand__", slot_nb_inplace_and, METH_O)
+    _MOLT_INSTALL_SIMPLE("__ixor__", slot_nb_inplace_xor, METH_O)
+    _MOLT_INSTALL_SIMPLE("__ior__", slot_nb_inplace_or, METH_O)
+    _MOLT_INSTALL_SIMPLE("__ifloordiv__", slot_nb_inplace_floor_divide, METH_O)
+    _MOLT_INSTALL_SIMPLE("__itruediv__", slot_nb_inplace_true_divide, METH_O)
+    _MOLT_INSTALL_SIMPLE("__imatmul__", slot_nb_inplace_matrix_multiply, METH_O)
+    /* nb_bool, nb_power, nb_inplace_power need trampolines (different signatures) */
+    _MOLT_INSTALL_TRAMPOLINE(slot_nb_bool, _molt_type_install_nb_bool)
+    _MOLT_INSTALL_TRAMPOLINE(slot_nb_power, _molt_type_install_nb_power)
+    _MOLT_INSTALL_TRAMPOLINE(slot_nb_inplace_power, _molt_type_install_nb_ipower)
+
+    /* ---- sq_ sequence protocol ---- */
+    /* sq_concat -> __add__ (only if nb_add not set) */
+    if (slot_nb_add == 0) {
+        _MOLT_INSTALL_SIMPLE("__add__", slot_sq_concat, METH_O)
     }
-    if (_molt_type_maybe_set_slot_callable(
-            type_obj, "__iter__", slot_tp_iter, (uint32_t)METH_NOARGS)
-        < 0) {
-        Py_DECREF(type_obj);
-        return NULL;
+    /* sq_inplace_concat -> __iadd__ (only if nb_inplace_add not set) */
+    if (slot_nb_inplace_add == 0) {
+        _MOLT_INSTALL_SIMPLE("__iadd__", slot_sq_inplace_concat, METH_O)
     }
-    if (_molt_type_maybe_set_slot_callable(
-            type_obj, "__next__", slot_tp_iternext, (uint32_t)METH_NOARGS)
-        < 0) {
-        Py_DECREF(type_obj);
-        return NULL;
+    _MOLT_INSTALL_TRAMPOLINE(slot_sq_length, _molt_type_install_sq_length)
+    _MOLT_INSTALL_TRAMPOLINE(slot_sq_item, _molt_type_install_sq_item)
+    _MOLT_INSTALL_TRAMPOLINE(slot_sq_ass_item, _molt_type_install_sq_ass_item)
+    _MOLT_INSTALL_TRAMPOLINE(slot_sq_contains, _molt_type_install_sq_contains)
+    /* sq_repeat -> __mul__ (only if nb_multiply not set) */
+    if (slot_nb_multiply == 0) {
+        _MOLT_INSTALL_TRAMPOLINE(slot_sq_repeat, _molt_type_install_sq_repeat)
     }
-    if (_molt_type_maybe_set_slot_callable(
-            type_obj, "__repr__", slot_tp_repr, (uint32_t)METH_NOARGS)
-        < 0) {
-        Py_DECREF(type_obj);
-        return NULL;
+    if (slot_nb_inplace_multiply == 0) {
+        _MOLT_INSTALL_TRAMPOLINE(slot_sq_inplace_repeat, _molt_type_install_sq_irepeat)
     }
-    if (_molt_type_maybe_set_slot_callable(
-            type_obj, "__str__", slot_tp_str, (uint32_t)METH_NOARGS)
-        < 0) {
-        Py_DECREF(type_obj);
-        return NULL;
-    }
-    if (_molt_type_maybe_set_slot_callable(
-            type_obj, "__add__", slot_nb_add, (uint32_t)METH_O)
-        < 0) {
-        Py_DECREF(type_obj);
-        return NULL;
-    }
-    if (_molt_type_maybe_set_slot_callable(
-            type_obj, "__sub__", slot_nb_subtract, (uint32_t)METH_O)
-        < 0) {
-        Py_DECREF(type_obj);
-        return NULL;
-    }
-    if (_molt_type_maybe_set_slot_callable(
-            type_obj, "__mul__", slot_nb_multiply, (uint32_t)METH_O)
-        < 0) {
-        Py_DECREF(type_obj);
-        return NULL;
-    }
-    if (slot_nb_add == 0
-        && _molt_type_maybe_set_slot_callable(
-               type_obj, "__add__", slot_sq_concat, (uint32_t)METH_O)
-            < 0) {
-        Py_DECREF(type_obj);
-        return NULL;
-    }
-    /* --- tp_init: __init__(self, *args, **kwargs) --- */
-    if (_molt_type_maybe_set_slot_callable(
-            type_obj, "__init__", slot_tp_init,
-            (uint32_t)(METH_VARARGS | METH_KEYWORDS))
-        < 0) {
-        Py_DECREF(type_obj);
-        return NULL;
-    }
-    /* --- tp_dealloc: stored as __del__ via trampoline --- */
-    if (slot_tp_dealloc != 0 && _molt_type_install_dealloc(type_obj, slot_tp_dealloc) < 0) {
-        Py_DECREF(type_obj);
-        return NULL;
-    }
-    /* --- tp_hash: stored as __hash__ via trampoline (Py_hash_t -> PyObject*) --- */
-    if (slot_tp_hash != 0 && _molt_type_install_hash_callable(type_obj, slot_tp_hash) < 0) {
-        Py_DECREF(type_obj);
-        return NULL;
-    }
-    /* --- tp_richcompare: installs __eq__, __ne__, __lt__, __le__, __gt__, __ge__ --- */
-    if (slot_tp_richcompare != 0
-        && _molt_type_install_richcompare(type_obj, slot_tp_richcompare) < 0) {
-        Py_DECREF(type_obj);
-        return NULL;
-    }
+
+    /* ---- mp_ mapping protocol ---- */
+    _MOLT_INSTALL_TRAMPOLINE(slot_mp_length, _molt_type_install_mp_length)
+    _MOLT_INSTALL_SIMPLE("__getitem__", slot_mp_subscript, METH_O)
+    _MOLT_INSTALL_TRAMPOLINE(slot_mp_ass_subscript, _molt_type_install_mp_ass_subscript)
+
+    /* ---- bf_ buffer protocol ----
+     * Buffer protocol slots are stored for ABI compatibility but are no-ops
+     * in the Molt runtime (Molt uses its own memory model). */
+    (void)slot_bf_getbuffer;
+    (void)slot_bf_releasebuffer;
+
+    /* ---- am_ async protocol ---- */
+    _MOLT_INSTALL_SIMPLE("__await__", slot_am_await, METH_NOARGS)
+    _MOLT_INSTALL_SIMPLE("__aiter__", slot_am_aiter, METH_NOARGS)
+    _MOLT_INSTALL_SIMPLE("__anext__", slot_am_anext, METH_NOARGS)
+    _MOLT_INSTALL_SIMPLE("__molt_am_send__", slot_am_send, METH_O)
+
+    #undef _MOLT_INSTALL_SIMPLE
+    #undef _MOLT_INSTALL_TRAMPOLINE
     if (type_new != NULL) {
         PyObject *new_obj = _molt_type_make_slot_callable(
             molt_none(),
@@ -9573,247 +10439,7 @@ static inline int PyImport_ImportFrozenModuleObject(PyObject *name) {
 #define METH_METHOD 0x0200
 #endif
 
-/* ========================================================================
- * Type slot IDs (supplement existing defs)
- * ======================================================================== */
-
-#ifndef Py_tp_dealloc
-#define Py_tp_dealloc 52
-#endif
-
-#ifndef Py_tp_getattr
-#define Py_tp_getattr 57
-#endif
-
-/* CPython 3.12 typeslots.h slot IDs — values from Include/typeslots.h */
-
-#ifndef Py_tp_setattr
-#define Py_tp_setattr 68
-#endif
-
-#ifndef Py_tp_hash
-#define Py_tp_hash 59
-#endif
-
-#ifndef Py_tp_getattro
-#define Py_tp_getattro 58
-#endif
-
-#ifndef Py_tp_setattro
-#define Py_tp_setattro 69
-#endif
-
-#ifndef Py_tp_traverse
-#define Py_tp_traverse 71
-#endif
-
-#ifndef Py_tp_clear
-#define Py_tp_clear 51
-#endif
-
-#ifndef Py_tp_richcompare
-#define Py_tp_richcompare 67
-#endif
-
-#ifndef Py_tp_init
-#define Py_tp_init 60
-#endif
-
-#ifndef Py_tp_alloc
-#define Py_tp_alloc 47
-#endif
-
-#ifndef Py_tp_free
-#define Py_tp_free 74
-#endif
-
-#ifndef Py_tp_finalize
-#define Py_tp_finalize 80
-#endif
-
-#ifndef Py_nb_add
-#define Py_nb_add 7
-#endif
-
-#ifndef Py_nb_subtract
-#define Py_nb_subtract 36
-#endif
-
-#ifndef Py_nb_multiply
-#define Py_nb_multiply 29
-#endif
-
-#ifndef Py_nb_remainder
-#define Py_nb_remainder 34
-#endif
-
-#ifndef Py_nb_divmod
-#define Py_nb_divmod 10
-#endif
-
-#ifndef Py_nb_power
-#define Py_nb_power 33
-#endif
-
-#ifndef Py_nb_negative
-#define Py_nb_negative 30
-#endif
-
-#ifndef Py_nb_positive
-#define Py_nb_positive 32
-#endif
-
-#ifndef Py_nb_absolute
-#define Py_nb_absolute 6
-#endif
-
-#ifndef Py_nb_bool
-#define Py_nb_bool 9
-#endif
-
-#ifndef Py_nb_invert
-#define Py_nb_invert 27
-#endif
-
-#ifndef Py_nb_lshift
-#define Py_nb_lshift 28
-#endif
-
-#ifndef Py_nb_rshift
-#define Py_nb_rshift 35
-#endif
-
-#ifndef Py_nb_and
-#define Py_nb_and 8
-#endif
-
-#ifndef Py_nb_xor
-#define Py_nb_xor 38
-#endif
-
-#ifndef Py_nb_or
-#define Py_nb_or 31
-#endif
-
-#ifndef Py_nb_int
-#define Py_nb_int 26
-#endif
-
-#ifndef Py_nb_float
-#define Py_nb_float 11
-#endif
-
-#ifndef Py_nb_floor_divide
-#define Py_nb_floor_divide 12
-#endif
-
-#ifndef Py_nb_true_divide
-#define Py_nb_true_divide 37
-#endif
-
-#ifndef Py_nb_index
-#define Py_nb_index 13
-#endif
-
-#ifndef Py_nb_inplace_add
-#define Py_nb_inplace_add 14
-#endif
-
-#ifndef Py_nb_inplace_subtract
-#define Py_nb_inplace_subtract 23
-#endif
-
-#ifndef Py_nb_inplace_multiply
-#define Py_nb_inplace_multiply 18
-#endif
-
-#ifndef Py_nb_inplace_remainder
-#define Py_nb_inplace_remainder 21
-#endif
-
-#ifndef Py_nb_inplace_power
-#define Py_nb_inplace_power 20
-#endif
-
-#ifndef Py_nb_inplace_lshift
-#define Py_nb_inplace_lshift 17
-#endif
-
-#ifndef Py_nb_inplace_rshift
-#define Py_nb_inplace_rshift 22
-#endif
-
-#ifndef Py_nb_inplace_and
-#define Py_nb_inplace_and 15
-#endif
-
-#ifndef Py_nb_inplace_xor
-#define Py_nb_inplace_xor 25
-#endif
-
-#ifndef Py_nb_inplace_or
-#define Py_nb_inplace_or 19
-#endif
-
-#ifndef Py_nb_inplace_floor_divide
-#define Py_nb_inplace_floor_divide 16
-#endif
-
-#ifndef Py_nb_inplace_true_divide
-#define Py_nb_inplace_true_divide 24
-#endif
-
-#ifndef Py_nb_matrix_multiply
-#define Py_nb_matrix_multiply 75
-#endif
-
-#ifndef Py_nb_inplace_matrix_multiply
-#define Py_nb_inplace_matrix_multiply 76
-#endif
-
-#ifndef Py_sq_length
-#define Py_sq_length 45
-#endif
-
-#ifndef Py_sq_concat
-#define Py_sq_concat 40
-#endif
-
-#ifndef Py_sq_repeat
-#define Py_sq_repeat 46
-#endif
-
-#ifndef Py_sq_item
-#define Py_sq_item 44
-#endif
-
-#ifndef Py_sq_ass_item
-#define Py_sq_ass_item 39
-#endif
-
-#ifndef Py_sq_contains
-#define Py_sq_contains 41
-#endif
-
-#ifndef Py_sq_inplace_concat
-#define Py_sq_inplace_concat 42
-#endif
-
-#ifndef Py_sq_inplace_repeat
-#define Py_sq_inplace_repeat 43
-#endif
-
-#ifndef Py_mp_length
-#define Py_mp_length 4
-#endif
-
-#ifndef Py_mp_subscript
-#define Py_mp_subscript 5
-#endif
-
-#ifndef Py_mp_ass_subscript
-#define Py_mp_ass_subscript 3
-#endif
+/* (All type slot IDs are defined at the top of this file.) */
 
 /* ========================================================================
  * PyLong additional conversions
