@@ -18610,7 +18610,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     return res
                 return self._emit_tuple_from_iter(iterable)
             if func_id == "dict":
-                if len(node.args) > 1:
+                has_starargs = len(node.args) > 1 or any(
+                    isinstance(a, ast.Starred) for a in node.args
+                )
+                if has_starargs:
+                    # dict(*args, ...) must unpack star-args into positional
+                    # arguments at runtime, so route through CALL_BIND.
                     callee = self.visit(node.func)
                     if callee is None:
                         raise NotImplementedError("Unsupported call target")
@@ -18618,19 +18623,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res = MoltValue(self.next_var(), type_hint="dict")
                 if not node.args:
                     self.emit(MoltOp(kind="DICT_NEW", args=[], result=res))
-                elif isinstance(node.args[0], ast.Starred):
-                    # dict(*args, **kwargs) — create empty dict, then update
-                    self.emit(MoltOp(kind="DICT_NEW", args=[], result=res))
-                    starred_val = self.visit(node.args[0].value)
-                    if starred_val is None:
-                        raise NotImplementedError("Unsupported dict * input")
-                    self.emit(
-                        MoltOp(
-                            kind="DICT_UPDATE",
-                            args=[res, starred_val],
-                            result=MoltValue("none"),
-                        )
-                    )
                 else:
                     iterable = self.visit(node.args[0])
                     if iterable is None:
@@ -19914,49 +19906,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
             self._emit_raise_exit()
 
+        # For the no-star case without an indexable hint, we used to inline
+        # a materialization loop that appended elements to a LIST_NEW list.
+        # That caused heap corruption when the same list was reused across
+        # outer-loop iterations.  Now we always pass value_node directly to
+        # UNPACK_SEQUENCE and let the runtime handle validation + extraction.
         if star_index is None and not self._iterable_is_indexable(value_node):
-            expected_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(
-                MoltOp(kind="CONST", args=[len(target.elts)], result=expected_val)
-            )
-            seq_val = MoltValue(self.next_var(), type_hint="list")
-            self.emit(MoltOp(kind="LIST_NEW", args=[], result=seq_val))
-            iter_obj = self._emit_iter_new(value_node)
-            zero = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-            one = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[1], result=one))
-            for idx in range(len(target.elts)):
-                pair = self._emit_iter_next_checked(iter_obj)
-                done = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
-                self.emit(MoltOp(kind="IF", args=[done], result=MoltValue("none")))
-                got_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[idx], result=got_val))
-                emit_unpack_error(
-                    "not enough values to unpack (expected ",
-                    expected_val,
-                    got_val,
-                )
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                item = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
-                self.emit(
-                    MoltOp(
-                        kind="LIST_APPEND",
-                        args=[seq_val, item],
-                        result=MoltValue("none"),
-                    )
-                )
-            pair = self._emit_iter_next_checked(iter_obj)
-            done = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
-            self.emit(MoltOp(kind="IF", args=[done], result=MoltValue("none")))
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            emit_unpack_error(
-                "too many values to unpack (expected ", expected_val, None
-            )
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            pass  # seq_val stays None → handled below
         if star_index is not None:
             if seq_val is None:
                 seq_val = self._emit_list_from_iter(value_node)
@@ -19965,7 +19921,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="LEN", args=[seq_val], result=length))
         if star_index is None:
             if seq_val is None:
-                seq_val = self._emit_list_from_iter(value_node)
+                seq_val = value_node
             # Emit a single outlined unpack_sequence op that validates the
             # length and extracts all elements in one runtime call.
             item_vals: list[MoltValue] = []
@@ -26000,6 +25956,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.current_method_first_param = prev_first_param
         return func_val
 
+    # Modules whose API calls are lowered directly to IR ops by the frontend.
+    # ``import molt_buffer`` etc. are no-ops: the module object is never used
+    # at runtime because every ``molt_buffer.new()`` / ``molt_msgpack.parse()``
+    # call is already emitted as specialised IR (BUFFER2D_NEW, MSGPACK_PARSE, …).
+    _STUB_IMPORT_MODULES: frozenset[str] = frozenset(
+        {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
+    )
+
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             module_name = alias.name
@@ -26007,6 +25971,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 # Track the alias so @<alias>.overload is recognised.
                 if alias.asname:
                     self._typing_import_aliases.add(alias.asname)
+                continue
+            if module_name in self._STUB_IMPORT_MODULES:
                 continue
             bind_name = alias.asname or module_name.split(".")[0]
             module_val = self._emit_module_load_with_parents(module_name)
@@ -26047,6 +26013,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.future_annotations = True
             return None
         if module_name == "typing_extensions":
+            return None
+        if module_name in self._STUB_IMPORT_MODULES:
             return None
         module_val = self._emit_module_load_with_parents(module_name)
         for alias in node.names:

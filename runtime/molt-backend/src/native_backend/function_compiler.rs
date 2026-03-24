@@ -321,6 +321,53 @@ impl SimpleBackend {
             &[types::I64],
             &[],
         );
+
+        // Import the exception-pending function for check_exception.
+        // The inline flag load optimization is applied lazily at the
+        // first check_exception site to avoid Cranelift block ordering
+        // issues with the entry block.
+        let local_exc_pending_fast = import_func_ref(
+            &mut self.module,
+            &mut self.import_ids,
+            &mut builder,
+            &mut import_refs,
+            "molt_exception_pending_fast",
+            &[],
+            &[types::I64],
+        );
+        // Inline exception flag optimization: fetch the flag pointer once
+        // per block and inline a byte load at each check_exception site.
+        // Fetch the exception flag pointer once in the entry block via a
+        // Cranelift Variable (SSA propagates it automatically across all
+        // blocks, including stateful/poll functions).  The Variable-based
+        // approach uses declare_var/def_var/use_var which handles dominator
+        // propagation through Switch-generated intermediate blocks correctly.
+        let has_exc_handling = function_exception_label_id.is_some();
+        let inline_exc_disabled = env_setting("MOLT_BACKEND_INLINE_EXC_DISABLED")
+            .as_deref()
+            .map(parse_truthy_env)
+            .unwrap_or(false);
+        let exc_flag_ptr_var: Option<Variable> = if has_exc_handling && !inline_exc_disabled {
+            let var = builder.declare_var(types::I64);
+            Some(var)
+        } else {
+            None
+        };
+        let exc_flag_ptr_fn = if has_exc_handling && !inline_exc_disabled {
+            Some(import_func_ref(
+                &mut self.module,
+                &mut self.import_ids,
+                &mut builder,
+                &mut import_refs,
+                "molt_exception_pending_flag_ptr",
+                &[],
+                &[types::I64],
+            ))
+        } else {
+            None
+        };
+        // Per-block cache for the flag pointer Value (stateful functions only).
+        let mut exc_flag_ptr_block_cache: BTreeMap<Block, Value> = BTreeMap::new();
         let local_profile_struct = has_store.then(|| {
             import_func_ref(
                 &mut self.module,
@@ -413,6 +460,15 @@ impl SimpleBackend {
             let call = builder.ins().call(local_profile_enabled, &[]);
             builder.inst_results(call)[0]
         });
+
+        // Fetch the exception flag pointer in the entry block and store it
+        // in a Cranelift Variable.  The SSA system propagates the definition
+        // across all blocks automatically (including stateful/poll functions).
+        if let (Some(var), Some(fn_ref)) = (exc_flag_ptr_var, exc_flag_ptr_fn) {
+            let call = builder.ins().call(fn_ref, &[]);
+            let ptr_val = builder.inst_results(call)[0];
+            builder.def_var(var, ptr_val);
+        }
 
         builder.seal_block(entry_block);
         sealed_blocks.insert(entry_block);
@@ -643,7 +699,9 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op.fast_int.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("int")
+                    {
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -758,7 +816,9 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op.fast_int.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("int")
+                    {
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -1322,7 +1382,9 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op.fast_int.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("int")
+                    {
                         // Inline isub with overflow check + BigInt fallback.
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
@@ -1438,7 +1500,9 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op.fast_int.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("int")
+                    {
                         // Inline isub with overflow check + BigInt fallback.
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
@@ -1550,7 +1614,9 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op.fast_int.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("int")
+                    {
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -1664,7 +1730,9 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op.fast_int.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("int")
+                    {
                         let mut sig = self.module.make_signature();
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
@@ -3401,6 +3469,10 @@ impl SimpleBackend {
                         let val = var_get(&mut builder, &vars, name).unwrap_or_else(|| {
                             panic!("List elem not found in {} op {}", func_ir.name, op_idx)
                         });
+                        // Inc-ref each element so the builder owns its own
+                        // reference.  The tracking system will dec-ref the
+                        // caller's variable independently at its last use.
+                        emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj);
                         builder.ins().call(append_local, &[builder_ptr, *val]);
                     }
 
@@ -3539,20 +3611,102 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap();
                     let out_name = op.out.unwrap();
 
-                    if op.stack_eligible == Some(true) {
-                        // Stack-eligible fast path: keep element Values in
-                        // stack_tuples instead of calling runtime builder.
-                        let mut elems: Vec<Value> = Vec::with_capacity(args.len());
-                        for name in args {
+                    if op.stack_eligible == Some(true) && args.len() <= 4 {
+                        // Stack-eligible fast path: allocate tuple on the
+                        // Cranelift stack frame instead of calling the runtime
+                        // heap allocator.  Layout mirrors MoltHeader (40 bytes)
+                        // followed by n packed i64 element slots.
+                        //
+                        // The element Values are also kept in `stack_tuples`
+                        // so that `index` and `len` ops can resolve them at
+                        // compile time without any memory loads.
+                        let n = args.len();
+                        let slot_bytes = (HEADER_SIZE_BYTES as usize) + n * 8;
+                        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            slot_bytes as u32,
+                            3, // align_shift: 2^3 = 8-byte alignment
+                        ));
+                        // Data pointer = slot base + HEADER_SIZE_BYTES.
+                        // All header fields are addressed via negative offsets
+                        // from data_ptr, matching the runtime MoltHeader layout.
+                        let data_ptr = builder.ins().stack_addr(
+                            types::I64,
+                            slot,
+                            HEADER_SIZE_BYTES,
+                        );
+
+                        // Initialize header fields (offsets relative to data_ptr).
+                        // type_id (u32 at -40)
+                        let type_id_val = builder.ins().iconst(types::I32, 206); // TYPE_ID_TUPLE
+                        builder.ins().store(
+                            MemFlags::trusted(),
+                            type_id_val,
+                            data_ptr,
+                            -HEADER_SIZE_BYTES,
+                        );
+                        // ref_count (u32 at -36) — set to u32::MAX (immortal)
+                        // so the runtime never frees the stack memory.
+                        let rc_val = builder.ins().iconst(types::I32, u32::MAX as i64);
+                        builder.ins().store(
+                            MemFlags::trusted(),
+                            rc_val,
+                            data_ptr,
+                            HEADER_REFCOUNT_OFFSET,
+                        );
+                        // flags (u64 at -8) — set HEADER_FLAG_IMMORTAL
+                        let flags_val = builder
+                            .ins()
+                            .iconst(types::I64, HEADER_FLAG_IMMORTAL as i64);
+                        builder.ins().store(
+                            MemFlags::trusted(),
+                            flags_val,
+                            data_ptr,
+                            HEADER_FLAGS_OFFSET,
+                        );
+                        // poll_fn (u64 at -32) — zero (not a coroutine)
+                        let zero_i64 = builder.ins().iconst(types::I64, 0);
+                        builder.ins().store(
+                            MemFlags::trusted(),
+                            zero_i64,
+                            data_ptr,
+                            -32,
+                        );
+                        // state (i64 at -24) — zero
+                        builder.ins().store(
+                            MemFlags::trusted(),
+                            zero_i64,
+                            data_ptr,
+                            -24,
+                        );
+                        // size (u64 at -16) — total allocation size
+                        let size_val = builder.ins().iconst(types::I64, slot_bytes as i64);
+                        builder.ins().store(
+                            MemFlags::trusted(),
+                            size_val,
+                            data_ptr,
+                            -16,
+                        );
+
+                        // Store elements and collect Values for stack_tuples.
+                        let mut elems: Vec<Value> = Vec::with_capacity(n);
+                        for (i, name) in args.iter().enumerate() {
                             let val = var_get(&mut builder, &vars, name)
                                 .expect("Stack tuple elem not found");
                             elems.push(*val);
+                            builder.ins().store(
+                                MemFlags::trusted(),
+                                *val,
+                                data_ptr,
+                                (i * 8) as i32,
+                            );
                         }
                         stack_tuples.insert(out_name.to_string(), elems);
-                        // Define the variable as a sentinel (zero) — it should
-                        // never be used directly; index ops will intercept it.
-                        let sentinel = builder.ins().iconst(types::I64, 0);
-                        def_var_named(&mut builder, &vars, out_name, sentinel);
+
+                        // Box the data pointer as a NaN-boxed pointer so the
+                        // variable holds a usable value (not a zero sentinel).
+                        let boxed = box_ptr_value(&mut builder, data_ptr);
+                        def_var_named(&mut builder, &vars, out_name, boxed);
                     } else {
                         let size = builder.ins().iconst(types::I64, box_int(args.len() as i64));
 
@@ -3579,6 +3733,10 @@ impl SimpleBackend {
                             .declare_func_in_func(append_callee, builder.func);
                         for name in args {
                             let val = var_get(&mut builder, &vars, name).expect("Tuple elem not found");
+                            // Inc-ref each element so the builder owns its own
+                            // reference.  The tracking system will dec-ref the
+                            // caller's variable independently at its last use.
+                            emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj);
                             builder.ins().call(append_local, &[builder_ptr, *val]);
                         }
 
@@ -8087,27 +8245,22 @@ impl SimpleBackend {
                         func_sig.params.push(AbiParam::new(types::I64));
                     }
                     func_sig.returns.push(AbiParam::new(types::I64));
-                    let mut actual_builtin_name = func_name.clone();
-                    let func_id = match self
-                        .module
-                        .declare_function(&actual_builtin_name, Linkage::Import, &func_sig)
+                    // Reuse existing declaration if the name is already known
+                    // (avoids __ov disambiguation when sig differs).
+                    let actual_builtin_name = func_name.clone();
+                    let func_id = if let Some(cranelift_module::FuncOrDataId::Func(id)) =
+                        self.module.get_name(&actual_builtin_name)
                     {
-                        Ok(id) => id,
-                        Err(_) => {
-                            let mut suffix = 1u32;
-                            loop {
-                                actual_builtin_name =
-                                    format!("{}__ov{}", func_name, suffix);
-                                match self.module.declare_function(
-                                    &actual_builtin_name,
-                                    Linkage::Import,
-                                    &func_sig,
-                                ) {
-                                    Ok(id) => break id,
-                                    Err(_) => suffix += 1,
-                                }
-                            }
-                        }
+                        id
+                    } else {
+                        self.module
+                            .declare_function(&actual_builtin_name, Linkage::Import, &func_sig)
+                            .unwrap_or_else(|e| {
+                                panic!(
+                                    "builtin_func: failed to declare '{}': {:?}",
+                                    actual_builtin_name, e
+                                )
+                            })
                     };
                     self.declared_func_arities.insert(func_name.clone(), arity as usize);
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
@@ -8170,29 +8323,25 @@ impl SimpleBackend {
                     }
                     func_sig.returns.push(AbiParam::new(types::I64));
                     self.declared_func_arities.insert(func_name.clone(), func_sig.params.len());
-                    // If a prior declaration (e.g. a builtin_func import) already
-                    // registered this symbol with a different signature, disambiguate
-                    // by appending a suffix rather than panicking.
-                    let mut actual_name = func_name.clone();
-                    let func_id = match self
-                        .module
-                        .declare_function(&actual_name, Linkage::Export, &func_sig)
+                    // func_new references an existing function. If the symbol is
+                    // already declared in this module (same or different sig),
+                    // reuse the existing FuncId. This avoids __ov disambiguation
+                    // that creates broken stub symbols.
+                    let actual_name = func_name.clone();
+                    let func_id = if let Some(cranelift_module::FuncOrDataId::Func(id)) =
+                        self.module.get_name(&actual_name)
                     {
-                        Ok(id) => id,
-                        Err(_) => {
-                            let mut suffix = 1u32;
-                            loop {
-                                actual_name = format!("{}__ov{}", func_name, suffix);
-                                match self.module.declare_function(
-                                    &actual_name,
-                                    Linkage::Export,
-                                    &func_sig,
-                                ) {
-                                    Ok(id) => break id,
-                                    Err(_) => suffix += 1,
-                                }
-                            }
-                        }
+                        id
+                    } else {
+                        // Not yet declared — use Import linkage (resolved at link time).
+                        self.module
+                            .declare_function(&actual_name, Linkage::Import, &func_sig)
+                            .unwrap_or_else(|e| {
+                                panic!(
+                                    "func_new: failed to declare '{}': {:?}",
+                                    actual_name, e
+                                )
+                            })
                     };
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
@@ -8581,6 +8730,10 @@ impl SimpleBackend {
                                         )
                                     });
                                 builder.ins().call(local_dec_ref_obj, &[*val]);
+                                // Remove from entry_vars so exception-handler
+                                // and function-return cleanup paths do not
+                                // dec-ref this already-freed variable again.
+                                entry_vars.remove(&name);
                             }
                         }
                         if let Some(names) = block_tracked_ptr.get_mut(&block) {
@@ -8594,6 +8747,7 @@ impl SimpleBackend {
                                         )
                                     });
                                 builder.ins().call(local_dec_ref, &[*val]);
+                                entry_vars.remove(&name);
                             }
                         }
                     }
@@ -8868,6 +9022,27 @@ impl SimpleBackend {
                     for val in &arg_cleanup {
                         builder.ins().call(local_dec_ref_obj, &[*val]);
                     }
+                    // Remove cleaned-up names from entry-tracked lists so the
+                    // function-return cleanup does not dec-ref them a second
+                    // time (the `call` op changes blocks, so the normal
+                    // entry-tracked drain no longer runs for these variables).
+                    if !arg_cleanup_names.is_empty() {
+                        tracked_obj_vars.retain(|n| !arg_cleanup_names.contains(n));
+                        tracked_vars.retain(|n| !arg_cleanup_names.contains(n));
+                        for name in &arg_cleanup_names {
+                            entry_vars.remove(name);
+                        }
+                    }
+                    for name in &origin_obj_cleanup {
+                        if !arg_cleanup_names.contains(name) {
+                            tracked_obj_vars.retain(|n| n != name);
+                            entry_vars.remove(name);
+                        }
+                    }
+                    for name in &origin_ptr_cleanup {
+                        tracked_vars.retain(|n| n != name);
+                        entry_vars.remove(name);
+                    }
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "call_internal" => {
@@ -8944,12 +9119,24 @@ impl SimpleBackend {
                     }
                 }
                 "dec_ref" | "release" => {
-                    if !rc_skip_inc.contains(&op_idx) {
-                        let args_names =
-                            op.args.as_ref().expect("dec_ref/release args missing");
-                        let src_name = args_names
-                            .first()
-                            .expect("dec_ref/release requires one source arg");
+                    let args_names =
+                        op.args.as_ref().expect("dec_ref/release args missing");
+                    let src_name = args_names
+                        .first()
+                        .expect("dec_ref/release requires one source arg");
+                    // Skip dec_ref for stack-allocated tuples — their memory
+                    // is freed automatically when the stack frame unwinds.
+                    let is_stack_tuple = stack_tuples.contains_key(src_name.as_str());
+                    if is_stack_tuple || rc_skip_inc.contains(&op_idx) {
+                        // No runtime call needed.  Still define the output
+                        // variable so downstream SSA reads succeed.
+                        if let Some(out_name) = op.out.as_ref()
+                            && out_name != "none"
+                        {
+                            let none_bits = builder.ins().iconst(types::I64, box_none());
+                            def_var_named(&mut builder, &vars, out_name.clone(), none_bits);
+                        }
+                    } else {
                         let src = *var_get(&mut builder, &vars, src_name)
                             .expect("dec_ref/release source not found");
                         builder.ins().call(local_dec_ref_obj, &[src]);
@@ -8959,13 +9146,6 @@ impl SimpleBackend {
                             let none_bits = builder.ins().iconst(types::I64, box_none());
                             def_var_named(&mut builder, &vars, out_name.clone(), none_bits);
                         }
-                    } else if let Some(out_name) = op.out.as_ref()
-                        && out_name != "none"
-                    {
-                        // RC coalesced: still define the output as none so the
-                        // SSA variable is available for later reads.
-                        let none_bits = builder.ins().iconst(types::I64, box_none());
-                        def_var_named(&mut builder, &vars, out_name.clone(), none_bits);
                     }
                 }
                 "box" | "unbox" | "cast" | "widen" => {
@@ -10585,7 +10765,9 @@ impl SimpleBackend {
                 }
                 "check_exception" => {
                     let target_id = op.value.unwrap();
-                    let target_block = state_blocks[&target_id];
+                    let target_block = *state_blocks.get(&target_id).unwrap_or_else(|| {
+                        panic!("check_exception: no state_block for target_id={target_id} in function '{}'. state_blocks keys: {:?}", func_ir.name, state_blocks.keys().collect::<Vec<_>>());
+                    });
                     let mut carry_obj: Vec<String> = Vec::new();
                     let mut carry_ptr: Vec<String> = Vec::new();
                     // `check_exception` terminates the current block (brif) to either jump to the
@@ -10624,10 +10806,13 @@ impl SimpleBackend {
                                 )
                             });
                             builder.ins().call(local_dec_ref_obj, &[*val]);
-                            // Remove from entry_vars so the exception handler's
-                            // cleanup path does not dec-ref this variable again
-                            // (it was already freed here).
+                            // Remove from entry_vars AND from exception handler
+                            // block_tracked_obj so neither path double-frees.
                             entry_vars.remove(&name);
+                            // Also scrub from ALL exception handler blocks
+                            for tracked_list in block_tracked_obj.values_mut() {
+                                tracked_list.retain(|n| n != &name);
+                            }
                         }
                     }
                     if !carry_ptr.is_empty() {
@@ -10641,26 +10826,74 @@ impl SimpleBackend {
                                 )
                             });
                             builder.ins().call(local_dec_ref, &[*val]);
-                            // Remove from entry_vars so the exception handler's
-                            // cleanup path does not dec-ref this variable again
-                            // (it was already freed here).
+                            // Remove from entry_vars AND from exception handler
+                            // block_tracked_obj so neither path double-frees.
                             entry_vars.remove(&name);
+                            // Also scrub from ALL exception handler blocks
+                            for tracked_list in block_tracked_obj.values_mut() {
+                                tracked_list.retain(|n| n != &name);
+                            }
                         }
                     }
-                    let mut sig = self.module.make_signature();
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_exception_pending_fast", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[]);
-                    let pending = builder.inst_results(call)[0];
-                    let cond = builder.ins().icmp_imm(IntCC::NotEqual, pending, 0);
+                    // Inline exception check: load the pending flag byte directly
+                    // instead of calling molt_exception_pending_fast() for each
+                    // check_exception site.  The flag pointer is fetched once per
+                    // block and the byte load is ~1 cycle vs ~15-40 cycles for the
+                    // function call.
+                    //
+                    // The flag pointer lives in a Cranelift Variable (SSA
+                    // propagates it across all blocks automatically, including
+                    // stateful/poll functions).  The per-block cache is a
+                    // fallback for any edge case where the Variable is unavailable.
                     let fallthrough = builder.create_block();
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough);
-                    brif_block(&mut builder, cond, target_block, &[], fallthrough, &[]);
+                    // Resolve the flag pointer for this check_exception site.
+                    let flag_ptr_val: Option<Value> = if let Some(var) = exc_flag_ptr_var {
+                        // Non-stateful path: use the Cranelift Variable.
+                        Some(builder.use_var(var))
+                    } else if let Some(fn_ref) = exc_flag_ptr_fn {
+                        // Stateful path: fetch pointer once per block, cache it.
+                        let current_block = builder.current_block().unwrap();
+                        let ptr = if let Some(&cached) = exc_flag_ptr_block_cache.get(&current_block) {
+                            cached
+                        } else {
+                            let call = builder.ins().call(fn_ref, &[]);
+                            let ptr = builder.inst_results(call)[0];
+                            exc_flag_ptr_block_cache.insert(current_block, ptr);
+                            ptr
+                        };
+                        Some(ptr)
+                    } else {
+                        None
+                    };
+                    if let Some(flag_ptr) = flag_ptr_val {
+                        // Fast path: inline byte load from flag address
+                        let pending_byte = builder.ins().load(
+                            types::I8,
+                            MemFlags::trusted(),
+                            flag_ptr,
+                            0,
+                        );
+                        let pending_i64 = builder.ins().uextend(types::I64, pending_byte);
+                        let is_pending = builder.ins().icmp_imm(IntCC::NotEqual, pending_i64, 0);
+                        // On positive read, validate with full function before branching
+                        let validate_block = builder.create_block();
+                        reachable_blocks.insert(validate_block);
+                        brif_block(&mut builder, is_pending, validate_block, &[], fallthrough, &[]);
+                        switch_to_block_tracking(&mut builder, validate_block, &mut is_block_filled);
+                        builder.seal_block(validate_block);
+                        let call = builder.ins().call(local_exc_pending_fast, &[]);
+                        let confirmed = builder.inst_results(call)[0];
+                        let cond2 = builder.ins().icmp_imm(IntCC::NotEqual, confirmed, 0);
+                        brif_block(&mut builder, cond2, target_block, &[], fallthrough, &[]);
+                    } else {
+                        // Fallback: direct function call (no flag pointer available)
+                        let call = builder.ins().call(local_exc_pending_fast, &[]);
+                        let pending = builder.inst_results(call)[0];
+                        let cond = builder.ins().icmp_imm(IntCC::NotEqual, pending, 0);
+                        brif_block(&mut builder, cond, target_block, &[], fallthrough, &[]);
+                    }
                     switch_to_block_tracking(&mut builder, fallthrough, &mut is_block_filled);
                     // Propagate remaining tracked objects to BOTH the fallthrough
                     // and the exception handler. Without this, the exception handler
@@ -11445,8 +11678,13 @@ impl SimpleBackend {
                     reachable_blocks.insert(frame.after_block);
                     jump_block(&mut builder, frame.after_block, &[]);
                     switch_to_block_tracking(&mut builder, frame.body_block, &mut is_block_filled);
-                    propagate_tracked_to_branches(&mut block_tracked_obj, &[frame.body_block], carry_obj_lb);
-                    propagate_tracked_to_branches(&mut block_tracked_ptr, &[frame.body_block], carry_ptr_lb);
+                    // Surviving tracked objects must reach BOTH the loop body
+                    // (for the next iteration) AND the after-block (for the
+                    // break path).  Missing the after_block propagation caused
+                    // leaked refcounts on objects like ITER_NEXT cached tuples,
+                    // leading to heap-reuse corruption in bench_str_join.
+                    propagate_tracked_to_branches(&mut block_tracked_obj, &[frame.body_block, frame.after_block], carry_obj_lb);
+                    propagate_tracked_to_branches(&mut block_tracked_ptr, &[frame.body_block, frame.after_block], carry_ptr_lb);
                     }
                 }
                 "loop_break_if_false" => {
@@ -11507,8 +11745,8 @@ impl SimpleBackend {
                     reachable_blocks.insert(frame.after_block);
                     jump_block(&mut builder, frame.after_block, &[]);
                     switch_to_block_tracking(&mut builder, frame.body_block, &mut is_block_filled);
-                    propagate_tracked_to_branches(&mut block_tracked_obj, &[frame.body_block], carry_obj_lb);
-                    propagate_tracked_to_branches(&mut block_tracked_ptr, &[frame.body_block], carry_ptr_lb);
+                    propagate_tracked_to_branches(&mut block_tracked_obj, &[frame.body_block, frame.after_block], carry_obj_lb);
+                    propagate_tracked_to_branches(&mut block_tracked_ptr, &[frame.body_block, frame.after_block], carry_ptr_lb);
                     }
                 }
                 "loop_break" => {
@@ -12649,12 +12887,12 @@ impl SimpleBackend {
                             }
                         }
                         for name in &tracked_vars {
-                            if let Some(val) = entry_vars.get(name) {
+                            if let Some(val) = var_get(&mut builder, &vars, name) {
                                 builder.ins().call(local_dec_ref, &[*val]);
                             }
                         }
                         for name in &tracked_obj_vars {
-                            if let Some(val) = entry_vars.get(name) {
+                            if let Some(val) = var_get(&mut builder, &vars, name) {
                                 builder.ins().call(local_dec_ref_obj, &[*val]);
                             }
                         }
@@ -12706,12 +12944,12 @@ impl SimpleBackend {
                     tracked_vars.retain(|v| v != var_name);
                     tracked_obj_vars.retain(|v| v != var_name);
                     for name in &tracked_vars {
-                        if let Some(val) = entry_vars.get(name) {
+                        if let Some(val) = var_get(&mut builder, &vars, name) {
                             builder.ins().call(local_dec_ref, &[*val]);
                         }
                     }
                     for name in &tracked_obj_vars {
-                        if let Some(val) = entry_vars.get(name) {
+                        if let Some(val) = var_get(&mut builder, &vars, name) {
                             builder.ins().call(local_dec_ref_obj, &[*val]);
                         }
                     }
@@ -12962,9 +13200,13 @@ impl SimpleBackend {
             {
                 if block == entry_block && loop_depth == 0 {
                     if output_is_ptr {
-                        tracked_vars.push(name.clone());
+                        if !tracked_vars.contains(&name.to_string()) {
+                            tracked_vars.push(name.clone());
+                        }
                     } else {
-                        tracked_obj_vars.push(name.clone());
+                        if !tracked_obj_vars.contains(&name.to_string()) {
+                            tracked_obj_vars.push(name.clone());
+                        }
                     }
                     if let Some(val) = var_get(&mut builder, &vars, name) {
                         entry_vars.insert(name.clone(), *val);
@@ -13093,12 +13335,22 @@ impl SimpleBackend {
                 panic!("declare_function failed for {}: {}", func_ir.name, e);
             }
         };
-        // Clone the function *before* handing it to the optimizer — if an
-        // optimization pass panics (e.g. Cranelift remove_constant_phis
-        // assertion at cranelift-codegen 0.128) the in-place IR may be
-        // partially mutated and unusable.  The clone lets us retry with a
-        // lower optimization level on the pristine IR.
-        let func_snapshot = self.ctx.func.clone();
+        // When opt_level=none there are no optimization passes that can
+        // panic, so we skip the expensive clone + catch_unwind path.  This
+        // saves a full IR deep-copy per function (~10-20% of dev compile time
+        // for large modules).
+        let skip_resilience = crate::env_setting("MOLT_BACKEND_OPT_LEVEL")
+            .as_deref() == Some("none");
+        let func_snapshot = if skip_resilience {
+            None
+        } else {
+            // Clone the function *before* handing it to the optimizer — if an
+            // optimization pass panics (e.g. Cranelift remove_constant_phis
+            // assertion at cranelift-codegen 0.128) the in-place IR may be
+            // partially mutated and unusable.  The clone lets us retry with a
+            // lower optimization level on the pristine IR.
+            Some(self.ctx.func.clone())
+        };
         let define_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.module
                 .define_function(id, &mut self.ctx)
@@ -13156,6 +13408,11 @@ impl SimpleBackend {
                 // which skips the problematic pass.  This is the same
                 // resilience pattern used by LLVM and GCC when an
                 // optimizer pass faults — fall back, warn, keep going.
+                let Some(func_snapshot) = func_snapshot else {
+                    // skip_resilience was true — should not happen at
+                    // opt_level=none, but propagate the panic if it does.
+                    std::panic::resume_unwind(payload);
+                };
                 eprintln!(
                     "WARNING: Cranelift optimizer panic in function `{}`; \
                      retrying at opt_level=none",

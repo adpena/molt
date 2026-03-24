@@ -2398,94 +2398,132 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
 ];
 
 pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
+    // Try per-module resolvers. Each is #[inline(never)] + #[cold]
+    // so --gc-sections can strip unreferenced module resolvers.
+    if let Some(v) = resolve_core_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_archive_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_argparse_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_array_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_ast_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_asyncio_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_atexit_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_base64_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_binascii_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_bisect_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_cancel_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_chan_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_cmath_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_codecs_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_codeop_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_collections_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_colorsys_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_compile_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_compileall_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_compression_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_concurrent_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_configparser_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_contextlib_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_copy_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_copyreg_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_crypto_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_csv_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_ctypes_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_dataclasses_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_datetime_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_dbm_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_decimal_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_difflib_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_email_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_enum_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_errno_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_fcntl_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_fnmatch_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_fractions_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_functools_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_gc_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_glob_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_graphlib_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_heapq_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_html_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_http_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_imghdr_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_importlib_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_inspect_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_io_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_ipaddress_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_itertools_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_json_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_keyword_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_linecache_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_locale_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_lock_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_logging_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_math_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_memoryview_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_multiprocessing_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_opcode_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_operator_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_os_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_pathlib_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_pkgutil_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_platform_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_pprint_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_punycode_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_py_compile_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_queue_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_quopri_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_random_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_re_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_reprlib_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_runpy_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_select_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_serialization_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_shlex_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_shutil_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_signal_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_site_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_socket_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_socketserver_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_sqlite_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_ssl_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_stat_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_statistics_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_string_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_stringprep_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_struct_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_subprocess_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_symtable_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_sys_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_tempfile_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_textwrap_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_this_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_threading_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_time_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_tk_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_tokenize_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_tomllib_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_traceback_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_typing_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_unicodedata_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_urllib_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_uu_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_uuid_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_warnings_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_weakref_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_websocket_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_wsgiref_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_xmlrpc_symbol(symbol) { return Some(v); }
+    if let Some(v) = resolve_zoneinfo_symbol(symbol) { return Some(v); }
+    None
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_core_symbol(symbol: &str) -> Option<u64> {
     match symbol {
         "molt_capabilities_trusted" => Some(crate::molt_capabilities_trusted as *const () as usize as u64),
         "molt_capabilities_has" => Some(crate::molt_capabilities_has as *const () as usize as u64),
         "molt_capabilities_require" => Some(crate::molt_capabilities_require as *const () as usize as u64),
-        "molt_tk_available" => Some(crate::molt_tk_available as *const () as usize as u64),
-        "molt_tk_app_new" => Some(crate::molt_tk_app_new as *const () as usize as u64),
-        "molt_tk_quit" => Some(crate::molt_tk_quit as *const () as usize as u64),
-        "molt_tk_mainloop" => Some(crate::molt_tk_mainloop as *const () as usize as u64),
-        "molt_tk_do_one_event" => Some(crate::molt_tk_do_one_event as *const () as usize as u64),
-        "molt_tk_after" => Some(crate::molt_tk_after as *const () as usize as u64),
-        "molt_tk_after_idle" => Some(crate::molt_tk_after_idle as *const () as usize as u64),
-        "molt_tk_after_cancel" => Some(crate::molt_tk_after_cancel as *const () as usize as u64),
-        "molt_tk_after_info" => Some(crate::molt_tk_after_info as *const () as usize as u64),
-        "molt_tk_call" => Some(crate::molt_tk_call as *const () as usize as u64),
-        "molt_tk_trace_add" => Some(crate::molt_tk_trace_add as *const () as usize as u64),
-        "molt_tk_trace_remove" => Some(crate::molt_tk_trace_remove as *const () as usize as u64),
-        "molt_tk_trace_info" => Some(crate::molt_tk_trace_info as *const () as usize as u64),
-        "molt_tk_trace_clear" => Some(crate::molt_tk_trace_clear as *const () as usize as u64),
-        "molt_tk_tkwait_variable" => Some(crate::molt_tk_tkwait_variable as *const () as usize as u64),
-        "molt_tk_tkwait_window" => Some(crate::molt_tk_tkwait_window as *const () as usize as u64),
-        "molt_tk_tkwait_visibility" => Some(crate::molt_tk_tkwait_visibility as *const () as usize as u64),
-        "molt_tk_bind_callback_register" => Some(crate::molt_tk_bind_callback_register as *const () as usize as u64),
-        "molt_tk_bind_callback_unregister" => Some(crate::molt_tk_bind_callback_unregister as *const () as usize as u64),
-        "molt_tk_widget_bind_callback_register" => Some(crate::molt_tk_widget_bind_callback_register as *const () as usize as u64),
-        "molt_tk_widget_bind_callback_unregister" => Some(crate::molt_tk_widget_bind_callback_unregister as *const () as usize as u64),
-        "molt_tk_text_tag_bind_callback_register" => Some(crate::molt_tk_text_tag_bind_callback_register as *const () as usize as u64),
-        "molt_tk_text_tag_bind_callback_unregister" => Some(crate::molt_tk_text_tag_bind_callback_unregister as *const () as usize as u64),
-        "molt_tk_treeview_tag_bind_callback_register" => Some(crate::molt_tk_treeview_tag_bind_callback_register as *const () as usize as u64),
-        "molt_tk_treeview_tag_bind_callback_unregister" => Some(crate::molt_tk_treeview_tag_bind_callback_unregister as *const () as usize as u64),
-        "molt_tk_bind_command" => Some(crate::molt_tk_bind_command as *const () as usize as u64),
-        "molt_tk_unbind_command" => Some(crate::molt_tk_unbind_command as *const () as usize as u64),
-        "molt_tk_filehandler_create" => Some(crate::molt_tk_filehandler_create as *const () as usize as u64),
-        "molt_tk_filehandler_delete" => Some(crate::molt_tk_filehandler_delete as *const () as usize as u64),
-        "molt_tk_destroy_widget" => Some(crate::molt_tk_destroy_widget as *const () as usize as u64),
-        "molt_tk_last_error" => Some(crate::molt_tk_last_error as *const () as usize as u64),
-        "molt_tk_getboolean" => Some(crate::molt_tk_getboolean as *const () as usize as u64),
-        "molt_tk_getdouble" => Some(crate::molt_tk_getdouble as *const () as usize as u64),
-        "molt_tk_splitlist" => Some(crate::molt_tk_splitlist as *const () as usize as u64),
-        "molt_tk_event_subst_parse" => Some(crate::molt_tk_event_subst_parse as *const () as usize as u64),
-        "molt_tk_bind_script_remove_command" => Some(crate::molt_tk_bind_script_remove_command as *const () as usize as u64),
-        "molt_tk_errorinfo_append" => Some(crate::molt_tk_errorinfo_append as *const () as usize as u64),
-        "molt_tk_dialog_show" => Some(crate::molt_tk_dialog_show as *const () as usize as u64),
-        "molt_tk_commondialog_show" => Some(crate::molt_tk_commondialog_show as *const () as usize as u64),
-        "molt_tk_messagebox_show" => Some(crate::molt_tk_messagebox_show as *const () as usize as u64),
-        "molt_tk_filedialog_show" => Some(crate::molt_tk_filedialog_show as *const () as usize as u64),
-        "molt_tk_simpledialog_query" => Some(crate::molt_tk_simpledialog_query as *const () as usize as u64),
-        "molt_atexit_register" => Some(crate::molt_atexit_register as *const () as usize as u64),
-        "molt_atexit_unregister" => Some(crate::molt_atexit_unregister as *const () as usize as u64),
-        "molt_atexit_clear" => Some(crate::molt_atexit_clear as *const () as usize as u64),
-        "molt_atexit_run_exitfuncs" => Some(crate::molt_atexit_run_exitfuncs as *const () as usize as u64),
-        "molt_atexit_ncallbacks" => Some(crate::molt_atexit_ncallbacks as *const () as usize as u64),
-        "molt_weakref_register" => Some(crate::molt_weakref_register as *const () as usize as u64),
-        "molt_weakref_get" => Some(crate::molt_weakref_get as *const () as usize as u64),
-        "molt_weakref_callback" => Some(crate::molt_weakref_callback as *const () as usize as u64),
-        "molt_weakref_peek" => Some(crate::molt_weakref_peek as *const () as usize as u64),
-        "molt_weakref_drop" => Some(crate::molt_weakref_drop as *const () as usize as u64),
-        "molt_weakref_collect" => Some(crate::molt_weakref_collect as *const () as usize as u64),
-        "molt_weakref_find_nocallback" => Some(crate::molt_weakref_find_nocallback as *const () as usize as u64),
-        "molt_weakref_refs" => Some(crate::molt_weakref_refs as *const () as usize as u64),
-        "molt_weakref_count" => Some(crate::molt_weakref_count as *const () as usize as u64),
-        "molt_weakref_finalize_track" => Some(crate::molt_weakref_finalize_track as *const () as usize as u64),
-        "molt_weakref_finalize_untrack" => Some(crate::molt_weakref_finalize_untrack as *const () as usize as u64),
-        "molt_weakkeydict_set" => Some(crate::molt_weakkeydict_set as *const () as usize as u64),
-        "molt_weakkeydict_get" => Some(crate::molt_weakkeydict_get as *const () as usize as u64),
-        "molt_weakkeydict_del" => Some(crate::molt_weakkeydict_del as *const () as usize as u64),
-        "molt_weakkeydict_contains" => Some(crate::molt_weakkeydict_contains as *const () as usize as u64),
-        "molt_weakkeydict_len" => Some(crate::molt_weakkeydict_len as *const () as usize as u64),
-        "molt_weakkeydict_items" => Some(crate::molt_weakkeydict_items as *const () as usize as u64),
-        "molt_weakkeydict_keyrefs" => Some(crate::molt_weakkeydict_keyrefs as *const () as usize as u64),
-        "molt_weakkeydict_popitem" => Some(crate::molt_weakkeydict_popitem as *const () as usize as u64),
-        "molt_weakkeydict_clear" => Some(crate::molt_weakkeydict_clear as *const () as usize as u64),
-        "molt_weakvaluedict_set" => Some(crate::molt_weakvaluedict_set as *const () as usize as u64),
-        "molt_weakvaluedict_get" => Some(crate::molt_weakvaluedict_get as *const () as usize as u64),
-        "molt_weakvaluedict_del" => Some(crate::molt_weakvaluedict_del as *const () as usize as u64),
-        "molt_weakvaluedict_contains" => Some(crate::molt_weakvaluedict_contains as *const () as usize as u64),
-        "molt_weakvaluedict_len" => Some(crate::molt_weakvaluedict_len as *const () as usize as u64),
-        "molt_weakvaluedict_items" => Some(crate::molt_weakvaluedict_items as *const () as usize as u64),
-        "molt_weakvaluedict_valuerefs" => Some(crate::molt_weakvaluedict_valuerefs as *const () as usize as u64),
-        "molt_weakvaluedict_popitem" => Some(crate::molt_weakvaluedict_popitem as *const () as usize as u64),
-        "molt_weakvaluedict_clear" => Some(crate::molt_weakvaluedict_clear as *const () as usize as u64),
-        "molt_weakset_add" => Some(crate::molt_weakset_add as *const () as usize as u64),
-        "molt_weakset_discard" => Some(crate::molt_weakset_discard as *const () as usize as u64),
-        "molt_weakset_remove" => Some(crate::molt_weakset_remove as *const () as usize as u64),
-        "molt_weakset_pop" => Some(crate::molt_weakset_pop as *const () as usize as u64),
-        "molt_weakset_contains" => Some(crate::molt_weakset_contains as *const () as usize as u64),
-        "molt_weakset_len" => Some(crate::molt_weakset_len as *const () as usize as u64),
-        "molt_weakset_items" => Some(crate::molt_weakset_items as *const () as usize as u64),
-        "molt_weakset_clear" => Some(crate::molt_weakset_clear as *const () as usize as u64),
         "molt_abc_bootstrap" => Some(crate::molt_abc_bootstrap as *const () as usize as u64),
         "molt_collections_abc_runtime_types" => Some(crate::molt_collections_abc_runtime_types as *const () as usize as u64),
         "molt_abc_get_cache_token" => Some(crate::molt_abc_get_cache_token as *const () as usize as u64),
@@ -2498,190 +2536,1101 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_abc_reset_caches" => Some(crate::molt_abc_reset_caches as *const () as usize as u64),
         "molt_abc_update_abstractmethods" => Some(crate::molt_abc_update_abstractmethods as *const () as usize as u64),
         "molt_abc_abstractmethod_check" => Some(crate::molt_abc_abstractmethod_check as *const () as usize as u64),
+        "molt_pow" => Some(crate::molt_pow as *const () as usize as u64),
+        "molt_pow_mod" => Some(crate::molt_pow_mod as *const () as usize as u64),
+        "molt_context_null" => Some(crate::molt_context_null as *const () as usize as u64),
+        "molt_block_on" => Some(crate::molt_block_on as *const () as usize as u64),
+        "molt_pending" => Some(crate::molt_pending as *const () as usize as u64),
+        "molt_spawn" => Some(crate::molt_spawn as *const () as usize as u64),
+        "molt_getcwd" => Some(crate::molt_getcwd as *const () as usize as u64),
+        "molt_getpid" => Some(crate::molt_getpid as *const () as usize as u64),
+        "molt_env_get" => Some(crate::molt_env_get as *const () as usize as u64),
+        "molt_env_snapshot" => Some(crate::molt_env_snapshot as *const () as usize as u64),
+        "molt_env_set" => Some(crate::molt_env_set as *const () as usize as u64),
+        "molt_env_unset" => Some(crate::molt_env_unset as *const () as usize as u64),
+        "molt_env_len" => Some(crate::molt_env_len as *const () as usize as u64),
+        "molt_env_contains" => Some(crate::molt_env_contains as *const () as usize as u64),
+        "molt_env_popitem" => Some(crate::molt_env_popitem as *const () as usize as u64),
+        "molt_env_clear" => Some(crate::molt_env_clear as *const () as usize as u64),
+        "molt_env_putenv" => Some(crate::molt_env_putenv as *const () as usize as u64),
+        "molt_env_unsetenv" => Some(crate::molt_env_unsetenv as *const () as usize as u64),
+        "molt_gettext_gettext" => Some(crate::molt_gettext_gettext as *const () as usize as u64),
+        "molt_gettext_ngettext" => Some(crate::molt_gettext_ngettext as *const () as usize as u64),
+        "molt_glob" => Some(crate::molt_glob as *const () as usize as u64),
+        "molt_io_class" => Some(crate::molt_io_class as *const () as usize as u64),
+        "molt_str_repeat" => Some(crate::molt_str_repeat as *const () as usize as u64),
+        "molt_task_register_token_owned" => Some(crate::molt_task_register_token_owned as *const () as usize as u64),
+        "molt_trace_runtime_ready" => Some(crate::molt_trace_runtime_ready as *const () as usize as u64),
+        "molt_import_smoke_runtime_ready" => Some(crate::molt_import_smoke_runtime_ready as *const () as usize as u64),
+        "molt_input_builtin" => Some(crate::molt_input_builtin as *const () as usize as u64),
+        "molt_globals_builtin" => Some(crate::molt_globals_builtin as *const () as usize as u64),
+        "molt_locals_builtin" => Some(crate::molt_locals_builtin as *const () as usize as u64),
+        "molt_code_new" => Some(crate::molt_code_new as *const () as usize as u64),
+        "molt_code_slots_init" => Some(crate::molt_code_slots_init as *const () as usize as u64),
+        "molt_code_slot_set" => Some(crate::molt_code_slot_set as *const () as usize as u64),
+        "molt_module_new" => Some(crate::molt_module_new as *const () as usize as u64),
+        "molt_module_import" => Some(crate::molt_module_import as *const () as usize as u64),
+        "molt_module_cache_set" => Some(crate::molt_module_cache_set as *const () as usize as u64),
+        "molt_exception_active" => Some(crate::molt_exception_active as *const () as usize as u64),
+        "molt_exception_last" => Some(crate::molt_exception_last as *const () as usize as u64),
+        "molt_exception_pending" => Some(crate::molt_exception_pending as *const () as usize as u64),
+        "molt_exception_clear" => Some(crate::molt_exception_clear as *const () as usize as u64),
+        "molt_getargv" => Some(crate::molt_getargv as *const () as usize as u64),
+        "molt_getframe" => Some(crate::molt_getframe as *const () as usize as u64),
+        "molt_getrecursionlimit" => Some(crate::molt_getrecursionlimit as *const () as usize as u64),
+        "molt_setrecursionlimit" => Some(crate::molt_setrecursionlimit as *const () as usize as u64),
+        "molt_gen_locals" => Some(crate::molt_gen_locals as *const () as usize as u64),
+        "molt_function_set_builtin" => Some(crate::molt_function_set_builtin as *const () as usize as u64),
+        "molt_builtin_class_lookup" => Some(crate::molt_builtin_class_lookup as *const () as usize as u64),
+        "molt_class_new" => Some(crate::molt_class_new as *const () as usize as u64),
+        "molt_class_set_base" => Some(crate::molt_class_set_base as *const () as usize as u64),
+        "molt_class_apply_set_name" => Some(crate::molt_class_apply_set_name as *const () as usize as u64),
+        "molt_classmethod_new" => Some(crate::molt_classmethod_new as *const () as usize as u64),
+        "molt_staticmethod_new" => Some(crate::molt_staticmethod_new as *const () as usize as u64),
+        "molt_property_new" => Some(crate::molt_property_new as *const () as usize as u64),
+        "molt_generic_alias_new" => Some(crate::molt_generic_alias_new as *const () as usize as u64),
+        "molt_sys_set_version_info" => Some(crate::molt_sys_set_version_info as *const () as usize as u64),
+        "molt_is_string_obj" => Some(crate::molt_is_string_obj as *const () as usize as u64),
+        "molt_trace_enter_slot" => Some(crate::molt_trace_enter_slot as *const () as usize as u64),
+        "molt_trace_exit" => Some(crate::molt_trace_exit as *const () as usize as u64),
+        "molt_trace_set_line" => Some(crate::molt_trace_set_line as *const () as usize as u64),
+        "molt_types_bootstrap" => Some(crate::molt_types_bootstrap as *const () as usize as u64),
+        "molt_stdlib_probe" => Some(crate::molt_stdlib_probe as *const () as usize as u64),
+        "molt_fcntl" => Some(crate::molt_fcntl as *const () as usize as u64),
+        "molt_type_of_borrowed" => Some(crate::molt_type_of_borrowed as *const () as usize as u64),
+        "molt_dict_getitem_borrowed" => Some(crate::molt_dict_getitem_borrowed as *const () as usize as u64),
+        "molt_list_getitem_borrowed" => Some(crate::molt_list_getitem_borrowed as *const () as usize as u64),
+        "molt_tuple_getitem_borrowed" => Some(crate::molt_tuple_getitem_borrowed as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_archive_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_archive")]
+        "molt_zipfile_crc32" => Some(crate::molt_zipfile_crc32 as *const () as usize as u64),
+        #[cfg(feature = "stdlib_archive")]
+        "molt_zipfile_parse_central_directory" => Some(crate::molt_zipfile_parse_central_directory as *const () as usize as u64),
+        #[cfg(feature = "stdlib_archive")]
+        "molt_zipfile_build_zip64_extra" => Some(crate::molt_zipfile_build_zip64_extra as *const () as usize as u64),
+        #[cfg(feature = "stdlib_archive")]
+        "molt_zipfile_path_implied_dirs" => Some(crate::molt_zipfile_path_implied_dirs as *const () as usize as u64),
+        #[cfg(feature = "stdlib_archive")]
+        "molt_zipfile_path_resolve_dir" => Some(crate::molt_zipfile_path_resolve_dir as *const () as usize as u64),
+        #[cfg(feature = "stdlib_archive")]
+        "molt_zipfile_path_is_child" => Some(crate::molt_zipfile_path_is_child as *const () as usize as u64),
+        #[cfg(feature = "stdlib_archive")]
+        "molt_zipfile_path_translate_glob" => Some(crate::molt_zipfile_path_translate_glob as *const () as usize as u64),
+        #[cfg(feature = "stdlib_archive")]
+        "molt_zipfile_normalize_member_path" => Some(crate::molt_zipfile_normalize_member_path as *const () as usize as u64),
+        "molt_zipapp_runtime_ready" => Some(crate::molt_zipapp_runtime_ready as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_argparse_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_argparse_parse" => Some(crate::molt_argparse_parse as *const () as usize as u64),
+        "molt_argparse_add_argument" => Some(crate::molt_argparse_add_argument as *const () as usize as u64),
+        "molt_argparse_add_mutually_exclusive" => Some(crate::molt_argparse_add_mutually_exclusive as *const () as usize as u64),
+        "molt_argparse_add_parser" => Some(crate::molt_argparse_add_parser as *const () as usize as u64),
+        "molt_argparse_add_subparsers" => Some(crate::molt_argparse_add_subparsers as *const () as usize as u64),
+        "molt_argparse_error" => Some(crate::molt_argparse_error as *const () as usize as u64),
+        "molt_argparse_format_help" => Some(crate::molt_argparse_format_help as *const () as usize as u64),
+        "molt_argparse_format_usage" => Some(crate::molt_argparse_format_usage as *const () as usize as u64),
+        "molt_argparse_group_add_argument" => Some(crate::molt_argparse_group_add_argument as *const () as usize as u64),
+        "molt_argparse_parse_args" => Some(crate::molt_argparse_parse_args as *const () as usize as u64),
+        "molt_argparse_parser_drop" => Some(crate::molt_argparse_parser_drop as *const () as usize as u64),
+        "molt_argparse_parser_new" => Some(crate::molt_argparse_parser_new as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_array_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_array_append" => Some(crate::molt_array_append as *const () as usize as u64),
+        "molt_array_buffer_info" => Some(crate::molt_array_buffer_info as *const () as usize as u64),
+        "molt_array_count" => Some(crate::molt_array_count as *const () as usize as u64),
+        "molt_array_drop" => Some(crate::molt_array_drop as *const () as usize as u64),
+        "molt_array_extend" => Some(crate::molt_array_extend as *const () as usize as u64),
+        "molt_array_from_list" => Some(crate::molt_array_from_list as *const () as usize as u64),
+        "molt_array_frombytes" => Some(crate::molt_array_frombytes as *const () as usize as u64),
+        "molt_array_getitem" => Some(crate::molt_array_getitem as *const () as usize as u64),
+        "molt_array_index" => Some(crate::molt_array_index as *const () as usize as u64),
+        "molt_array_insert" => Some(crate::molt_array_insert as *const () as usize as u64),
+        "molt_array_itemsize" => Some(crate::molt_array_itemsize as *const () as usize as u64),
+        "molt_array_len" => Some(crate::molt_array_len as *const () as usize as u64),
+        "molt_array_new" => Some(crate::molt_array_new as *const () as usize as u64),
+        "molt_array_pop" => Some(crate::molt_array_pop as *const () as usize as u64),
+        "molt_array_remove" => Some(crate::molt_array_remove as *const () as usize as u64),
+        "molt_array_reverse" => Some(crate::molt_array_reverse as *const () as usize as u64),
+        "molt_array_setitem" => Some(crate::molt_array_setitem as *const () as usize as u64),
+        "molt_array_tobytes" => Some(crate::molt_array_tobytes as *const () as usize as u64),
+        "molt_array_tolist" => Some(crate::molt_array_tolist as *const () as usize as u64),
+        "molt_array_typecode" => Some(crate::molt_array_typecode as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_ast_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_ast")]
+        "molt_ast_parse" => Some(crate::molt_ast_parse as *const () as usize as u64),
+        #[cfg(feature = "stdlib_ast")]
+        "molt_ast_walk" => Some(crate::molt_ast_walk as *const () as usize as u64),
+        #[cfg(feature = "stdlib_ast")]
+        "molt_ast_get_docstring" => Some(crate::molt_ast_get_docstring as *const () as usize as u64),
+        #[cfg(feature = "stdlib_ast")]
+        "molt_ast_iter_fields" => Some(crate::molt_ast_iter_fields as *const () as usize as u64),
+        #[cfg(feature = "stdlib_ast")]
+        "molt_ast_iter_child_nodes" => Some(crate::molt_ast_iter_child_nodes as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_asyncio_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
         "molt_protocol_check" => Some(crate::molt_protocol_check as *const () as usize as u64),
         "molt_protocol_get_structural_members" => Some(crate::molt_protocol_get_structural_members as *const () as usize as u64),
         "molt_protocol_register" => Some(crate::molt_protocol_register as *const () as usize as u64),
-        "molt_argparse_parse" => Some(crate::molt_argparse_parse as *const () as usize as u64),
-        "molt_enum_init_member" => Some(crate::molt_enum_init_member as *const () as usize as u64),
-        "molt_re_literal_matches" => Some(crate::molt_re_literal_matches as *const () as usize as u64),
-        "molt_re_literal_advance" => Some(crate::molt_re_literal_advance as *const () as usize as u64),
-        "molt_re_any_advance" => Some(crate::molt_re_any_advance as *const () as usize as u64),
-        "molt_re_char_in_range" => Some(crate::molt_re_char_in_range as *const () as usize as u64),
-        "molt_re_category_matches" => Some(crate::molt_re_category_matches as *const () as usize as u64),
-        "molt_re_anchor_matches" => Some(crate::molt_re_anchor_matches as *const () as usize as u64),
-        "molt_re_group_is_set" => Some(crate::molt_re_group_is_set as *const () as usize as u64),
-        "molt_re_backref_advance" => Some(crate::molt_re_backref_advance as *const () as usize as u64),
-        "molt_re_backref_group_advance" => Some(crate::molt_re_backref_group_advance as *const () as usize as u64),
-        "molt_re_apply_scoped_flags" => Some(crate::molt_re_apply_scoped_flags as *const () as usize as u64),
-        "molt_re_group_capture" => Some(crate::molt_re_group_capture as *const () as usize as u64),
-        "molt_re_charclass_matches" => Some(crate::molt_re_charclass_matches as *const () as usize as u64),
-        "molt_re_charclass_advance" => Some(crate::molt_re_charclass_advance as *const () as usize as u64),
-        "molt_re_group_values" => Some(crate::molt_re_group_values as *const () as usize as u64),
-        "molt_re_expand_replacement" => Some(crate::molt_re_expand_replacement as *const () as usize as u64),
-        "molt_shlex_quote" => Some(crate::molt_shlex_quote as *const () as usize as u64),
-        "molt_shlex_split" => Some(crate::molt_shlex_split as *const () as usize as u64),
-        "molt_shlex_split_ex" => Some(crate::molt_shlex_split_ex as *const () as usize as u64),
-        "molt_shlex_join" => Some(crate::molt_shlex_join as *const () as usize as u64),
+        "molt_asyncgen_shutdown" => Some(crate::molt_asyncgen_shutdown as *const () as usize as u64),
+        "molt_async_sleep_new" => Some(crate::molt_async_sleep_new as *const () as usize as u64),
+        "molt_future_cancel" => Some(crate::molt_future_cancel as *const () as usize as u64),
+        "molt_future_cancel_msg" => Some(crate::molt_future_cancel_msg as *const () as usize as u64),
+        "molt_future_cancel_clear" => Some(crate::molt_future_cancel_clear as *const () as usize as u64),
+        "molt_promise_new" => Some(crate::molt_promise_new as *const () as usize as u64),
+        "molt_promise_set_result" => Some(crate::molt_promise_set_result as *const () as usize as u64),
+        "molt_promise_set_exception" => Some(crate::molt_promise_set_exception as *const () as usize as u64),
+        "molt_event_new" => Some(crate::molt_event_new as *const () as usize as u64),
+        "molt_event_set" => Some(crate::molt_event_set as *const () as usize as u64),
+        "molt_event_clear" => Some(crate::molt_event_clear as *const () as usize as u64),
+        "molt_event_is_set" => Some(crate::molt_event_is_set as *const () as usize as u64),
+        "molt_event_wait" => Some(crate::molt_event_wait as *const () as usize as u64),
+        "molt_event_drop" => Some(crate::molt_event_drop as *const () as usize as u64),
+        "molt_asyncgen_hooks_get" => Some(crate::molt_asyncgen_hooks_get as *const () as usize as u64),
+        "molt_asyncgen_hooks_set" => Some(crate::molt_asyncgen_hooks_set as *const () as usize as u64),
+        "molt_asyncgen_locals" => Some(crate::molt_asyncgen_locals as *const () as usize as u64),
+        "molt_future_features" => Some(crate::molt_future_features as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_wait_for_new" => Some(crate::molt_asyncio_wait_for_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_wait_new" => Some(crate::molt_asyncio_wait_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_gather_new" => Some(crate::molt_asyncio_gather_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_cancel_pending" => Some(crate::molt_asyncio_cancel_pending as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_ready_batch_run" => Some(crate::molt_asyncio_ready_batch_run as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_ready_queue_drain" => Some(crate::molt_asyncio_ready_queue_drain as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_waiters_notify" => Some(crate::molt_asyncio_waiters_notify as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_waiters_notify_exception" => Some(crate::molt_asyncio_waiters_notify_exception as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_waiters_remove" => Some(crate::molt_asyncio_waiters_remove as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_barrier_release" => Some(crate::molt_asyncio_barrier_release as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_condition_wait_for_step" => Some(crate::molt_asyncio_condition_wait_for_step as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_future_transfer" => Some(crate::molt_asyncio_future_transfer as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_event_waiters_cleanup" => Some(crate::molt_asyncio_event_waiters_cleanup as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_task_registry_set" => Some(crate::molt_asyncio_task_registry_set as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_task_registry_get" => Some(crate::molt_asyncio_task_registry_get as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_task_registry_contains" => Some(crate::molt_asyncio_task_registry_contains as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_task_registry_current" => Some(crate::molt_asyncio_task_registry_current as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_task_registry_current_for_loop" => Some(crate::molt_asyncio_task_registry_current_for_loop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_task_registry_pop" => Some(crate::molt_asyncio_task_registry_pop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_task_registry_move" => Some(crate::molt_asyncio_task_registry_move as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_task_registry_values" => Some(crate::molt_asyncio_task_registry_values as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_task_registry_live" => Some(crate::molt_asyncio_task_registry_live as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_task_registry_live_set" => Some(crate::molt_asyncio_task_registry_live_set as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_event_waiters_register" => Some(crate::molt_asyncio_event_waiters_register as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_event_waiters_unregister" => Some(crate::molt_asyncio_event_waiters_unregister as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_event_waiters_cleanup_token" => Some(crate::molt_asyncio_event_waiters_cleanup_token as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_child_watcher_add" => Some(crate::molt_asyncio_child_watcher_add as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_child_watcher_remove" => Some(crate::molt_asyncio_child_watcher_remove as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_child_watcher_clear" => Some(crate::molt_asyncio_child_watcher_clear as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_child_watcher_pop" => Some(crate::molt_asyncio_child_watcher_pop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_require_ssl_transport_support" => Some(crate::molt_asyncio_require_ssl_transport_support as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_ssl_transport_orchestrate" => Some(crate::molt_asyncio_ssl_transport_orchestrate as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_tls_client_connect_new" => Some(crate::molt_asyncio_tls_client_connect_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_tls_client_from_fd_new" => Some(crate::molt_asyncio_tls_client_from_fd_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_tls_server_payload" => Some(crate::molt_asyncio_tls_server_payload as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_tls_server_from_fd_new" => Some(crate::molt_asyncio_tls_server_from_fd_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_to_thread" => Some(crate::molt_asyncio_to_thread as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_require_unix_socket_support" => Some(crate::molt_asyncio_require_unix_socket_support as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_require_child_watcher_support" => Some(crate::molt_asyncio_require_child_watcher_support as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_running_loop_get" => Some(crate::molt_asyncio_running_loop_get as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_running_loop_set" => Some(crate::molt_asyncio_running_loop_set as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_event_loop_get" => Some(crate::molt_asyncio_event_loop_get as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_event_loop_get_current" => Some(crate::molt_asyncio_event_loop_get_current as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_event_loop_set" => Some(crate::molt_asyncio_event_loop_set as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_event_loop_policy_get" => Some(crate::molt_asyncio_event_loop_policy_get as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_event_loop_policy_set" => Some(crate::molt_asyncio_event_loop_policy_set as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_enter_task" => Some(crate::molt_asyncio_enter_task as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_leave_task" => Some(crate::molt_asyncio_leave_task as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_register_task" => Some(crate::molt_asyncio_register_task as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_unregister_task" => Some(crate::molt_asyncio_unregister_task as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_taskgroup_on_task_done" => Some(crate::molt_asyncio_taskgroup_on_task_done as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_taskgroup_request_cancel" => Some(crate::molt_asyncio_taskgroup_request_cancel as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_tasks_add_done_callback" => Some(crate::molt_asyncio_tasks_add_done_callback as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_task_cancel_apply" => Some(crate::molt_asyncio_task_cancel_apply as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_task_uncancel_apply" => Some(crate::molt_asyncio_task_uncancel_apply as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_future_invoke_callbacks" => Some(crate::molt_asyncio_future_invoke_callbacks as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_event_set_waiters" => Some(crate::molt_asyncio_event_set_waiters as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_loop_enqueue_handle" => Some(crate::molt_asyncio_loop_enqueue_handle as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_timer_handle_new" => Some(crate::molt_asyncio_timer_handle_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_timer_schedule" => Some(crate::molt_asyncio_timer_schedule as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_timer_handle_cancel" => Some(crate::molt_asyncio_timer_handle_cancel as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_fd_watcher_new" => Some(crate::molt_asyncio_fd_watcher_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_fd_watcher_register" => Some(crate::molt_asyncio_fd_watcher_register as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_fd_watcher_unregister" => Some(crate::molt_asyncio_fd_watcher_unregister as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_subprocess_stdio_normalize" => Some(crate::molt_asyncio_subprocess_stdio_normalize as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_server_accept_loop_new" => Some(crate::molt_asyncio_server_accept_loop_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_ready_runner_new" => Some(crate::molt_asyncio_ready_runner_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_stream_reader_read_new" => Some(crate::molt_asyncio_stream_reader_read_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_stream_reader_readline_new" => Some(crate::molt_asyncio_stream_reader_readline_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_stream_send_all_new" => Some(crate::molt_asyncio_stream_send_all_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_stream_buffer_snapshot" => Some(crate::molt_asyncio_stream_buffer_snapshot as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_stream_buffer_consume" => Some(crate::molt_asyncio_stream_buffer_consume as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_socket_reader_read_new" => Some(crate::molt_asyncio_socket_reader_read_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_socket_reader_readline_new" => Some(crate::molt_asyncio_socket_reader_readline_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_sock_recv_new" => Some(crate::molt_asyncio_sock_recv_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_sock_connect_new" => Some(crate::molt_asyncio_sock_connect_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_sock_accept_new" => Some(crate::molt_asyncio_sock_accept_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_sock_recv_into_new" => Some(crate::molt_asyncio_sock_recv_into_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_sock_sendall_new" => Some(crate::molt_asyncio_sock_sendall_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_sock_recvfrom_new" => Some(crate::molt_asyncio_sock_recvfrom_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_sock_recvfrom_into_new" => Some(crate::molt_asyncio_sock_recvfrom_into_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_sock_sendto_new" => Some(crate::molt_asyncio_sock_sendto_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_new" => Some(crate::molt_event_loop_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_call_soon" => Some(crate::molt_event_loop_call_soon as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_call_later" => Some(crate::molt_event_loop_call_later as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_call_at" => Some(crate::molt_event_loop_call_at as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_cancel_timer" => Some(crate::molt_event_loop_cancel_timer as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_add_reader" => Some(crate::molt_event_loop_add_reader as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_remove_reader" => Some(crate::molt_event_loop_remove_reader as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_add_writer" => Some(crate::molt_event_loop_add_writer as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_remove_writer" => Some(crate::molt_event_loop_remove_writer as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_run_once" => Some(crate::molt_event_loop_run_once as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_time" => Some(crate::molt_event_loop_time as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_next_deadline_delay" => Some(crate::molt_event_loop_next_deadline_delay as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_has_pending" => Some(crate::molt_event_loop_has_pending as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_ready_count" => Some(crate::molt_event_loop_ready_count as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_start" => Some(crate::molt_event_loop_start as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_stop" => Some(crate::molt_event_loop_stop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_is_running" => Some(crate::molt_event_loop_is_running as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_is_closed" => Some(crate::molt_event_loop_is_closed as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_close" => Some(crate::molt_event_loop_close as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_drop" => Some(crate::molt_event_loop_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_set_debug" => Some(crate::molt_event_loop_set_debug as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_get_debug" => Some(crate::molt_event_loop_get_debug as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_set_exception_handler" => Some(crate::molt_event_loop_set_exception_handler as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_get_exception_handler" => Some(crate::molt_event_loop_get_exception_handler as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_set_task_factory" => Some(crate::molt_event_loop_set_task_factory as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_get_task_factory" => Some(crate::molt_event_loop_get_task_factory as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_notify_reader_ready" => Some(crate::molt_event_loop_notify_reader_ready as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_notify_writer_ready" => Some(crate::molt_event_loop_notify_writer_ready as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_connect_read_pipe" => Some(crate::molt_event_loop_connect_read_pipe as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_event_loop_connect_write_pipe" => Some(crate::molt_event_loop_connect_write_pipe as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_pipe_transport_new" => Some(crate::molt_pipe_transport_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_pipe_transport_get_fd" => Some(crate::molt_pipe_transport_get_fd as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_pipe_transport_is_closing" => Some(crate::molt_pipe_transport_is_closing as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_pipe_transport_close" => Some(crate::molt_pipe_transport_close as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_pipe_transport_pause_reading" => Some(crate::molt_pipe_transport_pause_reading as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_pipe_transport_resume_reading" => Some(crate::molt_pipe_transport_resume_reading as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_pipe_transport_write" => Some(crate::molt_pipe_transport_write as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_pipe_transport_get_write_buffer_size" => Some(crate::molt_pipe_transport_get_write_buffer_size as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_pipe_transport_drop" => Some(crate::molt_pipe_transport_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_future_new" => Some(crate::molt_asyncio_future_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_future_result" => Some(crate::molt_asyncio_future_result as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_future_exception" => Some(crate::molt_asyncio_future_exception as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_future_set_result_fast" => Some(crate::molt_asyncio_future_set_result_fast as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_future_set_exception_fast" => Some(crate::molt_asyncio_future_set_exception_fast as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_future_cancel_fast" => Some(crate::molt_asyncio_future_cancel_fast as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_future_done" => Some(crate::molt_asyncio_future_done as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_future_cancelled" => Some(crate::molt_asyncio_future_cancelled as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_future_add_done_callback_fast" => Some(crate::molt_asyncio_future_add_done_callback_fast as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_future_drop" => Some(crate::molt_asyncio_future_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_event_new" => Some(crate::molt_asyncio_event_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_event_is_set" => Some(crate::molt_asyncio_event_is_set as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_event_set_fast" => Some(crate::molt_asyncio_event_set_fast as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_event_clear" => Some(crate::molt_asyncio_event_clear as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_event_drop" => Some(crate::molt_asyncio_event_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_lock_new" => Some(crate::molt_asyncio_lock_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_lock_locked" => Some(crate::molt_asyncio_lock_locked as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_lock_acquire_fast" => Some(crate::molt_asyncio_lock_acquire_fast as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_lock_release_fast" => Some(crate::molt_asyncio_lock_release_fast as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_lock_drop" => Some(crate::molt_asyncio_lock_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_semaphore_new" => Some(crate::molt_asyncio_semaphore_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_semaphore_acquire_fast" => Some(crate::molt_asyncio_semaphore_acquire_fast as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_semaphore_release_fast" => Some(crate::molt_asyncio_semaphore_release_fast as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_semaphore_value" => Some(crate::molt_asyncio_semaphore_value as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_semaphore_drop" => Some(crate::molt_asyncio_semaphore_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_new" => Some(crate::molt_asyncio_queue_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_put_nowait" => Some(crate::molt_asyncio_queue_put_nowait as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_get_nowait" => Some(crate::molt_asyncio_queue_get_nowait as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_qsize" => Some(crate::molt_asyncio_queue_qsize as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_maxsize" => Some(crate::molt_asyncio_queue_maxsize as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_empty" => Some(crate::molt_asyncio_queue_empty as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_full" => Some(crate::molt_asyncio_queue_full as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_task_done" => Some(crate::molt_asyncio_queue_task_done as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_unfinished_tasks" => Some(crate::molt_asyncio_queue_unfinished_tasks as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_putter_count" => Some(crate::molt_asyncio_queue_putter_count as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_getter_count" => Some(crate::molt_asyncio_queue_getter_count as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_add_putter" => Some(crate::molt_asyncio_queue_add_putter as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_add_getter" => Some(crate::molt_asyncio_queue_add_getter as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_notify_putters" => Some(crate::molt_asyncio_queue_notify_putters as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_notify_getters" => Some(crate::molt_asyncio_queue_notify_getters as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_shutdown" => Some(crate::molt_asyncio_queue_shutdown as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_is_shutdown" => Some(crate::molt_asyncio_queue_is_shutdown as *const () as usize as u64),
+        #[cfg(feature = "stdlib_asyncio")]
+        "molt_asyncio_queue_drop" => Some(crate::molt_asyncio_queue_drop as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_atexit_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_atexit_register" => Some(crate::molt_atexit_register as *const () as usize as u64),
+        "molt_atexit_unregister" => Some(crate::molt_atexit_unregister as *const () as usize as u64),
+        "molt_atexit_clear" => Some(crate::molt_atexit_clear as *const () as usize as u64),
+        "molt_atexit_run_exitfuncs" => Some(crate::molt_atexit_run_exitfuncs as *const () as usize as u64),
+        "molt_atexit_ncallbacks" => Some(crate::molt_atexit_ncallbacks as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_base64_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_base64_b64encode" => Some(crate::molt_base64_b64encode as *const () as usize as u64),
+        "molt_base64_b64decode" => Some(crate::molt_base64_b64decode as *const () as usize as u64),
+        "molt_base64_standard_b64encode" => Some(crate::molt_base64_standard_b64encode as *const () as usize as u64),
+        "molt_base64_standard_b64decode" => Some(crate::molt_base64_standard_b64decode as *const () as usize as u64),
+        "molt_base64_urlsafe_b64encode" => Some(crate::molt_base64_urlsafe_b64encode as *const () as usize as u64),
+        "molt_base64_urlsafe_b64decode" => Some(crate::molt_base64_urlsafe_b64decode as *const () as usize as u64),
+        "molt_base64_b32encode" => Some(crate::molt_base64_b32encode as *const () as usize as u64),
+        "molt_base64_b32decode" => Some(crate::molt_base64_b32decode as *const () as usize as u64),
+        "molt_base64_b32hexencode" => Some(crate::molt_base64_b32hexencode as *const () as usize as u64),
+        "molt_base64_b32hexdecode" => Some(crate::molt_base64_b32hexdecode as *const () as usize as u64),
+        "molt_base64_b16encode" => Some(crate::molt_base64_b16encode as *const () as usize as u64),
+        "molt_base64_b16decode" => Some(crate::molt_base64_b16decode as *const () as usize as u64),
+        "molt_base64_a85encode" => Some(crate::molt_base64_a85encode as *const () as usize as u64),
+        "molt_base64_a85decode" => Some(crate::molt_base64_a85decode as *const () as usize as u64),
+        "molt_base64_b85encode" => Some(crate::molt_base64_b85encode as *const () as usize as u64),
+        "molt_base64_b85decode" => Some(crate::molt_base64_b85decode as *const () as usize as u64),
+        "molt_base64_encodebytes" => Some(crate::molt_base64_encodebytes as *const () as usize as u64),
+        "molt_base64_decodebytes" => Some(crate::molt_base64_decodebytes as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_binascii_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_binascii_a2b_base64" => Some(crate::molt_binascii_a2b_base64 as *const () as usize as u64),
+        "molt_binascii_b2a_base64" => Some(crate::molt_binascii_b2a_base64 as *const () as usize as u64),
+        "molt_binascii_a2b_hex" => Some(crate::molt_binascii_a2b_hex as *const () as usize as u64),
+        "molt_binascii_b2a_hex" => Some(crate::molt_binascii_b2a_hex as *const () as usize as u64),
+        "molt_binascii_a2b_qp" => Some(crate::molt_binascii_a2b_qp as *const () as usize as u64),
+        "molt_binascii_b2a_qp" => Some(crate::molt_binascii_b2a_qp as *const () as usize as u64),
+        "molt_binascii_a2b_uu" => Some(crate::molt_binascii_a2b_uu as *const () as usize as u64),
+        "molt_binascii_b2a_uu" => Some(crate::molt_binascii_b2a_uu as *const () as usize as u64),
+        "molt_binascii_crc32" => Some(crate::molt_binascii_crc32 as *const () as usize as u64),
+        "molt_binascii_crc_hqx" => Some(crate::molt_binascii_crc_hqx as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_bisect_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_bisect_left" => Some(crate::molt_bisect_left as *const () as usize as u64),
+        "molt_bisect_right" => Some(crate::molt_bisect_right as *const () as usize as u64),
+        "molt_bisect_insort_left" => Some(crate::molt_bisect_insort_left as *const () as usize as u64),
+        "molt_bisect_insort_right" => Some(crate::molt_bisect_insort_right as *const () as usize as u64),
+        "molt_insort_left" => Some(crate::molt_insort_left as *const () as usize as u64),
+        "molt_insort_right" => Some(crate::molt_insort_right as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_cancel_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_cancel_token_new" => Some(crate::molt_cancel_token_new as *const () as usize as u64),
+        "molt_cancel_token_clone" => Some(crate::molt_cancel_token_clone as *const () as usize as u64),
+        "molt_cancel_token_drop" => Some(crate::molt_cancel_token_drop as *const () as usize as u64),
+        "molt_cancel_token_cancel" => Some(crate::molt_cancel_token_cancel as *const () as usize as u64),
+        "molt_cancel_token_is_cancelled" => Some(crate::molt_cancel_token_is_cancelled as *const () as usize as u64),
+        "molt_cancel_token_set_current" => Some(crate::molt_cancel_token_set_current as *const () as usize as u64),
+        "molt_cancel_token_get_current" => Some(crate::molt_cancel_token_get_current as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_chan_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_chan_new" => Some(crate::molt_chan_new as *const () as usize as u64),
+        "molt_chan_send" => Some(crate::molt_chan_send as *const () as usize as u64),
+        "molt_chan_recv" => Some(crate::molt_chan_recv as *const () as usize as u64),
+        "molt_chan_try_send" => Some(crate::molt_chan_try_send as *const () as usize as u64),
+        "molt_chan_try_recv" => Some(crate::molt_chan_try_recv as *const () as usize as u64),
+        "molt_chan_send_blocking" => Some(crate::molt_chan_send_blocking as *const () as usize as u64),
+        "molt_chan_recv_blocking" => Some(crate::molt_chan_recv_blocking as *const () as usize as u64),
+        "molt_chan_drop" => Some(crate::molt_chan_drop as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_cmath_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_cmath_acos" => Some(crate::molt_cmath_acos as *const () as usize as u64),
+        "molt_cmath_acosh" => Some(crate::molt_cmath_acosh as *const () as usize as u64),
+        "molt_cmath_asin" => Some(crate::molt_cmath_asin as *const () as usize as u64),
+        "molt_cmath_asinh" => Some(crate::molt_cmath_asinh as *const () as usize as u64),
+        "molt_cmath_atan" => Some(crate::molt_cmath_atan as *const () as usize as u64),
+        "molt_cmath_atanh" => Some(crate::molt_cmath_atanh as *const () as usize as u64),
+        "molt_cmath_constants" => Some(crate::molt_cmath_constants as *const () as usize as u64),
+        "molt_cmath_cos" => Some(crate::molt_cmath_cos as *const () as usize as u64),
+        "molt_cmath_cosh" => Some(crate::molt_cmath_cosh as *const () as usize as u64),
+        "molt_cmath_exp" => Some(crate::molt_cmath_exp as *const () as usize as u64),
+        "molt_cmath_isclose" => Some(crate::molt_cmath_isclose as *const () as usize as u64),
+        "molt_cmath_isfinite" => Some(crate::molt_cmath_isfinite as *const () as usize as u64),
+        "molt_cmath_isinf" => Some(crate::molt_cmath_isinf as *const () as usize as u64),
+        "molt_cmath_isnan" => Some(crate::molt_cmath_isnan as *const () as usize as u64),
+        "molt_cmath_log" => Some(crate::molt_cmath_log as *const () as usize as u64),
+        "molt_cmath_log10" => Some(crate::molt_cmath_log10 as *const () as usize as u64),
+        "molt_cmath_phase" => Some(crate::molt_cmath_phase as *const () as usize as u64),
+        "molt_cmath_polar" => Some(crate::molt_cmath_polar as *const () as usize as u64),
+        "molt_cmath_rect" => Some(crate::molt_cmath_rect as *const () as usize as u64),
+        "molt_cmath_sin" => Some(crate::molt_cmath_sin as *const () as usize as u64),
+        "molt_cmath_sinh" => Some(crate::molt_cmath_sinh as *const () as usize as u64),
+        "molt_cmath_sqrt" => Some(crate::molt_cmath_sqrt as *const () as usize as u64),
+        "molt_cmath_tan" => Some(crate::molt_cmath_tan as *const () as usize as u64),
+        "molt_cmath_tanh" => Some(crate::molt_cmath_tanh as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_codecs_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_codecs_decode" => Some(crate::molt_codecs_decode as *const () as usize as u64),
+        "molt_codecs_encode" => Some(crate::molt_codecs_encode as *const () as usize as u64),
+        "molt_codecs_lookup_name" => Some(crate::molt_codecs_lookup_name as *const () as usize as u64),
+        "molt_encodings_aliases_map" => Some(crate::molt_encodings_aliases_map as *const () as usize as u64),
+        "molt_codecs_bom_utf16_be" => Some(crate::molt_codecs_bom_utf16_be as *const () as usize as u64),
+        "molt_codecs_bom_utf16_le" => Some(crate::molt_codecs_bom_utf16_le as *const () as usize as u64),
+        "molt_codecs_bom_utf32_be" => Some(crate::molt_codecs_bom_utf32_be as *const () as usize as u64),
+        "molt_codecs_bom_utf32_le" => Some(crate::molt_codecs_bom_utf32_le as *const () as usize as u64),
+        "molt_codecs_bom_utf8" => Some(crate::molt_codecs_bom_utf8 as *const () as usize as u64),
+        "molt_codecs_incremental_decoder_decode" => Some(crate::molt_codecs_incremental_decoder_decode as *const () as usize as u64),
+        "molt_codecs_incremental_decoder_drop" => Some(crate::molt_codecs_incremental_decoder_drop as *const () as usize as u64),
+        "molt_codecs_incremental_decoder_new" => Some(crate::molt_codecs_incremental_decoder_new as *const () as usize as u64),
+        "molt_codecs_incremental_decoder_reset" => Some(crate::molt_codecs_incremental_decoder_reset as *const () as usize as u64),
+        "molt_codecs_incremental_encoder_drop" => Some(crate::molt_codecs_incremental_encoder_drop as *const () as usize as u64),
+        "molt_codecs_incremental_encoder_encode" => Some(crate::molt_codecs_incremental_encoder_encode as *const () as usize as u64),
+        "molt_codecs_incremental_encoder_new" => Some(crate::molt_codecs_incremental_encoder_new as *const () as usize as u64),
+        "molt_codecs_incremental_encoder_reset" => Some(crate::molt_codecs_incremental_encoder_reset as *const () as usize as u64),
+        "molt_codecs_lookup_error" => Some(crate::molt_codecs_lookup_error as *const () as usize as u64),
+        "molt_codecs_normalize_encoding" => Some(crate::molt_codecs_normalize_encoding as *const () as usize as u64),
+        "molt_codecs_register_error" => Some(crate::molt_codecs_register_error as *const () as usize as u64),
+        "molt_codecs_stream_reader_drop" => Some(crate::molt_codecs_stream_reader_drop as *const () as usize as u64),
+        "molt_codecs_stream_reader_new" => Some(crate::molt_codecs_stream_reader_new as *const () as usize as u64),
+        "molt_codecs_stream_reader_read" => Some(crate::molt_codecs_stream_reader_read as *const () as usize as u64),
+        "molt_codecs_stream_reader_readline" => Some(crate::molt_codecs_stream_reader_readline as *const () as usize as u64),
+        "molt_codecs_stream_writer_drop" => Some(crate::molt_codecs_stream_writer_drop as *const () as usize as u64),
+        "molt_codecs_stream_writer_new" => Some(crate::molt_codecs_stream_writer_new as *const () as usize as u64),
+        "molt_codecs_stream_writer_write" => Some(crate::molt_codecs_stream_writer_write as *const () as usize as u64),
+        "molt_codecs_charmap_build" => Some(crate::molt_codecs_charmap_build as *const () as usize as u64),
+        "molt_codecs_charmap_decode" => Some(crate::molt_codecs_charmap_decode as *const () as usize as u64),
+        "molt_codecs_charmap_encode" => Some(crate::molt_codecs_charmap_encode as *const () as usize as u64),
+        "molt_codecs_make_identity_dict" => Some(crate::molt_codecs_make_identity_dict as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_codeop_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_codeop_compile" => Some(crate::molt_codeop_compile as *const () as usize as u64),
+        "molt_codeop_compile_command" => Some(crate::molt_codeop_compile_command as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_collections_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_chainmap_contains" => Some(crate::molt_chainmap_contains as *const () as usize as u64),
+        "molt_chainmap_delitem" => Some(crate::molt_chainmap_delitem as *const () as usize as u64),
+        "molt_chainmap_drop" => Some(crate::molt_chainmap_drop as *const () as usize as u64),
+        "molt_chainmap_getitem" => Some(crate::molt_chainmap_getitem as *const () as usize as u64),
+        "molt_chainmap_keys" => Some(crate::molt_chainmap_keys as *const () as usize as u64),
+        "molt_chainmap_len" => Some(crate::molt_chainmap_len as *const () as usize as u64),
+        "molt_chainmap_maps" => Some(crate::molt_chainmap_maps as *const () as usize as u64),
+        "molt_chainmap_new" => Some(crate::molt_chainmap_new as *const () as usize as u64),
+        "molt_chainmap_new_child" => Some(crate::molt_chainmap_new_child as *const () as usize as u64),
+        "molt_chainmap_parents" => Some(crate::molt_chainmap_parents as *const () as usize as u64),
+        "molt_chainmap_setitem" => Some(crate::molt_chainmap_setitem as *const () as usize as u64),
+        "molt_ordereddict_clear" => Some(crate::molt_ordereddict_clear as *const () as usize as u64),
+        "molt_ordereddict_contains" => Some(crate::molt_ordereddict_contains as *const () as usize as u64),
+        "molt_ordereddict_copy" => Some(crate::molt_ordereddict_copy as *const () as usize as u64),
+        "molt_ordereddict_delitem" => Some(crate::molt_ordereddict_delitem as *const () as usize as u64),
+        "molt_ordereddict_drop" => Some(crate::molt_ordereddict_drop as *const () as usize as u64),
+        "molt_ordereddict_from_pairs" => Some(crate::molt_ordereddict_from_pairs as *const () as usize as u64),
+        "molt_ordereddict_getitem" => Some(crate::molt_ordereddict_getitem as *const () as usize as u64),
+        "molt_ordereddict_items" => Some(crate::molt_ordereddict_items as *const () as usize as u64),
+        "molt_ordereddict_keys" => Some(crate::molt_ordereddict_keys as *const () as usize as u64),
+        "molt_ordereddict_len" => Some(crate::molt_ordereddict_len as *const () as usize as u64),
+        "molt_ordereddict_move_to_end" => Some(crate::molt_ordereddict_move_to_end as *const () as usize as u64),
+        "molt_ordereddict_new" => Some(crate::molt_ordereddict_new as *const () as usize as u64),
+        "molt_ordereddict_pop" => Some(crate::molt_ordereddict_pop as *const () as usize as u64),
+        "molt_ordereddict_popitem" => Some(crate::molt_ordereddict_popitem as *const () as usize as u64),
+        "molt_ordereddict_setitem" => Some(crate::molt_ordereddict_setitem as *const () as usize as u64),
+        "molt_ordereddict_update" => Some(crate::molt_ordereddict_update as *const () as usize as u64),
+        "molt_ordereddict_values" => Some(crate::molt_ordereddict_values as *const () as usize as u64),
+        "molt_counter_add" => Some(crate::molt_counter_add as *const () as usize as u64),
+        "molt_counter_and" => Some(crate::molt_counter_and as *const () as usize as u64),
+        "molt_counter_clear" => Some(crate::molt_counter_clear as *const () as usize as u64),
+        "molt_counter_contains" => Some(crate::molt_counter_contains as *const () as usize as u64),
+        "molt_counter_copy" => Some(crate::molt_counter_copy as *const () as usize as u64),
+        "molt_counter_delitem" => Some(crate::molt_counter_delitem as *const () as usize as u64),
+        "molt_counter_drop" => Some(crate::molt_counter_drop as *const () as usize as u64),
+        "molt_counter_elements" => Some(crate::molt_counter_elements as *const () as usize as u64),
+        "molt_counter_from_iterable" => Some(crate::molt_counter_from_iterable as *const () as usize as u64),
+        "molt_counter_from_mapping" => Some(crate::molt_counter_from_mapping as *const () as usize as u64),
+        "molt_counter_getitem" => Some(crate::molt_counter_getitem as *const () as usize as u64),
+        "molt_counter_items" => Some(crate::molt_counter_items as *const () as usize as u64),
+        "molt_counter_len" => Some(crate::molt_counter_len as *const () as usize as u64),
+        "molt_counter_most_common" => Some(crate::molt_counter_most_common as *const () as usize as u64),
+        "molt_counter_new" => Some(crate::molt_counter_new as *const () as usize as u64),
+        "molt_counter_or" => Some(crate::molt_counter_or as *const () as usize as u64),
+        "molt_counter_pop" => Some(crate::molt_counter_pop as *const () as usize as u64),
+        "molt_counter_setitem" => Some(crate::molt_counter_setitem as *const () as usize as u64),
+        "molt_counter_sub" => Some(crate::molt_counter_sub as *const () as usize as u64),
+        "molt_counter_subtract" => Some(crate::molt_counter_subtract as *const () as usize as u64),
+        "molt_counter_total" => Some(crate::molt_counter_total as *const () as usize as u64),
+        "molt_counter_update" => Some(crate::molt_counter_update as *const () as usize as u64),
+        "molt_defaultdict_copy" => Some(crate::molt_defaultdict_copy as *const () as usize as u64),
+        "molt_defaultdict_drop" => Some(crate::molt_defaultdict_drop as *const () as usize as u64),
+        "molt_defaultdict_factory" => Some(crate::molt_defaultdict_factory as *const () as usize as u64),
+        "molt_defaultdict_missing" => Some(crate::molt_defaultdict_missing as *const () as usize as u64),
+        "molt_defaultdict_new" => Some(crate::molt_defaultdict_new as *const () as usize as u64),
+        "molt_deque_append" => Some(crate::molt_deque_append as *const () as usize as u64),
+        "molt_deque_appendleft" => Some(crate::molt_deque_appendleft as *const () as usize as u64),
+        "molt_deque_clear" => Some(crate::molt_deque_clear as *const () as usize as u64),
+        "molt_deque_contains" => Some(crate::molt_deque_contains as *const () as usize as u64),
+        "molt_deque_copy" => Some(crate::molt_deque_copy as *const () as usize as u64),
+        "molt_deque_count" => Some(crate::molt_deque_count as *const () as usize as u64),
+        "molt_deque_delitem" => Some(crate::molt_deque_delitem as *const () as usize as u64),
+        "molt_deque_drop" => Some(crate::molt_deque_drop as *const () as usize as u64),
+        "molt_deque_extend" => Some(crate::molt_deque_extend as *const () as usize as u64),
+        "molt_deque_extendleft" => Some(crate::molt_deque_extendleft as *const () as usize as u64),
+        "molt_deque_from_iterable" => Some(crate::molt_deque_from_iterable as *const () as usize as u64),
+        "molt_deque_getitem" => Some(crate::molt_deque_getitem as *const () as usize as u64),
+        "molt_deque_index" => Some(crate::molt_deque_index as *const () as usize as u64),
+        "molt_deque_insert" => Some(crate::molt_deque_insert as *const () as usize as u64),
+        "molt_deque_len" => Some(crate::molt_deque_len as *const () as usize as u64),
+        "molt_deque_maxlen" => Some(crate::molt_deque_maxlen as *const () as usize as u64),
+        "molt_deque_new" => Some(crate::molt_deque_new as *const () as usize as u64),
+        "molt_deque_pop" => Some(crate::molt_deque_pop as *const () as usize as u64),
+        "molt_deque_popleft" => Some(crate::molt_deque_popleft as *const () as usize as u64),
+        "molt_deque_remove" => Some(crate::molt_deque_remove as *const () as usize as u64),
+        "molt_deque_reverse" => Some(crate::molt_deque_reverse as *const () as usize as u64),
+        "molt_deque_rotate" => Some(crate::molt_deque_rotate as *const () as usize as u64),
+        "molt_deque_setitem" => Some(crate::molt_deque_setitem as *const () as usize as u64),
+        "molt_namedtuple_validate_fields" => Some(crate::molt_namedtuple_validate_fields as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_colorsys_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
         "molt_colorsys_rgb_to_hls" => Some(crate::molt_colorsys_rgb_to_hls as *const () as usize as u64),
         "molt_colorsys_hls_to_rgb" => Some(crate::molt_colorsys_hls_to_rgb as *const () as usize as u64),
         "molt_colorsys_rgb_to_hsv" => Some(crate::molt_colorsys_rgb_to_hsv as *const () as usize as u64),
         "molt_colorsys_hsv_to_rgb" => Some(crate::molt_colorsys_hsv_to_rgb as *const () as usize as u64),
         "molt_colorsys_rgb_to_yiq" => Some(crate::molt_colorsys_rgb_to_yiq as *const () as usize as u64),
         "molt_colorsys_yiq_to_rgb" => Some(crate::molt_colorsys_yiq_to_rgb as *const () as usize as u64),
-        "molt_fnmatch" => Some(crate::molt_fnmatch as *const () as usize as u64),
-        "molt_fnmatchcase" => Some(crate::molt_fnmatchcase as *const () as usize as u64),
-        "molt_pow" => Some(crate::molt_pow as *const () as usize as u64),
-        "molt_pow_mod" => Some(crate::molt_pow_mod as *const () as usize as u64),
-        "molt_fnmatch_filter" => Some(crate::molt_fnmatch_filter as *const () as usize as u64),
-        "molt_fnmatch_translate" => Some(crate::molt_fnmatch_translate as *const () as usize as u64),
-        "molt_bisect_left" => Some(crate::molt_bisect_left as *const () as usize as u64),
-        "molt_bisect_right" => Some(crate::molt_bisect_right as *const () as usize as u64),
-        "molt_bisect_insort_left" => Some(crate::molt_bisect_insort_left as *const () as usize as u64),
-        "molt_bisect_insort_right" => Some(crate::molt_bisect_insort_right as *const () as usize as u64),
-        "molt_pkgutil_iter_modules" => Some(crate::molt_pkgutil_iter_modules as *const () as usize as u64),
-        "molt_pkgutil_walk_packages" => Some(crate::molt_pkgutil_walk_packages as *const () as usize as u64),
-        "molt_insort_left" => Some(crate::molt_insort_left as *const () as usize as u64),
-        "molt_insort_right" => Some(crate::molt_insort_right as *const () as usize as u64),
-        "molt_site_help0" => Some(crate::molt_site_help0 as *const () as usize as u64),
-        "molt_site_help1" => Some(crate::molt_site_help1 as *const () as usize as u64),
-        "molt_site_credits" => Some(crate::molt_site_credits as *const () as usize as u64),
-        "molt_site_license" => Some(crate::molt_site_license as *const () as usize as u64),
-        "molt_site_copyright" => Some(crate::molt_site_copyright as *const () as usize as u64),
-        "molt_site_quitter_call" => Some(crate::molt_site_quitter_call as *const () as usize as u64),
-        "molt_shutil_copyfile" => Some(crate::molt_shutil_copyfile as *const () as usize as u64),
-        "molt_shutil_which" => Some(crate::molt_shutil_which as *const () as usize as u64),
-        "molt_py_compile_compile" => Some(crate::molt_py_compile_compile as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_compile_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_compile_builtin" => Some(crate::molt_compile_builtin as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_compileall_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
         "molt_compileall_compile_file" => Some(crate::molt_compileall_compile_file as *const () as usize as u64),
         "molt_compileall_compile_dir" => Some(crate::molt_compileall_compile_dir as *const () as usize as u64),
         "molt_compileall_compile_path" => Some(crate::molt_compileall_compile_path as *const () as usize as u64),
-        "molt_stat_constants" => Some(crate::molt_stat_constants as *const () as usize as u64),
-        "molt_stat_ifmt" => Some(crate::molt_stat_ifmt as *const () as usize as u64),
-        "molt_stat_imode" => Some(crate::molt_stat_imode as *const () as usize as u64),
-        "molt_stat_isdir" => Some(crate::molt_stat_isdir as *const () as usize as u64),
-        "molt_stat_isreg" => Some(crate::molt_stat_isreg as *const () as usize as u64),
-        "molt_stat_ischr" => Some(crate::molt_stat_ischr as *const () as usize as u64),
-        "molt_stat_isblk" => Some(crate::molt_stat_isblk as *const () as usize as u64),
-        "molt_stat_isfifo" => Some(crate::molt_stat_isfifo as *const () as usize as u64),
-        "molt_stat_islnk" => Some(crate::molt_stat_islnk as *const () as usize as u64),
-        "molt_stat_issock" => Some(crate::molt_stat_issock as *const () as usize as u64),
-        "molt_stat_isdoor" => Some(crate::molt_stat_isdoor as *const () as usize as u64),
-        "molt_stat_isport" => Some(crate::molt_stat_isport as *const () as usize as u64),
-        "molt_stat_iswht" => Some(crate::molt_stat_iswht as *const () as usize as u64),
-        "molt_stat_filemode" => Some(crate::molt_stat_filemode as *const () as usize as u64),
-        "molt_textwrap_wrap" => Some(crate::molt_textwrap_wrap as *const () as usize as u64),
-        "molt_textwrap_wrap_ex" => Some(crate::molt_textwrap_wrap_ex as *const () as usize as u64),
-        "molt_textwrap_fill" => Some(crate::molt_textwrap_fill as *const () as usize as u64),
-        "molt_textwrap_fill_ex" => Some(crate::molt_textwrap_fill_ex as *const () as usize as u64),
-        "molt_textwrap_indent" => Some(crate::molt_textwrap_indent as *const () as usize as u64),
-        "molt_textwrap_indent_ex" => Some(crate::molt_textwrap_indent_ex as *const () as usize as u64),
-        "molt_urllib_quote" => Some(crate::molt_urllib_quote as *const () as usize as u64),
-        "molt_urllib_quote_plus" => Some(crate::molt_urllib_quote_plus as *const () as usize as u64),
-        "molt_urllib_unquote" => Some(crate::molt_urllib_unquote as *const () as usize as u64),
-        "molt_urllib_unquote_plus" => Some(crate::molt_urllib_unquote_plus as *const () as usize as u64),
-        "molt_urllib_parse_qsl" => Some(crate::molt_urllib_parse_qsl as *const () as usize as u64),
-        "molt_urllib_parse_qs" => Some(crate::molt_urllib_parse_qs as *const () as usize as u64),
-        "molt_urllib_urlencode" => Some(crate::molt_urllib_urlencode as *const () as usize as u64),
-        "molt_urllib_urlsplit" => Some(crate::molt_urllib_urlsplit as *const () as usize as u64),
-        "molt_urllib_urlparse" => Some(crate::molt_urllib_urlparse as *const () as usize as u64),
-        "molt_urllib_urlunsplit" => Some(crate::molt_urllib_urlunsplit as *const () as usize as u64),
-        "molt_urllib_urlunparse" => Some(crate::molt_urllib_urlunparse as *const () as usize as u64),
-        "molt_urllib_urldefrag" => Some(crate::molt_urllib_urldefrag as *const () as usize as u64),
-        "molt_urllib_urljoin" => Some(crate::molt_urllib_urljoin as *const () as usize as u64),
-        "molt_urllib_error_urlerror_init" => Some(crate::molt_urllib_error_urlerror_init as *const () as usize as u64),
-        "molt_urllib_error_urlerror_str" => Some(crate::molt_urllib_error_urlerror_str as *const () as usize as u64),
-        "molt_urllib_error_httperror_init" => Some(crate::molt_urllib_error_httperror_init as *const () as usize as u64),
-        "molt_urllib_error_httperror_str" => Some(crate::molt_urllib_error_httperror_str as *const () as usize as u64),
-        "molt_urllib_error_content_too_short_init" => Some(crate::molt_urllib_error_content_too_short_init as *const () as usize as u64),
-        "molt_urllib_request_request_init" => Some(crate::molt_urllib_request_request_init as *const () as usize as u64),
-        "molt_urllib_request_opener_init" => Some(crate::molt_urllib_request_opener_init as *const () as usize as u64),
-        "molt_urllib_request_add_handler" => Some(crate::molt_urllib_request_add_handler as *const () as usize as u64),
-        "molt_urllib_request_open" => Some(crate::molt_urllib_request_open as *const () as usize as u64),
-        "molt_urllib_request_process_http_error" => Some(crate::molt_urllib_request_process_http_error as *const () as usize as u64),
-        "molt_urllib_request_response_read" => Some(crate::molt_urllib_request_response_read as *const () as usize as u64),
-        "molt_urllib_request_response_readinto" => Some(crate::molt_urllib_request_response_readinto as *const () as usize as u64),
-        "molt_urllib_request_response_read1" => Some(crate::molt_urllib_request_response_read1 as *const () as usize as u64),
-        "molt_urllib_request_response_readinto1" => Some(crate::molt_urllib_request_response_readinto1 as *const () as usize as u64),
-        "molt_urllib_request_response_readline" => Some(crate::molt_urllib_request_response_readline as *const () as usize as u64),
-        "molt_urllib_request_response_readlines" => Some(crate::molt_urllib_request_response_readlines as *const () as usize as u64),
-        "molt_urllib_request_response_readable" => Some(crate::molt_urllib_request_response_readable as *const () as usize as u64),
-        "molt_urllib_request_response_writable" => Some(crate::molt_urllib_request_response_writable as *const () as usize as u64),
-        "molt_urllib_request_response_seekable" => Some(crate::molt_urllib_request_response_seekable as *const () as usize as u64),
-        "molt_urllib_request_response_tell" => Some(crate::molt_urllib_request_response_tell as *const () as usize as u64),
-        "molt_urllib_request_response_seek" => Some(crate::molt_urllib_request_response_seek as *const () as usize as u64),
-        "molt_urllib_request_response_close" => Some(crate::molt_urllib_request_response_close as *const () as usize as u64),
-        "molt_urllib_request_response_drop" => Some(crate::molt_urllib_request_response_drop as *const () as usize as u64),
-        "molt_urllib_request_response_geturl" => Some(crate::molt_urllib_request_response_geturl as *const () as usize as u64),
-        "molt_urllib_request_response_getcode" => Some(crate::molt_urllib_request_response_getcode as *const () as usize as u64),
-        "molt_urllib_request_response_getreason" => Some(crate::molt_urllib_request_response_getreason as *const () as usize as u64),
-        "molt_urllib_request_response_getheader" => Some(crate::molt_urllib_request_response_getheader as *const () as usize as u64),
-        "molt_urllib_request_response_getheaders" => Some(crate::molt_urllib_request_response_getheaders as *const () as usize as u64),
-        "molt_urllib_request_response_getheaders_list" => Some(crate::molt_urllib_request_response_getheaders_list as *const () as usize as u64),
-        "molt_urllib_request_response_message" => Some(crate::molt_urllib_request_response_message as *const () as usize as u64),
-        "molt_http_cookiejar_new" => Some(crate::molt_http_cookiejar_new as *const () as usize as u64),
-        "molt_http_cookiejar_len" => Some(crate::molt_http_cookiejar_len as *const () as usize as u64),
-        "molt_http_cookiejar_clear" => Some(crate::molt_http_cookiejar_clear as *const () as usize as u64),
-        "molt_http_cookiejar_extract" => Some(crate::molt_http_cookiejar_extract as *const () as usize as u64),
-        "molt_http_cookiejar_header_for_url" => Some(crate::molt_http_cookiejar_header_for_url as *const () as usize as u64),
-        "molt_http_cookies_parse" => Some(crate::molt_http_cookies_parse as *const () as usize as u64),
-        "molt_http_cookies_render_morsel" => Some(crate::molt_http_cookies_render_morsel as *const () as usize as u64),
-        "molt_ctypes_require_ffi" => Some(crate::molt_ctypes_require_ffi as *const () as usize as u64),
-        "molt_ctypes_coerce_value" => Some(crate::molt_ctypes_coerce_value as *const () as usize as u64),
-        "molt_ctypes_default_value" => Some(crate::molt_ctypes_default_value as *const () as usize as u64),
-        "molt_ctypes_sizeof" => Some(crate::molt_ctypes_sizeof as *const () as usize as u64),
-        "molt_http_client_execute" => Some(crate::molt_http_client_execute as *const () as usize as u64),
-        "molt_http_client_connection_new" => Some(crate::molt_http_client_connection_new as *const () as usize as u64),
-        "molt_http_client_connection_putrequest" => Some(crate::molt_http_client_connection_putrequest as *const () as usize as u64),
-        "molt_http_client_connection_putheader" => Some(crate::molt_http_client_connection_putheader as *const () as usize as u64),
-        "molt_http_client_connection_endheaders" => Some(crate::molt_http_client_connection_endheaders as *const () as usize as u64),
-        "molt_http_client_connection_send" => Some(crate::molt_http_client_connection_send as *const () as usize as u64),
-        "molt_http_client_connection_request" => Some(crate::molt_http_client_connection_request as *const () as usize as u64),
-        "molt_http_client_connection_getresponse" => Some(crate::molt_http_client_connection_getresponse as *const () as usize as u64),
-        "molt_http_client_connection_close" => Some(crate::molt_http_client_connection_close as *const () as usize as u64),
-        "molt_http_client_connection_drop" => Some(crate::molt_http_client_connection_drop as *const () as usize as u64),
-        "molt_http_client_connection_get_buffer" => Some(crate::molt_http_client_connection_get_buffer as *const () as usize as u64),
-        "molt_http_message_new" => Some(crate::molt_http_message_new as *const () as usize as u64),
-        "molt_http_message_parse" => Some(crate::molt_http_message_parse as *const () as usize as u64),
-        "molt_http_message_set_raw" => Some(crate::molt_http_message_set_raw as *const () as usize as u64),
-        "molt_http_message_get" => Some(crate::molt_http_message_get as *const () as usize as u64),
-        "molt_http_message_get_all" => Some(crate::molt_http_message_get_all as *const () as usize as u64),
-        "molt_http_message_items" => Some(crate::molt_http_message_items as *const () as usize as u64),
-        "molt_http_message_contains" => Some(crate::molt_http_message_contains as *const () as usize as u64),
-        "molt_http_message_len" => Some(crate::molt_http_message_len as *const () as usize as u64),
-        "molt_http_message_drop" => Some(crate::molt_http_message_drop as *const () as usize as u64),
-        "molt_http_parse_header_pairs" => Some(crate::molt_http_parse_header_pairs as *const () as usize as u64),
-        "molt_http_client_urlsplit" => Some(crate::molt_http_client_urlsplit as *const () as usize as u64),
-        "molt_http_client_response_read" => Some(crate::molt_http_client_response_read as *const () as usize as u64),
-        "molt_http_client_response_close" => Some(crate::molt_http_client_response_close as *const () as usize as u64),
-        "molt_http_client_response_drop" => Some(crate::molt_http_client_response_drop as *const () as usize as u64),
-        "molt_http_client_response_getstatus" => Some(crate::molt_http_client_response_getstatus as *const () as usize as u64),
-        "molt_http_client_response_getreason" => Some(crate::molt_http_client_response_getreason as *const () as usize as u64),
-        "molt_http_client_response_getheader" => Some(crate::molt_http_client_response_getheader as *const () as usize as u64),
-        "molt_http_client_response_getheaders" => Some(crate::molt_http_client_response_getheaders as *const () as usize as u64),
-        "molt_http_client_response_message" => Some(crate::molt_http_client_response_message as *const () as usize as u64),
-        "molt_socketserver_register" => Some(crate::molt_socketserver_register as *const () as usize as u64),
-        "molt_socketserver_unregister" => Some(crate::molt_socketserver_unregister as *const () as usize as u64),
-        "molt_socketserver_dispatch_begin" => Some(crate::molt_socketserver_dispatch_begin as *const () as usize as u64),
-        "molt_socketserver_dispatch_poll" => Some(crate::molt_socketserver_dispatch_poll as *const () as usize as u64),
-        "molt_socketserver_dispatch_cancel" => Some(crate::molt_socketserver_dispatch_cancel as *const () as usize as u64),
-        "molt_socketserver_get_request_poll" => Some(crate::molt_socketserver_get_request_poll as *const () as usize as u64),
-        "molt_socketserver_set_response" => Some(crate::molt_socketserver_set_response as *const () as usize as u64),
-        "molt_socketserver_serve_forever" => Some(crate::molt_socketserver_serve_forever as *const () as usize as u64),
-        "molt_socketserver_handle_request" => Some(crate::molt_socketserver_handle_request as *const () as usize as u64),
-        "molt_socketserver_shutdown" => Some(crate::molt_socketserver_shutdown as *const () as usize as u64),
-        "molt_http_server_read_request" => Some(crate::molt_http_server_read_request as *const () as usize as u64),
-        "molt_http_server_compute_close_connection" => Some(crate::molt_http_server_compute_close_connection as *const () as usize as u64),
-        "molt_http_server_handle_one_request" => Some(crate::molt_http_server_handle_one_request as *const () as usize as u64),
-        "molt_http_server_send_response" => Some(crate::molt_http_server_send_response as *const () as usize as u64),
-        "molt_http_server_send_response_only" => Some(crate::molt_http_server_send_response_only as *const () as usize as u64),
-        "molt_http_server_send_header" => Some(crate::molt_http_server_send_header as *const () as usize as u64),
-        "molt_http_server_end_headers" => Some(crate::molt_http_server_end_headers as *const () as usize as u64),
-        "molt_http_server_send_error" => Some(crate::molt_http_server_send_error as *const () as usize as u64),
-        "molt_http_server_version_string" => Some(crate::molt_http_server_version_string as *const () as usize as u64),
-        "molt_http_server_date_time_string" => Some(crate::molt_http_server_date_time_string as *const () as usize as u64),
-        "molt_http_status_reason" => Some(crate::molt_http_status_reason as *const () as usize as u64),
-        "molt_http_status_constants" => Some(crate::molt_http_status_constants as *const () as usize as u64),
-        "molt_http_status_responses" => Some(crate::molt_http_status_responses as *const () as usize as u64),
-        "molt_context_null" => Some(crate::molt_context_null as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_compression_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_compression")]
+        "molt_compression_streams_buffer_size" => Some(crate::molt_compression_streams_buffer_size as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_deflate_raw" => Some(crate::molt_deflate_raw as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_inflate_raw" => Some(crate::molt_inflate_raw as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_runtime_ready" => Some(crate::molt_zlib_runtime_ready as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_bz2_compress" => Some(crate::molt_bz2_compress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_bz2_compressor_compress" => Some(crate::molt_bz2_compressor_compress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_bz2_compressor_drop" => Some(crate::molt_bz2_compressor_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_bz2_compressor_flush" => Some(crate::molt_bz2_compressor_flush as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_bz2_compressor_new" => Some(crate::molt_bz2_compressor_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_bz2_decompress" => Some(crate::molt_bz2_decompress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_bz2_decompressor_decompress" => Some(crate::molt_bz2_decompressor_decompress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_bz2_decompressor_drop" => Some(crate::molt_bz2_decompressor_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_bz2_decompressor_eof" => Some(crate::molt_bz2_decompressor_eof as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_bz2_decompressor_needs_input" => Some(crate::molt_bz2_decompressor_needs_input as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_bz2_decompressor_new" => Some(crate::molt_bz2_decompressor_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_bz2_decompressor_unused_data" => Some(crate::molt_bz2_decompressor_unused_data as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_bz2_file_close" => Some(crate::molt_bz2_file_close as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_bz2_file_drop" => Some(crate::molt_bz2_file_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_bz2_file_open" => Some(crate::molt_bz2_file_open as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_bz2_file_read" => Some(crate::molt_bz2_file_read as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_bz2_file_write" => Some(crate::molt_bz2_file_write as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_gzip_close" => Some(crate::molt_gzip_close as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_gzip_compress" => Some(crate::molt_gzip_compress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_gzip_decompress" => Some(crate::molt_gzip_decompress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_gzip_drop" => Some(crate::molt_gzip_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_gzip_open" => Some(crate::molt_gzip_open as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_gzip_read" => Some(crate::molt_gzip_read as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_gzip_write" => Some(crate::molt_gzip_write as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_check_crc32" => Some(crate::molt_lzma_check_crc32 as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_check_crc64" => Some(crate::molt_lzma_check_crc64 as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_check_none" => Some(crate::molt_lzma_check_none as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_check_sha256" => Some(crate::molt_lzma_check_sha256 as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_compress" => Some(crate::molt_lzma_compress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_compressor_compress" => Some(crate::molt_lzma_compressor_compress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_compressor_drop" => Some(crate::molt_lzma_compressor_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_compressor_flush" => Some(crate::molt_lzma_compressor_flush as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_compressor_new" => Some(crate::molt_lzma_compressor_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_decompress" => Some(crate::molt_lzma_decompress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_decompressor_decompress" => Some(crate::molt_lzma_decompressor_decompress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_decompressor_drop" => Some(crate::molt_lzma_decompressor_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_decompressor_eof" => Some(crate::molt_lzma_decompressor_eof as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_decompressor_needs_input" => Some(crate::molt_lzma_decompressor_needs_input as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_decompressor_new" => Some(crate::molt_lzma_decompressor_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_decompressor_unused_data" => Some(crate::molt_lzma_decompressor_unused_data as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_format_alone" => Some(crate::molt_lzma_format_alone as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_format_auto" => Some(crate::molt_lzma_format_auto as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_format_raw" => Some(crate::molt_lzma_format_raw as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_format_xz" => Some(crate::molt_lzma_format_xz as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_preset_default" => Some(crate::molt_lzma_preset_default as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_preset_extreme" => Some(crate::molt_lzma_preset_extreme as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_tarfile_add" => Some(crate::molt_tarfile_add as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_tarfile_close" => Some(crate::molt_tarfile_close as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_tarfile_drop" => Some(crate::molt_tarfile_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_tarfile_extract" => Some(crate::molt_tarfile_extract as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_tarfile_extractall" => Some(crate::molt_tarfile_extractall as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_tarfile_extractfile" => Some(crate::molt_tarfile_extractfile as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_tarfile_getmembers" => Some(crate::molt_tarfile_getmembers as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_tarfile_getnames" => Some(crate::molt_tarfile_getnames as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_tarfile_is_tarfile" => Some(crate::molt_tarfile_is_tarfile as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_tarfile_open" => Some(crate::molt_tarfile_open as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_adler32" => Some(crate::molt_zlib_adler32 as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_compress" => Some(crate::molt_zlib_compress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_compressobj_compress" => Some(crate::molt_zlib_compressobj_compress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_compressobj_drop" => Some(crate::molt_zlib_compressobj_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_compressobj_flush" => Some(crate::molt_zlib_compressobj_flush as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_compressobj_new" => Some(crate::molt_zlib_compressobj_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_crc32" => Some(crate::molt_zlib_crc32 as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_decompress" => Some(crate::molt_zlib_decompress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_decompressobj_decompress" => Some(crate::molt_zlib_decompressobj_decompress as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_decompressobj_drop" => Some(crate::molt_zlib_decompressobj_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_decompressobj_eof" => Some(crate::molt_zlib_decompressobj_eof as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_decompressobj_flush" => Some(crate::molt_zlib_decompressobj_flush as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_decompressobj_new" => Some(crate::molt_zlib_decompressobj_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_decompressobj_unconsumed_tail" => Some(crate::molt_zlib_decompressobj_unconsumed_tail as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_def_buf_size" => Some(crate::molt_zlib_def_buf_size as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_def_mem_level" => Some(crate::molt_zlib_def_mem_level as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_max_wbits" => Some(crate::molt_zlib_max_wbits as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_z_best_compression" => Some(crate::molt_zlib_z_best_compression as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_z_best_speed" => Some(crate::molt_zlib_z_best_speed as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_z_default_compression" => Some(crate::molt_zlib_z_default_compression as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_z_default_strategy" => Some(crate::molt_zlib_z_default_strategy as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_z_filtered" => Some(crate::molt_zlib_z_filtered as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_z_finish" => Some(crate::molt_zlib_z_finish as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_z_full_flush" => Some(crate::molt_zlib_z_full_flush as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_z_huffman_only" => Some(crate::molt_zlib_z_huffman_only as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_z_no_compression" => Some(crate::molt_zlib_z_no_compression as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_z_no_flush" => Some(crate::molt_zlib_z_no_flush as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_z_sync_flush" => Some(crate::molt_zlib_z_sync_flush as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_gzip_flush" => Some(crate::molt_gzip_flush as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_file_close" => Some(crate::molt_lzma_file_close as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_file_drop" => Some(crate::molt_lzma_file_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_file_open" => Some(crate::molt_lzma_file_open as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_file_read" => Some(crate::molt_lzma_file_read as *const () as usize as u64),
+        #[cfg(feature = "stdlib_compression")]
+        "molt_lzma_file_write" => Some(crate::molt_lzma_file_write as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_concurrent_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_concurrent")]
+        "molt_concurrent_all_completed" => Some(crate::molt_concurrent_all_completed as *const () as usize as u64),
+        #[cfg(feature = "stdlib_concurrent")]
+        "molt_concurrent_as_completed" => Some(crate::molt_concurrent_as_completed as *const () as usize as u64),
+        #[cfg(feature = "stdlib_concurrent")]
+        "molt_concurrent_first_completed" => Some(crate::molt_concurrent_first_completed as *const () as usize as u64),
+        #[cfg(feature = "stdlib_concurrent")]
+        "molt_concurrent_first_exception" => Some(crate::molt_concurrent_first_exception as *const () as usize as u64),
+        #[cfg(feature = "stdlib_concurrent")]
+        "molt_concurrent_future_add_done_callback" => Some(crate::molt_concurrent_future_add_done_callback as *const () as usize as u64),
+        #[cfg(feature = "stdlib_concurrent")]
+        "molt_concurrent_future_cancel" => Some(crate::molt_concurrent_future_cancel as *const () as usize as u64),
+        #[cfg(feature = "stdlib_concurrent")]
+        "molt_concurrent_future_cancelled" => Some(crate::molt_concurrent_future_cancelled as *const () as usize as u64),
+        #[cfg(feature = "stdlib_concurrent")]
+        "molt_concurrent_future_done" => Some(crate::molt_concurrent_future_done as *const () as usize as u64),
+        #[cfg(feature = "stdlib_concurrent")]
+        "molt_concurrent_future_drop" => Some(crate::molt_concurrent_future_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_concurrent")]
+        "molt_concurrent_future_exception" => Some(crate::molt_concurrent_future_exception as *const () as usize as u64),
+        #[cfg(feature = "stdlib_concurrent")]
+        "molt_concurrent_future_result" => Some(crate::molt_concurrent_future_result as *const () as usize as u64),
+        #[cfg(feature = "stdlib_concurrent")]
+        "molt_concurrent_future_running" => Some(crate::molt_concurrent_future_running as *const () as usize as u64),
+        #[cfg(feature = "stdlib_concurrent")]
+        "molt_concurrent_threadpool_drop" => Some(crate::molt_concurrent_threadpool_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_concurrent")]
+        "molt_concurrent_threadpool_new" => Some(crate::molt_concurrent_threadpool_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_concurrent")]
+        "molt_concurrent_threadpool_shutdown" => Some(crate::molt_concurrent_threadpool_shutdown as *const () as usize as u64),
+        #[cfg(feature = "stdlib_concurrent")]
+        "molt_concurrent_threadpool_submit" => Some(crate::molt_concurrent_threadpool_submit as *const () as usize as u64),
+        #[cfg(feature = "stdlib_concurrent")]
+        "molt_concurrent_wait" => Some(crate::molt_concurrent_wait as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_configparser_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_configparser_add_section" => Some(crate::molt_configparser_add_section as *const () as usize as u64),
+        "molt_configparser_drop" => Some(crate::molt_configparser_drop as *const () as usize as u64),
+        "molt_configparser_get" => Some(crate::molt_configparser_get as *const () as usize as u64),
+        "molt_configparser_getboolean" => Some(crate::molt_configparser_getboolean as *const () as usize as u64),
+        "molt_configparser_getfloat" => Some(crate::molt_configparser_getfloat as *const () as usize as u64),
+        "molt_configparser_getint" => Some(crate::molt_configparser_getint as *const () as usize as u64),
+        "molt_configparser_has_option" => Some(crate::molt_configparser_has_option as *const () as usize as u64),
+        "molt_configparser_has_section" => Some(crate::molt_configparser_has_section as *const () as usize as u64),
+        "molt_configparser_items" => Some(crate::molt_configparser_items as *const () as usize as u64),
+        "molt_configparser_new" => Some(crate::molt_configparser_new as *const () as usize as u64),
+        "molt_configparser_options" => Some(crate::molt_configparser_options as *const () as usize as u64),
+        "molt_configparser_read" => Some(crate::molt_configparser_read as *const () as usize as u64),
+        "molt_configparser_read_string" => Some(crate::molt_configparser_read_string as *const () as usize as u64),
+        "molt_configparser_remove_option" => Some(crate::molt_configparser_remove_option as *const () as usize as u64),
+        "molt_configparser_remove_section" => Some(crate::molt_configparser_remove_section as *const () as usize as u64),
+        "molt_configparser_sections" => Some(crate::molt_configparser_sections as *const () as usize as u64),
+        "molt_configparser_set" => Some(crate::molt_configparser_set as *const () as usize as u64),
+        "molt_configparser_write" => Some(crate::molt_configparser_write as *const () as usize as u64),
+        "molt_configparser_defaults" => Some(crate::molt_configparser_defaults as *const () as usize as u64),
+        "molt_configparser_get_raw" => Some(crate::molt_configparser_get_raw as *const () as usize as u64),
+        "molt_configparser_interpolate_basic" => Some(crate::molt_configparser_interpolate_basic as *const () as usize as u64),
+        "molt_configparser_interpolate_extended" => Some(crate::molt_configparser_interpolate_extended as *const () as usize as u64),
+        "molt_configparser_read_file" => Some(crate::molt_configparser_read_file as *const () as usize as u64),
+        "molt_configparser_write_string" => Some(crate::molt_configparser_write_string as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_contextlib_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
         "molt_contextlib_closing" => Some(crate::molt_contextlib_closing as *const () as usize as u64),
         "molt_contextlib_aclosing_enter" => Some(crate::molt_contextlib_aclosing_enter as *const () as usize as u64),
         "molt_contextlib_aclosing_exit" => Some(crate::molt_contextlib_aclosing_exit as *const () as usize as u64),
@@ -2715,145 +3664,664 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_contextlib_async_exitstack_push_exit" => Some(crate::molt_contextlib_async_exitstack_push_exit as *const () as usize as u64),
         "molt_contextlib_async_exitstack_enter_context" => Some(crate::molt_contextlib_async_exitstack_enter_context as *const () as usize as u64),
         "molt_contextlib_async_exitstack_exit" => Some(crate::molt_contextlib_async_exitstack_exit as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_copy_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_copy_copy" => Some(crate::molt_copy_copy as *const () as usize as u64),
+        "molt_copy_deepcopy" => Some(crate::molt_copy_deepcopy as *const () as usize as u64),
+        "molt_copy_memo_new" => Some(crate::molt_copy_memo_new as *const () as usize as u64),
+        "molt_copy_memo_drop" => Some(crate::molt_copy_memo_drop as *const () as usize as u64),
+        "molt_copy_error" => Some(crate::molt_copy_error as *const () as usize as u64),
+        "molt_copy_replace" => Some(crate::molt_copy_replace as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_copyreg_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_copyreg_bootstrap" => Some(crate::molt_copyreg_bootstrap as *const () as usize as u64),
+        "molt_copyreg_pickle" => Some(crate::molt_copyreg_pickle as *const () as usize as u64),
+        "molt_copyreg_newobj" => Some(crate::molt_copyreg_newobj as *const () as usize as u64),
+        "molt_copyreg_newobj_ex" => Some(crate::molt_copyreg_newobj_ex as *const () as usize as u64),
+        "molt_copyreg_reconstructor" => Some(crate::molt_copyreg_reconstructor as *const () as usize as u64),
+        "molt_copyreg_reduce_ex" => Some(crate::molt_copyreg_reduce_ex as *const () as usize as u64),
+        "molt_copyreg_constructor" => Some(crate::molt_copyreg_constructor as *const () as usize as u64),
+        "molt_copyreg_add_extension" => Some(crate::molt_copyreg_add_extension as *const () as usize as u64),
+        "molt_copyreg_remove_extension" => Some(crate::molt_copyreg_remove_extension as *const () as usize as u64),
+        "molt_copyreg_clear_extension_cache" => Some(crate::molt_copyreg_clear_extension_cache as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_crypto_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_hash_new" => Some(crate::molt_hash_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_hash_update" => Some(crate::molt_hash_update as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_hash_copy" => Some(crate::molt_hash_copy as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_hash_digest" => Some(crate::molt_hash_digest as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_hash_drop" => Some(crate::molt_hash_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_hmac_new" => Some(crate::molt_hmac_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_hmac_update" => Some(crate::molt_hmac_update as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_hmac_copy" => Some(crate::molt_hmac_copy as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_hmac_digest" => Some(crate::molt_hmac_digest as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_hmac_drop" => Some(crate::molt_hmac_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_compare_digest" => Some(crate::molt_compare_digest as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_pbkdf2_hmac" => Some(crate::molt_pbkdf2_hmac as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_scrypt" => Some(crate::molt_scrypt as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_secrets_below" => Some(crate::molt_secrets_below as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_secrets_choice" => Some(crate::molt_secrets_choice as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_secrets_compare_digest" => Some(crate::molt_secrets_compare_digest as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_secrets_randbits" => Some(crate::molt_secrets_randbits as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_secrets_token_bytes" => Some(crate::molt_secrets_token_bytes as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_secrets_token_hex" => Some(crate::molt_secrets_token_hex as *const () as usize as u64),
+        #[cfg(feature = "stdlib_crypto")]
+        "molt_secrets_token_urlsafe" => Some(crate::molt_secrets_token_urlsafe as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_csv_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_runtime_ready" => Some(crate::molt_csv_runtime_ready as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_dict_project" => Some(crate::molt_csv_dict_project as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_field_size_limit" => Some(crate::molt_csv_field_size_limit as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_get_dialect" => Some(crate::molt_csv_get_dialect as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_has_header" => Some(crate::molt_csv_has_header as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_list_dialects" => Some(crate::molt_csv_list_dialects as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_quote_all" => Some(crate::molt_csv_quote_all as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_quote_minimal" => Some(crate::molt_csv_quote_minimal as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_quote_none" => Some(crate::molt_csv_quote_none as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_quote_nonnumeric" => Some(crate::molt_csv_quote_nonnumeric as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_quote_notnull" => Some(crate::molt_csv_quote_notnull as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_quote_strings" => Some(crate::molt_csv_quote_strings as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_register_dialect" => Some(crate::molt_csv_register_dialect as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_reader_drop" => Some(crate::molt_csv_reader_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_reader_new" => Some(crate::molt_csv_reader_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_reader_parse_line" => Some(crate::molt_csv_reader_parse_line as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_sniff" => Some(crate::molt_csv_sniff as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_unregister_dialect" => Some(crate::molt_csv_unregister_dialect as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_writer_drop" => Some(crate::molt_csv_writer_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_writer_new" => Some(crate::molt_csv_writer_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_writer_writerow" => Some(crate::molt_csv_writer_writerow as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_writer_writerows" => Some(crate::molt_csv_writer_writerows as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_normalize_row" => Some(crate::molt_csv_normalize_row as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_dialect_lookup_name" => Some(crate::molt_csv_dialect_lookup_name as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_validate_dialect" => Some(crate::molt_csv_validate_dialect as *const () as usize as u64),
+        #[cfg(feature = "stdlib_csv")]
+        "molt_csv_validate_fmtparams" => Some(crate::molt_csv_validate_fmtparams as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_ctypes_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_ctypes_require_ffi" => Some(crate::molt_ctypes_require_ffi as *const () as usize as u64),
+        "molt_ctypes_coerce_value" => Some(crate::molt_ctypes_coerce_value as *const () as usize as u64),
+        "molt_ctypes_default_value" => Some(crate::molt_ctypes_default_value as *const () as usize as u64),
+        "molt_ctypes_sizeof" => Some(crate::molt_ctypes_sizeof as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_dataclasses_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_dataclasses_make_dataclass" => Some(crate::molt_dataclasses_make_dataclass as *const () as usize as u64),
+        "molt_dataclasses_is_dataclass" => Some(crate::molt_dataclasses_is_dataclass as *const () as usize as u64),
+        "molt_dataclasses_fields" => Some(crate::molt_dataclasses_fields as *const () as usize as u64),
+        "molt_dataclasses_asdict" => Some(crate::molt_dataclasses_asdict as *const () as usize as u64),
+        "molt_dataclasses_astuple" => Some(crate::molt_dataclasses_astuple as *const () as usize as u64),
+        "molt_dataclasses_replace" => Some(crate::molt_dataclasses_replace as *const () as usize as u64),
+        "molt_dataclasses_post_init" => Some(crate::molt_dataclasses_post_init as *const () as usize as u64),
+        "molt_dataclasses_field_metadata" => Some(crate::molt_dataclasses_field_metadata as *const () as usize as u64),
+        "molt_dataclasses_set_field_metadata" => Some(crate::molt_dataclasses_set_field_metadata as *const () as usize as u64),
+        "molt_dataclasses_is_initvar" => Some(crate::molt_dataclasses_is_initvar as *const () as usize as u64),
+        "molt_dataclasses_is_kw_only_sentinel" => Some(crate::molt_dataclasses_is_kw_only_sentinel as *const () as usize as u64),
+        "molt_dataclasses_eq" => Some(crate::molt_dataclasses_eq as *const () as usize as u64),
+        "molt_dataclasses_hash_fn" => Some(crate::molt_dataclasses_hash_fn as *const () as usize as u64),
+        "molt_dataclasses_repr" => Some(crate::molt_dataclasses_repr as *const () as usize as u64),
+        "molt_dataclasses_check_default_order" => Some(crate::molt_dataclasses_check_default_order as *const () as usize as u64),
+        "molt_dataclasses_field_flags" => Some(crate::molt_dataclasses_field_flags as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_datetime_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_datetime_runtime_ready" => Some(crate::molt_datetime_runtime_ready as *const () as usize as u64),
+        "molt_datetime_ctime" => Some(crate::molt_datetime_ctime as *const () as usize as u64),
+        "molt_datetime_days_in_month" => Some(crate::molt_datetime_days_in_month as *const () as usize as u64),
+        "molt_datetime_format_isodate" => Some(crate::molt_datetime_format_isodate as *const () as usize as u64),
+        "molt_datetime_format_isodatetime" => Some(crate::molt_datetime_format_isodatetime as *const () as usize as u64),
+        "molt_datetime_format_isotime" => Some(crate::molt_datetime_format_isotime as *const () as usize as u64),
+        "molt_datetime_fromtimestamp_local" => Some(crate::molt_datetime_fromtimestamp_local as *const () as usize as u64),
+        "molt_datetime_fromtimestamp_utc" => Some(crate::molt_datetime_fromtimestamp_utc as *const () as usize as u64),
+        "molt_datetime_hash_date" => Some(crate::molt_datetime_hash_date as *const () as usize as u64),
+        "molt_datetime_hash_datetime" => Some(crate::molt_datetime_hash_datetime as *const () as usize as u64),
+        "molt_datetime_hash_time" => Some(crate::molt_datetime_hash_time as *const () as usize as u64),
+        "molt_datetime_hash_timedelta" => Some(crate::molt_datetime_hash_timedelta as *const () as usize as u64),
+        "molt_datetime_is_leap" => Some(crate::molt_datetime_is_leap as *const () as usize as u64),
+        "molt_datetime_isocalendar" => Some(crate::molt_datetime_isocalendar as *const () as usize as u64),
+        "molt_datetime_isoweekday" => Some(crate::molt_datetime_isoweekday as *const () as usize as u64),
+        "molt_datetime_local_utcoffset" => Some(crate::molt_datetime_local_utcoffset as *const () as usize as u64),
+        "molt_datetime_now_local" => Some(crate::molt_datetime_now_local as *const () as usize as u64),
+        "molt_datetime_now_utc" => Some(crate::molt_datetime_now_utc as *const () as usize as u64),
+        "molt_datetime_ordinal_to_ymd" => Some(crate::molt_datetime_ordinal_to_ymd as *const () as usize as u64),
+        "molt_datetime_parse_isoformat" => Some(crate::molt_datetime_parse_isoformat as *const () as usize as u64),
+        "molt_datetime_parse_isoformat_date" => Some(crate::molt_datetime_parse_isoformat_date as *const () as usize as u64),
+        "molt_datetime_parse_isoformat_time" => Some(crate::molt_datetime_parse_isoformat_time as *const () as usize as u64),
+        "molt_datetime_strftime" => Some(crate::molt_datetime_strftime as *const () as usize as u64),
+        "molt_datetime_strptime" => Some(crate::molt_datetime_strptime as *const () as usize as u64),
+        "molt_datetime_td_normalize" => Some(crate::molt_datetime_td_normalize as *const () as usize as u64),
+        "molt_datetime_td_total_seconds" => Some(crate::molt_datetime_td_total_seconds as *const () as usize as u64),
+        "molt_datetime_to_timestamp" => Some(crate::molt_datetime_to_timestamp as *const () as usize as u64),
+        "molt_datetime_validate_date" => Some(crate::molt_datetime_validate_date as *const () as usize as u64),
+        "molt_datetime_validate_time" => Some(crate::molt_datetime_validate_time as *const () as usize as u64),
+        "molt_datetime_combine" => Some(crate::molt_datetime_combine as *const () as usize as u64),
+        "molt_date_fromisocalendar" => Some(crate::molt_date_fromisocalendar as *const () as usize as u64),
+        "molt_timedelta_truediv_scalar" => Some(crate::molt_timedelta_truediv_scalar as *const () as usize as u64),
+        "molt_timedelta_truediv_td" => Some(crate::molt_timedelta_truediv_td as *const () as usize as u64),
+        "molt_timedelta_floordiv_td" => Some(crate::molt_timedelta_floordiv_td as *const () as usize as u64),
+        "molt_timedelta_mod_td" => Some(crate::molt_timedelta_mod_td as *const () as usize as u64),
+        "molt_timedelta_floordiv_scalar" => Some(crate::molt_timedelta_floordiv_scalar as *const () as usize as u64),
+        "molt_timedelta_abs" => Some(crate::molt_timedelta_abs as *const () as usize as u64),
+        "molt_datetime_weekday" => Some(crate::molt_datetime_weekday as *const () as usize as u64),
+        "molt_datetime_ymd_to_ordinal" => Some(crate::molt_datetime_ymd_to_ordinal as *const () as usize as u64),
+        "molt_datetime_as_int" => Some(crate::molt_datetime_as_int as *const () as usize as u64),
+        "molt_datetime_date_repr" => Some(crate::molt_datetime_date_repr as *const () as usize as u64),
+        "molt_datetime_datetime_repr" => Some(crate::molt_datetime_datetime_repr as *const () as usize as u64),
+        "molt_datetime_format_time" => Some(crate::molt_datetime_format_time as *const () as usize as u64),
+        "molt_datetime_time_repr" => Some(crate::molt_datetime_time_repr as *const () as usize as u64),
+        "molt_datetime_timetuple" => Some(crate::molt_datetime_timetuple as *const () as usize as u64),
+        "molt_timedelta_repr" => Some(crate::molt_timedelta_repr as *const () as usize as u64),
+        "molt_timedelta_str" => Some(crate::molt_timedelta_str as *const () as usize as u64),
+        "molt_timezone_tzname" => Some(crate::molt_timezone_tzname as *const () as usize as u64),
+        "molt_timezone_validate" => Some(crate::molt_timezone_validate as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_dbm_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_dbm")]
+        "molt_dbm_dumb_open" => Some(crate::molt_dbm_dumb_open as *const () as usize as u64),
+        #[cfg(feature = "stdlib_dbm")]
+        "molt_dbm_dumb_getitem" => Some(crate::molt_dbm_dumb_getitem as *const () as usize as u64),
+        #[cfg(feature = "stdlib_dbm")]
+        "molt_dbm_dumb_setitem" => Some(crate::molt_dbm_dumb_setitem as *const () as usize as u64),
+        #[cfg(feature = "stdlib_dbm")]
+        "molt_dbm_dumb_delitem" => Some(crate::molt_dbm_dumb_delitem as *const () as usize as u64),
+        #[cfg(feature = "stdlib_dbm")]
+        "molt_dbm_dumb_contains" => Some(crate::molt_dbm_dumb_contains as *const () as usize as u64),
+        #[cfg(feature = "stdlib_dbm")]
+        "molt_dbm_dumb_keys" => Some(crate::molt_dbm_dumb_keys as *const () as usize as u64),
+        #[cfg(feature = "stdlib_dbm")]
+        "molt_dbm_dumb_sync" => Some(crate::molt_dbm_dumb_sync as *const () as usize as u64),
+        #[cfg(feature = "stdlib_dbm")]
+        "molt_dbm_dumb_close" => Some(crate::molt_dbm_dumb_close as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_decimal_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_new" => Some(crate::molt_decimal_context_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_get_current" => Some(crate::molt_decimal_context_get_current as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_set_current" => Some(crate::molt_decimal_context_set_current as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_copy" => Some(crate::molt_decimal_context_copy as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_drop" => Some(crate::molt_decimal_context_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_get_prec" => Some(crate::molt_decimal_context_get_prec as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_set_prec" => Some(crate::molt_decimal_context_set_prec as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_get_rounding" => Some(crate::molt_decimal_context_get_rounding as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_set_rounding" => Some(crate::molt_decimal_context_set_rounding as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_clear_flags" => Some(crate::molt_decimal_context_clear_flags as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_get_flag" => Some(crate::molt_decimal_context_get_flag as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_set_flag" => Some(crate::molt_decimal_context_set_flag as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_get_trap" => Some(crate::molt_decimal_context_get_trap as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_set_trap" => Some(crate::molt_decimal_context_set_trap as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_from_str" => Some(crate::molt_decimal_from_str as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_from_int" => Some(crate::molt_decimal_from_int as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_clone" => Some(crate::molt_decimal_clone as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_drop" => Some(crate::molt_decimal_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_to_string" => Some(crate::molt_decimal_to_string as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_as_tuple" => Some(crate::molt_decimal_as_tuple as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_to_float" => Some(crate::molt_decimal_to_float as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_div" => Some(crate::molt_decimal_div as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_quantize" => Some(crate::molt_decimal_quantize as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_compare" => Some(crate::molt_decimal_compare as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_compare_total" => Some(crate::molt_decimal_compare_total as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_normalize" => Some(crate::molt_decimal_normalize as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_exp" => Some(crate::molt_decimal_exp as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_abs" => Some(crate::molt_decimal_abs as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_add" => Some(crate::molt_decimal_add as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_adjusted" => Some(crate::molt_decimal_adjusted as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_as_integer_ratio" => Some(crate::molt_decimal_as_integer_ratio as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_copy_abs" => Some(crate::molt_decimal_copy_abs as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_copy_negate" => Some(crate::molt_decimal_copy_negate as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_copy_sign" => Some(crate::molt_decimal_copy_sign as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_floordiv" => Some(crate::molt_decimal_floordiv as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_fma" => Some(crate::molt_decimal_fma as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_from_float" => Some(crate::molt_decimal_from_float as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_is_finite" => Some(crate::molt_decimal_is_finite as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_is_infinite" => Some(crate::molt_decimal_is_infinite as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_is_nan" => Some(crate::molt_decimal_is_nan as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_is_normal" => Some(crate::molt_decimal_is_normal as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_is_signed" => Some(crate::molt_decimal_is_signed as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_is_subnormal" => Some(crate::molt_decimal_is_subnormal as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_is_zero" => Some(crate::molt_decimal_is_zero as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_ln" => Some(crate::molt_decimal_ln as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_log10" => Some(crate::molt_decimal_log10 as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_max" => Some(crate::molt_decimal_max as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_min" => Some(crate::molt_decimal_min as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_mod" => Some(crate::molt_decimal_mod as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_mul" => Some(crate::molt_decimal_mul as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_neg" => Some(crate::molt_decimal_neg as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_next_minus" => Some(crate::molt_decimal_next_minus as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_next_plus" => Some(crate::molt_decimal_next_plus as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_number_class" => Some(crate::molt_decimal_number_class as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_pos" => Some(crate::molt_decimal_pos as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_pow" => Some(crate::molt_decimal_pow as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_remainder_near" => Some(crate::molt_decimal_remainder_near as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_same_quantum" => Some(crate::molt_decimal_same_quantum as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_scaleb" => Some(crate::molt_decimal_scaleb as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_sqrt" => Some(crate::molt_decimal_sqrt as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_sub" => Some(crate::molt_decimal_sub as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_to_eng_string" => Some(crate::molt_decimal_to_eng_string as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_to_int" => Some(crate::molt_decimal_to_int as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_to_integral_exact" => Some(crate::molt_decimal_to_integral_exact as *const () as usize as u64),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_to_integral_value" => Some(crate::molt_decimal_to_integral_value as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_difflib_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_difflib_context_diff" => Some(crate::molt_difflib_context_diff as *const () as usize as u64),
+        "molt_difflib_get_close_matches" => Some(crate::molt_difflib_get_close_matches as *const () as usize as u64),
+        "molt_difflib_get_matching_blocks" => Some(crate::molt_difflib_get_matching_blocks as *const () as usize as u64),
+        "molt_difflib_get_opcodes" => Some(crate::molt_difflib_get_opcodes as *const () as usize as u64),
+        "molt_difflib_is_junk" => Some(crate::molt_difflib_is_junk as *const () as usize as u64),
+        "molt_difflib_ndiff" => Some(crate::molt_difflib_ndiff as *const () as usize as u64),
+        "molt_difflib_quick_ratio" => Some(crate::molt_difflib_quick_ratio as *const () as usize as u64),
+        "molt_difflib_ratio" => Some(crate::molt_difflib_ratio as *const () as usize as u64),
+        "molt_difflib_unified_diff" => Some(crate::molt_difflib_unified_diff as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_email_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_email")]
         "molt_email_message_new" => Some(crate::molt_email_message_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_message_from_bytes" => Some(crate::molt_email_message_from_bytes as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_message_set" => Some(crate::molt_email_message_set as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_message_get" => Some(crate::molt_email_message_get as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_message_set_content" => Some(crate::molt_email_message_set_content as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_message_add_alternative" => Some(crate::molt_email_message_add_alternative as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_message_add_attachment" => Some(crate::molt_email_message_add_attachment as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_message_is_multipart" => Some(crate::molt_email_message_is_multipart as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_message_payload" => Some(crate::molt_email_message_payload as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_message_content" => Some(crate::molt_email_message_content as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_message_content_type" => Some(crate::molt_email_message_content_type as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_message_filename" => Some(crate::molt_email_message_filename as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_message_as_string" => Some(crate::molt_email_message_as_string as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_message_items" => Some(crate::molt_email_message_items as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_message_drop" => Some(crate::molt_email_message_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_utils_make_msgid" => Some(crate::molt_email_utils_make_msgid as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_utils_getaddresses" => Some(crate::molt_email_utils_getaddresses as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_utils_parsedate_tz" => Some(crate::molt_email_utils_parsedate_tz as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_utils_format_datetime" => Some(crate::molt_email_utils_format_datetime as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_utils_parsedate_to_datetime" => Some(crate::molt_email_utils_parsedate_to_datetime as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_policy_new" => Some(crate::molt_email_policy_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_headerregistry_value" => Some(crate::molt_email_headerregistry_value as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_header_encode_word" => Some(crate::molt_email_header_encode_word as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_address_addr_spec" => Some(crate::molt_email_address_addr_spec as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
         "molt_email_address_format" => Some(crate::molt_email_address_format as *const () as usize as u64),
-        "molt_asyncgen_shutdown" => Some(crate::molt_asyncgen_shutdown as *const () as usize as u64),
-        "molt_block_on" => Some(crate::molt_block_on as *const () as usize as u64),
-        "molt_chan_new" => Some(crate::molt_chan_new as *const () as usize as u64),
-        "molt_chan_send" => Some(crate::molt_chan_send as *const () as usize as u64),
-        "molt_chan_recv" => Some(crate::molt_chan_recv as *const () as usize as u64),
-        "molt_chan_try_send" => Some(crate::molt_chan_try_send as *const () as usize as u64),
-        "molt_chan_try_recv" => Some(crate::molt_chan_try_recv as *const () as usize as u64),
-        "molt_chan_send_blocking" => Some(crate::molt_chan_send_blocking as *const () as usize as u64),
-        "molt_chan_recv_blocking" => Some(crate::molt_chan_recv_blocking as *const () as usize as u64),
-        "molt_chan_drop" => Some(crate::molt_chan_drop as *const () as usize as u64),
-        "molt_pending" => Some(crate::molt_pending as *const () as usize as u64),
-        "molt_spawn" => Some(crate::molt_spawn as *const () as usize as u64),
-        "molt_async_sleep_new" => Some(crate::molt_async_sleep_new as *const () as usize as u64),
-        "molt_asyncio_wait_for_new" => Some(crate::molt_asyncio_wait_for_new as *const () as usize as u64),
-        "molt_asyncio_wait_new" => Some(crate::molt_asyncio_wait_new as *const () as usize as u64),
-        "molt_asyncio_gather_new" => Some(crate::molt_asyncio_gather_new as *const () as usize as u64),
-        "molt_asyncio_cancel_pending" => Some(crate::molt_asyncio_cancel_pending as *const () as usize as u64),
-        "molt_asyncio_ready_batch_run" => Some(crate::molt_asyncio_ready_batch_run as *const () as usize as u64),
-        "molt_asyncio_ready_queue_drain" => Some(crate::molt_asyncio_ready_queue_drain as *const () as usize as u64),
-        "molt_asyncio_waiters_notify" => Some(crate::molt_asyncio_waiters_notify as *const () as usize as u64),
-        "molt_asyncio_waiters_notify_exception" => Some(crate::molt_asyncio_waiters_notify_exception as *const () as usize as u64),
-        "molt_asyncio_waiters_remove" => Some(crate::molt_asyncio_waiters_remove as *const () as usize as u64),
-        "molt_asyncio_barrier_release" => Some(crate::molt_asyncio_barrier_release as *const () as usize as u64),
-        "molt_asyncio_condition_wait_for_step" => Some(crate::molt_asyncio_condition_wait_for_step as *const () as usize as u64),
-        "molt_asyncio_future_transfer" => Some(crate::molt_asyncio_future_transfer as *const () as usize as u64),
-        "molt_asyncio_event_waiters_cleanup" => Some(crate::molt_asyncio_event_waiters_cleanup as *const () as usize as u64),
-        "molt_asyncio_task_registry_set" => Some(crate::molt_asyncio_task_registry_set as *const () as usize as u64),
-        "molt_asyncio_task_registry_get" => Some(crate::molt_asyncio_task_registry_get as *const () as usize as u64),
-        "molt_asyncio_task_registry_contains" => Some(crate::molt_asyncio_task_registry_contains as *const () as usize as u64),
-        "molt_asyncio_task_registry_current" => Some(crate::molt_asyncio_task_registry_current as *const () as usize as u64),
-        "molt_asyncio_task_registry_current_for_loop" => Some(crate::molt_asyncio_task_registry_current_for_loop as *const () as usize as u64),
-        "molt_asyncio_task_registry_pop" => Some(crate::molt_asyncio_task_registry_pop as *const () as usize as u64),
-        "molt_asyncio_task_registry_move" => Some(crate::molt_asyncio_task_registry_move as *const () as usize as u64),
-        "molt_asyncio_task_registry_values" => Some(crate::molt_asyncio_task_registry_values as *const () as usize as u64),
-        "molt_asyncio_task_registry_live" => Some(crate::molt_asyncio_task_registry_live as *const () as usize as u64),
-        "molt_asyncio_task_registry_live_set" => Some(crate::molt_asyncio_task_registry_live_set as *const () as usize as u64),
-        "molt_asyncio_event_waiters_register" => Some(crate::molt_asyncio_event_waiters_register as *const () as usize as u64),
-        "molt_asyncio_event_waiters_unregister" => Some(crate::molt_asyncio_event_waiters_unregister as *const () as usize as u64),
-        "molt_asyncio_event_waiters_cleanup_token" => Some(crate::molt_asyncio_event_waiters_cleanup_token as *const () as usize as u64),
-        "molt_asyncio_child_watcher_add" => Some(crate::molt_asyncio_child_watcher_add as *const () as usize as u64),
-        "molt_asyncio_child_watcher_remove" => Some(crate::molt_asyncio_child_watcher_remove as *const () as usize as u64),
-        "molt_asyncio_child_watcher_clear" => Some(crate::molt_asyncio_child_watcher_clear as *const () as usize as u64),
-        "molt_asyncio_child_watcher_pop" => Some(crate::molt_asyncio_child_watcher_pop as *const () as usize as u64),
-        "molt_asyncio_require_ssl_transport_support" => Some(crate::molt_asyncio_require_ssl_transport_support as *const () as usize as u64),
-        "molt_asyncio_ssl_transport_orchestrate" => Some(crate::molt_asyncio_ssl_transport_orchestrate as *const () as usize as u64),
-        "molt_asyncio_tls_client_connect_new" => Some(crate::molt_asyncio_tls_client_connect_new as *const () as usize as u64),
-        "molt_asyncio_tls_client_from_fd_new" => Some(crate::molt_asyncio_tls_client_from_fd_new as *const () as usize as u64),
-        "molt_asyncio_tls_server_payload" => Some(crate::molt_asyncio_tls_server_payload as *const () as usize as u64),
-        "molt_asyncio_tls_server_from_fd_new" => Some(crate::molt_asyncio_tls_server_from_fd_new as *const () as usize as u64),
-        "molt_asyncio_to_thread" => Some(crate::molt_asyncio_to_thread as *const () as usize as u64),
-        "molt_asyncio_require_unix_socket_support" => Some(crate::molt_asyncio_require_unix_socket_support as *const () as usize as u64),
-        "molt_asyncio_require_child_watcher_support" => Some(crate::molt_asyncio_require_child_watcher_support as *const () as usize as u64),
-        "molt_asyncio_running_loop_get" => Some(crate::molt_asyncio_running_loop_get as *const () as usize as u64),
-        "molt_asyncio_running_loop_set" => Some(crate::molt_asyncio_running_loop_set as *const () as usize as u64),
-        "molt_asyncio_event_loop_get" => Some(crate::molt_asyncio_event_loop_get as *const () as usize as u64),
-        "molt_asyncio_event_loop_get_current" => Some(crate::molt_asyncio_event_loop_get_current as *const () as usize as u64),
-        "molt_asyncio_event_loop_set" => Some(crate::molt_asyncio_event_loop_set as *const () as usize as u64),
-        "molt_asyncio_event_loop_policy_get" => Some(crate::molt_asyncio_event_loop_policy_get as *const () as usize as u64),
-        "molt_asyncio_event_loop_policy_set" => Some(crate::molt_asyncio_event_loop_policy_set as *const () as usize as u64),
-        "molt_asyncio_enter_task" => Some(crate::molt_asyncio_enter_task as *const () as usize as u64),
-        "molt_asyncio_leave_task" => Some(crate::molt_asyncio_leave_task as *const () as usize as u64),
-        "molt_asyncio_register_task" => Some(crate::molt_asyncio_register_task as *const () as usize as u64),
-        "molt_asyncio_unregister_task" => Some(crate::molt_asyncio_unregister_task as *const () as usize as u64),
-        "molt_asyncio_taskgroup_on_task_done" => Some(crate::molt_asyncio_taskgroup_on_task_done as *const () as usize as u64),
-        "molt_asyncio_taskgroup_request_cancel" => Some(crate::molt_asyncio_taskgroup_request_cancel as *const () as usize as u64),
-        "molt_asyncio_tasks_add_done_callback" => Some(crate::molt_asyncio_tasks_add_done_callback as *const () as usize as u64),
-        "molt_asyncio_task_cancel_apply" => Some(crate::molt_asyncio_task_cancel_apply as *const () as usize as u64),
-        "molt_asyncio_task_uncancel_apply" => Some(crate::molt_asyncio_task_uncancel_apply as *const () as usize as u64),
-        "molt_asyncio_future_invoke_callbacks" => Some(crate::molt_asyncio_future_invoke_callbacks as *const () as usize as u64),
-        "molt_asyncio_event_set_waiters" => Some(crate::molt_asyncio_event_set_waiters as *const () as usize as u64),
-        "molt_asyncio_loop_enqueue_handle" => Some(crate::molt_asyncio_loop_enqueue_handle as *const () as usize as u64),
-        "molt_asyncio_timer_handle_new" => Some(crate::molt_asyncio_timer_handle_new as *const () as usize as u64),
-        "molt_asyncio_timer_schedule" => Some(crate::molt_asyncio_timer_schedule as *const () as usize as u64),
-        "molt_asyncio_timer_handle_cancel" => Some(crate::molt_asyncio_timer_handle_cancel as *const () as usize as u64),
-        "molt_asyncio_fd_watcher_new" => Some(crate::molt_asyncio_fd_watcher_new as *const () as usize as u64),
-        "molt_asyncio_fd_watcher_register" => Some(crate::molt_asyncio_fd_watcher_register as *const () as usize as u64),
-        "molt_asyncio_fd_watcher_unregister" => Some(crate::molt_asyncio_fd_watcher_unregister as *const () as usize as u64),
-        "molt_asyncio_subprocess_stdio_normalize" => Some(crate::molt_asyncio_subprocess_stdio_normalize as *const () as usize as u64),
-        "molt_asyncio_server_accept_loop_new" => Some(crate::molt_asyncio_server_accept_loop_new as *const () as usize as u64),
-        "molt_asyncio_ready_runner_new" => Some(crate::molt_asyncio_ready_runner_new as *const () as usize as u64),
-        "molt_asyncio_stream_reader_read_new" => Some(crate::molt_asyncio_stream_reader_read_new as *const () as usize as u64),
-        "molt_asyncio_stream_reader_readline_new" => Some(crate::molt_asyncio_stream_reader_readline_new as *const () as usize as u64),
-        "molt_asyncio_stream_send_all_new" => Some(crate::molt_asyncio_stream_send_all_new as *const () as usize as u64),
-        "molt_asyncio_stream_buffer_snapshot" => Some(crate::molt_asyncio_stream_buffer_snapshot as *const () as usize as u64),
-        "molt_asyncio_stream_buffer_consume" => Some(crate::molt_asyncio_stream_buffer_consume as *const () as usize as u64),
-        "molt_asyncio_socket_reader_read_new" => Some(crate::molt_asyncio_socket_reader_read_new as *const () as usize as u64),
-        "molt_asyncio_socket_reader_readline_new" => Some(crate::molt_asyncio_socket_reader_readline_new as *const () as usize as u64),
-        "molt_asyncio_sock_recv_new" => Some(crate::molt_asyncio_sock_recv_new as *const () as usize as u64),
-        "molt_asyncio_sock_connect_new" => Some(crate::molt_asyncio_sock_connect_new as *const () as usize as u64),
-        "molt_asyncio_sock_accept_new" => Some(crate::molt_asyncio_sock_accept_new as *const () as usize as u64),
-        "molt_asyncio_sock_recv_into_new" => Some(crate::molt_asyncio_sock_recv_into_new as *const () as usize as u64),
-        "molt_asyncio_sock_sendall_new" => Some(crate::molt_asyncio_sock_sendall_new as *const () as usize as u64),
-        "molt_asyncio_sock_recvfrom_new" => Some(crate::molt_asyncio_sock_recvfrom_new as *const () as usize as u64),
-        "molt_asyncio_sock_recvfrom_into_new" => Some(crate::molt_asyncio_sock_recvfrom_into_new as *const () as usize as u64),
-        "molt_asyncio_sock_sendto_new" => Some(crate::molt_asyncio_sock_sendto_new as *const () as usize as u64),
-        "molt_time_monotonic" => Some(crate::molt_time_monotonic as *const () as usize as u64),
-        "molt_time_monotonic_ns" => Some(crate::molt_time_monotonic_ns as *const () as usize as u64),
-        "molt_time_perf_counter" => Some(crate::molt_time_perf_counter as *const () as usize as u64),
-        "molt_time_perf_counter_ns" => Some(crate::molt_time_perf_counter_ns as *const () as usize as u64),
-        "molt_time_time" => Some(crate::molt_time_time as *const () as usize as u64),
-        "molt_time_time_ns" => Some(crate::molt_time_time_ns as *const () as usize as u64),
-        "molt_time_process_time" => Some(crate::molt_time_process_time as *const () as usize as u64),
-        "molt_time_process_time_ns" => Some(crate::molt_time_process_time_ns as *const () as usize as u64),
-        "molt_time_localtime" => Some(crate::molt_time_localtime as *const () as usize as u64),
-        "molt_time_gmtime" => Some(crate::molt_time_gmtime as *const () as usize as u64),
-        "molt_time_strftime" => Some(crate::molt_time_strftime as *const () as usize as u64),
-        "molt_time_timezone" => Some(crate::molt_time_timezone as *const () as usize as u64),
-        "molt_time_daylight" => Some(crate::molt_time_daylight as *const () as usize as u64),
-        "molt_time_altzone" => Some(crate::molt_time_altzone as *const () as usize as u64),
-        "molt_time_tzname" => Some(crate::molt_time_tzname as *const () as usize as u64),
-        "molt_time_asctime" => Some(crate::molt_time_asctime as *const () as usize as u64),
-        "molt_time_mktime" => Some(crate::molt_time_mktime as *const () as usize as u64),
-        "molt_time_timegm" => Some(crate::molt_time_timegm as *const () as usize as u64),
-        "molt_time_get_clock_info" => Some(crate::molt_time_get_clock_info as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
+        "molt_email_quoprimime_header_check" => Some(crate::molt_email_quoprimime_header_check as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
+        "molt_email_quoprimime_body_check" => Some(crate::molt_email_quoprimime_body_check as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
+        "molt_email_quoprimime_header_length" => Some(crate::molt_email_quoprimime_header_length as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
+        "molt_email_quoprimime_body_length" => Some(crate::molt_email_quoprimime_body_length as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
+        "molt_email_quoprimime_quote" => Some(crate::molt_email_quoprimime_quote as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
+        "molt_email_quoprimime_unquote" => Some(crate::molt_email_quoprimime_unquote as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
+        "molt_email_quoprimime_header_encode" => Some(crate::molt_email_quoprimime_header_encode as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
+        "molt_email_quoprimime_header_decode" => Some(crate::molt_email_quoprimime_header_decode as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
+        "molt_email_quoprimime_body_encode" => Some(crate::molt_email_quoprimime_body_encode as *const () as usize as u64),
+        #[cfg(feature = "stdlib_email")]
+        "molt_email_quoprimime_decode" => Some(crate::molt_email_quoprimime_decode as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_enum_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_enum_init_member" => Some(crate::molt_enum_init_member as *const () as usize as u64),
+        "molt_enum_auto_value" => Some(crate::molt_enum_auto_value as *const () as usize as u64),
+        "molt_enum_flag_and" => Some(crate::molt_enum_flag_and as *const () as usize as u64),
+        "molt_enum_flag_contains" => Some(crate::molt_enum_flag_contains as *const () as usize as u64),
+        "molt_enum_flag_decompose" => Some(crate::molt_enum_flag_decompose as *const () as usize as u64),
+        "molt_enum_flag_invert" => Some(crate::molt_enum_flag_invert as *const () as usize as u64),
+        "molt_enum_flag_new" => Some(crate::molt_enum_flag_new as *const () as usize as u64),
+        "molt_enum_flag_or" => Some(crate::molt_enum_flag_or as *const () as usize as u64),
+        "molt_enum_flag_xor" => Some(crate::molt_enum_flag_xor as *const () as usize as u64),
+        "molt_enum_str_value" => Some(crate::molt_enum_str_value as *const () as usize as u64),
+        "molt_enum_unique_check" => Some(crate::molt_enum_unique_check as *const () as usize as u64),
+        "molt_enum_verify_member" => Some(crate::molt_enum_verify_member as *const () as usize as u64),
+        "molt_enum_is_auto" => Some(crate::molt_enum_is_auto as *const () as usize as u64),
+        "molt_enum_is_descriptor" => Some(crate::molt_enum_is_descriptor as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_errno_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_errno_constants" => Some(crate::molt_errno_constants as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_fcntl_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_fcntl_f_getfl" => Some(crate::molt_fcntl_f_getfl as *const () as usize as u64),
+        "molt_fcntl_f_setfl" => Some(crate::molt_fcntl_f_setfl as *const () as usize as u64),
+        "molt_fcntl_f_getfd" => Some(crate::molt_fcntl_f_getfd as *const () as usize as u64),
+        "molt_fcntl_f_setfd" => Some(crate::molt_fcntl_f_setfd as *const () as usize as u64),
+        "molt_fcntl_fd_cloexec" => Some(crate::molt_fcntl_fd_cloexec as *const () as usize as u64),
+        "molt_fcntl_o_nonblock" => Some(crate::molt_fcntl_o_nonblock as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_fnmatch_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_fnmatch" => Some(crate::molt_fnmatch as *const () as usize as u64),
+        "molt_fnmatchcase" => Some(crate::molt_fnmatchcase as *const () as usize as u64),
+        "molt_fnmatch_filter" => Some(crate::molt_fnmatch_filter as *const () as usize as u64),
+        "molt_fnmatch_translate" => Some(crate::molt_fnmatch_translate as *const () as usize as u64),
+        "molt_fnmatch_fnmatch" => Some(crate::molt_fnmatch_fnmatch as *const () as usize as u64),
+        "molt_fnmatch_fnmatchcase" => Some(crate::molt_fnmatch_fnmatchcase as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_fractions_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_fraction_abs" => Some(crate::molt_fraction_abs as *const () as usize as u64),
+        "molt_fraction_add" => Some(crate::molt_fraction_add as *const () as usize as u64),
+        "molt_fraction_as_integer_ratio" => Some(crate::molt_fraction_as_integer_ratio as *const () as usize as u64),
+        "molt_fraction_denominator" => Some(crate::molt_fraction_denominator as *const () as usize as u64),
+        "molt_fraction_drop" => Some(crate::molt_fraction_drop as *const () as usize as u64),
+        "molt_fraction_eq" => Some(crate::molt_fraction_eq as *const () as usize as u64),
+        "molt_fraction_floordiv" => Some(crate::molt_fraction_floordiv as *const () as usize as u64),
+        "molt_fraction_from_float" => Some(crate::molt_fraction_from_float as *const () as usize as u64),
+        "molt_fraction_from_str" => Some(crate::molt_fraction_from_str as *const () as usize as u64),
+        "molt_fraction_hash" => Some(crate::molt_fraction_hash as *const () as usize as u64),
+        "molt_fraction_le" => Some(crate::molt_fraction_le as *const () as usize as u64),
+        "molt_fraction_limit_denominator" => Some(crate::molt_fraction_limit_denominator as *const () as usize as u64),
+        "molt_fraction_lt" => Some(crate::molt_fraction_lt as *const () as usize as u64),
+        "molt_fraction_mod" => Some(crate::molt_fraction_mod as *const () as usize as u64),
+        "molt_fraction_mul" => Some(crate::molt_fraction_mul as *const () as usize as u64),
+        "molt_fraction_neg" => Some(crate::molt_fraction_neg as *const () as usize as u64),
+        "molt_fraction_new" => Some(crate::molt_fraction_new as *const () as usize as u64),
+        "molt_fraction_numerator" => Some(crate::molt_fraction_numerator as *const () as usize as u64),
+        "molt_fraction_pow" => Some(crate::molt_fraction_pow as *const () as usize as u64),
+        "molt_fraction_sub" => Some(crate::molt_fraction_sub as *const () as usize as u64),
+        "molt_fraction_to_float" => Some(crate::molt_fraction_to_float as *const () as usize as u64),
+        "molt_fraction_to_str" => Some(crate::molt_fraction_to_str as *const () as usize as u64),
+        "molt_fraction_truediv" => Some(crate::molt_fraction_truediv as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_functools_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_functools_kwd_mark" => Some(crate::molt_functools_kwd_mark as *const () as usize as u64),
+        "molt_functools_update_wrapper" => Some(crate::molt_functools_update_wrapper as *const () as usize as u64),
+        "molt_functools_wraps" => Some(crate::molt_functools_wraps as *const () as usize as u64),
+        "molt_functools_cmp_to_key" => Some(crate::molt_functools_cmp_to_key as *const () as usize as u64),
+        "molt_functools_total_ordering" => Some(crate::molt_functools_total_ordering as *const () as usize as u64),
+        "molt_functools_partial" => Some(crate::molt_functools_partial as *const () as usize as u64),
+        "molt_functools_reduce" => Some(crate::molt_functools_reduce as *const () as usize as u64),
+        "molt_functools_lru_cache" => Some(crate::molt_functools_lru_cache as *const () as usize as u64),
+        "molt_functools_singledispatch_new" => Some(crate::molt_functools_singledispatch_new as *const () as usize as u64),
+        "molt_functools_singledispatch_register" => Some(crate::molt_functools_singledispatch_register as *const () as usize as u64),
+        "molt_functools_singledispatch_call" => Some(crate::molt_functools_singledispatch_call as *const () as usize as u64),
+        "molt_functools_singledispatch_dispatch" => Some(crate::molt_functools_singledispatch_dispatch as *const () as usize as u64),
+        "molt_functools_singledispatch_registry" => Some(crate::molt_functools_singledispatch_registry as *const () as usize as u64),
+        "molt_functools_singledispatch_drop" => Some(crate::molt_functools_singledispatch_drop as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_gc_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_gc_collect" => Some(crate::molt_gc_collect as *const () as usize as u64),
+        "molt_gc_enable" => Some(crate::molt_gc_enable as *const () as usize as u64),
+        "molt_gc_disable" => Some(crate::molt_gc_disable as *const () as usize as u64),
+        "molt_gc_isenabled" => Some(crate::molt_gc_isenabled as *const () as usize as u64),
+        "molt_gc_set_threshold" => Some(crate::molt_gc_set_threshold as *const () as usize as u64),
+        "molt_gc_get_threshold" => Some(crate::molt_gc_get_threshold as *const () as usize as u64),
+        "molt_gc_set_debug" => Some(crate::molt_gc_set_debug as *const () as usize as u64),
+        "molt_gc_get_debug" => Some(crate::molt_gc_get_debug as *const () as usize as u64),
+        "molt_gc_get_count" => Some(crate::molt_gc_get_count as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_glob_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_glob_has_magic" => Some(crate::molt_glob_has_magic as *const () as usize as u64),
+        "molt_glob_escape" => Some(crate::molt_glob_escape as *const () as usize as u64),
+        "molt_glob_translate" => Some(crate::molt_glob_translate as *const () as usize as u64),
+        #[cfg(feature = "stdlib_fs_extra")]
+        "molt_glob_glob" => Some(crate::molt_glob_glob as *const () as usize as u64),
+        #[cfg(feature = "stdlib_fs_extra")]
+        "molt_glob_iglob" => Some(crate::molt_glob_iglob as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_graphlib_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_graphlib_new" => Some(crate::molt_graphlib_new as *const () as usize as u64),
+        "molt_graphlib_add" => Some(crate::molt_graphlib_add as *const () as usize as u64),
+        "molt_graphlib_prepare" => Some(crate::molt_graphlib_prepare as *const () as usize as u64),
+        "molt_graphlib_get_ready" => Some(crate::molt_graphlib_get_ready as *const () as usize as u64),
+        "molt_graphlib_is_active" => Some(crate::molt_graphlib_is_active as *const () as usize as u64),
+        "molt_graphlib_done" => Some(crate::molt_graphlib_done as *const () as usize as u64),
+        "molt_graphlib_static_order" => Some(crate::molt_graphlib_static_order as *const () as usize as u64),
+        "molt_graphlib_drop" => Some(crate::molt_graphlib_drop as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_heapq_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
         "molt_heapq_heapify" => Some(crate::molt_heapq_heapify as *const () as usize as u64),
         "molt_heapq_heappush" => Some(crate::molt_heapq_heappush as *const () as usize as u64),
         "molt_heapq_heappop" => Some(crate::molt_heapq_heappop as *const () as usize as u64),
@@ -2864,6 +4332,633 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_heapq_nsmallest" => Some(crate::molt_heapq_nsmallest as *const () as usize as u64),
         "molt_heapq_nlargest" => Some(crate::molt_heapq_nlargest as *const () as usize as u64),
         "molt_heapq_merge" => Some(crate::molt_heapq_merge as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_html_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_html_entities_codepoint2name" => Some(crate::molt_html_entities_codepoint2name as *const () as usize as u64),
+        "molt_html_entities_html5" => Some(crate::molt_html_entities_html5 as *const () as usize as u64),
+        "molt_html_entities_name2codepoint" => Some(crate::molt_html_entities_name2codepoint as *const () as usize as u64),
+        "molt_html_escape" => Some(crate::molt_html_escape as *const () as usize as u64),
+        "molt_html_parser_close" => Some(crate::molt_html_parser_close as *const () as usize as u64),
+        "molt_html_parser_drop" => Some(crate::molt_html_parser_drop as *const () as usize as u64),
+        "molt_html_parser_feed" => Some(crate::molt_html_parser_feed as *const () as usize as u64),
+        "molt_html_parser_new" => Some(crate::molt_html_parser_new as *const () as usize as u64),
+        "molt_html_unescape" => Some(crate::molt_html_unescape as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_http_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_cookiejar_new" => Some(crate::molt_http_cookiejar_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_cookiejar_len" => Some(crate::molt_http_cookiejar_len as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_cookiejar_clear" => Some(crate::molt_http_cookiejar_clear as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_cookiejar_extract" => Some(crate::molt_http_cookiejar_extract as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_cookiejar_header_for_url" => Some(crate::molt_http_cookiejar_header_for_url as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_cookies_parse" => Some(crate::molt_http_cookies_parse as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_cookies_render_morsel" => Some(crate::molt_http_cookies_render_morsel as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_execute" => Some(crate::molt_http_client_execute as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_connection_new" => Some(crate::molt_http_client_connection_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_connection_putrequest" => Some(crate::molt_http_client_connection_putrequest as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_connection_putheader" => Some(crate::molt_http_client_connection_putheader as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_connection_endheaders" => Some(crate::molt_http_client_connection_endheaders as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_connection_send" => Some(crate::molt_http_client_connection_send as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_connection_request" => Some(crate::molt_http_client_connection_request as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_connection_getresponse" => Some(crate::molt_http_client_connection_getresponse as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_connection_close" => Some(crate::molt_http_client_connection_close as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_connection_drop" => Some(crate::molt_http_client_connection_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_connection_get_buffer" => Some(crate::molt_http_client_connection_get_buffer as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_message_new" => Some(crate::molt_http_message_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_message_parse" => Some(crate::molt_http_message_parse as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_message_set_raw" => Some(crate::molt_http_message_set_raw as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_message_get" => Some(crate::molt_http_message_get as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_message_get_all" => Some(crate::molt_http_message_get_all as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_message_items" => Some(crate::molt_http_message_items as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_message_contains" => Some(crate::molt_http_message_contains as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_message_len" => Some(crate::molt_http_message_len as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_message_drop" => Some(crate::molt_http_message_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_parse_header_pairs" => Some(crate::molt_http_parse_header_pairs as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_urlsplit" => Some(crate::molt_http_client_urlsplit as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_response_read" => Some(crate::molt_http_client_response_read as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_response_close" => Some(crate::molt_http_client_response_close as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_response_drop" => Some(crate::molt_http_client_response_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_response_getstatus" => Some(crate::molt_http_client_response_getstatus as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_response_getreason" => Some(crate::molt_http_client_response_getreason as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_response_getheader" => Some(crate::molt_http_client_response_getheader as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_response_getheaders" => Some(crate::molt_http_client_response_getheaders as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_client_response_message" => Some(crate::molt_http_client_response_message as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_server_read_request" => Some(crate::molt_http_server_read_request as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_server_compute_close_connection" => Some(crate::molt_http_server_compute_close_connection as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_server_handle_one_request" => Some(crate::molt_http_server_handle_one_request as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_server_send_response" => Some(crate::molt_http_server_send_response as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_server_send_response_only" => Some(crate::molt_http_server_send_response_only as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_server_send_header" => Some(crate::molt_http_server_send_header as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_server_end_headers" => Some(crate::molt_http_server_end_headers as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_server_send_error" => Some(crate::molt_http_server_send_error as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_server_version_string" => Some(crate::molt_http_server_version_string as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_server_date_time_string" => Some(crate::molt_http_server_date_time_string as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_status_reason" => Some(crate::molt_http_status_reason as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_status_constants" => Some(crate::molt_http_status_constants as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_http_status_responses" => Some(crate::molt_http_status_responses as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_imghdr_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_imghdr_test" => Some(crate::molt_imghdr_test as *const () as usize as u64),
+        "molt_imghdr_what" => Some(crate::molt_imghdr_what as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_importlib_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_importlib_extension_loader_payload" => Some(crate::molt_importlib_extension_loader_payload as *const () as usize as u64),
+        "molt_importlib_sourceless_loader_payload" => Some(crate::molt_importlib_sourceless_loader_payload as *const () as usize as u64),
+        "molt_importlib_coerce_module_name" => Some(crate::molt_importlib_coerce_module_name as *const () as usize as u64),
+        "molt_importlib_source_exec_payload" => Some(crate::molt_importlib_source_exec_payload as *const () as usize as u64),
+        "molt_importlib_zip_source_exec_payload" => Some(crate::molt_importlib_zip_source_exec_payload as *const () as usize as u64),
+        "molt_importlib_zip_read_entry" => Some(crate::molt_importlib_zip_read_entry as *const () as usize as u64),
+        "molt_importlib_read_file" => Some(crate::molt_importlib_read_file as *const () as usize as u64),
+        "molt_importlib_exec_restricted_source" => Some(crate::molt_importlib_exec_restricted_source as *const () as usize as u64),
+        "molt_importlib_exec_extension" => Some(crate::molt_importlib_exec_extension as *const () as usize as u64),
+        "molt_importlib_exec_sourceless" => Some(crate::molt_importlib_exec_sourceless as *const () as usize as u64),
+        "molt_importlib_module_spec_is_package" => Some(crate::molt_importlib_module_spec_is_package as *const () as usize as u64),
+        "molt_importlib_path_is_archive_member" => Some(crate::molt_importlib_path_is_archive_member as *const () as usize as u64),
+        "molt_importlib_package_root_from_origin" => Some(crate::molt_importlib_package_root_from_origin as *const () as usize as u64),
+        "molt_importlib_validate_resource_name" => Some(crate::molt_importlib_validate_resource_name as *const () as usize as u64),
+        "molt_importlib_cache_from_source" => Some(crate::molt_importlib_cache_from_source as *const () as usize as u64),
+        "molt_importlib_decode_source" => Some(crate::molt_importlib_decode_source as *const () as usize as u64),
+        "molt_importlib_source_hash" => Some(crate::molt_importlib_source_hash as *const () as usize as u64),
+        "molt_importlib_source_from_cache" => Some(crate::molt_importlib_source_from_cache as *const () as usize as u64),
+        "molt_importlib_resolve_name" => Some(crate::molt_importlib_resolve_name as *const () as usize as u64),
+        "molt_importlib_known_absent_missing_name" => Some(crate::molt_importlib_known_absent_missing_name as *const () as usize as u64),
+        "molt_importlib_import_optional" => Some(crate::molt_importlib_import_optional as *const () as usize as u64),
+        "molt_importlib_import_or_fallback" => Some(crate::molt_importlib_import_or_fallback as *const () as usize as u64),
+        "molt_importlib_import_required" => Some(crate::molt_importlib_import_required as *const () as usize as u64),
+        "molt_importlib_load_module_shim" => Some(crate::molt_importlib_load_module_shim as *const () as usize as u64),
+        "molt_importlib_frozen_payload" => Some(crate::molt_importlib_frozen_payload as *const () as usize as u64),
+        "molt_importlib_frozen_external_payload" => Some(crate::molt_importlib_frozen_external_payload as *const () as usize as u64),
+        "molt_importlib_import_module" => Some(crate::molt_importlib_import_module as *const () as usize as u64),
+        "molt_importlib_find_in_path" => Some(crate::molt_importlib_find_in_path as *const () as usize as u64),
+        "molt_importlib_find_in_path_package_context" => Some(crate::molt_importlib_find_in_path_package_context as *const () as usize as u64),
+        "molt_importlib_find_spec" => Some(crate::molt_importlib_find_spec as *const () as usize as u64),
+        "molt_importlib_find_spec_orchestrate" => Some(crate::molt_importlib_find_spec_orchestrate as *const () as usize as u64),
+        "molt_importlib_pathfinder_find_spec" => Some(crate::molt_importlib_pathfinder_find_spec as *const () as usize as u64),
+        "molt_importlib_filefinder_find_spec" => Some(crate::molt_importlib_filefinder_find_spec as *const () as usize as u64),
+        "molt_importlib_invalidate_caches" => Some(crate::molt_importlib_invalidate_caches as *const () as usize as u64),
+        "molt_importlib_filefinder_invalidate" => Some(crate::molt_importlib_filefinder_invalidate as *const () as usize as u64),
+        "molt_importlib_reload" => Some(crate::molt_importlib_reload as *const () as usize as u64),
+        "molt_importlib_bootstrap_payload" => Some(crate::molt_importlib_bootstrap_payload as *const () as usize as u64),
+        "molt_importlib_runtime_modules" => Some(crate::molt_importlib_runtime_modules as *const () as usize as u64),
+        "molt_importlib_ensure_default_meta_path" => Some(crate::molt_importlib_ensure_default_meta_path as *const () as usize as u64),
+        "molt_importlib_module_from_spec" => Some(crate::molt_importlib_module_from_spec as *const () as usize as u64),
+        "molt_importlib_spec_from_loader" => Some(crate::molt_importlib_spec_from_loader as *const () as usize as u64),
+        "molt_importlib_spec_from_file_location" => Some(crate::molt_importlib_spec_from_file_location as *const () as usize as u64),
+        "molt_importlib_set_module_state" => Some(crate::molt_importlib_set_module_state as *const () as usize as u64),
+        "molt_importlib_stabilize_module_state" => Some(crate::molt_importlib_stabilize_module_state as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_normalize_path" => Some(crate::molt_importlib_resources_normalize_path as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_only" => Some(crate::molt_importlib_resources_only as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_contents_from_package" => Some(crate::molt_importlib_resources_contents_from_package as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_is_resource_from_package" => Some(crate::molt_importlib_resources_is_resource_from_package as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_resource_path_from_package" => Some(crate::molt_importlib_resources_resource_path_from_package as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_read_text_from_package" => Some(crate::molt_importlib_resources_read_text_from_package as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_reader_resource_path_from_roots" => Some(crate::molt_importlib_resources_reader_resource_path_from_roots as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_reader_open_resource_bytes_from_roots" => Some(crate::molt_importlib_resources_reader_open_resource_bytes_from_roots as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_reader_is_resource_from_roots" => Some(crate::molt_importlib_resources_reader_is_resource_from_roots as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_reader_contents_from_roots" => Some(crate::molt_importlib_resources_reader_contents_from_roots as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_path_payload" => Some(crate::molt_importlib_resources_path_payload as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_package_info" => Some(crate::molt_importlib_resources_package_info as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_open_resource_bytes_from_package" => Some(crate::molt_importlib_resources_open_resource_bytes_from_package as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_open_resource_bytes_from_package_parts" => Some(crate::molt_importlib_resources_open_resource_bytes_from_package_parts as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_read_text_from_package_parts" => Some(crate::molt_importlib_resources_read_text_from_package_parts as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_contents_from_package_parts" => Some(crate::molt_importlib_resources_contents_from_package_parts as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_is_resource_from_package_parts" => Some(crate::molt_importlib_resources_is_resource_from_package_parts as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_resource_path_from_package_parts" => Some(crate::molt_importlib_resources_resource_path_from_package_parts as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_as_file_enter" => Some(crate::molt_importlib_resources_as_file_enter as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_as_file_exit" => Some(crate::molt_importlib_resources_as_file_exit as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_joinpath" => Some(crate::molt_importlib_resources_joinpath as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_open_mode_is_text" => Some(crate::molt_importlib_resources_open_mode_is_text as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_package_leaf_name" => Some(crate::molt_importlib_resources_package_leaf_name as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_module_name" => Some(crate::molt_importlib_resources_module_name as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_loader_reader" => Some(crate::molt_importlib_resources_loader_reader as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_files_payload" => Some(crate::molt_importlib_resources_files_payload as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_reader_files_traversable" => Some(crate::molt_importlib_resources_reader_files_traversable as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_reader_roots" => Some(crate::molt_importlib_resources_reader_roots as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_reader_contents" => Some(crate::molt_importlib_resources_reader_contents as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_reader_resource_path" => Some(crate::molt_importlib_resources_reader_resource_path as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_reader_is_resource" => Some(crate::molt_importlib_resources_reader_is_resource as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_reader_open_resource_bytes" => Some(crate::molt_importlib_resources_reader_open_resource_bytes as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_reader_child_names" => Some(crate::molt_importlib_resources_reader_child_names as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_reader_exists" => Some(crate::molt_importlib_resources_reader_exists as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_resources_reader_is_dir" => Some(crate::molt_importlib_resources_reader_is_dir as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_metadata_dist_paths" => Some(crate::molt_importlib_metadata_dist_paths as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_metadata_entry_points_select_payload" => Some(crate::molt_importlib_metadata_entry_points_select_payload as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_metadata_entry_points_filter_payload" => Some(crate::molt_importlib_metadata_entry_points_filter_payload as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_metadata_normalize_name" => Some(crate::molt_importlib_metadata_normalize_name as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_metadata_payload" => Some(crate::molt_importlib_metadata_payload as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_metadata_distributions_payload" => Some(crate::molt_importlib_metadata_distributions_payload as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_metadata_record_payload" => Some(crate::molt_importlib_metadata_record_payload as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_metadata_packages_distributions_payload" => Some(crate::molt_importlib_metadata_packages_distributions_payload as *const () as usize as u64),
+        #[cfg(feature = "stdlib_importlib_extra")]
+        "molt_importlib_metadata_types_payload" => Some(crate::molt_importlib_metadata_types_payload as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_inspect_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_inspect_cleandoc" => Some(crate::molt_inspect_cleandoc as *const () as usize as u64),
+        "molt_inspect_currentframe" => Some(crate::molt_inspect_currentframe as *const () as usize as u64),
+        "molt_inspect_getdoc" => Some(crate::molt_inspect_getdoc as *const () as usize as u64),
+        "molt_inspect_isfunction" => Some(crate::molt_inspect_isfunction as *const () as usize as u64),
+        "molt_inspect_isclass" => Some(crate::molt_inspect_isclass as *const () as usize as u64),
+        "molt_inspect_ismodule" => Some(crate::molt_inspect_ismodule as *const () as usize as u64),
+        "molt_inspect_iscoroutine" => Some(crate::molt_inspect_iscoroutine as *const () as usize as u64),
+        "molt_inspect_iscoroutinefunction" => Some(crate::molt_inspect_iscoroutinefunction as *const () as usize as u64),
+        "molt_inspect_isasyncgenfunction" => Some(crate::molt_inspect_isasyncgenfunction as *const () as usize as u64),
+        "molt_inspect_isgeneratorfunction" => Some(crate::molt_inspect_isgeneratorfunction as *const () as usize as u64),
+        "molt_inspect_isawaitable" => Some(crate::molt_inspect_isawaitable as *const () as usize as u64),
+        "molt_inspect_getgeneratorstate" => Some(crate::molt_inspect_getgeneratorstate as *const () as usize as u64),
+        "molt_inspect_getasyncgenstate" => Some(crate::molt_inspect_getasyncgenstate as *const () as usize as u64),
+        "molt_inspect_getcoroutinestate" => Some(crate::molt_inspect_getcoroutinestate as *const () as usize as u64),
+        "molt_inspect_signature_data" => Some(crate::molt_inspect_signature_data as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_io_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_file_open" => Some(crate::molt_file_open as *const () as usize as u64),
+        "molt_file_open_ex" => Some(crate::molt_file_open_ex as *const () as usize as u64),
+        "molt_file_read" => Some(crate::molt_file_read as *const () as usize as u64),
+        "molt_file_readline" => Some(crate::molt_file_readline as *const () as usize as u64),
+        "molt_file_readlines" => Some(crate::molt_file_readlines as *const () as usize as u64),
+        "molt_file_read1" => Some(crate::molt_file_read1 as *const () as usize as u64),
+        "molt_file_readall" => Some(crate::molt_file_readall as *const () as usize as u64),
+        "molt_file_readinto" => Some(crate::molt_file_readinto as *const () as usize as u64),
+        "molt_file_readinto1" => Some(crate::molt_file_readinto1 as *const () as usize as u64),
+        "molt_file_peek" => Some(crate::molt_file_peek as *const () as usize as u64),
+        "molt_file_getvalue" => Some(crate::molt_file_getvalue as *const () as usize as u64),
+        "molt_file_getbuffer" => Some(crate::molt_file_getbuffer as *const () as usize as u64),
+        "molt_file_detach" => Some(crate::molt_file_detach as *const () as usize as u64),
+        "molt_file_reconfigure" => Some(crate::molt_file_reconfigure as *const () as usize as u64),
+        "molt_file_seek" => Some(crate::molt_file_seek as *const () as usize as u64),
+        "molt_file_tell" => Some(crate::molt_file_tell as *const () as usize as u64),
+        "molt_file_fileno" => Some(crate::molt_file_fileno as *const () as usize as u64),
+        "molt_file_truncate" => Some(crate::molt_file_truncate as *const () as usize as u64),
+        "molt_file_readable" => Some(crate::molt_file_readable as *const () as usize as u64),
+        "molt_file_writable" => Some(crate::molt_file_writable as *const () as usize as u64),
+        "molt_file_seekable" => Some(crate::molt_file_seekable as *const () as usize as u64),
+        "molt_file_isatty" => Some(crate::molt_file_isatty as *const () as usize as u64),
+        "molt_file_iter" => Some(crate::molt_file_iter as *const () as usize as u64),
+        "molt_file_next" => Some(crate::molt_file_next as *const () as usize as u64),
+        "molt_file_enter" => Some(crate::molt_file_enter as *const () as usize as u64),
+        "molt_file_exit" => Some(crate::molt_file_exit as *const () as usize as u64),
+        "molt_file_exit_method" => Some(crate::molt_file_exit_method as *const () as usize as u64),
+        "molt_file_write" => Some(crate::molt_file_write as *const () as usize as u64),
+        "molt_file_writelines" => Some(crate::molt_file_writelines as *const () as usize as u64),
+        "molt_file_flush" => Some(crate::molt_file_flush as *const () as usize as u64),
+        "molt_file_close" => Some(crate::molt_file_close as *const () as usize as u64),
+        "molt_file_io_new" => Some(crate::molt_file_io_new as *const () as usize as u64),
+        "molt_file_io_init" => Some(crate::molt_file_io_init as *const () as usize as u64),
+        "molt_buffered_new" => Some(crate::molt_buffered_new as *const () as usize as u64),
+        "molt_buffered_init" => Some(crate::molt_buffered_init as *const () as usize as u64),
+        "molt_text_io_wrapper_new" => Some(crate::molt_text_io_wrapper_new as *const () as usize as u64),
+        "molt_text_io_wrapper_init" => Some(crate::molt_text_io_wrapper_init as *const () as usize as u64),
+        "molt_bytesio_new" => Some(crate::molt_bytesio_new as *const () as usize as u64),
+        "molt_bytesio_init" => Some(crate::molt_bytesio_init as *const () as usize as u64),
+        "molt_stringio_new" => Some(crate::molt_stringio_new as *const () as usize as u64),
+        "molt_stringio_init" => Some(crate::molt_stringio_init as *const () as usize as u64),
+        "molt_io_wait" => Some(crate::molt_io_wait as *const () as usize as u64),
+        "molt_io_wait_new" => Some(crate::molt_io_wait_new as *const () as usize as u64),
+        "molt_stream_new" => Some(crate::molt_stream_new as *const () as usize as u64),
+        "molt_stream_clone" => Some(crate::molt_stream_clone as *const () as usize as u64),
+        "molt_stream_send_obj" => Some(crate::molt_stream_send_obj as *const () as usize as u64),
+        "molt_stream_recv" => Some(crate::molt_stream_recv as *const () as usize as u64),
+        "molt_stream_close" => Some(crate::molt_stream_close as *const () as usize as u64),
+        "molt_stream_drop" => Some(crate::molt_stream_drop as *const () as usize as u64),
+        "molt_stream_reader_new" => Some(crate::molt_stream_reader_new as *const () as usize as u64),
+        "molt_stream_reader_read" => Some(crate::molt_stream_reader_read as *const () as usize as u64),
+        "molt_stream_reader_readline" => Some(crate::molt_stream_reader_readline as *const () as usize as u64),
+        "molt_stream_reader_at_eof" => Some(crate::molt_stream_reader_at_eof as *const () as usize as u64),
+        "molt_stream_reader_drop" => Some(crate::molt_stream_reader_drop as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_ipaddress_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_drop" => Some(crate::molt_ipaddress_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_int" => Some(crate::molt_ipaddress_v4_int as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_is_global" => Some(crate::molt_ipaddress_v4_is_global as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_is_link_local" => Some(crate::molt_ipaddress_v4_is_link_local as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_is_loopback" => Some(crate::molt_ipaddress_v4_is_loopback as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_is_multicast" => Some(crate::molt_ipaddress_v4_is_multicast as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_is_private" => Some(crate::molt_ipaddress_v4_is_private as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_is_reserved" => Some(crate::molt_ipaddress_v4_is_reserved as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_max_prefixlen" => Some(crate::molt_ipaddress_v4_max_prefixlen as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_network_broadcast" => Some(crate::molt_ipaddress_v4_network_broadcast as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_network_contains" => Some(crate::molt_ipaddress_v4_network_contains as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_network_drop" => Some(crate::molt_ipaddress_v4_network_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_network_hosts" => Some(crate::molt_ipaddress_v4_network_hosts as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_network_new" => Some(crate::molt_ipaddress_v4_network_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_network_prefixlen" => Some(crate::molt_ipaddress_v4_network_prefixlen as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_network_str" => Some(crate::molt_ipaddress_v4_network_str as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_new" => Some(crate::molt_ipaddress_v4_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_packed" => Some(crate::molt_ipaddress_v4_packed as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_str" => Some(crate::molt_ipaddress_v4_str as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v4_version" => Some(crate::molt_ipaddress_v4_version as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v6_drop" => Some(crate::molt_ipaddress_v6_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v6_int" => Some(crate::molt_ipaddress_v6_int as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v6_is_global" => Some(crate::molt_ipaddress_v6_is_global as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v6_is_link_local" => Some(crate::molt_ipaddress_v6_is_link_local as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v6_is_loopback" => Some(crate::molt_ipaddress_v6_is_loopback as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v6_is_multicast" => Some(crate::molt_ipaddress_v6_is_multicast as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v6_is_private" => Some(crate::molt_ipaddress_v6_is_private as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v6_new" => Some(crate::molt_ipaddress_v6_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v6_packed" => Some(crate::molt_ipaddress_v6_packed as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v6_str" => Some(crate::molt_ipaddress_v6_str as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ipaddress_v6_version" => Some(crate::molt_ipaddress_v6_version as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_itertools_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_itertools_kwd_mark" => Some(crate::molt_itertools_kwd_mark as *const () as usize as u64),
+        "molt_itertools_chain" => Some(crate::molt_itertools_chain as *const () as usize as u64),
+        "molt_itertools_chain_from_iterable" => Some(crate::molt_itertools_chain_from_iterable as *const () as usize as u64),
+        "molt_itertools_islice" => Some(crate::molt_itertools_islice as *const () as usize as u64),
+        "molt_itertools_repeat" => Some(crate::molt_itertools_repeat as *const () as usize as u64),
+        "molt_itertools_count" => Some(crate::molt_itertools_count as *const () as usize as u64),
+        "molt_itertools_cycle" => Some(crate::molt_itertools_cycle as *const () as usize as u64),
+        "molt_itertools_accumulate" => Some(crate::molt_itertools_accumulate as *const () as usize as u64),
+        "molt_itertools_batched" => Some(crate::molt_itertools_batched as *const () as usize as u64),
+        "molt_itertools_compress" => Some(crate::molt_itertools_compress as *const () as usize as u64),
+        "molt_itertools_combinations_with_replacement" => Some(crate::molt_itertools_combinations_with_replacement as *const () as usize as u64),
+        "molt_itertools_dropwhile" => Some(crate::molt_itertools_dropwhile as *const () as usize as u64),
+        "molt_itertools_filterfalse" => Some(crate::molt_itertools_filterfalse as *const () as usize as u64),
+        "molt_itertools_pairwise" => Some(crate::molt_itertools_pairwise as *const () as usize as u64),
+        "molt_itertools_product" => Some(crate::molt_itertools_product as *const () as usize as u64),
+        "molt_itertools_permutations" => Some(crate::molt_itertools_permutations as *const () as usize as u64),
+        "molt_itertools_combinations" => Some(crate::molt_itertools_combinations as *const () as usize as u64),
+        "molt_itertools_groupby" => Some(crate::molt_itertools_groupby as *const () as usize as u64),
+        "molt_itertools_starmap" => Some(crate::molt_itertools_starmap as *const () as usize as u64),
+        "molt_itertools_takewhile" => Some(crate::molt_itertools_takewhile as *const () as usize as u64),
+        "molt_itertools_tee" => Some(crate::molt_itertools_tee as *const () as usize as u64),
+        "molt_itertools_zip_longest" => Some(crate::molt_itertools_zip_longest as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_json_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_json_parse_scalar_obj" => Some(crate::molt_json_parse_scalar_obj as *const () as usize as u64),
+        "molt_json_encode_basestring_obj" => Some(crate::molt_json_encode_basestring_obj as *const () as usize as u64),
+        "molt_json_encode_basestring_ascii_obj" => Some(crate::molt_json_encode_basestring_ascii_obj as *const () as usize as u64),
+        "molt_json_scanstring_obj" => Some(crate::molt_json_scanstring_obj as *const () as usize as u64),
+        "molt_json_detect_encoding" => Some(crate::molt_json_detect_encoding as *const () as usize as u64),
+        "molt_json_dumps" => Some(crate::molt_json_dumps as *const () as usize as u64),
+        "molt_json_dumps_ex" => Some(crate::molt_json_dumps_ex as *const () as usize as u64),
+        "molt_json_loads" => Some(crate::molt_json_loads as *const () as usize as u64),
+        "molt_json_loads_ex" => Some(crate::molt_json_loads_ex as *const () as usize as u64),
+        "molt_json_parse_scalar" => Some(crate::molt_json_parse_scalar as *const () as usize as u64),
+        "molt_json_raw_decode_ex" => Some(crate::molt_json_raw_decode_ex as *const () as usize as u64),
+        "molt_json_calc_lineno_col" => Some(crate::molt_json_calc_lineno_col as *const () as usize as u64),
+        "molt_json_coerce_text" => Some(crate::molt_json_coerce_text as *const () as usize as u64),
+        "molt_json_default_separators" => Some(crate::molt_json_default_separators as *const () as usize as u64),
+        "molt_json_format_decode_error" => Some(crate::molt_json_format_decode_error as *const () as usize as u64),
+        "molt_json_parse_error_msg" => Some(crate::molt_json_parse_error_msg as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_keyword_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_keyword_lists" => Some(crate::molt_keyword_lists as *const () as usize as u64),
+        "molt_keyword_iskeyword" => Some(crate::molt_keyword_iskeyword as *const () as usize as u64),
+        "molt_keyword_issoftkeyword" => Some(crate::molt_keyword_issoftkeyword as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_linecache_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_linecache_loader_get_source" => Some(crate::molt_linecache_loader_get_source as *const () as usize as u64),
+        "molt_linecache_detect_encoding" => Some(crate::molt_linecache_detect_encoding as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_locale_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_locale_setlocale" => Some(crate::molt_locale_setlocale as *const () as usize as u64),
+        "molt_locale_getpreferredencoding" => Some(crate::molt_locale_getpreferredencoding as *const () as usize as u64),
+        "molt_locale_getlocale" => Some(crate::molt_locale_getlocale as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_lock_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_lock_new" => Some(crate::molt_lock_new as *const () as usize as u64),
+        "molt_lock_acquire" => Some(crate::molt_lock_acquire as *const () as usize as u64),
+        "molt_lock_release" => Some(crate::molt_lock_release as *const () as usize as u64),
+        "molt_lock_locked" => Some(crate::molt_lock_locked as *const () as usize as u64),
+        "molt_lock_drop" => Some(crate::molt_lock_drop as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_logging_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_percent_style_format" => Some(crate::molt_logging_percent_style_format as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_config_dict" => Some(crate::molt_logging_config_dict as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_config_valid_ident" => Some(crate::molt_logging_config_valid_ident as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_config_file_config" => Some(crate::molt_logging_config_file_config as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_config_listen" => Some(crate::molt_logging_config_listen as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_config_stop_listening" => Some(crate::molt_logging_config_stop_listening as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_runtime_ready" => Some(crate::molt_logging_runtime_ready as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_record_new" => Some(crate::molt_logging_record_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_record_get_message" => Some(crate::molt_logging_record_get_message as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_record_get_attr" => Some(crate::molt_logging_record_get_attr as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_record_drop" => Some(crate::molt_logging_record_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_formatter_new" => Some(crate::molt_logging_formatter_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_formatter_format" => Some(crate::molt_logging_formatter_format as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_formatter_format_time" => Some(crate::molt_logging_formatter_format_time as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_formatter_drop" => Some(crate::molt_logging_formatter_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_handler_new" => Some(crate::molt_logging_handler_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_handler_emit" => Some(crate::molt_logging_handler_emit as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_handler_set_level" => Some(crate::molt_logging_handler_set_level as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_handler_set_formatter" => Some(crate::molt_logging_handler_set_formatter as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_handler_flush" => Some(crate::molt_logging_handler_flush as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_handler_close" => Some(crate::molt_logging_handler_close as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_handler_drop" => Some(crate::molt_logging_handler_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_stream_handler_new" => Some(crate::molt_logging_stream_handler_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_stream_handler_emit" => Some(crate::molt_logging_stream_handler_emit as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_logger_new" => Some(crate::molt_logging_logger_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_logger_set_level" => Some(crate::molt_logging_logger_set_level as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_logger_add_handler" => Some(crate::molt_logging_logger_add_handler as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_logger_remove_handler" => Some(crate::molt_logging_logger_remove_handler as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_logger_log" => Some(crate::molt_logging_logger_log as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_logger_is_enabled_for" => Some(crate::molt_logging_logger_is_enabled_for as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_logger_get_effective_level" => Some(crate::molt_logging_logger_get_effective_level as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_logger_drop" => Some(crate::molt_logging_logger_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_manager_get_logger" => Some(crate::molt_logging_manager_get_logger as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_root_logger" => Some(crate::molt_logging_root_logger as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_basic_config" => Some(crate::molt_logging_basic_config as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_shutdown" => Some(crate::molt_logging_shutdown as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_get_level_name" => Some(crate::molt_logging_get_level_name as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_add_level_name" => Some(crate::molt_logging_add_level_name as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_level_to_int" => Some(crate::molt_logging_level_to_int as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_file_handler_emit" => Some(crate::molt_logging_file_handler_emit as *const () as usize as u64),
+        #[cfg(feature = "stdlib_logging")]
+        "molt_logging_filter_check" => Some(crate::molt_logging_filter_check as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_math_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
         "molt_math_log" => Some(crate::molt_math_log as *const () as usize as u64),
         "molt_math_log2" => Some(crate::molt_math_log2 as *const () as usize as u64),
         "molt_math_log10" => Some(crate::molt_math_log10 as *const () as usize as u64),
@@ -2917,86 +5012,117 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_math_asinh" => Some(crate::molt_math_asinh as *const () as usize as u64),
         "molt_math_acosh" => Some(crate::molt_math_acosh as *const () as usize as u64),
         "molt_math_atanh" => Some(crate::molt_math_atanh as *const () as usize as u64),
-        "molt_statistics_mean" => Some(crate::molt_statistics_mean as *const () as usize as u64),
-        "molt_statistics_fmean" => Some(crate::molt_statistics_fmean as *const () as usize as u64),
-        "molt_statistics_stdev" => Some(crate::molt_statistics_stdev as *const () as usize as u64),
-        "molt_statistics_variance" => Some(crate::molt_statistics_variance as *const () as usize as u64),
-        "molt_statistics_pvariance" => Some(crate::molt_statistics_pvariance as *const () as usize as u64),
-        "molt_statistics_pstdev" => Some(crate::molt_statistics_pstdev as *const () as usize as u64),
-        "molt_statistics_median" => Some(crate::molt_statistics_median as *const () as usize as u64),
-        "molt_statistics_median_low" => Some(crate::molt_statistics_median_low as *const () as usize as u64),
-        "molt_statistics_median_high" => Some(crate::molt_statistics_median_high as *const () as usize as u64),
-        "molt_statistics_median_grouped" => Some(crate::molt_statistics_median_grouped as *const () as usize as u64),
-        "molt_statistics_mode" => Some(crate::molt_statistics_mode as *const () as usize as u64),
-        "molt_statistics_multimode" => Some(crate::molt_statistics_multimode as *const () as usize as u64),
-        "molt_statistics_quantiles" => Some(crate::molt_statistics_quantiles as *const () as usize as u64),
-        "molt_statistics_harmonic_mean" => Some(crate::molt_statistics_harmonic_mean as *const () as usize as u64),
-        "molt_statistics_geometric_mean" => Some(crate::molt_statistics_geometric_mean as *const () as usize as u64),
-        "molt_statistics_covariance" => Some(crate::molt_statistics_covariance as *const () as usize as u64),
-        "molt_statistics_correlation" => Some(crate::molt_statistics_correlation as *const () as usize as u64),
-        "molt_statistics_linear_regression" => Some(crate::molt_statistics_linear_regression as *const () as usize as u64),
-        "molt_statistics_normal_dist_new" => Some(crate::molt_statistics_normal_dist_new as *const () as usize as u64),
-        "molt_statistics_normal_dist_samples" => Some(crate::molt_statistics_normal_dist_samples as *const () as usize as u64),
-        "molt_statistics_normal_dist_inv_cdf" => Some(crate::molt_statistics_normal_dist_inv_cdf as *const () as usize as u64),
-        "molt_statistics_normal_dist_pdf" => Some(crate::molt_statistics_normal_dist_pdf as *const () as usize as u64),
-        "molt_statistics_normal_dist_cdf" => Some(crate::molt_statistics_normal_dist_cdf as *const () as usize as u64),
-        "molt_statistics_normal_dist_zscore" => Some(crate::molt_statistics_normal_dist_zscore as *const () as usize as u64),
-        "molt_statistics_normal_dist_overlap" => Some(crate::molt_statistics_normal_dist_overlap as *const () as usize as u64),
-        "molt_decimal_context_new" => Some(crate::molt_decimal_context_new as *const () as usize as u64),
-        "molt_decimal_context_get_current" => Some(crate::molt_decimal_context_get_current as *const () as usize as u64),
-        "molt_decimal_context_set_current" => Some(crate::molt_decimal_context_set_current as *const () as usize as u64),
-        "molt_decimal_context_copy" => Some(crate::molt_decimal_context_copy as *const () as usize as u64),
-        "molt_decimal_context_drop" => Some(crate::molt_decimal_context_drop as *const () as usize as u64),
-        "molt_decimal_context_get_prec" => Some(crate::molt_decimal_context_get_prec as *const () as usize as u64),
-        "molt_decimal_context_set_prec" => Some(crate::molt_decimal_context_set_prec as *const () as usize as u64),
-        "molt_decimal_context_get_rounding" => Some(crate::molt_decimal_context_get_rounding as *const () as usize as u64),
-        "molt_decimal_context_set_rounding" => Some(crate::molt_decimal_context_set_rounding as *const () as usize as u64),
-        "molt_decimal_context_clear_flags" => Some(crate::molt_decimal_context_clear_flags as *const () as usize as u64),
-        "molt_decimal_context_get_flag" => Some(crate::molt_decimal_context_get_flag as *const () as usize as u64),
-        "molt_decimal_context_set_flag" => Some(crate::molt_decimal_context_set_flag as *const () as usize as u64),
-        "molt_decimal_context_get_trap" => Some(crate::molt_decimal_context_get_trap as *const () as usize as u64),
-        "molt_decimal_context_set_trap" => Some(crate::molt_decimal_context_set_trap as *const () as usize as u64),
-        "molt_decimal_from_str" => Some(crate::molt_decimal_from_str as *const () as usize as u64),
-        "molt_decimal_from_int" => Some(crate::molt_decimal_from_int as *const () as usize as u64),
-        "molt_decimal_clone" => Some(crate::molt_decimal_clone as *const () as usize as u64),
-        "molt_decimal_drop" => Some(crate::molt_decimal_drop as *const () as usize as u64),
-        "molt_decimal_to_string" => Some(crate::molt_decimal_to_string as *const () as usize as u64),
-        "molt_decimal_as_tuple" => Some(crate::molt_decimal_as_tuple as *const () as usize as u64),
-        "molt_decimal_to_float" => Some(crate::molt_decimal_to_float as *const () as usize as u64),
-        "molt_decimal_div" => Some(crate::molt_decimal_div as *const () as usize as u64),
-        "molt_decimal_quantize" => Some(crate::molt_decimal_quantize as *const () as usize as u64),
-        "molt_decimal_compare" => Some(crate::molt_decimal_compare as *const () as usize as u64),
-        "molt_decimal_compare_total" => Some(crate::molt_decimal_compare_total as *const () as usize as u64),
-        "molt_decimal_normalize" => Some(crate::molt_decimal_normalize as *const () as usize as u64),
-        "molt_decimal_exp" => Some(crate::molt_decimal_exp as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hash_new" => Some(crate::molt_hash_new as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hash_update" => Some(crate::molt_hash_update as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hash_copy" => Some(crate::molt_hash_copy as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hash_digest" => Some(crate::molt_hash_digest as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hash_drop" => Some(crate::molt_hash_drop as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hmac_new" => Some(crate::molt_hmac_new as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hmac_update" => Some(crate::molt_hmac_update as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hmac_copy" => Some(crate::molt_hmac_copy as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hmac_digest" => Some(crate::molt_hmac_digest as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hmac_drop" => Some(crate::molt_hmac_drop as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_compare_digest" => Some(crate::molt_compare_digest as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_compression_streams_buffer_size" => Some(crate::molt_compression_streams_buffer_size as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_pbkdf2_hmac" => Some(crate::molt_pbkdf2_hmac as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_scrypt" => Some(crate::molt_scrypt as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_memoryview_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_memoryview_new" => Some(crate::molt_memoryview_new as *const () as usize as u64),
+        "molt_memoryview_from_flags" => Some(crate::molt_memoryview_from_flags as *const () as usize as u64),
+        "molt_memoryview_cast" => Some(crate::molt_memoryview_cast as *const () as usize as u64),
+        "molt_memoryview_tobytes" => Some(crate::molt_memoryview_tobytes as *const () as usize as u64),
+        "molt_memoryview_tolist" => Some(crate::molt_memoryview_tolist as *const () as usize as u64),
+        "molt_memoryview_count" => Some(crate::molt_memoryview_count as *const () as usize as u64),
+        "molt_memoryview_index" => Some(crate::molt_memoryview_index as *const () as usize as u64),
+        "molt_memoryview_hex" => Some(crate::molt_memoryview_hex as *const () as usize as u64),
+        "molt_memoryview_release" => Some(crate::molt_memoryview_release as *const () as usize as u64),
+        "molt_memoryview_toreadonly" => Some(crate::molt_memoryview_toreadonly as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_multiprocessing_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_multiprocessing_codec_dumps" => Some(crate::molt_multiprocessing_codec_dumps as *const () as usize as u64),
+        "molt_multiprocessing_codec_loads" => Some(crate::molt_multiprocessing_codec_loads as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_opcode_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_opcode_payload_312_json" => Some(crate::molt_opcode_payload_312_json as *const () as usize as u64),
+        "molt_opcode_metadata_payload_314_json" => Some(crate::molt_opcode_metadata_payload_314_json as *const () as usize as u64),
+        "molt_opcode_get_specialization_stats" => Some(crate::molt_opcode_get_specialization_stats as *const () as usize as u64),
+        "molt_opcode_stack_effect" => Some(crate::molt_opcode_stack_effect as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_operator_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_operator_abs" => Some(crate::molt_operator_abs as *const () as usize as u64),
+        "molt_operator_add" => Some(crate::molt_operator_add as *const () as usize as u64),
+        "molt_operator_sub" => Some(crate::molt_operator_sub as *const () as usize as u64),
+        "molt_operator_mul" => Some(crate::molt_operator_mul as *const () as usize as u64),
+        "molt_operator_matmul" => Some(crate::molt_operator_matmul as *const () as usize as u64),
+        "molt_operator_truediv" => Some(crate::molt_operator_truediv as *const () as usize as u64),
+        "molt_operator_floordiv" => Some(crate::molt_operator_floordiv as *const () as usize as u64),
+        "molt_operator_mod" => Some(crate::molt_operator_mod as *const () as usize as u64),
+        "molt_operator_pow" => Some(crate::molt_operator_pow as *const () as usize as u64),
+        "molt_operator_lshift" => Some(crate::molt_operator_lshift as *const () as usize as u64),
+        "molt_operator_rshift" => Some(crate::molt_operator_rshift as *const () as usize as u64),
+        "molt_operator_and" => Some(crate::molt_operator_and as *const () as usize as u64),
+        "molt_operator_or" => Some(crate::molt_operator_or as *const () as usize as u64),
+        "molt_operator_xor" => Some(crate::molt_operator_xor as *const () as usize as u64),
+        "molt_operator_neg" => Some(crate::molt_operator_neg as *const () as usize as u64),
+        "molt_operator_pos" => Some(crate::molt_operator_pos as *const () as usize as u64),
+        "molt_operator_invert" => Some(crate::molt_operator_invert as *const () as usize as u64),
+        "molt_operator_not" => Some(crate::molt_operator_not as *const () as usize as u64),
+        "molt_operator_truth" => Some(crate::molt_operator_truth as *const () as usize as u64),
+        "molt_operator_eq" => Some(crate::molt_operator_eq as *const () as usize as u64),
+        "molt_operator_ne" => Some(crate::molt_operator_ne as *const () as usize as u64),
+        "molt_operator_lt" => Some(crate::molt_operator_lt as *const () as usize as u64),
+        "molt_operator_le" => Some(crate::molt_operator_le as *const () as usize as u64),
+        "molt_operator_gt" => Some(crate::molt_operator_gt as *const () as usize as u64),
+        "molt_operator_ge" => Some(crate::molt_operator_ge as *const () as usize as u64),
+        "molt_operator_is" => Some(crate::molt_operator_is as *const () as usize as u64),
+        "molt_operator_is_not" => Some(crate::molt_operator_is_not as *const () as usize as u64),
+        "molt_operator_contains" => Some(crate::molt_operator_contains as *const () as usize as u64),
+        "molt_operator_getitem" => Some(crate::molt_operator_getitem as *const () as usize as u64),
+        "molt_operator_setitem" => Some(crate::molt_operator_setitem as *const () as usize as u64),
+        "molt_operator_delitem" => Some(crate::molt_operator_delitem as *const () as usize as u64),
+        "molt_operator_countof" => Some(crate::molt_operator_countof as *const () as usize as u64),
+        "molt_operator_length_hint" => Some(crate::molt_operator_length_hint as *const () as usize as u64),
+        "molt_operator_concat" => Some(crate::molt_operator_concat as *const () as usize as u64),
+        "molt_operator_iconcat" => Some(crate::molt_operator_iconcat as *const () as usize as u64),
+        "molt_operator_iadd" => Some(crate::molt_operator_iadd as *const () as usize as u64),
+        "molt_operator_isub" => Some(crate::molt_operator_isub as *const () as usize as u64),
+        "molt_operator_imul" => Some(crate::molt_operator_imul as *const () as usize as u64),
+        "molt_operator_imatmul" => Some(crate::molt_operator_imatmul as *const () as usize as u64),
+        "molt_operator_itruediv" => Some(crate::molt_operator_itruediv as *const () as usize as u64),
+        "molt_operator_ifloordiv" => Some(crate::molt_operator_ifloordiv as *const () as usize as u64),
+        "molt_operator_imod" => Some(crate::molt_operator_imod as *const () as usize as u64),
+        "molt_operator_ipow" => Some(crate::molt_operator_ipow as *const () as usize as u64),
+        "molt_operator_ilshift" => Some(crate::molt_operator_ilshift as *const () as usize as u64),
+        "molt_operator_irshift" => Some(crate::molt_operator_irshift as *const () as usize as u64),
+        "molt_operator_iand" => Some(crate::molt_operator_iand as *const () as usize as u64),
+        "molt_operator_ior" => Some(crate::molt_operator_ior as *const () as usize as u64),
+        "molt_operator_ixor" => Some(crate::molt_operator_ixor as *const () as usize as u64),
+        "molt_operator_index" => Some(crate::molt_operator_index as *const () as usize as u64),
+        "molt_operator_itemgetter" => Some(crate::molt_operator_itemgetter as *const () as usize as u64),
+        "molt_operator_attrgetter" => Some(crate::molt_operator_attrgetter as *const () as usize as u64),
+        "molt_operator_methodcaller" => Some(crate::molt_operator_methodcaller as *const () as usize as u64),
+        "molt_operator_itemgetter_type" => Some(crate::molt_operator_itemgetter_type as *const () as usize as u64),
+        "molt_operator_attrgetter_type" => Some(crate::molt_operator_attrgetter_type as *const () as usize as u64),
+        "molt_operator_methodcaller_type" => Some(crate::molt_operator_methodcaller_type as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_os_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
         "molt_os_open" => Some(crate::molt_os_open as *const () as usize as u64),
         "molt_os_open_flags" => Some(crate::molt_os_open_flags as *const () as usize as u64),
         "molt_os_dup" => Some(crate::molt_os_dup as *const () as usize as u64),
@@ -3014,25 +5140,83 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_os_fstat" => Some(crate::molt_os_fstat as *const () as usize as u64),
         "molt_os_rename" => Some(crate::molt_os_rename as *const () as usize as u64),
         "molt_os_replace" => Some(crate::molt_os_replace as *const () as usize as u64),
-        "molt_getcwd" => Some(crate::molt_getcwd as *const () as usize as u64),
-        "molt_getpid" => Some(crate::molt_getpid as *const () as usize as u64),
-        "molt_signal_raise" => Some(crate::molt_signal_raise as *const () as usize as u64),
-        "molt_env_get" => Some(crate::molt_env_get as *const () as usize as u64),
-        "molt_env_snapshot" => Some(crate::molt_env_snapshot as *const () as usize as u64),
-        "molt_env_set" => Some(crate::molt_env_set as *const () as usize as u64),
-        "molt_env_unset" => Some(crate::molt_env_unset as *const () as usize as u64),
-        "molt_env_len" => Some(crate::molt_env_len as *const () as usize as u64),
-        "molt_env_contains" => Some(crate::molt_env_contains as *const () as usize as u64),
-        "molt_env_popitem" => Some(crate::molt_env_popitem as *const () as usize as u64),
-        "molt_env_clear" => Some(crate::molt_env_clear as *const () as usize as u64),
-        "molt_env_putenv" => Some(crate::molt_env_putenv as *const () as usize as u64),
-        "molt_env_unsetenv" => Some(crate::molt_env_unsetenv as *const () as usize as u64),
-        "molt_locale_setlocale" => Some(crate::molt_locale_setlocale as *const () as usize as u64),
-        "molt_locale_getpreferredencoding" => Some(crate::molt_locale_getpreferredencoding as *const () as usize as u64),
-        "molt_locale_getlocale" => Some(crate::molt_locale_getlocale as *const () as usize as u64),
-        "molt_gettext_gettext" => Some(crate::molt_gettext_gettext as *const () as usize as u64),
-        "molt_gettext_ngettext" => Some(crate::molt_gettext_ngettext as *const () as usize as u64),
-        "molt_errno_constants" => Some(crate::molt_errno_constants as *const () as usize as u64),
+        "molt_os_access" => Some(crate::molt_os_access as *const () as usize as u64),
+        "molt_os_altsep" => Some(crate::molt_os_altsep as *const () as usize as u64),
+        "molt_os_chdir" => Some(crate::molt_os_chdir as *const () as usize as u64),
+        "molt_os_chmod" => Some(crate::molt_os_chmod as *const () as usize as u64),
+        "molt_os_cpu_count" => Some(crate::molt_os_cpu_count as *const () as usize as u64),
+        "molt_os_curdir" => Some(crate::molt_os_curdir as *const () as usize as u64),
+        "molt_os_devnull" => Some(crate::molt_os_devnull as *const () as usize as u64),
+        "molt_os_dup2" => Some(crate::molt_os_dup2 as *const () as usize as u64),
+        "molt_os_extsep" => Some(crate::molt_os_extsep as *const () as usize as u64),
+        "molt_os_fdopen" => Some(crate::molt_os_fdopen as *const () as usize as u64),
+        "molt_os_ftruncate" => Some(crate::molt_os_ftruncate as *const () as usize as u64),
+        "molt_os_get_terminal_size" => Some(crate::molt_os_get_terminal_size as *const () as usize as u64),
+        "molt_os_getcwd" => Some(crate::molt_os_getcwd as *const () as usize as u64),
+        "molt_os_getegid" => Some(crate::molt_os_getegid as *const () as usize as u64),
+        "molt_os_geteuid" => Some(crate::molt_os_geteuid as *const () as usize as u64),
+        "molt_os_getgid" => Some(crate::molt_os_getgid as *const () as usize as u64),
+        "molt_os_getloadavg" => Some(crate::molt_os_getloadavg as *const () as usize as u64),
+        "molt_os_getlogin" => Some(crate::molt_os_getlogin as *const () as usize as u64),
+        "molt_os_getpgrp" => Some(crate::molt_os_getpgrp as *const () as usize as u64),
+        "molt_os_getpid" => Some(crate::molt_os_getpid as *const () as usize as u64),
+        "molt_os_getppid" => Some(crate::molt_os_getppid as *const () as usize as u64),
+        "molt_os_getuid" => Some(crate::molt_os_getuid as *const () as usize as u64),
+        "molt_os_isatty" => Some(crate::molt_os_isatty as *const () as usize as u64),
+        "molt_os_kill" => Some(crate::molt_os_kill as *const () as usize as u64),
+        "molt_os_linesep" => Some(crate::molt_os_linesep as *const () as usize as u64),
+        "molt_os_link" => Some(crate::molt_os_link as *const () as usize as u64),
+        "molt_os_lseek" => Some(crate::molt_os_lseek as *const () as usize as u64),
+        "molt_os_listdir" => Some(crate::molt_os_listdir as *const () as usize as u64),
+        "molt_os_mkdir" => Some(crate::molt_os_mkdir as *const () as usize as u64),
+        "molt_os_pardir" => Some(crate::molt_os_pardir as *const () as usize as u64),
+        "molt_os_path_commonpath" => Some(crate::molt_os_path_commonpath as *const () as usize as u64),
+        "molt_os_path_commonprefix" => Some(crate::molt_os_path_commonprefix as *const () as usize as u64),
+        "molt_os_path_getatime" => Some(crate::molt_os_path_getatime as *const () as usize as u64),
+        "molt_os_path_getctime" => Some(crate::molt_os_path_getctime as *const () as usize as u64),
+        "molt_os_path_getmtime" => Some(crate::molt_os_path_getmtime as *const () as usize as u64),
+        "molt_os_path_getsize" => Some(crate::molt_os_path_getsize as *const () as usize as u64),
+        "molt_os_path_realpath" => Some(crate::molt_os_path_realpath as *const () as usize as u64),
+        "molt_os_path_samefile" => Some(crate::molt_os_path_samefile as *const () as usize as u64),
+        "molt_os_pathsep" => Some(crate::molt_os_pathsep as *const () as usize as u64),
+        "molt_os_readlink" => Some(crate::molt_os_readlink as *const () as usize as u64),
+        "molt_os_removedirs" => Some(crate::molt_os_removedirs as *const () as usize as u64),
+        "molt_os_rmdir" => Some(crate::molt_os_rmdir as *const () as usize as u64),
+        "molt_os_scandir" => Some(crate::molt_os_scandir as *const () as usize as u64),
+        "molt_os_sendfile" => Some(crate::molt_os_sendfile as *const () as usize as u64),
+        "molt_os_sep" => Some(crate::molt_os_sep as *const () as usize as u64),
+        "molt_os_setpgrp" => Some(crate::molt_os_setpgrp as *const () as usize as u64),
+        "molt_os_setsid" => Some(crate::molt_os_setsid as *const () as usize as u64),
+        "molt_os_symlink" => Some(crate::molt_os_symlink as *const () as usize as u64),
+        "molt_os_sysconf" => Some(crate::molt_os_sysconf as *const () as usize as u64),
+        "molt_os_sysconf_names" => Some(crate::molt_os_sysconf_names as *const () as usize as u64),
+        "molt_os_truncate" => Some(crate::molt_os_truncate as *const () as usize as u64),
+        "molt_os_umask" => Some(crate::molt_os_umask as *const () as usize as u64),
+        "molt_os_uname" => Some(crate::molt_os_uname as *const () as usize as u64),
+        "molt_os_utime" => Some(crate::molt_os_utime as *const () as usize as u64),
+        "molt_os_waitpid" => Some(crate::molt_os_waitpid as *const () as usize as u64),
+        "molt_os_walk" => Some(crate::molt_os_walk as *const () as usize as u64),
+        "molt_os_wifexited" => Some(crate::molt_os_wifexited as *const () as usize as u64),
+        "molt_os_wexitstatus" => Some(crate::molt_os_wexitstatus as *const () as usize as u64),
+        "molt_os_wifsignaled" => Some(crate::molt_os_wifsignaled as *const () as usize as u64),
+        "molt_os_wtermsig" => Some(crate::molt_os_wtermsig as *const () as usize as u64),
+        "molt_os_wifstopped" => Some(crate::molt_os_wifstopped as *const () as usize as u64),
+        "molt_os_wstopsig" => Some(crate::molt_os_wstopsig as *const () as usize as u64),
+        "molt_os_fspath" => Some(crate::molt_os_fspath as *const () as usize as u64),
+        "molt_os_environ" => Some(crate::molt_os_environ as *const () as usize as u64),
+        "molt_os_makedirs" => Some(crate::molt_os_makedirs as *const () as usize as u64),
+        "molt_os_path_join" => Some(crate::molt_os_path_join as *const () as usize as u64),
+        "molt_os_path_exists" => Some(crate::molt_os_path_exists as *const () as usize as u64),
+        "molt_os_path_isfile" => Some(crate::molt_os_path_isfile as *const () as usize as u64),
+        "molt_os_path_isdir" => Some(crate::molt_os_path_isdir as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_pathlib_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
         "molt_path_exists" => Some(crate::molt_path_exists as *const () as usize as u64),
         "molt_path_isdir" => Some(crate::molt_path_isdir as *const () as usize as u64),
         "molt_path_isfile" => Some(crate::molt_path_isfile as *const () as usize as u64),
@@ -3076,191 +5260,133 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_path_expanduser" => Some(crate::molt_path_expanduser as *const () as usize as u64),
         "molt_path_match" => Some(crate::molt_path_match as *const () as usize as u64),
         "molt_path_glob" => Some(crate::molt_path_glob as *const () as usize as u64),
-        "molt_glob_has_magic" => Some(crate::molt_glob_has_magic as *const () as usize as u64),
-        "molt_glob_escape" => Some(crate::molt_glob_escape as *const () as usize as u64),
-        "molt_glob_translate" => Some(crate::molt_glob_translate as *const () as usize as u64),
-        "molt_glob" => Some(crate::molt_glob as *const () as usize as u64),
-        "molt_io_class" => Some(crate::molt_io_class as *const () as usize as u64),
-        "molt_file_open" => Some(crate::molt_file_open as *const () as usize as u64),
-        "molt_file_open_ex" => Some(crate::molt_file_open_ex as *const () as usize as u64),
-        "molt_file_read" => Some(crate::molt_file_read as *const () as usize as u64),
-        "molt_file_readline" => Some(crate::molt_file_readline as *const () as usize as u64),
-        "molt_file_readlines" => Some(crate::molt_file_readlines as *const () as usize as u64),
-        "molt_file_read1" => Some(crate::molt_file_read1 as *const () as usize as u64),
-        "molt_file_readall" => Some(crate::molt_file_readall as *const () as usize as u64),
-        "molt_file_readinto" => Some(crate::molt_file_readinto as *const () as usize as u64),
-        "molt_file_readinto1" => Some(crate::molt_file_readinto1 as *const () as usize as u64),
-        "molt_file_peek" => Some(crate::molt_file_peek as *const () as usize as u64),
-        "molt_file_getvalue" => Some(crate::molt_file_getvalue as *const () as usize as u64),
-        "molt_file_getbuffer" => Some(crate::molt_file_getbuffer as *const () as usize as u64),
-        "molt_file_detach" => Some(crate::molt_file_detach as *const () as usize as u64),
-        "molt_file_reconfigure" => Some(crate::molt_file_reconfigure as *const () as usize as u64),
-        "molt_file_seek" => Some(crate::molt_file_seek as *const () as usize as u64),
-        "molt_file_tell" => Some(crate::molt_file_tell as *const () as usize as u64),
-        "molt_file_fileno" => Some(crate::molt_file_fileno as *const () as usize as u64),
-        "molt_file_truncate" => Some(crate::molt_file_truncate as *const () as usize as u64),
-        "molt_file_readable" => Some(crate::molt_file_readable as *const () as usize as u64),
-        "molt_file_writable" => Some(crate::molt_file_writable as *const () as usize as u64),
-        "molt_file_seekable" => Some(crate::molt_file_seekable as *const () as usize as u64),
-        "molt_file_isatty" => Some(crate::molt_file_isatty as *const () as usize as u64),
-        "molt_file_iter" => Some(crate::molt_file_iter as *const () as usize as u64),
-        "molt_file_next" => Some(crate::molt_file_next as *const () as usize as u64),
-        "molt_file_enter" => Some(crate::molt_file_enter as *const () as usize as u64),
-        "molt_file_exit" => Some(crate::molt_file_exit as *const () as usize as u64),
-        "molt_file_exit_method" => Some(crate::molt_file_exit_method as *const () as usize as u64),
-        "molt_file_write" => Some(crate::molt_file_write as *const () as usize as u64),
-        "molt_file_writelines" => Some(crate::molt_file_writelines as *const () as usize as u64),
-        "molt_file_flush" => Some(crate::molt_file_flush as *const () as usize as u64),
-        "molt_file_close" => Some(crate::molt_file_close as *const () as usize as u64),
-        "molt_file_io_new" => Some(crate::molt_file_io_new as *const () as usize as u64),
-        "molt_file_io_init" => Some(crate::molt_file_io_init as *const () as usize as u64),
-        "molt_buffered_new" => Some(crate::molt_buffered_new as *const () as usize as u64),
-        "molt_buffered_init" => Some(crate::molt_buffered_init as *const () as usize as u64),
-        "molt_text_io_wrapper_new" => Some(crate::molt_text_io_wrapper_new as *const () as usize as u64),
-        "molt_text_io_wrapper_init" => Some(crate::molt_text_io_wrapper_init as *const () as usize as u64),
-        "molt_bytesio_new" => Some(crate::molt_bytesio_new as *const () as usize as u64),
-        "molt_bytesio_init" => Some(crate::molt_bytesio_init as *const () as usize as u64),
-        "molt_stringio_new" => Some(crate::molt_stringio_new as *const () as usize as u64),
-        "molt_stringio_init" => Some(crate::molt_stringio_init as *const () as usize as u64),
-        "molt_repr_from_obj" => Some(crate::molt_repr_from_obj as *const () as usize as u64),
-        "molt_str_repeat" => Some(crate::molt_str_repeat as *const () as usize as u64),
-        "molt_string_capitalize" => Some(crate::molt_string_capitalize as *const () as usize as u64),
-        "molt_string_template_scan" => Some(crate::molt_string_template_scan as *const () as usize as u64),
-        "molt_string_template_is_valid" => Some(crate::molt_string_template_is_valid as *const () as usize as u64),
-        "molt_string_template_get_identifiers" => Some(crate::molt_string_template_get_identifiers as *const () as usize as u64),
-        "molt_string_formatter_parse" => Some(crate::molt_string_formatter_parse as *const () as usize as u64),
-        "molt_string_formatter_field_name_split" => Some(crate::molt_string_formatter_field_name_split as *const () as usize as u64),
-        "molt_codecs_decode" => Some(crate::molt_codecs_decode as *const () as usize as u64),
-        "molt_codecs_encode" => Some(crate::molt_codecs_encode as *const () as usize as u64),
-        "molt_codecs_lookup_name" => Some(crate::molt_codecs_lookup_name as *const () as usize as u64),
-        "molt_encodings_aliases_map" => Some(crate::molt_encodings_aliases_map as *const () as usize as u64),
-        "molt_binascii_a2b_base64" => Some(crate::molt_binascii_a2b_base64 as *const () as usize as u64),
-        "molt_binascii_b2a_base64" => Some(crate::molt_binascii_b2a_base64 as *const () as usize as u64),
-        "molt_binascii_a2b_hex" => Some(crate::molt_binascii_a2b_hex as *const () as usize as u64),
-        "molt_binascii_b2a_hex" => Some(crate::molt_binascii_b2a_hex as *const () as usize as u64),
-        "molt_binascii_a2b_qp" => Some(crate::molt_binascii_a2b_qp as *const () as usize as u64),
-        "molt_binascii_b2a_qp" => Some(crate::molt_binascii_b2a_qp as *const () as usize as u64),
-        "molt_binascii_a2b_uu" => Some(crate::molt_binascii_a2b_uu as *const () as usize as u64),
-        "molt_binascii_b2a_uu" => Some(crate::molt_binascii_b2a_uu as *const () as usize as u64),
-        "molt_binascii_crc32" => Some(crate::molt_binascii_crc32 as *const () as usize as u64),
-        "molt_binascii_crc_hqx" => Some(crate::molt_binascii_crc_hqx as *const () as usize as u64),
-        "molt_uu_codec_encode" => Some(crate::molt_uu_codec_encode as *const () as usize as u64),
-        "molt_uu_codec_decode" => Some(crate::molt_uu_codec_decode as *const () as usize as u64),
+        "molt_pathlib_join" => Some(crate::molt_pathlib_join as *const () as usize as u64),
+        "molt_pathlib_str" => Some(crate::molt_pathlib_str as *const () as usize as u64),
+        "molt_pathlib_parts" => Some(crate::molt_pathlib_parts as *const () as usize as u64),
+        "molt_pathlib_splitroot" => Some(crate::molt_pathlib_splitroot as *const () as usize as u64),
+        "molt_pathlib_drive" => Some(crate::molt_pathlib_drive as *const () as usize as u64),
+        "molt_pathlib_root" => Some(crate::molt_pathlib_root as *const () as usize as u64),
+        "molt_pathlib_anchor" => Some(crate::molt_pathlib_anchor as *const () as usize as u64),
+        "molt_pathlib_name" => Some(crate::molt_pathlib_name as *const () as usize as u64),
+        "molt_pathlib_suffix" => Some(crate::molt_pathlib_suffix as *const () as usize as u64),
+        "molt_pathlib_suffixes" => Some(crate::molt_pathlib_suffixes as *const () as usize as u64),
+        "molt_pathlib_stem" => Some(crate::molt_pathlib_stem as *const () as usize as u64),
+        "molt_pathlib_parent" => Some(crate::molt_pathlib_parent as *const () as usize as u64),
+        "molt_pathlib_parents" => Some(crate::molt_pathlib_parents as *const () as usize as u64),
+        "molt_pathlib_is_absolute" => Some(crate::molt_pathlib_is_absolute as *const () as usize as u64),
+        "molt_pathlib_is_relative_to" => Some(crate::molt_pathlib_is_relative_to as *const () as usize as u64),
+        "molt_pathlib_relative_to" => Some(crate::molt_pathlib_relative_to as *const () as usize as u64),
+        "molt_pathlib_with_name" => Some(crate::molt_pathlib_with_name as *const () as usize as u64),
+        "molt_pathlib_with_stem" => Some(crate::molt_pathlib_with_stem as *const () as usize as u64),
+        "molt_pathlib_with_suffix" => Some(crate::molt_pathlib_with_suffix as *const () as usize as u64),
+        "molt_pathlib_match" => Some(crate::molt_pathlib_match as *const () as usize as u64),
+        "molt_pathlib_hash" => Some(crate::molt_pathlib_hash as *const () as usize as u64),
+        "molt_pathlib_eq" => Some(crate::molt_pathlib_eq as *const () as usize as u64),
+        "molt_pathlib_lt" => Some(crate::molt_pathlib_lt as *const () as usize as u64),
+        "molt_pathlib_as_posix" => Some(crate::molt_pathlib_as_posix as *const () as usize as u64),
+        "molt_pathlib_cwd" => Some(crate::molt_pathlib_cwd as *const () as usize as u64),
+        "molt_pathlib_home" => Some(crate::molt_pathlib_home as *const () as usize as u64),
+        "molt_pathlib_resolve" => Some(crate::molt_pathlib_resolve as *const () as usize as u64),
+        "molt_pathlib_expanduser" => Some(crate::molt_pathlib_expanduser as *const () as usize as u64),
+        "molt_pathlib_exists" => Some(crate::molt_pathlib_exists as *const () as usize as u64),
+        "molt_pathlib_is_file" => Some(crate::molt_pathlib_is_file as *const () as usize as u64),
+        "molt_pathlib_is_dir" => Some(crate::molt_pathlib_is_dir as *const () as usize as u64),
+        "molt_pathlib_is_symlink" => Some(crate::molt_pathlib_is_symlink as *const () as usize as u64),
+        "molt_pathlib_is_mount" => Some(crate::molt_pathlib_is_mount as *const () as usize as u64),
+        "molt_pathlib_stat" => Some(crate::molt_pathlib_stat as *const () as usize as u64),
+        "molt_pathlib_lstat" => Some(crate::molt_pathlib_lstat as *const () as usize as u64),
+        "molt_pathlib_iterdir" => Some(crate::molt_pathlib_iterdir as *const () as usize as u64),
+        "molt_pathlib_glob" => Some(crate::molt_pathlib_glob as *const () as usize as u64),
+        "molt_pathlib_rglob" => Some(crate::molt_pathlib_rglob as *const () as usize as u64),
+        "molt_pathlib_mkdir" => Some(crate::molt_pathlib_mkdir as *const () as usize as u64),
+        "molt_pathlib_rmdir" => Some(crate::molt_pathlib_rmdir as *const () as usize as u64),
+        "molt_pathlib_unlink" => Some(crate::molt_pathlib_unlink as *const () as usize as u64),
+        "molt_pathlib_rename" => Some(crate::molt_pathlib_rename as *const () as usize as u64),
+        "molt_pathlib_replace" => Some(crate::molt_pathlib_replace as *const () as usize as u64),
+        "molt_pathlib_touch" => Some(crate::molt_pathlib_touch as *const () as usize as u64),
+        "molt_pathlib_symlink_to" => Some(crate::molt_pathlib_symlink_to as *const () as usize as u64),
+        "molt_pathlib_hardlink_to" => Some(crate::molt_pathlib_hardlink_to as *const () as usize as u64),
+        "molt_pathlib_readlink" => Some(crate::molt_pathlib_readlink as *const () as usize as u64),
+        "molt_pathlib_read_text" => Some(crate::molt_pathlib_read_text as *const () as usize as u64),
+        "molt_pathlib_read_bytes" => Some(crate::molt_pathlib_read_bytes as *const () as usize as u64),
+        "molt_pathlib_write_text" => Some(crate::molt_pathlib_write_text as *const () as usize as u64),
+        "molt_pathlib_write_bytes" => Some(crate::molt_pathlib_write_bytes as *const () as usize as u64),
+        "molt_pathlib_chmod" => Some(crate::molt_pathlib_chmod as *const () as usize as u64),
+        "molt_pathlib_owner" => Some(crate::molt_pathlib_owner as *const () as usize as u64),
+        "molt_pathlib_group" => Some(crate::molt_pathlib_group as *const () as usize as u64),
+        "molt_pathlib_samefile" => Some(crate::molt_pathlib_samefile as *const () as usize as u64),
+        "molt_pathlib_sep" => Some(crate::molt_pathlib_sep as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_pkgutil_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_pkgutil_iter_modules" => Some(crate::molt_pkgutil_iter_modules as *const () as usize as u64),
+        "molt_pkgutil_walk_packages" => Some(crate::molt_pkgutil_walk_packages as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_platform_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_platform_architecture" => Some(crate::molt_platform_architecture as *const () as usize as u64),
+        "molt_platform_machine" => Some(crate::molt_platform_machine as *const () as usize as u64),
+        "molt_platform_node" => Some(crate::molt_platform_node as *const () as usize as u64),
+        "molt_platform_platform" => Some(crate::molt_platform_platform as *const () as usize as u64),
+        "molt_platform_processor" => Some(crate::molt_platform_processor as *const () as usize as u64),
+        "molt_platform_python_compiler" => Some(crate::molt_platform_python_compiler as *const () as usize as u64),
+        "molt_platform_python_implementation" => Some(crate::molt_platform_python_implementation as *const () as usize as u64),
+        "molt_platform_python_version" => Some(crate::molt_platform_python_version as *const () as usize as u64),
+        "molt_platform_python_version_tuple" => Some(crate::molt_platform_python_version_tuple as *const () as usize as u64),
+        "molt_platform_release" => Some(crate::molt_platform_release as *const () as usize as u64),
+        "molt_platform_system" => Some(crate::molt_platform_system as *const () as usize as u64),
+        "molt_platform_uname" => Some(crate::molt_platform_uname as *const () as usize as u64),
+        "molt_platform_version" => Some(crate::molt_platform_version as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_pprint_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_pprint_safe_repr" => Some(crate::molt_pprint_safe_repr as *const () as usize as u64),
+        "molt_pprint_isreadable" => Some(crate::molt_pprint_isreadable as *const () as usize as u64),
+        "molt_pprint_isrecursive" => Some(crate::molt_pprint_isrecursive as *const () as usize as u64),
+        "molt_pprint_pformat" => Some(crate::molt_pprint_pformat as *const () as usize as u64),
+        "molt_pprint_format_object" => Some(crate::molt_pprint_format_object as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_punycode_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
         "molt_punycode_encode" => Some(crate::molt_punycode_encode as *const () as usize as u64),
         "molt_punycode_decode" => Some(crate::molt_punycode_decode as *const () as usize as u64),
-        "molt_stringprep_in_table" => Some(crate::molt_stringprep_in_table as *const () as usize as u64),
-        "molt_stringprep_map_table_b3" => Some(crate::molt_stringprep_map_table_b3 as *const () as usize as u64),
-        "molt_struct_pack" => Some(crate::molt_struct_pack as *const () as usize as u64),
-        "molt_struct_unpack" => Some(crate::molt_struct_unpack as *const () as usize as u64),
-        "molt_struct_calcsize" => Some(crate::molt_struct_calcsize as *const () as usize as u64),
-        "molt_struct_pack_into" => Some(crate::molt_struct_pack_into as *const () as usize as u64),
-        "molt_struct_unpack_from" => Some(crate::molt_struct_unpack_from as *const () as usize as u64),
-        "molt_struct_iter_unpack" => Some(crate::molt_struct_iter_unpack as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_deflate_raw" => Some(crate::molt_deflate_raw as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_inflate_raw" => Some(crate::molt_inflate_raw as *const () as usize as u64),
-        "molt_cancel_token_new" => Some(crate::molt_cancel_token_new as *const () as usize as u64),
-        "molt_cancel_token_clone" => Some(crate::molt_cancel_token_clone as *const () as usize as u64),
-        "molt_cancel_token_drop" => Some(crate::molt_cancel_token_drop as *const () as usize as u64),
-        "molt_cancel_token_cancel" => Some(crate::molt_cancel_token_cancel as *const () as usize as u64),
-        "molt_cancel_token_is_cancelled" => Some(crate::molt_cancel_token_is_cancelled as *const () as usize as u64),
-        "molt_cancel_token_set_current" => Some(crate::molt_cancel_token_set_current as *const () as usize as u64),
-        "molt_cancel_token_get_current" => Some(crate::molt_cancel_token_get_current as *const () as usize as u64),
-        "molt_future_cancel" => Some(crate::molt_future_cancel as *const () as usize as u64),
-        "molt_future_cancel_msg" => Some(crate::molt_future_cancel_msg as *const () as usize as u64),
-        "molt_future_cancel_clear" => Some(crate::molt_future_cancel_clear as *const () as usize as u64),
-        "molt_promise_new" => Some(crate::molt_promise_new as *const () as usize as u64),
-        "molt_promise_set_result" => Some(crate::molt_promise_set_result as *const () as usize as u64),
-        "molt_promise_set_exception" => Some(crate::molt_promise_set_exception as *const () as usize as u64),
-        "molt_task_register_token_owned" => Some(crate::molt_task_register_token_owned as *const () as usize as u64),
-        "molt_io_wait" => Some(crate::molt_io_wait as *const () as usize as u64),
-        "molt_io_wait_new" => Some(crate::molt_io_wait_new as *const () as usize as u64),
-        "molt_select_select" => Some(crate::molt_select_select as *const () as usize as u64),
-        "molt_select_constants" => Some(crate::molt_select_constants as *const () as usize as u64),
-        "molt_select_poll" => Some(crate::molt_select_poll as *const () as usize as u64),
-        "molt_select_epoll" => Some(crate::molt_select_epoll as *const () as usize as u64),
-        "molt_select_devpoll" => Some(crate::molt_select_devpoll as *const () as usize as u64),
-        "molt_select_fileno" => Some(crate::molt_select_fileno as *const () as usize as u64),
-        "molt_select_default_selector_kind" => Some(crate::molt_select_default_selector_kind as *const () as usize as u64),
-        "molt_select_backend_available" => Some(crate::molt_select_backend_available as *const () as usize as u64),
-        "molt_select_selector_new" => Some(crate::molt_select_selector_new as *const () as usize as u64),
-        "molt_select_selector_fileno" => Some(crate::molt_select_selector_fileno as *const () as usize as u64),
-        "molt_select_selector_len" => Some(crate::molt_select_selector_len as *const () as usize as u64),
-        "molt_select_selector_events" => Some(crate::molt_select_selector_events as *const () as usize as u64),
-        "molt_select_selector_register" => Some(crate::molt_select_selector_register as *const () as usize as u64),
-        "molt_select_selector_register_fd" => Some(crate::molt_select_selector_register_fd as *const () as usize as u64),
-        "molt_select_selector_unregister" => Some(crate::molt_select_selector_unregister as *const () as usize as u64),
-        "molt_select_selector_unregister_obj" => Some(crate::molt_select_selector_unregister_obj as *const () as usize as u64),
-        "molt_select_selector_modify" => Some(crate::molt_select_selector_modify as *const () as usize as u64),
-        "molt_select_selector_modify_obj" => Some(crate::molt_select_selector_modify_obj as *const () as usize as u64),
-        "molt_select_selector_poll" => Some(crate::molt_select_selector_poll as *const () as usize as u64),
-        "molt_select_selector_close" => Some(crate::molt_select_selector_close as *const () as usize as u64),
-        "molt_select_selector_drop" => Some(crate::molt_select_selector_drop as *const () as usize as u64),
-        "molt_ws_wait_new" => Some(crate::molt_ws_wait_new as *const () as usize as u64),
-        "molt_ws_pair_obj" => Some(crate::molt_ws_pair_obj as *const () as usize as u64),
-        "molt_ws_connect_obj" => Some(crate::molt_ws_connect_obj as *const () as usize as u64),
-        "molt_ws_send_obj" => Some(crate::molt_ws_send_obj as *const () as usize as u64),
-        "molt_ws_recv" => Some(crate::molt_ws_recv as *const () as usize as u64),
-        "molt_ws_close" => Some(crate::molt_ws_close as *const () as usize as u64),
-        "molt_ws_drop" => Some(crate::molt_ws_drop as *const () as usize as u64),
-        "molt_thread_submit" => Some(crate::molt_thread_submit as *const () as usize as u64),
-        "molt_thread_spawn" => Some(crate::molt_thread_spawn as *const () as usize as u64),
-        "molt_thread_spawn_shared" => Some(crate::molt_thread_spawn_shared as *const () as usize as u64),
-        "molt_thread_join" => Some(crate::molt_thread_join as *const () as usize as u64),
-        "molt_thread_is_alive" => Some(crate::molt_thread_is_alive as *const () as usize as u64),
-        "molt_thread_ident" => Some(crate::molt_thread_ident as *const () as usize as u64),
-        "molt_thread_native_id" => Some(crate::molt_thread_native_id as *const () as usize as u64),
-        "molt_thread_current_ident" => Some(crate::molt_thread_current_ident as *const () as usize as u64),
-        "molt_thread_current_native_id" => Some(crate::molt_thread_current_native_id as *const () as usize as u64),
-        "molt_thread_drop" => Some(crate::molt_thread_drop as *const () as usize as u64),
-        "molt_thread_stack_size_get" => Some(crate::molt_thread_stack_size_get as *const () as usize as u64),
-        "molt_thread_stack_size_set" => Some(crate::molt_thread_stack_size_set as *const () as usize as u64),
-        "molt_thread_registry_set_main" => Some(crate::molt_thread_registry_set_main as *const () as usize as u64),
-        "molt_thread_registry_register" => Some(crate::molt_thread_registry_register as *const () as usize as u64),
-        "molt_thread_registry_forget" => Some(crate::molt_thread_registry_forget as *const () as usize as u64),
-        "molt_thread_registry_snapshot" => Some(crate::molt_thread_registry_snapshot as *const () as usize as u64),
-        "molt_thread_registry_current" => Some(crate::molt_thread_registry_current as *const () as usize as u64),
-        "molt_thread_registry_active_count" => Some(crate::molt_thread_registry_active_count as *const () as usize as u64),
-        "molt_lock_new" => Some(crate::molt_lock_new as *const () as usize as u64),
-        "molt_lock_acquire" => Some(crate::molt_lock_acquire as *const () as usize as u64),
-        "molt_lock_release" => Some(crate::molt_lock_release as *const () as usize as u64),
-        "molt_lock_locked" => Some(crate::molt_lock_locked as *const () as usize as u64),
-        "molt_lock_drop" => Some(crate::molt_lock_drop as *const () as usize as u64),
-        "molt_rlock_new" => Some(crate::molt_rlock_new as *const () as usize as u64),
-        "molt_rlock_acquire" => Some(crate::molt_rlock_acquire as *const () as usize as u64),
-        "molt_rlock_release" => Some(crate::molt_rlock_release as *const () as usize as u64),
-        "molt_rlock_locked" => Some(crate::molt_rlock_locked as *const () as usize as u64),
-        "molt_rlock_is_owned" => Some(crate::molt_rlock_is_owned as *const () as usize as u64),
-        "molt_rlock_release_save" => Some(crate::molt_rlock_release_save as *const () as usize as u64),
-        "molt_rlock_acquire_restore" => Some(crate::molt_rlock_acquire_restore as *const () as usize as u64),
-        "molt_rlock_drop" => Some(crate::molt_rlock_drop as *const () as usize as u64),
-        "molt_condition_new" => Some(crate::molt_condition_new as *const () as usize as u64),
-        "molt_condition_wait" => Some(crate::molt_condition_wait as *const () as usize as u64),
-        "molt_condition_wait_for" => Some(crate::molt_condition_wait_for as *const () as usize as u64),
-        "molt_condition_notify" => Some(crate::molt_condition_notify as *const () as usize as u64),
-        "molt_condition_drop" => Some(crate::molt_condition_drop as *const () as usize as u64),
-        "molt_event_new" => Some(crate::molt_event_new as *const () as usize as u64),
-        "molt_event_set" => Some(crate::molt_event_set as *const () as usize as u64),
-        "molt_event_clear" => Some(crate::molt_event_clear as *const () as usize as u64),
-        "molt_event_is_set" => Some(crate::molt_event_is_set as *const () as usize as u64),
-        "molt_event_wait" => Some(crate::molt_event_wait as *const () as usize as u64),
-        "molt_event_drop" => Some(crate::molt_event_drop as *const () as usize as u64),
-        "molt_semaphore_new" => Some(crate::molt_semaphore_new as *const () as usize as u64),
-        "molt_semaphore_acquire" => Some(crate::molt_semaphore_acquire as *const () as usize as u64),
-        "molt_semaphore_release" => Some(crate::molt_semaphore_release as *const () as usize as u64),
-        "molt_semaphore_drop" => Some(crate::molt_semaphore_drop as *const () as usize as u64),
-        "molt_barrier_new" => Some(crate::molt_barrier_new as *const () as usize as u64),
-        "molt_barrier_wait" => Some(crate::molt_barrier_wait as *const () as usize as u64),
-        "molt_barrier_abort" => Some(crate::molt_barrier_abort as *const () as usize as u64),
-        "molt_barrier_reset" => Some(crate::molt_barrier_reset as *const () as usize as u64),
-        "molt_barrier_parties" => Some(crate::molt_barrier_parties as *const () as usize as u64),
-        "molt_barrier_n_waiting" => Some(crate::molt_barrier_n_waiting as *const () as usize as u64),
-        "molt_barrier_broken" => Some(crate::molt_barrier_broken as *const () as usize as u64),
-        "molt_barrier_drop" => Some(crate::molt_barrier_drop as *const () as usize as u64),
-        "molt_local_new" => Some(crate::molt_local_new as *const () as usize as u64),
-        "molt_local_get_dict" => Some(crate::molt_local_get_dict as *const () as usize as u64),
-        "molt_local_drop" => Some(crate::molt_local_drop as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_py_compile_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_py_compile_compile" => Some(crate::molt_py_compile_compile as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_queue_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
         "molt_queue_new" => Some(crate::molt_queue_new as *const () as usize as u64),
         "molt_queue_lifo_new" => Some(crate::molt_queue_lifo_new as *const () as usize as u64),
         "molt_queue_priority_new" => Some(crate::molt_queue_priority_new as *const () as usize as u64),
@@ -3274,93 +5400,338 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_queue_task_done" => Some(crate::molt_queue_task_done as *const () as usize as u64),
         "molt_queue_join" => Some(crate::molt_queue_join as *const () as usize as u64),
         "molt_queue_drop" => Some(crate::molt_queue_drop as *const () as usize as u64),
-        "molt_graphlib_new" => Some(crate::molt_graphlib_new as *const () as usize as u64),
-        "molt_graphlib_add" => Some(crate::molt_graphlib_add as *const () as usize as u64),
-        "molt_graphlib_prepare" => Some(crate::molt_graphlib_prepare as *const () as usize as u64),
-        "molt_graphlib_get_ready" => Some(crate::molt_graphlib_get_ready as *const () as usize as u64),
-        "molt_graphlib_is_active" => Some(crate::molt_graphlib_is_active as *const () as usize as u64),
-        "molt_graphlib_done" => Some(crate::molt_graphlib_done as *const () as usize as u64),
-        "molt_graphlib_static_order" => Some(crate::molt_graphlib_static_order as *const () as usize as u64),
-        "molt_graphlib_drop" => Some(crate::molt_graphlib_drop as *const () as usize as u64),
-        #[cfg(feature = "stdlib_archive")]
-        "molt_zipfile_crc32" => Some(crate::molt_zipfile_crc32 as *const () as usize as u64),
-        #[cfg(feature = "stdlib_archive")]
-        "molt_zipfile_parse_central_directory" => Some(crate::molt_zipfile_parse_central_directory as *const () as usize as u64),
-        #[cfg(feature = "stdlib_archive")]
-        "molt_zipfile_build_zip64_extra" => Some(crate::molt_zipfile_build_zip64_extra as *const () as usize as u64),
-        #[cfg(feature = "stdlib_archive")]
-        "molt_zipfile_path_implied_dirs" => Some(crate::molt_zipfile_path_implied_dirs as *const () as usize as u64),
-        #[cfg(feature = "stdlib_archive")]
-        "molt_zipfile_path_resolve_dir" => Some(crate::molt_zipfile_path_resolve_dir as *const () as usize as u64),
-        #[cfg(feature = "stdlib_archive")]
-        "molt_zipfile_path_is_child" => Some(crate::molt_zipfile_path_is_child as *const () as usize as u64),
-        #[cfg(feature = "stdlib_archive")]
-        "molt_zipfile_path_translate_glob" => Some(crate::molt_zipfile_path_translate_glob as *const () as usize as u64),
-        #[cfg(feature = "stdlib_archive")]
-        "molt_zipfile_normalize_member_path" => Some(crate::molt_zipfile_normalize_member_path as *const () as usize as u64),
-        "molt_logging_percent_style_format" => Some(crate::molt_logging_percent_style_format as *const () as usize as u64),
-        "molt_logging_config_dict" => Some(crate::molt_logging_config_dict as *const () as usize as u64),
-        "molt_logging_config_valid_ident" => Some(crate::molt_logging_config_valid_ident as *const () as usize as u64),
-        "molt_logging_config_file_config" => Some(crate::molt_logging_config_file_config as *const () as usize as u64),
-        "molt_logging_config_listen" => Some(crate::molt_logging_config_listen as *const () as usize as u64),
-        "molt_logging_config_stop_listening" => Some(crate::molt_logging_config_stop_listening as *const () as usize as u64),
-        "molt_logging_runtime_ready" => Some(crate::molt_logging_runtime_ready as *const () as usize as u64),
-        "molt_wsgiref_runtime_ready" => Some(crate::molt_wsgiref_runtime_ready as *const () as usize as u64),
-        "molt_zoneinfo_runtime_ready" => Some(crate::molt_zoneinfo_runtime_ready as *const () as usize as u64),
-        "molt_zipapp_runtime_ready" => Some(crate::molt_zipapp_runtime_ready as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_runtime_ready" => Some(crate::molt_zlib_runtime_ready as *const () as usize as u64),
-        "molt_xmlrpc_runtime_ready" => Some(crate::molt_xmlrpc_runtime_ready as *const () as usize as u64),
-        "molt_csv_runtime_ready" => Some(crate::molt_csv_runtime_ready as *const () as usize as u64),
-        "molt_datetime_runtime_ready" => Some(crate::molt_datetime_runtime_ready as *const () as usize as u64),
-        "molt_tokenize_runtime_ready" => Some(crate::molt_tokenize_runtime_ready as *const () as usize as u64),
-        "molt_tomllib_runtime_ready" => Some(crate::molt_tomllib_runtime_ready as *const () as usize as u64),
-        "molt_trace_runtime_ready" => Some(crate::molt_trace_runtime_ready as *const () as usize as u64),
-        "molt_unicodedata_runtime_ready" => Some(crate::molt_unicodedata_runtime_ready as *const () as usize as u64),
-        "molt_subprocess_runtime_ready" => Some(crate::molt_subprocess_runtime_ready as *const () as usize as u64),
-        "molt_symtable_runtime_ready" => Some(crate::molt_symtable_runtime_ready as *const () as usize as u64),
-        "molt_import_smoke_runtime_ready" => Some(crate::molt_import_smoke_runtime_ready as *const () as usize as u64),
-        "molt_process_spawn" => Some(crate::molt_process_spawn as *const () as usize as u64),
-        "molt_process_spawn_ex" => Some(crate::molt_process_spawn_ex as *const () as usize as u64),
-        "molt_process_wait_future" => Some(crate::molt_process_wait_future as *const () as usize as u64),
-        "molt_process_poll" => Some(crate::molt_process_poll as *const () as usize as u64),
-        "molt_process_pid" => Some(crate::molt_process_pid as *const () as usize as u64),
-        "molt_process_returncode" => Some(crate::molt_process_returncode as *const () as usize as u64),
-        "molt_process_kill" => Some(crate::molt_process_kill as *const () as usize as u64),
-        "molt_process_terminate" => Some(crate::molt_process_terminate as *const () as usize as u64),
-        "molt_process_stdin" => Some(crate::molt_process_stdin as *const () as usize as u64),
-        "molt_process_stdout" => Some(crate::molt_process_stdout as *const () as usize as u64),
-        "molt_process_stderr" => Some(crate::molt_process_stderr as *const () as usize as u64),
-        "molt_process_drop" => Some(crate::molt_process_drop as *const () as usize as u64),
-        "molt_stream_new" => Some(crate::molt_stream_new as *const () as usize as u64),
-        "molt_stream_clone" => Some(crate::molt_stream_clone as *const () as usize as u64),
-        "molt_stream_send_obj" => Some(crate::molt_stream_send_obj as *const () as usize as u64),
-        "molt_stream_recv" => Some(crate::molt_stream_recv as *const () as usize as u64),
-        "molt_stream_close" => Some(crate::molt_stream_close as *const () as usize as u64),
-        "molt_stream_drop" => Some(crate::molt_stream_drop as *const () as usize as u64),
-        "molt_multiprocessing_codec_dumps" => Some(crate::molt_multiprocessing_codec_dumps as *const () as usize as u64),
-        "molt_multiprocessing_codec_loads" => Some(crate::molt_multiprocessing_codec_loads as *const () as usize as u64),
-        "molt_stream_reader_new" => Some(crate::molt_stream_reader_new as *const () as usize as u64),
-        "molt_stream_reader_read" => Some(crate::molt_stream_reader_read as *const () as usize as u64),
-        "molt_stream_reader_readline" => Some(crate::molt_stream_reader_readline as *const () as usize as u64),
-        "molt_stream_reader_at_eof" => Some(crate::molt_stream_reader_at_eof as *const () as usize as u64),
-        "molt_stream_reader_drop" => Some(crate::molt_stream_reader_drop as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_quopri_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_quopri_encode" => Some(crate::molt_quopri_encode as *const () as usize as u64),
+        "molt_quopri_decode" => Some(crate::molt_quopri_decode as *const () as usize as u64),
+        "molt_quopri_needs_quoting" => Some(crate::molt_quopri_needs_quoting as *const () as usize as u64),
+        "molt_quopri_quote" => Some(crate::molt_quopri_quote as *const () as usize as u64),
+        "molt_quopri_ishex" => Some(crate::molt_quopri_ishex as *const () as usize as u64),
+        "molt_quopri_unhex" => Some(crate::molt_quopri_unhex as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_random_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_random_new" => Some(crate::molt_random_new as *const () as usize as u64),
+        "molt_random_seed" => Some(crate::molt_random_seed as *const () as usize as u64),
+        "molt_random_random" => Some(crate::molt_random_random as *const () as usize as u64),
+        "molt_random_getrandbits" => Some(crate::molt_random_getrandbits as *const () as usize as u64),
+        "molt_random_randbelow" => Some(crate::molt_random_randbelow as *const () as usize as u64),
+        "molt_random_getstate" => Some(crate::molt_random_getstate as *const () as usize as u64),
+        "molt_random_setstate" => Some(crate::molt_random_setstate as *const () as usize as u64),
+        "molt_random_shuffle" => Some(crate::molt_random_shuffle as *const () as usize as u64),
+        "molt_random_gauss" => Some(crate::molt_random_gauss as *const () as usize as u64),
+        "molt_random_uniform" => Some(crate::molt_random_uniform as *const () as usize as u64),
+        "molt_random_triangular" => Some(crate::molt_random_triangular as *const () as usize as u64),
+        "molt_random_expovariate" => Some(crate::molt_random_expovariate as *const () as usize as u64),
+        "molt_random_normalvariate" => Some(crate::molt_random_normalvariate as *const () as usize as u64),
+        "molt_random_lognormvariate" => Some(crate::molt_random_lognormvariate as *const () as usize as u64),
+        "molt_random_vonmisesvariate" => Some(crate::molt_random_vonmisesvariate as *const () as usize as u64),
+        "molt_random_paretovariate" => Some(crate::molt_random_paretovariate as *const () as usize as u64),
+        "molt_random_weibullvariate" => Some(crate::molt_random_weibullvariate as *const () as usize as u64),
+        "molt_random_gammavariate" => Some(crate::molt_random_gammavariate as *const () as usize as u64),
+        "molt_random_betavariate" => Some(crate::molt_random_betavariate as *const () as usize as u64),
+        "molt_random_choices" => Some(crate::molt_random_choices as *const () as usize as u64),
+        "molt_random_sample" => Some(crate::molt_random_sample as *const () as usize as u64),
+        "molt_random_randbytes" => Some(crate::molt_random_randbytes as *const () as usize as u64),
+        "molt_random_randrange" => Some(crate::molt_random_randrange as *const () as usize as u64),
+        "molt_random_binomialvariate" => Some(crate::molt_random_binomialvariate as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_re_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_re_literal_matches" => Some(crate::molt_re_literal_matches as *const () as usize as u64),
+        "molt_re_literal_advance" => Some(crate::molt_re_literal_advance as *const () as usize as u64),
+        "molt_re_any_advance" => Some(crate::molt_re_any_advance as *const () as usize as u64),
+        "molt_re_char_in_range" => Some(crate::molt_re_char_in_range as *const () as usize as u64),
+        "molt_re_category_matches" => Some(crate::molt_re_category_matches as *const () as usize as u64),
+        "molt_re_anchor_matches" => Some(crate::molt_re_anchor_matches as *const () as usize as u64),
+        "molt_re_group_is_set" => Some(crate::molt_re_group_is_set as *const () as usize as u64),
+        "molt_re_backref_advance" => Some(crate::molt_re_backref_advance as *const () as usize as u64),
+        "molt_re_backref_group_advance" => Some(crate::molt_re_backref_group_advance as *const () as usize as u64),
+        "molt_re_apply_scoped_flags" => Some(crate::molt_re_apply_scoped_flags as *const () as usize as u64),
+        "molt_re_group_capture" => Some(crate::molt_re_group_capture as *const () as usize as u64),
+        "molt_re_charclass_matches" => Some(crate::molt_re_charclass_matches as *const () as usize as u64),
+        "molt_re_charclass_advance" => Some(crate::molt_re_charclass_advance as *const () as usize as u64),
+        "molt_re_group_values" => Some(crate::molt_re_group_values as *const () as usize as u64),
+        "molt_re_expand_replacement" => Some(crate::molt_re_expand_replacement as *const () as usize as u64),
+        "molt_re_fullmatch_check" => Some(crate::molt_re_fullmatch_check as *const () as usize as u64),
+        "molt_re_named_backref_advance" => Some(crate::molt_re_named_backref_advance as *const () as usize as u64),
+        "molt_re_negative_lookahead" => Some(crate::molt_re_negative_lookahead as *const () as usize as u64),
+        "molt_re_negative_lookbehind" => Some(crate::molt_re_negative_lookbehind as *const () as usize as u64),
+        "molt_re_positive_lookahead" => Some(crate::molt_re_positive_lookahead as *const () as usize as u64),
+        "molt_re_positive_lookbehind" => Some(crate::molt_re_positive_lookbehind as *const () as usize as u64),
+        "molt_re_strip_verbose" => Some(crate::molt_re_strip_verbose as *const () as usize as u64),
+        "molt_re_compile" => Some(crate::molt_re_compile as *const () as usize as u64),
+        "molt_re_execute" => Some(crate::molt_re_execute as *const () as usize as u64),
+        "molt_re_finditer_collect" => Some(crate::molt_re_finditer_collect as *const () as usize as u64),
+        "molt_re_pattern_info" => Some(crate::molt_re_pattern_info as *const () as usize as u64),
+        "molt_re_escape" => Some(crate::molt_re_escape as *const () as usize as u64),
+        "molt_re_match_group" => Some(crate::molt_re_match_group as *const () as usize as u64),
+        "molt_re_match_groups" => Some(crate::molt_re_match_groups as *const () as usize as u64),
+        "molt_re_match_groupdict" => Some(crate::molt_re_match_groupdict as *const () as usize as u64),
+        "molt_re_split" => Some(crate::molt_re_split as *const () as usize as u64),
+        "molt_re_sub" => Some(crate::molt_re_sub as *const () as usize as u64),
+        "molt_re_sub_callable" => Some(crate::molt_re_sub_callable as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_reprlib_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_repr_from_obj" => Some(crate::molt_repr_from_obj as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_runpy_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_runpy_run_module" => Some(crate::molt_runpy_run_module as *const () as usize as u64),
+        "molt_runpy_run_path" => Some(crate::molt_runpy_run_path as *const () as usize as u64),
+        "molt_runpy_resolve_path" => Some(crate::molt_runpy_resolve_path as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_select_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_select" => Some(crate::molt_select_select as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_constants" => Some(crate::molt_select_constants as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_poll" => Some(crate::molt_select_poll as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_epoll" => Some(crate::molt_select_epoll as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_devpoll" => Some(crate::molt_select_devpoll as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_fileno" => Some(crate::molt_select_fileno as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_default_selector_kind" => Some(crate::molt_select_default_selector_kind as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_backend_available" => Some(crate::molt_select_backend_available as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_selector_new" => Some(crate::molt_select_selector_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_selector_fileno" => Some(crate::molt_select_selector_fileno as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_selector_len" => Some(crate::molt_select_selector_len as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_selector_events" => Some(crate::molt_select_selector_events as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_selector_register" => Some(crate::molt_select_selector_register as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_selector_register_fd" => Some(crate::molt_select_selector_register_fd as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_selector_unregister" => Some(crate::molt_select_selector_unregister as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_selector_unregister_obj" => Some(crate::molt_select_selector_unregister_obj as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_selector_modify" => Some(crate::molt_select_selector_modify as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_selector_modify_obj" => Some(crate::molt_select_selector_modify_obj as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_selector_poll" => Some(crate::molt_select_selector_poll as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_selector_close" => Some(crate::molt_select_selector_close as *const () as usize as u64),
+        #[cfg(feature = "stdlib_select")]
+        "molt_select_selector_drop" => Some(crate::molt_select_selector_drop as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_serialization_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_serialization")]
+        "molt_msgpack_parse_scalar_obj" => Some(crate::molt_msgpack_parse_scalar_obj as *const () as usize as u64),
+        #[cfg(feature = "stdlib_serialization")]
+        "molt_cbor_parse_scalar_obj" => Some(crate::molt_cbor_parse_scalar_obj as *const () as usize as u64),
+        "molt_pickle_encode_protocol0" => Some(crate::molt_pickle_encode_protocol0 as *const () as usize as u64),
+        "molt_pickle_dumps_protocol01" => Some(crate::molt_pickle_dumps_protocol01 as *const () as usize as u64),
+        "molt_pickle_loads_protocol01" => Some(crate::molt_pickle_loads_protocol01 as *const () as usize as u64),
+        "molt_pickle_dumps_core" => Some(crate::molt_pickle_dumps_core as *const () as usize as u64),
+        "molt_pickle_loads_core" => Some(crate::molt_pickle_loads_core as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_shlex_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_shlex_quote" => Some(crate::molt_shlex_quote as *const () as usize as u64),
+        "molt_shlex_split" => Some(crate::molt_shlex_split as *const () as usize as u64),
+        "molt_shlex_split_ex" => Some(crate::molt_shlex_split_ex as *const () as usize as u64),
+        "molt_shlex_join" => Some(crate::molt_shlex_join as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_shutil_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_shutil_copyfile" => Some(crate::molt_shutil_copyfile as *const () as usize as u64),
+        "molt_shutil_which" => Some(crate::molt_shutil_which as *const () as usize as u64),
+        "molt_shutil_chown" => Some(crate::molt_shutil_chown as *const () as usize as u64),
+        "molt_shutil_copy" => Some(crate::molt_shutil_copy as *const () as usize as u64),
+        "molt_shutil_copy2" => Some(crate::molt_shutil_copy2 as *const () as usize as u64),
+        "molt_shutil_copytree" => Some(crate::molt_shutil_copytree as *const () as usize as u64),
+        "molt_shutil_disk_usage" => Some(crate::molt_shutil_disk_usage as *const () as usize as u64),
+        "molt_shutil_get_terminal_size" => Some(crate::molt_shutil_get_terminal_size as *const () as usize as u64),
+        "molt_shutil_make_archive" => Some(crate::molt_shutil_make_archive as *const () as usize as u64),
+        "molt_shutil_move" => Some(crate::molt_shutil_move as *const () as usize as u64),
+        "molt_shutil_rmtree" => Some(crate::molt_shutil_rmtree as *const () as usize as u64),
+        "molt_shutil_unpack_archive" => Some(crate::molt_shutil_unpack_archive as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_signal_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_raise" => Some(crate::molt_signal_raise as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_alarm" => Some(crate::molt_signal_alarm as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_default_int_handler" => Some(crate::molt_signal_default_int_handler as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_getsignal" => Some(crate::molt_signal_getsignal as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_nsig" => Some(crate::molt_signal_nsig as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_pause" => Some(crate::molt_signal_pause as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_pthread_kill" => Some(crate::molt_signal_pthread_kill as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_pthread_sigmask" => Some(crate::molt_signal_pthread_sigmask as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_raise_signal" => Some(crate::molt_signal_raise_signal as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_set_wakeup_fd" => Some(crate::molt_signal_set_wakeup_fd as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sig_dfl" => Some(crate::molt_signal_sig_dfl as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sig_ign" => Some(crate::molt_signal_sig_ign as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigabrt" => Some(crate::molt_signal_sigabrt as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigalrm" => Some(crate::molt_signal_sigalrm as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sig_block" => Some(crate::molt_signal_sig_block as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigbus" => Some(crate::molt_signal_sigbus as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigchld" => Some(crate::molt_signal_sigchld as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigcont" => Some(crate::molt_signal_sigcont as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigfpe" => Some(crate::molt_signal_sigfpe as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sighup" => Some(crate::molt_signal_sighup as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigill" => Some(crate::molt_signal_sigill as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigint" => Some(crate::molt_signal_sigint as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_signal" => Some(crate::molt_signal_signal as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigpending" => Some(crate::molt_signal_sigpending as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigpipe" => Some(crate::molt_signal_sigpipe as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigprof" => Some(crate::molt_signal_sigprof as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigquit" => Some(crate::molt_signal_sigquit as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigsegv" => Some(crate::molt_signal_sigsegv as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sig_setmask" => Some(crate::molt_signal_sig_setmask as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigstop" => Some(crate::molt_signal_sigstop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigsys" => Some(crate::molt_signal_sigsys as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigterm" => Some(crate::molt_signal_sigterm as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigtstp" => Some(crate::molt_signal_sigtstp as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigttin" => Some(crate::molt_signal_sigttin as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigttou" => Some(crate::molt_signal_sigttou as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigusr1" => Some(crate::molt_signal_sigusr1 as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigusr2" => Some(crate::molt_signal_sigusr2 as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sig_unblock" => Some(crate::molt_signal_sig_unblock as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigvtalrm" => Some(crate::molt_signal_sigvtalrm as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigwait" => Some(crate::molt_signal_sigwait as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigwinch" => Some(crate::molt_signal_sigwinch as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigxcpu" => Some(crate::molt_signal_sigxcpu as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_sigxfsz" => Some(crate::molt_signal_sigxfsz as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_strsignal" => Some(crate::molt_signal_strsignal as *const () as usize as u64),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_valid_signals" => Some(crate::molt_signal_valid_signals as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_site_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_site_help0" => Some(crate::molt_site_help0 as *const () as usize as u64),
+        "molt_site_help1" => Some(crate::molt_site_help1 as *const () as usize as u64),
+        "molt_site_credits" => Some(crate::molt_site_credits as *const () as usize as u64),
+        "molt_site_license" => Some(crate::molt_site_license as *const () as usize as u64),
+        "molt_site_copyright" => Some(crate::molt_site_copyright as *const () as usize as u64),
+        "molt_site_quitter_call" => Some(crate::molt_site_quitter_call as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_socket_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
         "molt_socket_reader_new" => Some(crate::molt_socket_reader_new as *const () as usize as u64),
         "molt_socket_reader_read" => Some(crate::molt_socket_reader_read as *const () as usize as u64),
         "molt_socket_reader_readline" => Some(crate::molt_socket_reader_readline as *const () as usize as u64),
         "molt_socket_reader_readline_limit" => Some(crate::molt_socket_reader_readline_limit as *const () as usize as u64),
         "molt_socket_reader_at_eof" => Some(crate::molt_socket_reader_at_eof as *const () as usize as u64),
         "molt_socket_reader_drop" => Some(crate::molt_socket_reader_drop as *const () as usize as u64),
-        "molt_db_query_obj" => Some(crate::molt_db_query_obj as *const () as usize as u64),
-        "molt_db_exec_obj" => Some(crate::molt_db_exec_obj as *const () as usize as u64),
-        #[cfg(feature = "stdlib_serialization")]
-        "molt_msgpack_parse_scalar_obj" => Some(crate::molt_msgpack_parse_scalar_obj as *const () as usize as u64),
-        #[cfg(feature = "stdlib_serialization")]
-        "molt_cbor_parse_scalar_obj" => Some(crate::molt_cbor_parse_scalar_obj as *const () as usize as u64),
-        "molt_json_parse_scalar_obj" => Some(crate::molt_json_parse_scalar_obj as *const () as usize as u64),
-        "molt_json_encode_basestring_obj" => Some(crate::molt_json_encode_basestring_obj as *const () as usize as u64),
-        "molt_json_encode_basestring_ascii_obj" => Some(crate::molt_json_encode_basestring_ascii_obj as *const () as usize as u64),
-        "molt_json_scanstring_obj" => Some(crate::molt_json_scanstring_obj as *const () as usize as u64),
         "molt_socket_new" => Some(crate::molt_socket_new as *const () as usize as u64),
         "molt_socket_close" => Some(crate::molt_socket_close as *const () as usize as u64),
         "molt_socket_drop" => Some(crate::molt_socket_drop as *const () as usize as u64),
@@ -3421,218 +5792,238 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_socket_sendfile" => Some(crate::molt_socket_sendfile as *const () as usize as u64),
         "molt_socket_sethostname" => Some(crate::molt_socket_sethostname as *const () as usize as u64),
         "molt_socket_sendmsg_afalg" => Some(crate::molt_socket_sendmsg_afalg as *const () as usize as u64),
-        "molt_compile_builtin" => Some(crate::molt_compile_builtin as *const () as usize as u64),
-        "molt_codeop_compile" => Some(crate::molt_codeop_compile as *const () as usize as u64),
-        "molt_codeop_compile_command" => Some(crate::molt_codeop_compile_command as *const () as usize as u64),
-        "molt_input_builtin" => Some(crate::molt_input_builtin as *const () as usize as u64),
-        "molt_globals_builtin" => Some(crate::molt_globals_builtin as *const () as usize as u64),
-        "molt_locals_builtin" => Some(crate::molt_locals_builtin as *const () as usize as u64),
-        "molt_code_new" => Some(crate::molt_code_new as *const () as usize as u64),
-        "molt_code_slots_init" => Some(crate::molt_code_slots_init as *const () as usize as u64),
-        "molt_code_slot_set" => Some(crate::molt_code_slot_set as *const () as usize as u64),
-        "molt_module_new" => Some(crate::molt_module_new as *const () as usize as u64),
-        "molt_module_import" => Some(crate::molt_module_import as *const () as usize as u64),
-        "molt_runpy_run_module" => Some(crate::molt_runpy_run_module as *const () as usize as u64),
-        "molt_runpy_run_path" => Some(crate::molt_runpy_run_path as *const () as usize as u64),
-        "molt_runpy_resolve_path" => Some(crate::molt_runpy_resolve_path as *const () as usize as u64),
-        "molt_uuid_getnode" => Some(crate::molt_uuid_getnode as *const () as usize as u64),
-        "molt_uuid_uuid4_bytes" => Some(crate::molt_uuid_uuid4_bytes as *const () as usize as u64),
-        "molt_uuid_uuid1_bytes" => Some(crate::molt_uuid_uuid1_bytes as *const () as usize as u64),
-        "molt_uuid_uuid3_bytes" => Some(crate::molt_uuid_uuid3_bytes as *const () as usize as u64),
-        "molt_uuid_uuid5_bytes" => Some(crate::molt_uuid_uuid5_bytes as *const () as usize as u64),
-        "molt_importlib_extension_loader_payload" => Some(crate::molt_importlib_extension_loader_payload as *const () as usize as u64),
-        "molt_importlib_sourceless_loader_payload" => Some(crate::molt_importlib_sourceless_loader_payload as *const () as usize as u64),
-        "molt_importlib_coerce_module_name" => Some(crate::molt_importlib_coerce_module_name as *const () as usize as u64),
-        "molt_importlib_source_exec_payload" => Some(crate::molt_importlib_source_exec_payload as *const () as usize as u64),
-        "molt_importlib_zip_source_exec_payload" => Some(crate::molt_importlib_zip_source_exec_payload as *const () as usize as u64),
-        "molt_importlib_zip_read_entry" => Some(crate::molt_importlib_zip_read_entry as *const () as usize as u64),
-        "molt_importlib_read_file" => Some(crate::molt_importlib_read_file as *const () as usize as u64),
-        "molt_importlib_exec_restricted_source" => Some(crate::molt_importlib_exec_restricted_source as *const () as usize as u64),
-        "molt_importlib_exec_extension" => Some(crate::molt_importlib_exec_extension as *const () as usize as u64),
-        "molt_importlib_exec_sourceless" => Some(crate::molt_importlib_exec_sourceless as *const () as usize as u64),
-        "molt_importlib_module_spec_is_package" => Some(crate::molt_importlib_module_spec_is_package as *const () as usize as u64),
-        "molt_importlib_path_is_archive_member" => Some(crate::molt_importlib_path_is_archive_member as *const () as usize as u64),
-        "molt_importlib_package_root_from_origin" => Some(crate::molt_importlib_package_root_from_origin as *const () as usize as u64),
-        "molt_importlib_validate_resource_name" => Some(crate::molt_importlib_validate_resource_name as *const () as usize as u64),
-        "molt_importlib_resources_normalize_path" => Some(crate::molt_importlib_resources_normalize_path as *const () as usize as u64),
-        "molt_importlib_resources_only" => Some(crate::molt_importlib_resources_only as *const () as usize as u64),
-        "molt_importlib_resources_contents_from_package" => Some(crate::molt_importlib_resources_contents_from_package as *const () as usize as u64),
-        "molt_importlib_resources_is_resource_from_package" => Some(crate::molt_importlib_resources_is_resource_from_package as *const () as usize as u64),
-        "molt_importlib_resources_resource_path_from_package" => Some(crate::molt_importlib_resources_resource_path_from_package as *const () as usize as u64),
-        "molt_importlib_resources_read_text_from_package" => Some(crate::molt_importlib_resources_read_text_from_package as *const () as usize as u64),
-        "molt_importlib_resources_reader_resource_path_from_roots" => Some(crate::molt_importlib_resources_reader_resource_path_from_roots as *const () as usize as u64),
-        "molt_importlib_resources_reader_open_resource_bytes_from_roots" => Some(crate::molt_importlib_resources_reader_open_resource_bytes_from_roots as *const () as usize as u64),
-        "molt_importlib_resources_reader_is_resource_from_roots" => Some(crate::molt_importlib_resources_reader_is_resource_from_roots as *const () as usize as u64),
-        "molt_importlib_resources_reader_contents_from_roots" => Some(crate::molt_importlib_resources_reader_contents_from_roots as *const () as usize as u64),
-        "molt_importlib_cache_from_source" => Some(crate::molt_importlib_cache_from_source as *const () as usize as u64),
-        "molt_importlib_decode_source" => Some(crate::molt_importlib_decode_source as *const () as usize as u64),
-        "molt_importlib_source_hash" => Some(crate::molt_importlib_source_hash as *const () as usize as u64),
-        "molt_importlib_source_from_cache" => Some(crate::molt_importlib_source_from_cache as *const () as usize as u64),
-        "molt_importlib_resolve_name" => Some(crate::molt_importlib_resolve_name as *const () as usize as u64),
-        "molt_importlib_known_absent_missing_name" => Some(crate::molt_importlib_known_absent_missing_name as *const () as usize as u64),
-        "molt_importlib_import_optional" => Some(crate::molt_importlib_import_optional as *const () as usize as u64),
-        "molt_importlib_import_or_fallback" => Some(crate::molt_importlib_import_or_fallback as *const () as usize as u64),
-        "molt_importlib_import_required" => Some(crate::molt_importlib_import_required as *const () as usize as u64),
-        "molt_importlib_load_module_shim" => Some(crate::molt_importlib_load_module_shim as *const () as usize as u64),
-        "molt_importlib_frozen_payload" => Some(crate::molt_importlib_frozen_payload as *const () as usize as u64),
-        "molt_importlib_frozen_external_payload" => Some(crate::molt_importlib_frozen_external_payload as *const () as usize as u64),
-        "molt_importlib_import_module" => Some(crate::molt_importlib_import_module as *const () as usize as u64),
-        "molt_importlib_find_in_path" => Some(crate::molt_importlib_find_in_path as *const () as usize as u64),
-        "molt_importlib_find_in_path_package_context" => Some(crate::molt_importlib_find_in_path_package_context as *const () as usize as u64),
-        "molt_importlib_find_spec" => Some(crate::molt_importlib_find_spec as *const () as usize as u64),
-        "molt_importlib_find_spec_orchestrate" => Some(crate::molt_importlib_find_spec_orchestrate as *const () as usize as u64),
-        "molt_importlib_pathfinder_find_spec" => Some(crate::molt_importlib_pathfinder_find_spec as *const () as usize as u64),
-        "molt_importlib_filefinder_find_spec" => Some(crate::molt_importlib_filefinder_find_spec as *const () as usize as u64),
-        "molt_importlib_invalidate_caches" => Some(crate::molt_importlib_invalidate_caches as *const () as usize as u64),
-        "molt_importlib_filefinder_invalidate" => Some(crate::molt_importlib_filefinder_invalidate as *const () as usize as u64),
-        "molt_importlib_reload" => Some(crate::molt_importlib_reload as *const () as usize as u64),
-        "molt_importlib_bootstrap_payload" => Some(crate::molt_importlib_bootstrap_payload as *const () as usize as u64),
-        "molt_importlib_runtime_modules" => Some(crate::molt_importlib_runtime_modules as *const () as usize as u64),
-        "molt_importlib_ensure_default_meta_path" => Some(crate::molt_importlib_ensure_default_meta_path as *const () as usize as u64),
-        "molt_importlib_resources_path_payload" => Some(crate::molt_importlib_resources_path_payload as *const () as usize as u64),
-        "molt_importlib_resources_package_info" => Some(crate::molt_importlib_resources_package_info as *const () as usize as u64),
-        "molt_importlib_resources_open_resource_bytes_from_package" => Some(crate::molt_importlib_resources_open_resource_bytes_from_package as *const () as usize as u64),
-        "molt_importlib_resources_open_resource_bytes_from_package_parts" => Some(crate::molt_importlib_resources_open_resource_bytes_from_package_parts as *const () as usize as u64),
-        "molt_importlib_resources_read_text_from_package_parts" => Some(crate::molt_importlib_resources_read_text_from_package_parts as *const () as usize as u64),
-        "molt_importlib_resources_contents_from_package_parts" => Some(crate::molt_importlib_resources_contents_from_package_parts as *const () as usize as u64),
-        "molt_importlib_resources_is_resource_from_package_parts" => Some(crate::molt_importlib_resources_is_resource_from_package_parts as *const () as usize as u64),
-        "molt_importlib_resources_resource_path_from_package_parts" => Some(crate::molt_importlib_resources_resource_path_from_package_parts as *const () as usize as u64),
-        "molt_importlib_resources_as_file_enter" => Some(crate::molt_importlib_resources_as_file_enter as *const () as usize as u64),
-        "molt_importlib_resources_as_file_exit" => Some(crate::molt_importlib_resources_as_file_exit as *const () as usize as u64),
-        "molt_importlib_resources_joinpath" => Some(crate::molt_importlib_resources_joinpath as *const () as usize as u64),
-        "molt_importlib_resources_open_mode_is_text" => Some(crate::molt_importlib_resources_open_mode_is_text as *const () as usize as u64),
-        "molt_importlib_resources_package_leaf_name" => Some(crate::molt_importlib_resources_package_leaf_name as *const () as usize as u64),
-        "molt_importlib_resources_module_name" => Some(crate::molt_importlib_resources_module_name as *const () as usize as u64),
-        "molt_importlib_resources_loader_reader" => Some(crate::molt_importlib_resources_loader_reader as *const () as usize as u64),
-        "molt_importlib_resources_files_payload" => Some(crate::molt_importlib_resources_files_payload as *const () as usize as u64),
-        "molt_importlib_resources_reader_files_traversable" => Some(crate::molt_importlib_resources_reader_files_traversable as *const () as usize as u64),
-        "molt_importlib_resources_reader_roots" => Some(crate::molt_importlib_resources_reader_roots as *const () as usize as u64),
-        "molt_importlib_resources_reader_contents" => Some(crate::molt_importlib_resources_reader_contents as *const () as usize as u64),
-        "molt_importlib_resources_reader_resource_path" => Some(crate::molt_importlib_resources_reader_resource_path as *const () as usize as u64),
-        "molt_importlib_resources_reader_is_resource" => Some(crate::molt_importlib_resources_reader_is_resource as *const () as usize as u64),
-        "molt_importlib_resources_reader_open_resource_bytes" => Some(crate::molt_importlib_resources_reader_open_resource_bytes as *const () as usize as u64),
-        "molt_importlib_resources_reader_child_names" => Some(crate::molt_importlib_resources_reader_child_names as *const () as usize as u64),
-        "molt_importlib_resources_reader_exists" => Some(crate::molt_importlib_resources_reader_exists as *const () as usize as u64),
-        "molt_importlib_resources_reader_is_dir" => Some(crate::molt_importlib_resources_reader_is_dir as *const () as usize as u64),
-        "molt_linecache_loader_get_source" => Some(crate::molt_linecache_loader_get_source as *const () as usize as u64),
-        "molt_importlib_metadata_dist_paths" => Some(crate::molt_importlib_metadata_dist_paths as *const () as usize as u64),
-        "molt_importlib_metadata_entry_points_select_payload" => Some(crate::molt_importlib_metadata_entry_points_select_payload as *const () as usize as u64),
-        "molt_importlib_metadata_entry_points_filter_payload" => Some(crate::molt_importlib_metadata_entry_points_filter_payload as *const () as usize as u64),
-        "molt_importlib_metadata_normalize_name" => Some(crate::molt_importlib_metadata_normalize_name as *const () as usize as u64),
-        "molt_importlib_metadata_payload" => Some(crate::molt_importlib_metadata_payload as *const () as usize as u64),
-        "molt_importlib_metadata_distributions_payload" => Some(crate::molt_importlib_metadata_distributions_payload as *const () as usize as u64),
-        "molt_importlib_metadata_record_payload" => Some(crate::molt_importlib_metadata_record_payload as *const () as usize as u64),
-        "molt_importlib_metadata_packages_distributions_payload" => Some(crate::molt_importlib_metadata_packages_distributions_payload as *const () as usize as u64),
-        "molt_importlib_module_from_spec" => Some(crate::molt_importlib_module_from_spec as *const () as usize as u64),
-        "molt_importlib_spec_from_loader" => Some(crate::molt_importlib_spec_from_loader as *const () as usize as u64),
-        "molt_importlib_spec_from_file_location" => Some(crate::molt_importlib_spec_from_file_location as *const () as usize as u64),
-        "molt_importlib_set_module_state" => Some(crate::molt_importlib_set_module_state as *const () as usize as u64),
-        "molt_importlib_stabilize_module_state" => Some(crate::molt_importlib_stabilize_module_state as *const () as usize as u64),
-        "molt_copyreg_bootstrap" => Some(crate::molt_copyreg_bootstrap as *const () as usize as u64),
-        "molt_copyreg_pickle" => Some(crate::molt_copyreg_pickle as *const () as usize as u64),
-        "molt_copyreg_newobj" => Some(crate::molt_copyreg_newobj as *const () as usize as u64),
-        "molt_copyreg_newobj_ex" => Some(crate::molt_copyreg_newobj_ex as *const () as usize as u64),
-        "molt_copyreg_reconstructor" => Some(crate::molt_copyreg_reconstructor as *const () as usize as u64),
-        "molt_copyreg_reduce_ex" => Some(crate::molt_copyreg_reduce_ex as *const () as usize as u64),
-        "molt_pickle_encode_protocol0" => Some(crate::molt_pickle_encode_protocol0 as *const () as usize as u64),
-        "molt_pickle_dumps_protocol01" => Some(crate::molt_pickle_dumps_protocol01 as *const () as usize as u64),
-        "molt_pickle_loads_protocol01" => Some(crate::molt_pickle_loads_protocol01 as *const () as usize as u64),
-        "molt_pickle_dumps_core" => Some(crate::molt_pickle_dumps_core as *const () as usize as u64),
-        "molt_pickle_loads_core" => Some(crate::molt_pickle_loads_core as *const () as usize as u64),
-        "molt_copyreg_constructor" => Some(crate::molt_copyreg_constructor as *const () as usize as u64),
-        "molt_copyreg_add_extension" => Some(crate::molt_copyreg_add_extension as *const () as usize as u64),
-        "molt_copyreg_remove_extension" => Some(crate::molt_copyreg_remove_extension as *const () as usize as u64),
-        "molt_copyreg_clear_extension_cache" => Some(crate::molt_copyreg_clear_extension_cache as *const () as usize as u64),
-        "molt_module_cache_set" => Some(crate::molt_module_cache_set as *const () as usize as u64),
-        "molt_exception_active" => Some(crate::molt_exception_active as *const () as usize as u64),
-        "molt_exception_last" => Some(crate::molt_exception_last as *const () as usize as u64),
-        "molt_exception_pending" => Some(crate::molt_exception_pending as *const () as usize as u64),
-        "molt_exception_clear" => Some(crate::molt_exception_clear as *const () as usize as u64),
-        "molt_gc_collect" => Some(crate::molt_gc_collect as *const () as usize as u64),
-        "molt_gc_enable" => Some(crate::molt_gc_enable as *const () as usize as u64),
-        "molt_gc_disable" => Some(crate::molt_gc_disable as *const () as usize as u64),
-        "molt_gc_isenabled" => Some(crate::molt_gc_isenabled as *const () as usize as u64),
-        "molt_gc_set_threshold" => Some(crate::molt_gc_set_threshold as *const () as usize as u64),
-        "molt_gc_get_threshold" => Some(crate::molt_gc_get_threshold as *const () as usize as u64),
-        "molt_gc_set_debug" => Some(crate::molt_gc_set_debug as *const () as usize as u64),
-        "molt_gc_get_debug" => Some(crate::molt_gc_get_debug as *const () as usize as u64),
-        "molt_gc_get_count" => Some(crate::molt_gc_get_count as *const () as usize as u64),
-        "molt_traceback_source_line" => Some(crate::molt_traceback_source_line as *const () as usize as u64),
-        "molt_traceback_infer_col_offsets" => Some(crate::molt_traceback_infer_col_offsets as *const () as usize as u64),
-        "molt_traceback_format_caret_line" => Some(crate::molt_traceback_format_caret_line as *const () as usize as u64),
-        "molt_traceback_format_exception_only" => Some(crate::molt_traceback_format_exception_only as *const () as usize as u64),
-        "molt_traceback_format_exception" => Some(crate::molt_traceback_format_exception as *const () as usize as u64),
-        "molt_traceback_format_tb" => Some(crate::molt_traceback_format_tb as *const () as usize as u64),
-        "molt_traceback_format_stack" => Some(crate::molt_traceback_format_stack as *const () as usize as u64),
-        "molt_traceback_extract_tb" => Some(crate::molt_traceback_extract_tb as *const () as usize as u64),
-        "molt_traceback_exception_components" => Some(crate::molt_traceback_exception_components as *const () as usize as u64),
-        "molt_traceback_exception_chain_payload" => Some(crate::molt_traceback_exception_chain_payload as *const () as usize as u64),
-        "molt_traceback_exception_suppress_context" => Some(crate::molt_traceback_exception_suppress_context as *const () as usize as u64),
-        "molt_traceback_payload" => Some(crate::molt_traceback_payload as *const () as usize as u64),
-        "molt_getargv" => Some(crate::molt_getargv as *const () as usize as u64),
-        "molt_getframe" => Some(crate::molt_getframe as *const () as usize as u64),
-        "molt_getrecursionlimit" => Some(crate::molt_getrecursionlimit as *const () as usize as u64),
-        "molt_setrecursionlimit" => Some(crate::molt_setrecursionlimit as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_socketserver_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_socketserver_register" => Some(crate::molt_socketserver_register as *const () as usize as u64),
+        "molt_socketserver_unregister" => Some(crate::molt_socketserver_unregister as *const () as usize as u64),
+        "molt_socketserver_dispatch_begin" => Some(crate::molt_socketserver_dispatch_begin as *const () as usize as u64),
+        "molt_socketserver_dispatch_poll" => Some(crate::molt_socketserver_dispatch_poll as *const () as usize as u64),
+        "molt_socketserver_dispatch_cancel" => Some(crate::molt_socketserver_dispatch_cancel as *const () as usize as u64),
+        "molt_socketserver_get_request_poll" => Some(crate::molt_socketserver_get_request_poll as *const () as usize as u64),
+        "molt_socketserver_set_response" => Some(crate::molt_socketserver_set_response as *const () as usize as u64),
+        "molt_socketserver_serve_forever" => Some(crate::molt_socketserver_serve_forever as *const () as usize as u64),
+        "molt_socketserver_handle_request" => Some(crate::molt_socketserver_handle_request as *const () as usize as u64),
+        "molt_socketserver_shutdown" => Some(crate::molt_socketserver_shutdown as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_sqlite_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_db_query_obj" => Some(crate::molt_db_query_obj as *const () as usize as u64),
+        "molt_db_exec_obj" => Some(crate::molt_db_exec_obj as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_ssl_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_cert_none" => Some(crate::molt_ssl_cert_none as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_cert_optional" => Some(crate::molt_ssl_cert_optional as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_cert_required" => Some(crate::molt_ssl_cert_required as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_context_check_hostname_get" => Some(crate::molt_ssl_context_check_hostname_get as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_context_check_hostname_set" => Some(crate::molt_ssl_context_check_hostname_set as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_context_drop" => Some(crate::molt_ssl_context_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_context_get_protocol" => Some(crate::molt_ssl_context_get_protocol as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_context_load_cert_chain" => Some(crate::molt_ssl_context_load_cert_chain as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_context_load_verify_locations" => Some(crate::molt_ssl_context_load_verify_locations as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_context_new" => Some(crate::molt_ssl_context_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_context_set_ciphers" => Some(crate::molt_ssl_context_set_ciphers as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_context_set_default_verify_paths" => Some(crate::molt_ssl_context_set_default_verify_paths as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_context_verify_mode_get" => Some(crate::molt_ssl_context_verify_mode_get as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_context_verify_mode_set" => Some(crate::molt_ssl_context_verify_mode_set as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_create_default_context" => Some(crate::molt_ssl_create_default_context as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_has_sni" => Some(crate::molt_ssl_has_sni as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_openssl_version" => Some(crate::molt_ssl_openssl_version as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_protocol_tls_client" => Some(crate::molt_ssl_protocol_tls_client as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_protocol_tls_server" => Some(crate::molt_ssl_protocol_tls_server as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_socket_cipher" => Some(crate::molt_ssl_socket_cipher as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_socket_close" => Some(crate::molt_ssl_socket_close as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_socket_do_handshake" => Some(crate::molt_ssl_socket_do_handshake as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_socket_drop" => Some(crate::molt_ssl_socket_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_socket_getpeercert" => Some(crate::molt_ssl_socket_getpeercert as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_socket_read" => Some(crate::molt_ssl_socket_read as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_socket_unwrap" => Some(crate::molt_ssl_socket_unwrap as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_socket_version" => Some(crate::molt_ssl_socket_version as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_socket_write" => Some(crate::molt_ssl_socket_write as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_ssl_wrap_socket" => Some(crate::molt_ssl_wrap_socket as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_stat_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_stat_constants" => Some(crate::molt_stat_constants as *const () as usize as u64),
+        "molt_stat_ifmt" => Some(crate::molt_stat_ifmt as *const () as usize as u64),
+        "molt_stat_imode" => Some(crate::molt_stat_imode as *const () as usize as u64),
+        "molt_stat_isdir" => Some(crate::molt_stat_isdir as *const () as usize as u64),
+        "molt_stat_isreg" => Some(crate::molt_stat_isreg as *const () as usize as u64),
+        "molt_stat_ischr" => Some(crate::molt_stat_ischr as *const () as usize as u64),
+        "molt_stat_isblk" => Some(crate::molt_stat_isblk as *const () as usize as u64),
+        "molt_stat_isfifo" => Some(crate::molt_stat_isfifo as *const () as usize as u64),
+        "molt_stat_islnk" => Some(crate::molt_stat_islnk as *const () as usize as u64),
+        "molt_stat_issock" => Some(crate::molt_stat_issock as *const () as usize as u64),
+        "molt_stat_isdoor" => Some(crate::molt_stat_isdoor as *const () as usize as u64),
+        "molt_stat_isport" => Some(crate::molt_stat_isport as *const () as usize as u64),
+        "molt_stat_iswht" => Some(crate::molt_stat_iswht as *const () as usize as u64),
+        "molt_stat_filemode" => Some(crate::molt_stat_filemode as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_statistics_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_statistics_mean" => Some(crate::molt_statistics_mean as *const () as usize as u64),
+        "molt_statistics_fmean" => Some(crate::molt_statistics_fmean as *const () as usize as u64),
+        "molt_statistics_stdev" => Some(crate::molt_statistics_stdev as *const () as usize as u64),
+        "molt_statistics_variance" => Some(crate::molt_statistics_variance as *const () as usize as u64),
+        "molt_statistics_pvariance" => Some(crate::molt_statistics_pvariance as *const () as usize as u64),
+        "molt_statistics_pstdev" => Some(crate::molt_statistics_pstdev as *const () as usize as u64),
+        "molt_statistics_median" => Some(crate::molt_statistics_median as *const () as usize as u64),
+        "molt_statistics_median_low" => Some(crate::molt_statistics_median_low as *const () as usize as u64),
+        "molt_statistics_median_high" => Some(crate::molt_statistics_median_high as *const () as usize as u64),
+        "molt_statistics_median_grouped" => Some(crate::molt_statistics_median_grouped as *const () as usize as u64),
+        "molt_statistics_mode" => Some(crate::molt_statistics_mode as *const () as usize as u64),
+        "molt_statistics_multimode" => Some(crate::molt_statistics_multimode as *const () as usize as u64),
+        "molt_statistics_quantiles" => Some(crate::molt_statistics_quantiles as *const () as usize as u64),
+        "molt_statistics_harmonic_mean" => Some(crate::molt_statistics_harmonic_mean as *const () as usize as u64),
+        "molt_statistics_geometric_mean" => Some(crate::molt_statistics_geometric_mean as *const () as usize as u64),
+        "molt_statistics_covariance" => Some(crate::molt_statistics_covariance as *const () as usize as u64),
+        "molt_statistics_correlation" => Some(crate::molt_statistics_correlation as *const () as usize as u64),
+        "molt_statistics_linear_regression" => Some(crate::molt_statistics_linear_regression as *const () as usize as u64),
+        "molt_statistics_normal_dist_new" => Some(crate::molt_statistics_normal_dist_new as *const () as usize as u64),
+        "molt_statistics_normal_dist_samples" => Some(crate::molt_statistics_normal_dist_samples as *const () as usize as u64),
+        "molt_statistics_normal_dist_inv_cdf" => Some(crate::molt_statistics_normal_dist_inv_cdf as *const () as usize as u64),
+        "molt_statistics_normal_dist_pdf" => Some(crate::molt_statistics_normal_dist_pdf as *const () as usize as u64),
+        "molt_statistics_normal_dist_cdf" => Some(crate::molt_statistics_normal_dist_cdf as *const () as usize as u64),
+        "molt_statistics_normal_dist_zscore" => Some(crate::molt_statistics_normal_dist_zscore as *const () as usize as u64),
+        "molt_statistics_normal_dist_overlap" => Some(crate::molt_statistics_normal_dist_overlap as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_string_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_string_capitalize" => Some(crate::molt_string_capitalize as *const () as usize as u64),
+        "molt_string_template_scan" => Some(crate::molt_string_template_scan as *const () as usize as u64),
+        "molt_string_template_is_valid" => Some(crate::molt_string_template_is_valid as *const () as usize as u64),
+        "molt_string_template_get_identifiers" => Some(crate::molt_string_template_get_identifiers as *const () as usize as u64),
+        "molt_string_formatter_parse" => Some(crate::molt_string_formatter_parse as *const () as usize as u64),
+        "molt_string_formatter_field_name_split" => Some(crate::molt_string_formatter_field_name_split as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_stringprep_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_stringprep_in_table" => Some(crate::molt_stringprep_in_table as *const () as usize as u64),
+        "molt_stringprep_map_table_b3" => Some(crate::molt_stringprep_map_table_b3 as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_struct_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_struct_pack" => Some(crate::molt_struct_pack as *const () as usize as u64),
+        "molt_struct_unpack" => Some(crate::molt_struct_unpack as *const () as usize as u64),
+        "molt_struct_calcsize" => Some(crate::molt_struct_calcsize as *const () as usize as u64),
+        "molt_struct_pack_into" => Some(crate::molt_struct_pack_into as *const () as usize as u64),
+        "molt_struct_unpack_from" => Some(crate::molt_struct_unpack_from as *const () as usize as u64),
+        "molt_struct_iter_unpack" => Some(crate::molt_struct_iter_unpack as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_subprocess_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_subprocess_runtime_ready" => Some(crate::molt_subprocess_runtime_ready as *const () as usize as u64),
+        "molt_process_spawn" => Some(crate::molt_process_spawn as *const () as usize as u64),
+        "molt_process_spawn_ex" => Some(crate::molt_process_spawn_ex as *const () as usize as u64),
+        "molt_process_wait_future" => Some(crate::molt_process_wait_future as *const () as usize as u64),
+        "molt_process_poll" => Some(crate::molt_process_poll as *const () as usize as u64),
+        "molt_process_pid" => Some(crate::molt_process_pid as *const () as usize as u64),
+        "molt_process_returncode" => Some(crate::molt_process_returncode as *const () as usize as u64),
+        "molt_process_kill" => Some(crate::molt_process_kill as *const () as usize as u64),
+        "molt_process_terminate" => Some(crate::molt_process_terminate as *const () as usize as u64),
+        "molt_process_stdin" => Some(crate::molt_process_stdin as *const () as usize as u64),
+        "molt_process_stdout" => Some(crate::molt_process_stdout as *const () as usize as u64),
+        "molt_process_stderr" => Some(crate::molt_process_stderr as *const () as usize as u64),
+        "molt_process_drop" => Some(crate::molt_process_drop as *const () as usize as u64),
+        "molt_subprocess_check_call" => Some(crate::molt_subprocess_check_call as *const () as usize as u64),
+        "molt_subprocess_check_output" => Some(crate::molt_subprocess_check_output as *const () as usize as u64),
+        "molt_subprocess_devnull_const" => Some(crate::molt_subprocess_devnull_const as *const () as usize as u64),
+        "molt_subprocess_pipe_const" => Some(crate::molt_subprocess_pipe_const as *const () as usize as u64),
+        "molt_subprocess_run" => Some(crate::molt_subprocess_run as *const () as usize as u64),
+        "molt_subprocess_stdout_const" => Some(crate::molt_subprocess_stdout_const as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_symtable_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_symtable_runtime_ready" => Some(crate::molt_symtable_runtime_ready as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_sys_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
         "molt_sys_executable" => Some(crate::molt_sys_executable as *const () as usize as u64),
-        "molt_asyncgen_hooks_get" => Some(crate::molt_asyncgen_hooks_get as *const () as usize as u64),
-        "molt_asyncgen_hooks_set" => Some(crate::molt_asyncgen_hooks_set as *const () as usize as u64),
-        "molt_asyncgen_locals" => Some(crate::molt_asyncgen_locals as *const () as usize as u64),
-        "molt_gen_locals" => Some(crate::molt_gen_locals as *const () as usize as u64),
-        #[cfg(feature = "stdlib_ast")]
-        "molt_ast_parse" => Some(crate::molt_ast_parse as *const () as usize as u64),
-        #[cfg(feature = "stdlib_ast")]
-        "molt_ast_walk" => Some(crate::molt_ast_walk as *const () as usize as u64),
-        #[cfg(feature = "stdlib_ast")]
-        "molt_ast_get_docstring" => Some(crate::molt_ast_get_docstring as *const () as usize as u64),
-        "molt_inspect_cleandoc" => Some(crate::molt_inspect_cleandoc as *const () as usize as u64),
-        "molt_inspect_currentframe" => Some(crate::molt_inspect_currentframe as *const () as usize as u64),
-        "molt_inspect_getdoc" => Some(crate::molt_inspect_getdoc as *const () as usize as u64),
-        "molt_inspect_isfunction" => Some(crate::molt_inspect_isfunction as *const () as usize as u64),
-        "molt_inspect_isclass" => Some(crate::molt_inspect_isclass as *const () as usize as u64),
-        "molt_inspect_ismodule" => Some(crate::molt_inspect_ismodule as *const () as usize as u64),
-        "molt_inspect_iscoroutine" => Some(crate::molt_inspect_iscoroutine as *const () as usize as u64),
-        "molt_inspect_iscoroutinefunction" => Some(crate::molt_inspect_iscoroutinefunction as *const () as usize as u64),
-        "molt_inspect_isasyncgenfunction" => Some(crate::molt_inspect_isasyncgenfunction as *const () as usize as u64),
-        "molt_inspect_isgeneratorfunction" => Some(crate::molt_inspect_isgeneratorfunction as *const () as usize as u64),
-        "molt_inspect_isawaitable" => Some(crate::molt_inspect_isawaitable as *const () as usize as u64),
-        "molt_inspect_getgeneratorstate" => Some(crate::molt_inspect_getgeneratorstate as *const () as usize as u64),
-        "molt_inspect_getasyncgenstate" => Some(crate::molt_inspect_getasyncgenstate as *const () as usize as u64),
-        "molt_inspect_getcoroutinestate" => Some(crate::molt_inspect_getcoroutinestate as *const () as usize as u64),
-        "molt_inspect_signature_data" => Some(crate::molt_inspect_signature_data as *const () as usize as u64),
-        "molt_function_set_builtin" => Some(crate::molt_function_set_builtin as *const () as usize as u64),
-        "molt_builtin_class_lookup" => Some(crate::molt_builtin_class_lookup as *const () as usize as u64),
-        "molt_class_new" => Some(crate::molt_class_new as *const () as usize as u64),
-        "molt_dataclasses_make_dataclass" => Some(crate::molt_dataclasses_make_dataclass as *const () as usize as u64),
-        "molt_dataclasses_is_dataclass" => Some(crate::molt_dataclasses_is_dataclass as *const () as usize as u64),
-        "molt_dataclasses_fields" => Some(crate::molt_dataclasses_fields as *const () as usize as u64),
-        "molt_dataclasses_asdict" => Some(crate::molt_dataclasses_asdict as *const () as usize as u64),
-        "molt_dataclasses_astuple" => Some(crate::molt_dataclasses_astuple as *const () as usize as u64),
-        "molt_dataclasses_replace" => Some(crate::molt_dataclasses_replace as *const () as usize as u64),
-        "molt_dataclasses_post_init" => Some(crate::molt_dataclasses_post_init as *const () as usize as u64),
-        "molt_dataclasses_field_metadata" => Some(crate::molt_dataclasses_field_metadata as *const () as usize as u64),
-        "molt_dataclasses_set_field_metadata" => Some(crate::molt_dataclasses_set_field_metadata as *const () as usize as u64),
-        "molt_dataclasses_is_initvar" => Some(crate::molt_dataclasses_is_initvar as *const () as usize as u64),
-        "molt_dataclasses_is_kw_only_sentinel" => Some(crate::molt_dataclasses_is_kw_only_sentinel as *const () as usize as u64),
-        "molt_class_set_base" => Some(crate::molt_class_set_base as *const () as usize as u64),
-        "molt_class_apply_set_name" => Some(crate::molt_class_apply_set_name as *const () as usize as u64),
-        "molt_classmethod_new" => Some(crate::molt_classmethod_new as *const () as usize as u64),
-        "molt_staticmethod_new" => Some(crate::molt_staticmethod_new as *const () as usize as u64),
-        "molt_property_new" => Some(crate::molt_property_new as *const () as usize as u64),
-        "molt_memoryview_new" => Some(crate::molt_memoryview_new as *const () as usize as u64),
-        "molt_memoryview_from_flags" => Some(crate::molt_memoryview_from_flags as *const () as usize as u64),
-        "molt_memoryview_cast" => Some(crate::molt_memoryview_cast as *const () as usize as u64),
-        "molt_memoryview_tobytes" => Some(crate::molt_memoryview_tobytes as *const () as usize as u64),
-        "molt_memoryview_tolist" => Some(crate::molt_memoryview_tolist as *const () as usize as u64),
-        "molt_memoryview_count" => Some(crate::molt_memoryview_count as *const () as usize as u64),
-        "molt_memoryview_index" => Some(crate::molt_memoryview_index as *const () as usize as u64),
-        "molt_memoryview_hex" => Some(crate::molt_memoryview_hex as *const () as usize as u64),
-        "molt_memoryview_release" => Some(crate::molt_memoryview_release as *const () as usize as u64),
-        "molt_memoryview_toreadonly" => Some(crate::molt_memoryview_toreadonly as *const () as usize as u64),
-        "molt_generic_alias_new" => Some(crate::molt_generic_alias_new as *const () as usize as u64),
-        "molt_typing_type_param" => Some(crate::molt_typing_type_param as *const () as usize as u64),
-        "molt_typing_private_payload" => Some(crate::molt_typing_private_payload as *const () as usize as u64),
-        "molt_importlib_metadata_types_payload" => Some(crate::molt_importlib_metadata_types_payload as *const () as usize as u64),
-        "molt_sys_set_version_info" => Some(crate::molt_sys_set_version_info as *const () as usize as u64),
         "molt_sys_version_info" => Some(crate::molt_sys_version_info as *const () as usize as u64),
         "molt_sys_version" => Some(crate::molt_sys_version as *const () as usize as u64),
         "molt_sys_hexversion" => Some(crate::molt_sys_hexversion as *const () as usize as u64),
@@ -3648,7 +6039,6 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_sys_setprofile" => Some(crate::molt_sys_setprofile as *const () as usize as u64),
         "molt_sys_getprofile" => Some(crate::molt_sys_getprofile as *const () as usize as u64),
         "molt_sys_bootstrap_payload" => Some(crate::molt_sys_bootstrap_payload as *const () as usize as u64),
-        "molt_is_string_obj" => Some(crate::molt_is_string_obj as *const () as usize as u64),
         "molt_sys_stdin" => Some(crate::molt_sys_stdin as *const () as usize as u64),
         "molt_sys_stdout" => Some(crate::molt_sys_stdout as *const () as usize as u64),
         "molt_sys_stderr" => Some(crate::molt_sys_stderr as *const () as usize as u64),
@@ -3671,1131 +6061,30 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_sys_builtin_module_names" => Some(crate::molt_sys_builtin_module_names as *const () as usize as u64),
         "molt_sys_orig_argv" => Some(crate::molt_sys_orig_argv as *const () as usize as u64),
         "molt_sys_copyright" => Some(crate::molt_sys_copyright as *const () as usize as u64),
-        "molt_trace_enter_slot" => Some(crate::molt_trace_enter_slot as *const () as usize as u64),
-        "molt_trace_exit" => Some(crate::molt_trace_exit as *const () as usize as u64),
-        "molt_trace_set_line" => Some(crate::molt_trace_set_line as *const () as usize as u64),
-        "molt_operator_abs" => Some(crate::molt_operator_abs as *const () as usize as u64),
-        "molt_operator_add" => Some(crate::molt_operator_add as *const () as usize as u64),
-        "molt_operator_sub" => Some(crate::molt_operator_sub as *const () as usize as u64),
-        "molt_operator_mul" => Some(crate::molt_operator_mul as *const () as usize as u64),
-        "molt_operator_matmul" => Some(crate::molt_operator_matmul as *const () as usize as u64),
-        "molt_operator_truediv" => Some(crate::molt_operator_truediv as *const () as usize as u64),
-        "molt_operator_floordiv" => Some(crate::molt_operator_floordiv as *const () as usize as u64),
-        "molt_operator_mod" => Some(crate::molt_operator_mod as *const () as usize as u64),
-        "molt_operator_pow" => Some(crate::molt_operator_pow as *const () as usize as u64),
-        "molt_operator_lshift" => Some(crate::molt_operator_lshift as *const () as usize as u64),
-        "molt_operator_rshift" => Some(crate::molt_operator_rshift as *const () as usize as u64),
-        "molt_operator_and" => Some(crate::molt_operator_and as *const () as usize as u64),
-        "molt_operator_or" => Some(crate::molt_operator_or as *const () as usize as u64),
-        "molt_operator_xor" => Some(crate::molt_operator_xor as *const () as usize as u64),
-        "molt_operator_neg" => Some(crate::molt_operator_neg as *const () as usize as u64),
-        "molt_operator_pos" => Some(crate::molt_operator_pos as *const () as usize as u64),
-        "molt_operator_invert" => Some(crate::molt_operator_invert as *const () as usize as u64),
-        "molt_operator_not" => Some(crate::molt_operator_not as *const () as usize as u64),
-        "molt_operator_truth" => Some(crate::molt_operator_truth as *const () as usize as u64),
-        "molt_operator_eq" => Some(crate::molt_operator_eq as *const () as usize as u64),
-        "molt_operator_ne" => Some(crate::molt_operator_ne as *const () as usize as u64),
-        "molt_operator_lt" => Some(crate::molt_operator_lt as *const () as usize as u64),
-        "molt_operator_le" => Some(crate::molt_operator_le as *const () as usize as u64),
-        "molt_operator_gt" => Some(crate::molt_operator_gt as *const () as usize as u64),
-        "molt_operator_ge" => Some(crate::molt_operator_ge as *const () as usize as u64),
-        "molt_operator_is" => Some(crate::molt_operator_is as *const () as usize as u64),
-        "molt_operator_is_not" => Some(crate::molt_operator_is_not as *const () as usize as u64),
-        "molt_operator_contains" => Some(crate::molt_operator_contains as *const () as usize as u64),
-        "molt_operator_getitem" => Some(crate::molt_operator_getitem as *const () as usize as u64),
-        "molt_operator_setitem" => Some(crate::molt_operator_setitem as *const () as usize as u64),
-        "molt_operator_delitem" => Some(crate::molt_operator_delitem as *const () as usize as u64),
-        "molt_operator_countof" => Some(crate::molt_operator_countof as *const () as usize as u64),
-        "molt_operator_length_hint" => Some(crate::molt_operator_length_hint as *const () as usize as u64),
-        "molt_operator_concat" => Some(crate::molt_operator_concat as *const () as usize as u64),
-        "molt_operator_iconcat" => Some(crate::molt_operator_iconcat as *const () as usize as u64),
-        "molt_operator_iadd" => Some(crate::molt_operator_iadd as *const () as usize as u64),
-        "molt_operator_isub" => Some(crate::molt_operator_isub as *const () as usize as u64),
-        "molt_operator_imul" => Some(crate::molt_operator_imul as *const () as usize as u64),
-        "molt_operator_imatmul" => Some(crate::molt_operator_imatmul as *const () as usize as u64),
-        "molt_operator_itruediv" => Some(crate::molt_operator_itruediv as *const () as usize as u64),
-        "molt_operator_ifloordiv" => Some(crate::molt_operator_ifloordiv as *const () as usize as u64),
-        "molt_operator_imod" => Some(crate::molt_operator_imod as *const () as usize as u64),
-        "molt_operator_ipow" => Some(crate::molt_operator_ipow as *const () as usize as u64),
-        "molt_operator_ilshift" => Some(crate::molt_operator_ilshift as *const () as usize as u64),
-        "molt_operator_irshift" => Some(crate::molt_operator_irshift as *const () as usize as u64),
-        "molt_operator_iand" => Some(crate::molt_operator_iand as *const () as usize as u64),
-        "molt_operator_ior" => Some(crate::molt_operator_ior as *const () as usize as u64),
-        "molt_operator_ixor" => Some(crate::molt_operator_ixor as *const () as usize as u64),
-        "molt_operator_index" => Some(crate::molt_operator_index as *const () as usize as u64),
-        "molt_operator_itemgetter" => Some(crate::molt_operator_itemgetter as *const () as usize as u64),
-        "molt_operator_attrgetter" => Some(crate::molt_operator_attrgetter as *const () as usize as u64),
-        "molt_operator_methodcaller" => Some(crate::molt_operator_methodcaller as *const () as usize as u64),
-        "molt_operator_itemgetter_type" => Some(crate::molt_operator_itemgetter_type as *const () as usize as u64),
-        "molt_operator_attrgetter_type" => Some(crate::molt_operator_attrgetter_type as *const () as usize as u64),
-        "molt_operator_methodcaller_type" => Some(crate::molt_operator_methodcaller_type as *const () as usize as u64),
-        "molt_itertools_kwd_mark" => Some(crate::molt_itertools_kwd_mark as *const () as usize as u64),
-        "molt_itertools_chain" => Some(crate::molt_itertools_chain as *const () as usize as u64),
-        "molt_itertools_chain_from_iterable" => Some(crate::molt_itertools_chain_from_iterable as *const () as usize as u64),
-        "molt_itertools_islice" => Some(crate::molt_itertools_islice as *const () as usize as u64),
-        "molt_itertools_repeat" => Some(crate::molt_itertools_repeat as *const () as usize as u64),
-        "molt_itertools_count" => Some(crate::molt_itertools_count as *const () as usize as u64),
-        "molt_itertools_cycle" => Some(crate::molt_itertools_cycle as *const () as usize as u64),
-        "molt_itertools_accumulate" => Some(crate::molt_itertools_accumulate as *const () as usize as u64),
-        "molt_itertools_batched" => Some(crate::molt_itertools_batched as *const () as usize as u64),
-        "molt_itertools_compress" => Some(crate::molt_itertools_compress as *const () as usize as u64),
-        "molt_itertools_combinations_with_replacement" => Some(crate::molt_itertools_combinations_with_replacement as *const () as usize as u64),
-        "molt_itertools_dropwhile" => Some(crate::molt_itertools_dropwhile as *const () as usize as u64),
-        "molt_itertools_filterfalse" => Some(crate::molt_itertools_filterfalse as *const () as usize as u64),
-        "molt_itertools_pairwise" => Some(crate::molt_itertools_pairwise as *const () as usize as u64),
-        "molt_itertools_product" => Some(crate::molt_itertools_product as *const () as usize as u64),
-        "molt_itertools_permutations" => Some(crate::molt_itertools_permutations as *const () as usize as u64),
-        "molt_itertools_combinations" => Some(crate::molt_itertools_combinations as *const () as usize as u64),
-        "molt_itertools_groupby" => Some(crate::molt_itertools_groupby as *const () as usize as u64),
-        "molt_itertools_starmap" => Some(crate::molt_itertools_starmap as *const () as usize as u64),
-        "molt_itertools_takewhile" => Some(crate::molt_itertools_takewhile as *const () as usize as u64),
-        "molt_itertools_tee" => Some(crate::molt_itertools_tee as *const () as usize as u64),
-        "molt_itertools_zip_longest" => Some(crate::molt_itertools_zip_longest as *const () as usize as u64),
-        "molt_functools_kwd_mark" => Some(crate::molt_functools_kwd_mark as *const () as usize as u64),
-        "molt_functools_update_wrapper" => Some(crate::molt_functools_update_wrapper as *const () as usize as u64),
-        "molt_functools_wraps" => Some(crate::molt_functools_wraps as *const () as usize as u64),
-        "molt_functools_cmp_to_key" => Some(crate::molt_functools_cmp_to_key as *const () as usize as u64),
-        "molt_functools_total_ordering" => Some(crate::molt_functools_total_ordering as *const () as usize as u64),
-        "molt_functools_partial" => Some(crate::molt_functools_partial as *const () as usize as u64),
-        "molt_functools_reduce" => Some(crate::molt_functools_reduce as *const () as usize as u64),
-        "molt_functools_lru_cache" => Some(crate::molt_functools_lru_cache as *const () as usize as u64),
-        "molt_keyword_lists" => Some(crate::molt_keyword_lists as *const () as usize as u64),
-        "molt_keyword_iskeyword" => Some(crate::molt_keyword_iskeyword as *const () as usize as u64),
-        "molt_keyword_issoftkeyword" => Some(crate::molt_keyword_issoftkeyword as *const () as usize as u64),
-        "molt_future_features" => Some(crate::molt_future_features as *const () as usize as u64),
-        "molt_types_bootstrap" => Some(crate::molt_types_bootstrap as *const () as usize as u64),
-        "molt_this_payload" => Some(crate::molt_this_payload as *const () as usize as u64),
-        "molt_quopri_encode" => Some(crate::molt_quopri_encode as *const () as usize as u64),
-        "molt_quopri_decode" => Some(crate::molt_quopri_decode as *const () as usize as u64),
-        "molt_quopri_needs_quoting" => Some(crate::molt_quopri_needs_quoting as *const () as usize as u64),
-        "molt_quopri_quote" => Some(crate::molt_quopri_quote as *const () as usize as u64),
-        "molt_quopri_ishex" => Some(crate::molt_quopri_ishex as *const () as usize as u64),
-        "molt_quopri_unhex" => Some(crate::molt_quopri_unhex as *const () as usize as u64),
-        "molt_email_quoprimime_header_check" => Some(crate::molt_email_quoprimime_header_check as *const () as usize as u64),
-        "molt_email_quoprimime_body_check" => Some(crate::molt_email_quoprimime_body_check as *const () as usize as u64),
-        "molt_email_quoprimime_header_length" => Some(crate::molt_email_quoprimime_header_length as *const () as usize as u64),
-        "molt_email_quoprimime_body_length" => Some(crate::molt_email_quoprimime_body_length as *const () as usize as u64),
-        "molt_email_quoprimime_quote" => Some(crate::molt_email_quoprimime_quote as *const () as usize as u64),
-        "molt_email_quoprimime_unquote" => Some(crate::molt_email_quoprimime_unquote as *const () as usize as u64),
-        "molt_email_quoprimime_header_encode" => Some(crate::molt_email_quoprimime_header_encode as *const () as usize as u64),
-        "molt_email_quoprimime_header_decode" => Some(crate::molt_email_quoprimime_header_decode as *const () as usize as u64),
-        "molt_email_quoprimime_body_encode" => Some(crate::molt_email_quoprimime_body_encode as *const () as usize as u64),
-        "molt_email_quoprimime_decode" => Some(crate::molt_email_quoprimime_decode as *const () as usize as u64),
-        "molt_opcode_payload_312_json" => Some(crate::molt_opcode_payload_312_json as *const () as usize as u64),
-        "molt_token_payload_312_json" => Some(crate::molt_token_payload_312_json as *const () as usize as u64),
-        "molt_token_payload_312" => Some(crate::molt_token_payload_312 as *const () as usize as u64),
-        "molt_opcode_metadata_payload_314_json" => Some(crate::molt_opcode_metadata_payload_314_json as *const () as usize as u64),
-        "molt_opcode_get_specialization_stats" => Some(crate::molt_opcode_get_specialization_stats as *const () as usize as u64),
-        "molt_opcode_stack_effect" => Some(crate::molt_opcode_stack_effect as *const () as usize as u64),
-        "molt_imghdr_test" => Some(crate::molt_imghdr_test as *const () as usize as u64),
-        "molt_imghdr_what" => Some(crate::molt_imghdr_what as *const () as usize as u64),
-        "molt_stdlib_probe" => Some(crate::molt_stdlib_probe as *const () as usize as u64),
-        "molt_argparse_add_argument" => Some(crate::molt_argparse_add_argument as *const () as usize as u64),
-        "molt_argparse_add_mutually_exclusive" => Some(crate::molt_argparse_add_mutually_exclusive as *const () as usize as u64),
-        "molt_argparse_add_parser" => Some(crate::molt_argparse_add_parser as *const () as usize as u64),
-        "molt_argparse_add_subparsers" => Some(crate::molt_argparse_add_subparsers as *const () as usize as u64),
-        "molt_argparse_error" => Some(crate::molt_argparse_error as *const () as usize as u64),
-        "molt_argparse_format_help" => Some(crate::molt_argparse_format_help as *const () as usize as u64),
-        "molt_argparse_format_usage" => Some(crate::molt_argparse_format_usage as *const () as usize as u64),
-        "molt_argparse_group_add_argument" => Some(crate::molt_argparse_group_add_argument as *const () as usize as u64),
-        "molt_argparse_parse_args" => Some(crate::molt_argparse_parse_args as *const () as usize as u64),
-        "molt_argparse_parser_drop" => Some(crate::molt_argparse_parser_drop as *const () as usize as u64),
-        "molt_argparse_parser_new" => Some(crate::molt_argparse_parser_new as *const () as usize as u64),
-        "molt_array_append" => Some(crate::molt_array_append as *const () as usize as u64),
-        "molt_array_buffer_info" => Some(crate::molt_array_buffer_info as *const () as usize as u64),
-        "molt_array_count" => Some(crate::molt_array_count as *const () as usize as u64),
-        "molt_array_drop" => Some(crate::molt_array_drop as *const () as usize as u64),
-        "molt_array_extend" => Some(crate::molt_array_extend as *const () as usize as u64),
-        "molt_array_from_list" => Some(crate::molt_array_from_list as *const () as usize as u64),
-        "molt_array_frombytes" => Some(crate::molt_array_frombytes as *const () as usize as u64),
-        "molt_array_getitem" => Some(crate::molt_array_getitem as *const () as usize as u64),
-        "molt_array_index" => Some(crate::molt_array_index as *const () as usize as u64),
-        "molt_array_insert" => Some(crate::molt_array_insert as *const () as usize as u64),
-        "molt_array_itemsize" => Some(crate::molt_array_itemsize as *const () as usize as u64),
-        "molt_array_len" => Some(crate::molt_array_len as *const () as usize as u64),
-        "molt_array_new" => Some(crate::molt_array_new as *const () as usize as u64),
-        "molt_array_pop" => Some(crate::molt_array_pop as *const () as usize as u64),
-        "molt_array_remove" => Some(crate::molt_array_remove as *const () as usize as u64),
-        "molt_array_reverse" => Some(crate::molt_array_reverse as *const () as usize as u64),
-        "molt_array_setitem" => Some(crate::molt_array_setitem as *const () as usize as u64),
-        "molt_array_tobytes" => Some(crate::molt_array_tobytes as *const () as usize as u64),
-        "molt_array_tolist" => Some(crate::molt_array_tolist as *const () as usize as u64),
-        "molt_array_typecode" => Some(crate::molt_array_typecode as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_compress" => Some(crate::molt_bz2_compress as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_compressor_compress" => Some(crate::molt_bz2_compressor_compress as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_compressor_drop" => Some(crate::molt_bz2_compressor_drop as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_compressor_flush" => Some(crate::molt_bz2_compressor_flush as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_compressor_new" => Some(crate::molt_bz2_compressor_new as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_decompress" => Some(crate::molt_bz2_decompress as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_decompressor_decompress" => Some(crate::molt_bz2_decompressor_decompress as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_decompressor_drop" => Some(crate::molt_bz2_decompressor_drop as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_decompressor_eof" => Some(crate::molt_bz2_decompressor_eof as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_decompressor_needs_input" => Some(crate::molt_bz2_decompressor_needs_input as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_decompressor_new" => Some(crate::molt_bz2_decompressor_new as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_decompressor_unused_data" => Some(crate::molt_bz2_decompressor_unused_data as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_file_close" => Some(crate::molt_bz2_file_close as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_file_drop" => Some(crate::molt_bz2_file_drop as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_file_open" => Some(crate::molt_bz2_file_open as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_file_read" => Some(crate::molt_bz2_file_read as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_file_write" => Some(crate::molt_bz2_file_write as *const () as usize as u64),
-        "molt_chainmap_contains" => Some(crate::molt_chainmap_contains as *const () as usize as u64),
-        "molt_chainmap_delitem" => Some(crate::molt_chainmap_delitem as *const () as usize as u64),
-        "molt_chainmap_drop" => Some(crate::molt_chainmap_drop as *const () as usize as u64),
-        "molt_chainmap_getitem" => Some(crate::molt_chainmap_getitem as *const () as usize as u64),
-        "molt_chainmap_keys" => Some(crate::molt_chainmap_keys as *const () as usize as u64),
-        "molt_chainmap_len" => Some(crate::molt_chainmap_len as *const () as usize as u64),
-        "molt_chainmap_maps" => Some(crate::molt_chainmap_maps as *const () as usize as u64),
-        "molt_chainmap_new" => Some(crate::molt_chainmap_new as *const () as usize as u64),
-        "molt_chainmap_new_child" => Some(crate::molt_chainmap_new_child as *const () as usize as u64),
-        "molt_chainmap_parents" => Some(crate::molt_chainmap_parents as *const () as usize as u64),
-        "molt_chainmap_setitem" => Some(crate::molt_chainmap_setitem as *const () as usize as u64),
-        "molt_cmath_acos" => Some(crate::molt_cmath_acos as *const () as usize as u64),
-        "molt_cmath_acosh" => Some(crate::molt_cmath_acosh as *const () as usize as u64),
-        "molt_cmath_asin" => Some(crate::molt_cmath_asin as *const () as usize as u64),
-        "molt_cmath_asinh" => Some(crate::molt_cmath_asinh as *const () as usize as u64),
-        "molt_cmath_atan" => Some(crate::molt_cmath_atan as *const () as usize as u64),
-        "molt_cmath_atanh" => Some(crate::molt_cmath_atanh as *const () as usize as u64),
-        "molt_cmath_constants" => Some(crate::molt_cmath_constants as *const () as usize as u64),
-        "molt_cmath_cos" => Some(crate::molt_cmath_cos as *const () as usize as u64),
-        "molt_cmath_cosh" => Some(crate::molt_cmath_cosh as *const () as usize as u64),
-        "molt_cmath_exp" => Some(crate::molt_cmath_exp as *const () as usize as u64),
-        "molt_cmath_isclose" => Some(crate::molt_cmath_isclose as *const () as usize as u64),
-        "molt_cmath_isfinite" => Some(crate::molt_cmath_isfinite as *const () as usize as u64),
-        "molt_cmath_isinf" => Some(crate::molt_cmath_isinf as *const () as usize as u64),
-        "molt_cmath_isnan" => Some(crate::molt_cmath_isnan as *const () as usize as u64),
-        "molt_cmath_log" => Some(crate::molt_cmath_log as *const () as usize as u64),
-        "molt_cmath_log10" => Some(crate::molt_cmath_log10 as *const () as usize as u64),
-        "molt_cmath_phase" => Some(crate::molt_cmath_phase as *const () as usize as u64),
-        "molt_cmath_polar" => Some(crate::molt_cmath_polar as *const () as usize as u64),
-        "molt_cmath_rect" => Some(crate::molt_cmath_rect as *const () as usize as u64),
-        "molt_cmath_sin" => Some(crate::molt_cmath_sin as *const () as usize as u64),
-        "molt_cmath_sinh" => Some(crate::molt_cmath_sinh as *const () as usize as u64),
-        "molt_cmath_sqrt" => Some(crate::molt_cmath_sqrt as *const () as usize as u64),
-        "molt_cmath_tan" => Some(crate::molt_cmath_tan as *const () as usize as u64),
-        "molt_cmath_tanh" => Some(crate::molt_cmath_tanh as *const () as usize as u64),
-        "molt_codecs_bom_utf16_be" => Some(crate::molt_codecs_bom_utf16_be as *const () as usize as u64),
-        "molt_codecs_bom_utf16_le" => Some(crate::molt_codecs_bom_utf16_le as *const () as usize as u64),
-        "molt_codecs_bom_utf32_be" => Some(crate::molt_codecs_bom_utf32_be as *const () as usize as u64),
-        "molt_codecs_bom_utf32_le" => Some(crate::molt_codecs_bom_utf32_le as *const () as usize as u64),
-        "molt_codecs_bom_utf8" => Some(crate::molt_codecs_bom_utf8 as *const () as usize as u64),
-        "molt_codecs_incremental_decoder_decode" => Some(crate::molt_codecs_incremental_decoder_decode as *const () as usize as u64),
-        "molt_codecs_incremental_decoder_drop" => Some(crate::molt_codecs_incremental_decoder_drop as *const () as usize as u64),
-        "molt_codecs_incremental_decoder_new" => Some(crate::molt_codecs_incremental_decoder_new as *const () as usize as u64),
-        "molt_codecs_incremental_decoder_reset" => Some(crate::molt_codecs_incremental_decoder_reset as *const () as usize as u64),
-        "molt_codecs_incremental_encoder_drop" => Some(crate::molt_codecs_incremental_encoder_drop as *const () as usize as u64),
-        "molt_codecs_incremental_encoder_encode" => Some(crate::molt_codecs_incremental_encoder_encode as *const () as usize as u64),
-        "molt_codecs_incremental_encoder_new" => Some(crate::molt_codecs_incremental_encoder_new as *const () as usize as u64),
-        "molt_codecs_incremental_encoder_reset" => Some(crate::molt_codecs_incremental_encoder_reset as *const () as usize as u64),
-        "molt_codecs_lookup_error" => Some(crate::molt_codecs_lookup_error as *const () as usize as u64),
-        "molt_codecs_normalize_encoding" => Some(crate::molt_codecs_normalize_encoding as *const () as usize as u64),
-        "molt_codecs_register_error" => Some(crate::molt_codecs_register_error as *const () as usize as u64),
-        "molt_codecs_stream_reader_drop" => Some(crate::molt_codecs_stream_reader_drop as *const () as usize as u64),
-        "molt_codecs_stream_reader_new" => Some(crate::molt_codecs_stream_reader_new as *const () as usize as u64),
-        "molt_codecs_stream_reader_read" => Some(crate::molt_codecs_stream_reader_read as *const () as usize as u64),
-        "molt_codecs_stream_reader_readline" => Some(crate::molt_codecs_stream_reader_readline as *const () as usize as u64),
-        "molt_codecs_stream_writer_drop" => Some(crate::molt_codecs_stream_writer_drop as *const () as usize as u64),
-        "molt_codecs_stream_writer_new" => Some(crate::molt_codecs_stream_writer_new as *const () as usize as u64),
-        "molt_codecs_stream_writer_write" => Some(crate::molt_codecs_stream_writer_write as *const () as usize as u64),
-        "molt_concurrent_all_completed" => Some(crate::molt_concurrent_all_completed as *const () as usize as u64),
-        "molt_concurrent_as_completed" => Some(crate::molt_concurrent_as_completed as *const () as usize as u64),
-        "molt_concurrent_first_completed" => Some(crate::molt_concurrent_first_completed as *const () as usize as u64),
-        "molt_concurrent_first_exception" => Some(crate::molt_concurrent_first_exception as *const () as usize as u64),
-        "molt_concurrent_future_add_done_callback" => Some(crate::molt_concurrent_future_add_done_callback as *const () as usize as u64),
-        "molt_concurrent_future_cancel" => Some(crate::molt_concurrent_future_cancel as *const () as usize as u64),
-        "molt_concurrent_future_cancelled" => Some(crate::molt_concurrent_future_cancelled as *const () as usize as u64),
-        "molt_concurrent_future_done" => Some(crate::molt_concurrent_future_done as *const () as usize as u64),
-        "molt_concurrent_future_drop" => Some(crate::molt_concurrent_future_drop as *const () as usize as u64),
-        "molt_concurrent_future_exception" => Some(crate::molt_concurrent_future_exception as *const () as usize as u64),
-        "molt_concurrent_future_result" => Some(crate::molt_concurrent_future_result as *const () as usize as u64),
-        "molt_concurrent_future_running" => Some(crate::molt_concurrent_future_running as *const () as usize as u64),
-        "molt_concurrent_threadpool_drop" => Some(crate::molt_concurrent_threadpool_drop as *const () as usize as u64),
-        "molt_concurrent_threadpool_new" => Some(crate::molt_concurrent_threadpool_new as *const () as usize as u64),
-        "molt_concurrent_threadpool_shutdown" => Some(crate::molt_concurrent_threadpool_shutdown as *const () as usize as u64),
-        "molt_concurrent_threadpool_submit" => Some(crate::molt_concurrent_threadpool_submit as *const () as usize as u64),
-        "molt_concurrent_wait" => Some(crate::molt_concurrent_wait as *const () as usize as u64),
-        "molt_configparser_add_section" => Some(crate::molt_configparser_add_section as *const () as usize as u64),
-        "molt_configparser_drop" => Some(crate::molt_configparser_drop as *const () as usize as u64),
-        "molt_configparser_get" => Some(crate::molt_configparser_get as *const () as usize as u64),
-        "molt_configparser_getboolean" => Some(crate::molt_configparser_getboolean as *const () as usize as u64),
-        "molt_configparser_getfloat" => Some(crate::molt_configparser_getfloat as *const () as usize as u64),
-        "molt_configparser_getint" => Some(crate::molt_configparser_getint as *const () as usize as u64),
-        "molt_configparser_has_option" => Some(crate::molt_configparser_has_option as *const () as usize as u64),
-        "molt_configparser_has_section" => Some(crate::molt_configparser_has_section as *const () as usize as u64),
-        "molt_configparser_items" => Some(crate::molt_configparser_items as *const () as usize as u64),
-        "molt_configparser_new" => Some(crate::molt_configparser_new as *const () as usize as u64),
-        "molt_configparser_options" => Some(crate::molt_configparser_options as *const () as usize as u64),
-        "molt_configparser_read" => Some(crate::molt_configparser_read as *const () as usize as u64),
-        "molt_configparser_read_string" => Some(crate::molt_configparser_read_string as *const () as usize as u64),
-        "molt_configparser_remove_option" => Some(crate::molt_configparser_remove_option as *const () as usize as u64),
-        "molt_configparser_remove_section" => Some(crate::molt_configparser_remove_section as *const () as usize as u64),
-        "molt_configparser_sections" => Some(crate::molt_configparser_sections as *const () as usize as u64),
-        "molt_configparser_set" => Some(crate::molt_configparser_set as *const () as usize as u64),
-        "molt_configparser_write" => Some(crate::molt_configparser_write as *const () as usize as u64),
-        "molt_dbm_dumb_open" => Some(crate::molt_dbm_dumb_open as *const () as usize as u64),
-        "molt_dbm_dumb_getitem" => Some(crate::molt_dbm_dumb_getitem as *const () as usize as u64),
-        "molt_dbm_dumb_setitem" => Some(crate::molt_dbm_dumb_setitem as *const () as usize as u64),
-        "molt_dbm_dumb_delitem" => Some(crate::molt_dbm_dumb_delitem as *const () as usize as u64),
-        "molt_dbm_dumb_contains" => Some(crate::molt_dbm_dumb_contains as *const () as usize as u64),
-        "molt_dbm_dumb_keys" => Some(crate::molt_dbm_dumb_keys as *const () as usize as u64),
-        "molt_dbm_dumb_sync" => Some(crate::molt_dbm_dumb_sync as *const () as usize as u64),
-        "molt_dbm_dumb_close" => Some(crate::molt_dbm_dumb_close as *const () as usize as u64),
-        "molt_csv_dict_project" => Some(crate::molt_csv_dict_project as *const () as usize as u64),
-        "molt_csv_field_size_limit" => Some(crate::molt_csv_field_size_limit as *const () as usize as u64),
-        "molt_csv_get_dialect" => Some(crate::molt_csv_get_dialect as *const () as usize as u64),
-        "molt_csv_has_header" => Some(crate::molt_csv_has_header as *const () as usize as u64),
-        "molt_csv_list_dialects" => Some(crate::molt_csv_list_dialects as *const () as usize as u64),
-        "molt_csv_quote_all" => Some(crate::molt_csv_quote_all as *const () as usize as u64),
-        "molt_csv_quote_minimal" => Some(crate::molt_csv_quote_minimal as *const () as usize as u64),
-        "molt_csv_quote_none" => Some(crate::molt_csv_quote_none as *const () as usize as u64),
-        "molt_csv_quote_nonnumeric" => Some(crate::molt_csv_quote_nonnumeric as *const () as usize as u64),
-        "molt_csv_quote_notnull" => Some(crate::molt_csv_quote_notnull as *const () as usize as u64),
-        "molt_csv_quote_strings" => Some(crate::molt_csv_quote_strings as *const () as usize as u64),
-        "molt_csv_register_dialect" => Some(crate::molt_csv_register_dialect as *const () as usize as u64),
-        "molt_csv_reader_drop" => Some(crate::molt_csv_reader_drop as *const () as usize as u64),
-        "molt_csv_reader_new" => Some(crate::molt_csv_reader_new as *const () as usize as u64),
-        "molt_csv_reader_parse_line" => Some(crate::molt_csv_reader_parse_line as *const () as usize as u64),
-        "molt_csv_sniff" => Some(crate::molt_csv_sniff as *const () as usize as u64),
-        "molt_csv_unregister_dialect" => Some(crate::molt_csv_unregister_dialect as *const () as usize as u64),
-        "molt_csv_writer_drop" => Some(crate::molt_csv_writer_drop as *const () as usize as u64),
-        "molt_csv_writer_new" => Some(crate::molt_csv_writer_new as *const () as usize as u64),
-        "molt_csv_writer_writerow" => Some(crate::molt_csv_writer_writerow as *const () as usize as u64),
-        "molt_csv_writer_writerows" => Some(crate::molt_csv_writer_writerows as *const () as usize as u64),
-        "molt_datetime_ctime" => Some(crate::molt_datetime_ctime as *const () as usize as u64),
-        "molt_datetime_days_in_month" => Some(crate::molt_datetime_days_in_month as *const () as usize as u64),
-        "molt_datetime_format_isodate" => Some(crate::molt_datetime_format_isodate as *const () as usize as u64),
-        "molt_datetime_format_isodatetime" => Some(crate::molt_datetime_format_isodatetime as *const () as usize as u64),
-        "molt_datetime_format_isotime" => Some(crate::molt_datetime_format_isotime as *const () as usize as u64),
-        "molt_datetime_fromtimestamp_local" => Some(crate::molt_datetime_fromtimestamp_local as *const () as usize as u64),
-        "molt_datetime_fromtimestamp_utc" => Some(crate::molt_datetime_fromtimestamp_utc as *const () as usize as u64),
-        "molt_datetime_hash_date" => Some(crate::molt_datetime_hash_date as *const () as usize as u64),
-        "molt_datetime_hash_datetime" => Some(crate::molt_datetime_hash_datetime as *const () as usize as u64),
-        "molt_datetime_hash_time" => Some(crate::molt_datetime_hash_time as *const () as usize as u64),
-        "molt_datetime_hash_timedelta" => Some(crate::molt_datetime_hash_timedelta as *const () as usize as u64),
-        "molt_datetime_is_leap" => Some(crate::molt_datetime_is_leap as *const () as usize as u64),
-        "molt_datetime_isocalendar" => Some(crate::molt_datetime_isocalendar as *const () as usize as u64),
-        "molt_datetime_isoweekday" => Some(crate::molt_datetime_isoweekday as *const () as usize as u64),
-        "molt_datetime_local_utcoffset" => Some(crate::molt_datetime_local_utcoffset as *const () as usize as u64),
-        "molt_datetime_now_local" => Some(crate::molt_datetime_now_local as *const () as usize as u64),
-        "molt_datetime_now_utc" => Some(crate::molt_datetime_now_utc as *const () as usize as u64),
-        "molt_datetime_ordinal_to_ymd" => Some(crate::molt_datetime_ordinal_to_ymd as *const () as usize as u64),
-        "molt_datetime_parse_isoformat" => Some(crate::molt_datetime_parse_isoformat as *const () as usize as u64),
-        "molt_datetime_parse_isoformat_date" => Some(crate::molt_datetime_parse_isoformat_date as *const () as usize as u64),
-        "molt_datetime_parse_isoformat_time" => Some(crate::molt_datetime_parse_isoformat_time as *const () as usize as u64),
-        "molt_datetime_strftime" => Some(crate::molt_datetime_strftime as *const () as usize as u64),
-        "molt_datetime_strptime" => Some(crate::molt_datetime_strptime as *const () as usize as u64),
-        "molt_datetime_td_normalize" => Some(crate::molt_datetime_td_normalize as *const () as usize as u64),
-        "molt_datetime_td_total_seconds" => Some(crate::molt_datetime_td_total_seconds as *const () as usize as u64),
-        "molt_datetime_to_timestamp" => Some(crate::molt_datetime_to_timestamp as *const () as usize as u64),
-        "molt_datetime_validate_date" => Some(crate::molt_datetime_validate_date as *const () as usize as u64),
-        "molt_datetime_validate_time" => Some(crate::molt_datetime_validate_time as *const () as usize as u64),
-        "molt_datetime_combine" => Some(crate::molt_datetime_combine as *const () as usize as u64),
-        "molt_date_fromisocalendar" => Some(crate::molt_date_fromisocalendar as *const () as usize as u64),
-        "molt_timedelta_truediv_scalar" => Some(crate::molt_timedelta_truediv_scalar as *const () as usize as u64),
-        "molt_timedelta_truediv_td" => Some(crate::molt_timedelta_truediv_td as *const () as usize as u64),
-        "molt_timedelta_floordiv_td" => Some(crate::molt_timedelta_floordiv_td as *const () as usize as u64),
-        "molt_timedelta_mod_td" => Some(crate::molt_timedelta_mod_td as *const () as usize as u64),
-        "molt_timedelta_floordiv_scalar" => Some(crate::molt_timedelta_floordiv_scalar as *const () as usize as u64),
-        "molt_timedelta_abs" => Some(crate::molt_timedelta_abs as *const () as usize as u64),
-        "molt_datetime_weekday" => Some(crate::molt_datetime_weekday as *const () as usize as u64),
-        "molt_datetime_ymd_to_ordinal" => Some(crate::molt_datetime_ymd_to_ordinal as *const () as usize as u64),
-        "molt_decimal_abs" => Some(crate::molt_decimal_abs as *const () as usize as u64),
-        "molt_decimal_add" => Some(crate::molt_decimal_add as *const () as usize as u64),
-        "molt_decimal_adjusted" => Some(crate::molt_decimal_adjusted as *const () as usize as u64),
-        "molt_decimal_as_integer_ratio" => Some(crate::molt_decimal_as_integer_ratio as *const () as usize as u64),
-        "molt_decimal_copy_abs" => Some(crate::molt_decimal_copy_abs as *const () as usize as u64),
-        "molt_decimal_copy_negate" => Some(crate::molt_decimal_copy_negate as *const () as usize as u64),
-        "molt_decimal_copy_sign" => Some(crate::molt_decimal_copy_sign as *const () as usize as u64),
-        "molt_decimal_floordiv" => Some(crate::molt_decimal_floordiv as *const () as usize as u64),
-        "molt_decimal_fma" => Some(crate::molt_decimal_fma as *const () as usize as u64),
-        "molt_decimal_from_float" => Some(crate::molt_decimal_from_float as *const () as usize as u64),
-        "molt_decimal_is_finite" => Some(crate::molt_decimal_is_finite as *const () as usize as u64),
-        "molt_decimal_is_infinite" => Some(crate::molt_decimal_is_infinite as *const () as usize as u64),
-        "molt_decimal_is_nan" => Some(crate::molt_decimal_is_nan as *const () as usize as u64),
-        "molt_decimal_is_normal" => Some(crate::molt_decimal_is_normal as *const () as usize as u64),
-        "molt_decimal_is_signed" => Some(crate::molt_decimal_is_signed as *const () as usize as u64),
-        "molt_decimal_is_subnormal" => Some(crate::molt_decimal_is_subnormal as *const () as usize as u64),
-        "molt_decimal_is_zero" => Some(crate::molt_decimal_is_zero as *const () as usize as u64),
-        "molt_decimal_ln" => Some(crate::molt_decimal_ln as *const () as usize as u64),
-        "molt_decimal_log10" => Some(crate::molt_decimal_log10 as *const () as usize as u64),
-        "molt_decimal_max" => Some(crate::molt_decimal_max as *const () as usize as u64),
-        "molt_decimal_min" => Some(crate::molt_decimal_min as *const () as usize as u64),
-        "molt_decimal_mod" => Some(crate::molt_decimal_mod as *const () as usize as u64),
-        "molt_decimal_mul" => Some(crate::molt_decimal_mul as *const () as usize as u64),
-        "molt_decimal_neg" => Some(crate::molt_decimal_neg as *const () as usize as u64),
-        "molt_decimal_next_minus" => Some(crate::molt_decimal_next_minus as *const () as usize as u64),
-        "molt_decimal_next_plus" => Some(crate::molt_decimal_next_plus as *const () as usize as u64),
-        "molt_decimal_number_class" => Some(crate::molt_decimal_number_class as *const () as usize as u64),
-        "molt_decimal_pos" => Some(crate::molt_decimal_pos as *const () as usize as u64),
-        "molt_decimal_pow" => Some(crate::molt_decimal_pow as *const () as usize as u64),
-        "molt_decimal_remainder_near" => Some(crate::molt_decimal_remainder_near as *const () as usize as u64),
-        "molt_decimal_same_quantum" => Some(crate::molt_decimal_same_quantum as *const () as usize as u64),
-        "molt_decimal_scaleb" => Some(crate::molt_decimal_scaleb as *const () as usize as u64),
-        "molt_decimal_sqrt" => Some(crate::molt_decimal_sqrt as *const () as usize as u64),
-        "molt_decimal_sub" => Some(crate::molt_decimal_sub as *const () as usize as u64),
-        "molt_decimal_to_eng_string" => Some(crate::molt_decimal_to_eng_string as *const () as usize as u64),
-        "molt_decimal_to_int" => Some(crate::molt_decimal_to_int as *const () as usize as u64),
-        "molt_decimal_to_integral_exact" => Some(crate::molt_decimal_to_integral_exact as *const () as usize as u64),
-        "molt_decimal_to_integral_value" => Some(crate::molt_decimal_to_integral_value as *const () as usize as u64),
-        "molt_difflib_context_diff" => Some(crate::molt_difflib_context_diff as *const () as usize as u64),
-        "molt_difflib_get_close_matches" => Some(crate::molt_difflib_get_close_matches as *const () as usize as u64),
-        "molt_difflib_get_matching_blocks" => Some(crate::molt_difflib_get_matching_blocks as *const () as usize as u64),
-        "molt_difflib_get_opcodes" => Some(crate::molt_difflib_get_opcodes as *const () as usize as u64),
-        "molt_difflib_is_junk" => Some(crate::molt_difflib_is_junk as *const () as usize as u64),
-        "molt_difflib_ndiff" => Some(crate::molt_difflib_ndiff as *const () as usize as u64),
-        "molt_difflib_quick_ratio" => Some(crate::molt_difflib_quick_ratio as *const () as usize as u64),
-        "molt_difflib_ratio" => Some(crate::molt_difflib_ratio as *const () as usize as u64),
-        "molt_difflib_unified_diff" => Some(crate::molt_difflib_unified_diff as *const () as usize as u64),
-        "molt_enum_auto_value" => Some(crate::molt_enum_auto_value as *const () as usize as u64),
-        "molt_enum_flag_and" => Some(crate::molt_enum_flag_and as *const () as usize as u64),
-        "molt_enum_flag_contains" => Some(crate::molt_enum_flag_contains as *const () as usize as u64),
-        "molt_enum_flag_decompose" => Some(crate::molt_enum_flag_decompose as *const () as usize as u64),
-        "molt_enum_flag_invert" => Some(crate::molt_enum_flag_invert as *const () as usize as u64),
-        "molt_enum_flag_new" => Some(crate::molt_enum_flag_new as *const () as usize as u64),
-        "molt_enum_flag_or" => Some(crate::molt_enum_flag_or as *const () as usize as u64),
-        "molt_enum_flag_xor" => Some(crate::molt_enum_flag_xor as *const () as usize as u64),
-        "molt_enum_str_value" => Some(crate::molt_enum_str_value as *const () as usize as u64),
-        "molt_enum_unique_check" => Some(crate::molt_enum_unique_check as *const () as usize as u64),
-        "molt_enum_verify_member" => Some(crate::molt_enum_verify_member as *const () as usize as u64),
-        "molt_fraction_abs" => Some(crate::molt_fraction_abs as *const () as usize as u64),
-        "molt_fraction_add" => Some(crate::molt_fraction_add as *const () as usize as u64),
-        "molt_fraction_as_integer_ratio" => Some(crate::molt_fraction_as_integer_ratio as *const () as usize as u64),
-        "molt_fraction_denominator" => Some(crate::molt_fraction_denominator as *const () as usize as u64),
-        "molt_fraction_drop" => Some(crate::molt_fraction_drop as *const () as usize as u64),
-        "molt_fraction_eq" => Some(crate::molt_fraction_eq as *const () as usize as u64),
-        "molt_fraction_floordiv" => Some(crate::molt_fraction_floordiv as *const () as usize as u64),
-        "molt_fraction_from_float" => Some(crate::molt_fraction_from_float as *const () as usize as u64),
-        "molt_fraction_from_str" => Some(crate::molt_fraction_from_str as *const () as usize as u64),
-        "molt_fraction_hash" => Some(crate::molt_fraction_hash as *const () as usize as u64),
-        "molt_fraction_le" => Some(crate::molt_fraction_le as *const () as usize as u64),
-        "molt_fraction_limit_denominator" => Some(crate::molt_fraction_limit_denominator as *const () as usize as u64),
-        "molt_fraction_lt" => Some(crate::molt_fraction_lt as *const () as usize as u64),
-        "molt_fraction_mod" => Some(crate::molt_fraction_mod as *const () as usize as u64),
-        "molt_fraction_mul" => Some(crate::molt_fraction_mul as *const () as usize as u64),
-        "molt_fraction_neg" => Some(crate::molt_fraction_neg as *const () as usize as u64),
-        "molt_fraction_new" => Some(crate::molt_fraction_new as *const () as usize as u64),
-        "molt_fraction_numerator" => Some(crate::molt_fraction_numerator as *const () as usize as u64),
-        "molt_fraction_pow" => Some(crate::molt_fraction_pow as *const () as usize as u64),
-        "molt_fraction_sub" => Some(crate::molt_fraction_sub as *const () as usize as u64),
-        "molt_fraction_to_float" => Some(crate::molt_fraction_to_float as *const () as usize as u64),
-        "molt_fraction_to_str" => Some(crate::molt_fraction_to_str as *const () as usize as u64),
-        "molt_fraction_truediv" => Some(crate::molt_fraction_truediv as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_gzip_close" => Some(crate::molt_gzip_close as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_gzip_compress" => Some(crate::molt_gzip_compress as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_gzip_decompress" => Some(crate::molt_gzip_decompress as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_gzip_drop" => Some(crate::molt_gzip_drop as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_gzip_open" => Some(crate::molt_gzip_open as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_gzip_read" => Some(crate::molt_gzip_read as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_gzip_write" => Some(crate::molt_gzip_write as *const () as usize as u64),
-        "molt_html_entities_codepoint2name" => Some(crate::molt_html_entities_codepoint2name as *const () as usize as u64),
-        "molt_html_entities_html5" => Some(crate::molt_html_entities_html5 as *const () as usize as u64),
-        "molt_html_entities_name2codepoint" => Some(crate::molt_html_entities_name2codepoint as *const () as usize as u64),
-        "molt_html_escape" => Some(crate::molt_html_escape as *const () as usize as u64),
-        "molt_html_parser_close" => Some(crate::molt_html_parser_close as *const () as usize as u64),
-        "molt_html_parser_drop" => Some(crate::molt_html_parser_drop as *const () as usize as u64),
-        "molt_html_parser_feed" => Some(crate::molt_html_parser_feed as *const () as usize as u64),
-        "molt_html_parser_new" => Some(crate::molt_html_parser_new as *const () as usize as u64),
-        "molt_html_unescape" => Some(crate::molt_html_unescape as *const () as usize as u64),
-        "molt_ipaddress_drop" => Some(crate::molt_ipaddress_drop as *const () as usize as u64),
-        "molt_ipaddress_v4_int" => Some(crate::molt_ipaddress_v4_int as *const () as usize as u64),
-        "molt_ipaddress_v4_is_global" => Some(crate::molt_ipaddress_v4_is_global as *const () as usize as u64),
-        "molt_ipaddress_v4_is_link_local" => Some(crate::molt_ipaddress_v4_is_link_local as *const () as usize as u64),
-        "molt_ipaddress_v4_is_loopback" => Some(crate::molt_ipaddress_v4_is_loopback as *const () as usize as u64),
-        "molt_ipaddress_v4_is_multicast" => Some(crate::molt_ipaddress_v4_is_multicast as *const () as usize as u64),
-        "molt_ipaddress_v4_is_private" => Some(crate::molt_ipaddress_v4_is_private as *const () as usize as u64),
-        "molt_ipaddress_v4_is_reserved" => Some(crate::molt_ipaddress_v4_is_reserved as *const () as usize as u64),
-        "molt_ipaddress_v4_max_prefixlen" => Some(crate::molt_ipaddress_v4_max_prefixlen as *const () as usize as u64),
-        "molt_ipaddress_v4_network_broadcast" => Some(crate::molt_ipaddress_v4_network_broadcast as *const () as usize as u64),
-        "molt_ipaddress_v4_network_contains" => Some(crate::molt_ipaddress_v4_network_contains as *const () as usize as u64),
-        "molt_ipaddress_v4_network_drop" => Some(crate::molt_ipaddress_v4_network_drop as *const () as usize as u64),
-        "molt_ipaddress_v4_network_hosts" => Some(crate::molt_ipaddress_v4_network_hosts as *const () as usize as u64),
-        "molt_ipaddress_v4_network_new" => Some(crate::molt_ipaddress_v4_network_new as *const () as usize as u64),
-        "molt_ipaddress_v4_network_prefixlen" => Some(crate::molt_ipaddress_v4_network_prefixlen as *const () as usize as u64),
-        "molt_ipaddress_v4_network_str" => Some(crate::molt_ipaddress_v4_network_str as *const () as usize as u64),
-        "molt_ipaddress_v4_new" => Some(crate::molt_ipaddress_v4_new as *const () as usize as u64),
-        "molt_ipaddress_v4_packed" => Some(crate::molt_ipaddress_v4_packed as *const () as usize as u64),
-        "molt_ipaddress_v4_str" => Some(crate::molt_ipaddress_v4_str as *const () as usize as u64),
-        "molt_ipaddress_v4_version" => Some(crate::molt_ipaddress_v4_version as *const () as usize as u64),
-        "molt_ipaddress_v6_drop" => Some(crate::molt_ipaddress_v6_drop as *const () as usize as u64),
-        "molt_ipaddress_v6_int" => Some(crate::molt_ipaddress_v6_int as *const () as usize as u64),
-        "molt_ipaddress_v6_is_global" => Some(crate::molt_ipaddress_v6_is_global as *const () as usize as u64),
-        "molt_ipaddress_v6_is_link_local" => Some(crate::molt_ipaddress_v6_is_link_local as *const () as usize as u64),
-        "molt_ipaddress_v6_is_loopback" => Some(crate::molt_ipaddress_v6_is_loopback as *const () as usize as u64),
-        "molt_ipaddress_v6_is_multicast" => Some(crate::molt_ipaddress_v6_is_multicast as *const () as usize as u64),
-        "molt_ipaddress_v6_is_private" => Some(crate::molt_ipaddress_v6_is_private as *const () as usize as u64),
-        "molt_ipaddress_v6_new" => Some(crate::molt_ipaddress_v6_new as *const () as usize as u64),
-        "molt_ipaddress_v6_packed" => Some(crate::molt_ipaddress_v6_packed as *const () as usize as u64),
-        "molt_ipaddress_v6_str" => Some(crate::molt_ipaddress_v6_str as *const () as usize as u64),
-        "molt_ipaddress_v6_version" => Some(crate::molt_ipaddress_v6_version as *const () as usize as u64),
-        "molt_json_detect_encoding" => Some(crate::molt_json_detect_encoding as *const () as usize as u64),
-        "molt_json_dumps" => Some(crate::molt_json_dumps as *const () as usize as u64),
-        "molt_json_dumps_ex" => Some(crate::molt_json_dumps_ex as *const () as usize as u64),
-        "molt_json_loads" => Some(crate::molt_json_loads as *const () as usize as u64),
-        "molt_json_loads_ex" => Some(crate::molt_json_loads_ex as *const () as usize as u64),
-        "molt_json_parse_scalar" => Some(crate::molt_json_parse_scalar as *const () as usize as u64),
-        "molt_json_raw_decode_ex" => Some(crate::molt_json_raw_decode_ex as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_check_crc32" => Some(crate::molt_lzma_check_crc32 as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_check_crc64" => Some(crate::molt_lzma_check_crc64 as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_check_none" => Some(crate::molt_lzma_check_none as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_check_sha256" => Some(crate::molt_lzma_check_sha256 as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_compress" => Some(crate::molt_lzma_compress as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_compressor_compress" => Some(crate::molt_lzma_compressor_compress as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_compressor_drop" => Some(crate::molt_lzma_compressor_drop as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_compressor_flush" => Some(crate::molt_lzma_compressor_flush as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_compressor_new" => Some(crate::molt_lzma_compressor_new as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_decompress" => Some(crate::molt_lzma_decompress as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_decompressor_decompress" => Some(crate::molt_lzma_decompressor_decompress as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_decompressor_drop" => Some(crate::molt_lzma_decompressor_drop as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_decompressor_eof" => Some(crate::molt_lzma_decompressor_eof as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_decompressor_needs_input" => Some(crate::molt_lzma_decompressor_needs_input as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_decompressor_new" => Some(crate::molt_lzma_decompressor_new as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_decompressor_unused_data" => Some(crate::molt_lzma_decompressor_unused_data as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_format_alone" => Some(crate::molt_lzma_format_alone as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_format_auto" => Some(crate::molt_lzma_format_auto as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_format_raw" => Some(crate::molt_lzma_format_raw as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_format_xz" => Some(crate::molt_lzma_format_xz as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_preset_default" => Some(crate::molt_lzma_preset_default as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_preset_extreme" => Some(crate::molt_lzma_preset_extreme as *const () as usize as u64),
-        "molt_ordereddict_clear" => Some(crate::molt_ordereddict_clear as *const () as usize as u64),
-        "molt_ordereddict_contains" => Some(crate::molt_ordereddict_contains as *const () as usize as u64),
-        "molt_ordereddict_copy" => Some(crate::molt_ordereddict_copy as *const () as usize as u64),
-        "molt_ordereddict_delitem" => Some(crate::molt_ordereddict_delitem as *const () as usize as u64),
-        "molt_ordereddict_drop" => Some(crate::molt_ordereddict_drop as *const () as usize as u64),
-        "molt_ordereddict_from_pairs" => Some(crate::molt_ordereddict_from_pairs as *const () as usize as u64),
-        "molt_ordereddict_getitem" => Some(crate::molt_ordereddict_getitem as *const () as usize as u64),
-        "molt_ordereddict_items" => Some(crate::molt_ordereddict_items as *const () as usize as u64),
-        "molt_ordereddict_keys" => Some(crate::molt_ordereddict_keys as *const () as usize as u64),
-        "molt_ordereddict_len" => Some(crate::molt_ordereddict_len as *const () as usize as u64),
-        "molt_ordereddict_move_to_end" => Some(crate::molt_ordereddict_move_to_end as *const () as usize as u64),
-        "molt_ordereddict_new" => Some(crate::molt_ordereddict_new as *const () as usize as u64),
-        "molt_ordereddict_pop" => Some(crate::molt_ordereddict_pop as *const () as usize as u64),
-        "molt_ordereddict_popitem" => Some(crate::molt_ordereddict_popitem as *const () as usize as u64),
-        "molt_ordereddict_setitem" => Some(crate::molt_ordereddict_setitem as *const () as usize as u64),
-        "molt_ordereddict_update" => Some(crate::molt_ordereddict_update as *const () as usize as u64),
-        "molt_ordereddict_values" => Some(crate::molt_ordereddict_values as *const () as usize as u64),
-        "molt_os_access" => Some(crate::molt_os_access as *const () as usize as u64),
-        "molt_os_altsep" => Some(crate::molt_os_altsep as *const () as usize as u64),
-        "molt_os_chdir" => Some(crate::molt_os_chdir as *const () as usize as u64),
-        "molt_os_chmod" => Some(crate::molt_os_chmod as *const () as usize as u64),
-        "molt_os_cpu_count" => Some(crate::molt_os_cpu_count as *const () as usize as u64),
-        "molt_os_curdir" => Some(crate::molt_os_curdir as *const () as usize as u64),
-        "molt_os_devnull" => Some(crate::molt_os_devnull as *const () as usize as u64),
-        "molt_os_dup2" => Some(crate::molt_os_dup2 as *const () as usize as u64),
-        "molt_os_extsep" => Some(crate::molt_os_extsep as *const () as usize as u64),
-        "molt_os_fdopen" => Some(crate::molt_os_fdopen as *const () as usize as u64),
-        "molt_os_ftruncate" => Some(crate::molt_os_ftruncate as *const () as usize as u64),
-        "molt_os_get_terminal_size" => Some(crate::molt_os_get_terminal_size as *const () as usize as u64),
-        "molt_os_getcwd" => Some(crate::molt_os_getcwd as *const () as usize as u64),
-        "molt_os_getegid" => Some(crate::molt_os_getegid as *const () as usize as u64),
-        "molt_os_geteuid" => Some(crate::molt_os_geteuid as *const () as usize as u64),
-        "molt_os_getgid" => Some(crate::molt_os_getgid as *const () as usize as u64),
-        "molt_os_getloadavg" => Some(crate::molt_os_getloadavg as *const () as usize as u64),
-        "molt_os_getlogin" => Some(crate::molt_os_getlogin as *const () as usize as u64),
-        "molt_os_getpgrp" => Some(crate::molt_os_getpgrp as *const () as usize as u64),
-        "molt_os_getpid" => Some(crate::molt_os_getpid as *const () as usize as u64),
-        "molt_os_getppid" => Some(crate::molt_os_getppid as *const () as usize as u64),
-        "molt_os_getuid" => Some(crate::molt_os_getuid as *const () as usize as u64),
-        "molt_os_isatty" => Some(crate::molt_os_isatty as *const () as usize as u64),
-        "molt_os_kill" => Some(crate::molt_os_kill as *const () as usize as u64),
-        "molt_os_linesep" => Some(crate::molt_os_linesep as *const () as usize as u64),
-        "molt_os_link" => Some(crate::molt_os_link as *const () as usize as u64),
-        "molt_os_lseek" => Some(crate::molt_os_lseek as *const () as usize as u64),
-        "molt_os_listdir" => Some(crate::molt_os_listdir as *const () as usize as u64),
-        "molt_os_mkdir" => Some(crate::molt_os_mkdir as *const () as usize as u64),
-        "molt_os_pardir" => Some(crate::molt_os_pardir as *const () as usize as u64),
-        "molt_os_path_commonpath" => Some(crate::molt_os_path_commonpath as *const () as usize as u64),
-        "molt_os_path_commonprefix" => Some(crate::molt_os_path_commonprefix as *const () as usize as u64),
-        "molt_os_path_getatime" => Some(crate::molt_os_path_getatime as *const () as usize as u64),
-        "molt_os_path_getctime" => Some(crate::molt_os_path_getctime as *const () as usize as u64),
-        "molt_os_path_getmtime" => Some(crate::molt_os_path_getmtime as *const () as usize as u64),
-        "molt_os_path_getsize" => Some(crate::molt_os_path_getsize as *const () as usize as u64),
-        "molt_os_path_realpath" => Some(crate::molt_os_path_realpath as *const () as usize as u64),
-        "molt_os_path_samefile" => Some(crate::molt_os_path_samefile as *const () as usize as u64),
-        "molt_os_pathsep" => Some(crate::molt_os_pathsep as *const () as usize as u64),
-        "molt_os_readlink" => Some(crate::molt_os_readlink as *const () as usize as u64),
-        "molt_os_removedirs" => Some(crate::molt_os_removedirs as *const () as usize as u64),
-        "molt_os_rmdir" => Some(crate::molt_os_rmdir as *const () as usize as u64),
-        "molt_os_scandir" => Some(crate::molt_os_scandir as *const () as usize as u64),
-        "molt_os_sendfile" => Some(crate::molt_os_sendfile as *const () as usize as u64),
-        "molt_os_sep" => Some(crate::molt_os_sep as *const () as usize as u64),
-        "molt_os_setpgrp" => Some(crate::molt_os_setpgrp as *const () as usize as u64),
-        "molt_os_setsid" => Some(crate::molt_os_setsid as *const () as usize as u64),
-        "molt_os_symlink" => Some(crate::molt_os_symlink as *const () as usize as u64),
-        "molt_os_sysconf" => Some(crate::molt_os_sysconf as *const () as usize as u64),
-        "molt_os_sysconf_names" => Some(crate::molt_os_sysconf_names as *const () as usize as u64),
-        "molt_os_truncate" => Some(crate::molt_os_truncate as *const () as usize as u64),
-        "molt_os_umask" => Some(crate::molt_os_umask as *const () as usize as u64),
-        "molt_os_uname" => Some(crate::molt_os_uname as *const () as usize as u64),
-        "molt_os_utime" => Some(crate::molt_os_utime as *const () as usize as u64),
-        "molt_os_waitpid" => Some(crate::molt_os_waitpid as *const () as usize as u64),
-        "molt_os_walk" => Some(crate::molt_os_walk as *const () as usize as u64),
-        "molt_platform_architecture" => Some(crate::molt_platform_architecture as *const () as usize as u64),
-        "molt_platform_machine" => Some(crate::molt_platform_machine as *const () as usize as u64),
-        "molt_platform_node" => Some(crate::molt_platform_node as *const () as usize as u64),
-        "molt_platform_platform" => Some(crate::molt_platform_platform as *const () as usize as u64),
-        "molt_platform_processor" => Some(crate::molt_platform_processor as *const () as usize as u64),
-        "molt_platform_python_compiler" => Some(crate::molt_platform_python_compiler as *const () as usize as u64),
-        "molt_platform_python_implementation" => Some(crate::molt_platform_python_implementation as *const () as usize as u64),
-        "molt_platform_python_version" => Some(crate::molt_platform_python_version as *const () as usize as u64),
-        "molt_platform_python_version_tuple" => Some(crate::molt_platform_python_version_tuple as *const () as usize as u64),
-        "molt_platform_release" => Some(crate::molt_platform_release as *const () as usize as u64),
-        "molt_platform_system" => Some(crate::molt_platform_system as *const () as usize as u64),
-        "molt_platform_uname" => Some(crate::molt_platform_uname as *const () as usize as u64),
-        "molt_platform_version" => Some(crate::molt_platform_version as *const () as usize as u64),
-        "molt_re_fullmatch_check" => Some(crate::molt_re_fullmatch_check as *const () as usize as u64),
-        "molt_re_named_backref_advance" => Some(crate::molt_re_named_backref_advance as *const () as usize as u64),
-        "molt_re_negative_lookahead" => Some(crate::molt_re_negative_lookahead as *const () as usize as u64),
-        "molt_re_negative_lookbehind" => Some(crate::molt_re_negative_lookbehind as *const () as usize as u64),
-        "molt_re_positive_lookahead" => Some(crate::molt_re_positive_lookahead as *const () as usize as u64),
-        "molt_re_positive_lookbehind" => Some(crate::molt_re_positive_lookbehind as *const () as usize as u64),
-        "molt_re_strip_verbose" => Some(crate::molt_re_strip_verbose as *const () as usize as u64),
-        "molt_re_compile" => Some(crate::molt_re_compile as *const () as usize as u64),
-        "molt_re_execute" => Some(crate::molt_re_execute as *const () as usize as u64),
-        "molt_re_finditer_collect" => Some(crate::molt_re_finditer_collect as *const () as usize as u64),
-        "molt_re_pattern_info" => Some(crate::molt_re_pattern_info as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_secrets_below" => Some(crate::molt_secrets_below as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_secrets_choice" => Some(crate::molt_secrets_choice as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_secrets_compare_digest" => Some(crate::molt_secrets_compare_digest as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_secrets_randbits" => Some(crate::molt_secrets_randbits as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_secrets_token_bytes" => Some(crate::molt_secrets_token_bytes as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_secrets_token_hex" => Some(crate::molt_secrets_token_hex as *const () as usize as u64),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_secrets_token_urlsafe" => Some(crate::molt_secrets_token_urlsafe as *const () as usize as u64),
-        "molt_random_new" => Some(crate::molt_random_new as *const () as usize as u64),
-        "molt_random_seed" => Some(crate::molt_random_seed as *const () as usize as u64),
-        "molt_random_random" => Some(crate::molt_random_random as *const () as usize as u64),
-        "molt_random_getrandbits" => Some(crate::molt_random_getrandbits as *const () as usize as u64),
-        "molt_random_randbelow" => Some(crate::molt_random_randbelow as *const () as usize as u64),
-        "molt_random_getstate" => Some(crate::molt_random_getstate as *const () as usize as u64),
-        "molt_random_setstate" => Some(crate::molt_random_setstate as *const () as usize as u64),
-        "molt_random_shuffle" => Some(crate::molt_random_shuffle as *const () as usize as u64),
-        "molt_random_gauss" => Some(crate::molt_random_gauss as *const () as usize as u64),
-        "molt_random_uniform" => Some(crate::molt_random_uniform as *const () as usize as u64),
-        "molt_random_triangular" => Some(crate::molt_random_triangular as *const () as usize as u64),
-        "molt_random_expovariate" => Some(crate::molt_random_expovariate as *const () as usize as u64),
-        "molt_random_normalvariate" => Some(crate::molt_random_normalvariate as *const () as usize as u64),
-        "molt_random_lognormvariate" => Some(crate::molt_random_lognormvariate as *const () as usize as u64),
-        "molt_random_vonmisesvariate" => Some(crate::molt_random_vonmisesvariate as *const () as usize as u64),
-        "molt_random_paretovariate" => Some(crate::molt_random_paretovariate as *const () as usize as u64),
-        "molt_random_weibullvariate" => Some(crate::molt_random_weibullvariate as *const () as usize as u64),
-        "molt_random_gammavariate" => Some(crate::molt_random_gammavariate as *const () as usize as u64),
-        "molt_random_betavariate" => Some(crate::molt_random_betavariate as *const () as usize as u64),
-        "molt_random_choices" => Some(crate::molt_random_choices as *const () as usize as u64),
-        "molt_random_sample" => Some(crate::molt_random_sample as *const () as usize as u64),
-        "molt_shutil_chown" => Some(crate::molt_shutil_chown as *const () as usize as u64),
-        "molt_shutil_copy" => Some(crate::molt_shutil_copy as *const () as usize as u64),
-        "molt_shutil_copy2" => Some(crate::molt_shutil_copy2 as *const () as usize as u64),
-        "molt_shutil_copytree" => Some(crate::molt_shutil_copytree as *const () as usize as u64),
-        "molt_shutil_disk_usage" => Some(crate::molt_shutil_disk_usage as *const () as usize as u64),
-        "molt_shutil_get_terminal_size" => Some(crate::molt_shutil_get_terminal_size as *const () as usize as u64),
-        "molt_shutil_make_archive" => Some(crate::molt_shutil_make_archive as *const () as usize as u64),
-        "molt_shutil_move" => Some(crate::molt_shutil_move as *const () as usize as u64),
-        "molt_shutil_rmtree" => Some(crate::molt_shutil_rmtree as *const () as usize as u64),
-        "molt_shutil_unpack_archive" => Some(crate::molt_shutil_unpack_archive as *const () as usize as u64),
-        "molt_signal_alarm" => Some(crate::molt_signal_alarm as *const () as usize as u64),
-        "molt_signal_default_int_handler" => Some(crate::molt_signal_default_int_handler as *const () as usize as u64),
-        "molt_signal_getsignal" => Some(crate::molt_signal_getsignal as *const () as usize as u64),
-        "molt_signal_nsig" => Some(crate::molt_signal_nsig as *const () as usize as u64),
-        "molt_signal_pause" => Some(crate::molt_signal_pause as *const () as usize as u64),
-        "molt_signal_pthread_kill" => Some(crate::molt_signal_pthread_kill as *const () as usize as u64),
-        "molt_signal_pthread_sigmask" => Some(crate::molt_signal_pthread_sigmask as *const () as usize as u64),
-        "molt_signal_raise_signal" => Some(crate::molt_signal_raise_signal as *const () as usize as u64),
-        "molt_signal_set_wakeup_fd" => Some(crate::molt_signal_set_wakeup_fd as *const () as usize as u64),
-        "molt_signal_sig_dfl" => Some(crate::molt_signal_sig_dfl as *const () as usize as u64),
-        "molt_signal_sig_ign" => Some(crate::molt_signal_sig_ign as *const () as usize as u64),
-        "molt_signal_sigabrt" => Some(crate::molt_signal_sigabrt as *const () as usize as u64),
-        "molt_signal_sigalrm" => Some(crate::molt_signal_sigalrm as *const () as usize as u64),
-        "molt_signal_sig_block" => Some(crate::molt_signal_sig_block as *const () as usize as u64),
-        "molt_signal_sigbus" => Some(crate::molt_signal_sigbus as *const () as usize as u64),
-        "molt_signal_sigchld" => Some(crate::molt_signal_sigchld as *const () as usize as u64),
-        "molt_signal_sigcont" => Some(crate::molt_signal_sigcont as *const () as usize as u64),
-        "molt_signal_sigfpe" => Some(crate::molt_signal_sigfpe as *const () as usize as u64),
-        "molt_signal_sighup" => Some(crate::molt_signal_sighup as *const () as usize as u64),
-        "molt_signal_sigill" => Some(crate::molt_signal_sigill as *const () as usize as u64),
-        "molt_signal_sigint" => Some(crate::molt_signal_sigint as *const () as usize as u64),
-        "molt_signal_signal" => Some(crate::molt_signal_signal as *const () as usize as u64),
-        "molt_signal_sigpending" => Some(crate::molt_signal_sigpending as *const () as usize as u64),
-        "molt_signal_sigpipe" => Some(crate::molt_signal_sigpipe as *const () as usize as u64),
-        "molt_signal_sigprof" => Some(crate::molt_signal_sigprof as *const () as usize as u64),
-        "molt_signal_sigquit" => Some(crate::molt_signal_sigquit as *const () as usize as u64),
-        "molt_signal_sigsegv" => Some(crate::molt_signal_sigsegv as *const () as usize as u64),
-        "molt_signal_sig_setmask" => Some(crate::molt_signal_sig_setmask as *const () as usize as u64),
-        "molt_signal_sigstop" => Some(crate::molt_signal_sigstop as *const () as usize as u64),
-        "molt_signal_sigsys" => Some(crate::molt_signal_sigsys as *const () as usize as u64),
-        "molt_signal_sigterm" => Some(crate::molt_signal_sigterm as *const () as usize as u64),
-        "molt_signal_sigtstp" => Some(crate::molt_signal_sigtstp as *const () as usize as u64),
-        "molt_signal_sigttin" => Some(crate::molt_signal_sigttin as *const () as usize as u64),
-        "molt_signal_sigttou" => Some(crate::molt_signal_sigttou as *const () as usize as u64),
-        "molt_signal_sigusr1" => Some(crate::molt_signal_sigusr1 as *const () as usize as u64),
-        "molt_signal_sigusr2" => Some(crate::molt_signal_sigusr2 as *const () as usize as u64),
-        "molt_signal_sig_unblock" => Some(crate::molt_signal_sig_unblock as *const () as usize as u64),
-        "molt_signal_sigvtalrm" => Some(crate::molt_signal_sigvtalrm as *const () as usize as u64),
-        "molt_signal_sigwait" => Some(crate::molt_signal_sigwait as *const () as usize as u64),
-        "molt_signal_sigwinch" => Some(crate::molt_signal_sigwinch as *const () as usize as u64),
-        "molt_signal_sigxcpu" => Some(crate::molt_signal_sigxcpu as *const () as usize as u64),
-        "molt_signal_sigxfsz" => Some(crate::molt_signal_sigxfsz as *const () as usize as u64),
-        "molt_signal_strsignal" => Some(crate::molt_signal_strsignal as *const () as usize as u64),
-        "molt_signal_valid_signals" => Some(crate::molt_signal_valid_signals as *const () as usize as u64),
-        "molt_ssl_cert_none" => Some(crate::molt_ssl_cert_none as *const () as usize as u64),
-        "molt_ssl_cert_optional" => Some(crate::molt_ssl_cert_optional as *const () as usize as u64),
-        "molt_ssl_cert_required" => Some(crate::molt_ssl_cert_required as *const () as usize as u64),
-        "molt_ssl_context_check_hostname_get" => Some(crate::molt_ssl_context_check_hostname_get as *const () as usize as u64),
-        "molt_ssl_context_check_hostname_set" => Some(crate::molt_ssl_context_check_hostname_set as *const () as usize as u64),
-        "molt_ssl_context_drop" => Some(crate::molt_ssl_context_drop as *const () as usize as u64),
-        "molt_ssl_context_get_protocol" => Some(crate::molt_ssl_context_get_protocol as *const () as usize as u64),
-        "molt_ssl_context_load_cert_chain" => Some(crate::molt_ssl_context_load_cert_chain as *const () as usize as u64),
-        "molt_ssl_context_load_verify_locations" => Some(crate::molt_ssl_context_load_verify_locations as *const () as usize as u64),
-        "molt_ssl_context_new" => Some(crate::molt_ssl_context_new as *const () as usize as u64),
-        "molt_ssl_context_set_ciphers" => Some(crate::molt_ssl_context_set_ciphers as *const () as usize as u64),
-        "molt_ssl_context_set_default_verify_paths" => Some(crate::molt_ssl_context_set_default_verify_paths as *const () as usize as u64),
-        "molt_ssl_context_verify_mode_get" => Some(crate::molt_ssl_context_verify_mode_get as *const () as usize as u64),
-        "molt_ssl_context_verify_mode_set" => Some(crate::molt_ssl_context_verify_mode_set as *const () as usize as u64),
-        "molt_ssl_create_default_context" => Some(crate::molt_ssl_create_default_context as *const () as usize as u64),
-        "molt_ssl_has_sni" => Some(crate::molt_ssl_has_sni as *const () as usize as u64),
-        "molt_ssl_openssl_version" => Some(crate::molt_ssl_openssl_version as *const () as usize as u64),
-        "molt_ssl_protocol_tls_client" => Some(crate::molt_ssl_protocol_tls_client as *const () as usize as u64),
-        "molt_ssl_protocol_tls_server" => Some(crate::molt_ssl_protocol_tls_server as *const () as usize as u64),
-        "molt_ssl_socket_cipher" => Some(crate::molt_ssl_socket_cipher as *const () as usize as u64),
-        "molt_ssl_socket_close" => Some(crate::molt_ssl_socket_close as *const () as usize as u64),
-        "molt_ssl_socket_do_handshake" => Some(crate::molt_ssl_socket_do_handshake as *const () as usize as u64),
-        "molt_ssl_socket_drop" => Some(crate::molt_ssl_socket_drop as *const () as usize as u64),
-        "molt_ssl_socket_getpeercert" => Some(crate::molt_ssl_socket_getpeercert as *const () as usize as u64),
-        "molt_ssl_socket_read" => Some(crate::molt_ssl_socket_read as *const () as usize as u64),
-        "molt_ssl_socket_unwrap" => Some(crate::molt_ssl_socket_unwrap as *const () as usize as u64),
-        "molt_ssl_socket_version" => Some(crate::molt_ssl_socket_version as *const () as usize as u64),
-        "molt_ssl_socket_write" => Some(crate::molt_ssl_socket_write as *const () as usize as u64),
-        "molt_ssl_wrap_socket" => Some(crate::molt_ssl_wrap_socket as *const () as usize as u64),
-        "molt_subprocess_check_call" => Some(crate::molt_subprocess_check_call as *const () as usize as u64),
-        "molt_subprocess_check_output" => Some(crate::molt_subprocess_check_output as *const () as usize as u64),
-        "molt_subprocess_devnull_const" => Some(crate::molt_subprocess_devnull_const as *const () as usize as u64),
-        "molt_subprocess_pipe_const" => Some(crate::molt_subprocess_pipe_const as *const () as usize as u64),
-        "molt_subprocess_run" => Some(crate::molt_subprocess_run as *const () as usize as u64),
-        "molt_subprocess_stdout_const" => Some(crate::molt_subprocess_stdout_const as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_tarfile_add" => Some(crate::molt_tarfile_add as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_tarfile_close" => Some(crate::molt_tarfile_close as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_tarfile_drop" => Some(crate::molt_tarfile_drop as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_tarfile_extract" => Some(crate::molt_tarfile_extract as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_tarfile_extractall" => Some(crate::molt_tarfile_extractall as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_tarfile_extractfile" => Some(crate::molt_tarfile_extractfile as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_tarfile_getmembers" => Some(crate::molt_tarfile_getmembers as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_tarfile_getnames" => Some(crate::molt_tarfile_getnames as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_tarfile_is_tarfile" => Some(crate::molt_tarfile_is_tarfile as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_tarfile_open" => Some(crate::molt_tarfile_open as *const () as usize as u64),
-        "molt_unicodedata_bidirectional" => Some(crate::molt_unicodedata_bidirectional as *const () as usize as u64),
-        "molt_unicodedata_category" => Some(crate::molt_unicodedata_category as *const () as usize as u64),
-        "molt_unicodedata_combining" => Some(crate::molt_unicodedata_combining as *const () as usize as u64),
-        "molt_unicodedata_decimal" => Some(crate::molt_unicodedata_decimal as *const () as usize as u64),
-        "molt_unicodedata_decomposition" => Some(crate::molt_unicodedata_decomposition as *const () as usize as u64),
-        "molt_unicodedata_digit" => Some(crate::molt_unicodedata_digit as *const () as usize as u64),
-        "molt_unicodedata_east_asian_width" => Some(crate::molt_unicodedata_east_asian_width as *const () as usize as u64),
-        "molt_unicodedata_is_normalized" => Some(crate::molt_unicodedata_is_normalized as *const () as usize as u64),
-        "molt_unicodedata_lookup" => Some(crate::molt_unicodedata_lookup as *const () as usize as u64),
-        "molt_unicodedata_mirrored" => Some(crate::molt_unicodedata_mirrored as *const () as usize as u64),
-        "molt_unicodedata_name" => Some(crate::molt_unicodedata_name as *const () as usize as u64),
-        "molt_unicodedata_normalize" => Some(crate::molt_unicodedata_normalize as *const () as usize as u64),
-        "molt_unicodedata_numeric" => Some(crate::molt_unicodedata_numeric as *const () as usize as u64),
-        "molt_unicodedata_unidata_version" => Some(crate::molt_unicodedata_unidata_version as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_adler32" => Some(crate::molt_zlib_adler32 as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_compress" => Some(crate::molt_zlib_compress as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_compressobj_compress" => Some(crate::molt_zlib_compressobj_compress as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_compressobj_drop" => Some(crate::molt_zlib_compressobj_drop as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_compressobj_flush" => Some(crate::molt_zlib_compressobj_flush as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_compressobj_new" => Some(crate::molt_zlib_compressobj_new as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_crc32" => Some(crate::molt_zlib_crc32 as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_decompress" => Some(crate::molt_zlib_decompress as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_decompressobj_decompress" => Some(crate::molt_zlib_decompressobj_decompress as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_decompressobj_drop" => Some(crate::molt_zlib_decompressobj_drop as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_decompressobj_eof" => Some(crate::molt_zlib_decompressobj_eof as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_decompressobj_flush" => Some(crate::molt_zlib_decompressobj_flush as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_decompressobj_new" => Some(crate::molt_zlib_decompressobj_new as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_decompressobj_unconsumed_tail" => Some(crate::molt_zlib_decompressobj_unconsumed_tail as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_def_buf_size" => Some(crate::molt_zlib_def_buf_size as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_def_mem_level" => Some(crate::molt_zlib_def_mem_level as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_max_wbits" => Some(crate::molt_zlib_max_wbits as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_z_best_compression" => Some(crate::molt_zlib_z_best_compression as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_z_best_speed" => Some(crate::molt_zlib_z_best_speed as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_z_default_compression" => Some(crate::molt_zlib_z_default_compression as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_z_default_strategy" => Some(crate::molt_zlib_z_default_strategy as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_z_filtered" => Some(crate::molt_zlib_z_filtered as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_z_finish" => Some(crate::molt_zlib_z_finish as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_z_full_flush" => Some(crate::molt_zlib_z_full_flush as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_z_huffman_only" => Some(crate::molt_zlib_z_huffman_only as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_z_no_compression" => Some(crate::molt_zlib_z_no_compression as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_z_no_flush" => Some(crate::molt_zlib_z_no_flush as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_z_sync_flush" => Some(crate::molt_zlib_z_sync_flush as *const () as usize as u64),
-        "molt_zoneinfo_available_timezones" => Some(crate::molt_zoneinfo_available_timezones as *const () as usize as u64),
-        "molt_zoneinfo_drop" => Some(crate::molt_zoneinfo_drop as *const () as usize as u64),
-        "molt_zoneinfo_dst" => Some(crate::molt_zoneinfo_dst as *const () as usize as u64),
-        "molt_zoneinfo_key" => Some(crate::molt_zoneinfo_key as *const () as usize as u64),
-        "molt_zoneinfo_new" => Some(crate::molt_zoneinfo_new as *const () as usize as u64),
-        "molt_zoneinfo_tzname" => Some(crate::molt_zoneinfo_tzname as *const () as usize as u64),
-        "molt_zoneinfo_utcoffset" => Some(crate::molt_zoneinfo_utcoffset as *const () as usize as u64),
-        "molt_counter_add" => Some(crate::molt_counter_add as *const () as usize as u64),
-        "molt_counter_and" => Some(crate::molt_counter_and as *const () as usize as u64),
-        "molt_counter_clear" => Some(crate::molt_counter_clear as *const () as usize as u64),
-        "molt_counter_contains" => Some(crate::molt_counter_contains as *const () as usize as u64),
-        "molt_counter_copy" => Some(crate::molt_counter_copy as *const () as usize as u64),
-        "molt_counter_delitem" => Some(crate::molt_counter_delitem as *const () as usize as u64),
-        "molt_counter_drop" => Some(crate::molt_counter_drop as *const () as usize as u64),
-        "molt_counter_elements" => Some(crate::molt_counter_elements as *const () as usize as u64),
-        "molt_counter_from_iterable" => Some(crate::molt_counter_from_iterable as *const () as usize as u64),
-        "molt_counter_from_mapping" => Some(crate::molt_counter_from_mapping as *const () as usize as u64),
-        "molt_counter_getitem" => Some(crate::molt_counter_getitem as *const () as usize as u64),
-        "molt_counter_items" => Some(crate::molt_counter_items as *const () as usize as u64),
-        "molt_counter_len" => Some(crate::molt_counter_len as *const () as usize as u64),
-        "molt_counter_most_common" => Some(crate::molt_counter_most_common as *const () as usize as u64),
-        "molt_counter_new" => Some(crate::molt_counter_new as *const () as usize as u64),
-        "molt_counter_or" => Some(crate::molt_counter_or as *const () as usize as u64),
-        "molt_counter_pop" => Some(crate::molt_counter_pop as *const () as usize as u64),
-        "molt_counter_setitem" => Some(crate::molt_counter_setitem as *const () as usize as u64),
-        "molt_counter_sub" => Some(crate::molt_counter_sub as *const () as usize as u64),
-        "molt_counter_subtract" => Some(crate::molt_counter_subtract as *const () as usize as u64),
-        "molt_counter_total" => Some(crate::molt_counter_total as *const () as usize as u64),
-        "molt_counter_update" => Some(crate::molt_counter_update as *const () as usize as u64),
-        "molt_defaultdict_copy" => Some(crate::molt_defaultdict_copy as *const () as usize as u64),
-        "molt_defaultdict_drop" => Some(crate::molt_defaultdict_drop as *const () as usize as u64),
-        "molt_defaultdict_factory" => Some(crate::molt_defaultdict_factory as *const () as usize as u64),
-        "molt_defaultdict_missing" => Some(crate::molt_defaultdict_missing as *const () as usize as u64),
-        "molt_defaultdict_new" => Some(crate::molt_defaultdict_new as *const () as usize as u64),
-        "molt_deque_append" => Some(crate::molt_deque_append as *const () as usize as u64),
-        "molt_deque_appendleft" => Some(crate::molt_deque_appendleft as *const () as usize as u64),
-        "molt_deque_clear" => Some(crate::molt_deque_clear as *const () as usize as u64),
-        "molt_deque_contains" => Some(crate::molt_deque_contains as *const () as usize as u64),
-        "molt_deque_copy" => Some(crate::molt_deque_copy as *const () as usize as u64),
-        "molt_deque_count" => Some(crate::molt_deque_count as *const () as usize as u64),
-        "molt_deque_delitem" => Some(crate::molt_deque_delitem as *const () as usize as u64),
-        "molt_deque_drop" => Some(crate::molt_deque_drop as *const () as usize as u64),
-        "molt_deque_extend" => Some(crate::molt_deque_extend as *const () as usize as u64),
-        "molt_deque_extendleft" => Some(crate::molt_deque_extendleft as *const () as usize as u64),
-        "molt_deque_from_iterable" => Some(crate::molt_deque_from_iterable as *const () as usize as u64),
-        "molt_deque_getitem" => Some(crate::molt_deque_getitem as *const () as usize as u64),
-        "molt_deque_index" => Some(crate::molt_deque_index as *const () as usize as u64),
-        "molt_deque_insert" => Some(crate::molt_deque_insert as *const () as usize as u64),
-        "molt_deque_len" => Some(crate::molt_deque_len as *const () as usize as u64),
-        "molt_deque_maxlen" => Some(crate::molt_deque_maxlen as *const () as usize as u64),
-        "molt_deque_new" => Some(crate::molt_deque_new as *const () as usize as u64),
-        "molt_deque_pop" => Some(crate::molt_deque_pop as *const () as usize as u64),
-        "molt_deque_popleft" => Some(crate::molt_deque_popleft as *const () as usize as u64),
-        "molt_deque_remove" => Some(crate::molt_deque_remove as *const () as usize as u64),
-        "molt_deque_reverse" => Some(crate::molt_deque_reverse as *const () as usize as u64),
-        "molt_deque_rotate" => Some(crate::molt_deque_rotate as *const () as usize as u64),
-        "molt_deque_setitem" => Some(crate::molt_deque_setitem as *const () as usize as u64),
-        "molt_functools_singledispatch_new" => Some(crate::molt_functools_singledispatch_new as *const () as usize as u64),
-        "molt_functools_singledispatch_register" => Some(crate::molt_functools_singledispatch_register as *const () as usize as u64),
-        "molt_functools_singledispatch_call" => Some(crate::molt_functools_singledispatch_call as *const () as usize as u64),
-        "molt_functools_singledispatch_dispatch" => Some(crate::molt_functools_singledispatch_dispatch as *const () as usize as u64),
-        "molt_functools_singledispatch_registry" => Some(crate::molt_functools_singledispatch_registry as *const () as usize as u64),
-        "molt_functools_singledispatch_drop" => Some(crate::molt_functools_singledispatch_drop as *const () as usize as u64),
-        "molt_event_loop_new" => Some(crate::molt_event_loop_new as *const () as usize as u64),
-        "molt_event_loop_call_soon" => Some(crate::molt_event_loop_call_soon as *const () as usize as u64),
-        "molt_event_loop_call_later" => Some(crate::molt_event_loop_call_later as *const () as usize as u64),
-        "molt_event_loop_call_at" => Some(crate::molt_event_loop_call_at as *const () as usize as u64),
-        "molt_event_loop_cancel_timer" => Some(crate::molt_event_loop_cancel_timer as *const () as usize as u64),
-        "molt_event_loop_add_reader" => Some(crate::molt_event_loop_add_reader as *const () as usize as u64),
-        "molt_event_loop_remove_reader" => Some(crate::molt_event_loop_remove_reader as *const () as usize as u64),
-        "molt_event_loop_add_writer" => Some(crate::molt_event_loop_add_writer as *const () as usize as u64),
-        "molt_event_loop_remove_writer" => Some(crate::molt_event_loop_remove_writer as *const () as usize as u64),
-        "molt_event_loop_run_once" => Some(crate::molt_event_loop_run_once as *const () as usize as u64),
-        "molt_event_loop_time" => Some(crate::molt_event_loop_time as *const () as usize as u64),
-        "molt_event_loop_next_deadline_delay" => Some(crate::molt_event_loop_next_deadline_delay as *const () as usize as u64),
-        "molt_event_loop_has_pending" => Some(crate::molt_event_loop_has_pending as *const () as usize as u64),
-        "molt_event_loop_ready_count" => Some(crate::molt_event_loop_ready_count as *const () as usize as u64),
-        "molt_event_loop_start" => Some(crate::molt_event_loop_start as *const () as usize as u64),
-        "molt_event_loop_stop" => Some(crate::molt_event_loop_stop as *const () as usize as u64),
-        "molt_event_loop_is_running" => Some(crate::molt_event_loop_is_running as *const () as usize as u64),
-        "molt_event_loop_is_closed" => Some(crate::molt_event_loop_is_closed as *const () as usize as u64),
-        "molt_event_loop_close" => Some(crate::molt_event_loop_close as *const () as usize as u64),
-        "molt_event_loop_drop" => Some(crate::molt_event_loop_drop as *const () as usize as u64),
-        "molt_event_loop_set_debug" => Some(crate::molt_event_loop_set_debug as *const () as usize as u64),
-        "molt_event_loop_get_debug" => Some(crate::molt_event_loop_get_debug as *const () as usize as u64),
-        "molt_event_loop_set_exception_handler" => Some(crate::molt_event_loop_set_exception_handler as *const () as usize as u64),
-        "molt_event_loop_get_exception_handler" => Some(crate::molt_event_loop_get_exception_handler as *const () as usize as u64),
-        "molt_event_loop_set_task_factory" => Some(crate::molt_event_loop_set_task_factory as *const () as usize as u64),
-        "molt_event_loop_get_task_factory" => Some(crate::molt_event_loop_get_task_factory as *const () as usize as u64),
-        "molt_event_loop_notify_reader_ready" => Some(crate::molt_event_loop_notify_reader_ready as *const () as usize as u64),
-        "molt_event_loop_notify_writer_ready" => Some(crate::molt_event_loop_notify_writer_ready as *const () as usize as u64),
-        "molt_event_loop_connect_read_pipe" => Some(crate::molt_event_loop_connect_read_pipe as *const () as usize as u64),
-        "molt_event_loop_connect_write_pipe" => Some(crate::molt_event_loop_connect_write_pipe as *const () as usize as u64),
-        "molt_pipe_transport_new" => Some(crate::molt_pipe_transport_new as *const () as usize as u64),
-        "molt_pipe_transport_get_fd" => Some(crate::molt_pipe_transport_get_fd as *const () as usize as u64),
-        "molt_pipe_transport_is_closing" => Some(crate::molt_pipe_transport_is_closing as *const () as usize as u64),
-        "molt_pipe_transport_close" => Some(crate::molt_pipe_transport_close as *const () as usize as u64),
-        "molt_pipe_transport_pause_reading" => Some(crate::molt_pipe_transport_pause_reading as *const () as usize as u64),
-        "molt_pipe_transport_resume_reading" => Some(crate::molt_pipe_transport_resume_reading as *const () as usize as u64),
-        "molt_pipe_transport_write" => Some(crate::molt_pipe_transport_write as *const () as usize as u64),
-        "molt_pipe_transport_get_write_buffer_size" => Some(crate::molt_pipe_transport_get_write_buffer_size as *const () as usize as u64),
-        "molt_pipe_transport_drop" => Some(crate::molt_pipe_transport_drop as *const () as usize as u64),
-        "molt_base64_b64encode" => Some(crate::molt_base64_b64encode as *const () as usize as u64),
-        "molt_base64_b64decode" => Some(crate::molt_base64_b64decode as *const () as usize as u64),
-        "molt_base64_standard_b64encode" => Some(crate::molt_base64_standard_b64encode as *const () as usize as u64),
-        "molt_base64_standard_b64decode" => Some(crate::molt_base64_standard_b64decode as *const () as usize as u64),
-        "molt_base64_urlsafe_b64encode" => Some(crate::molt_base64_urlsafe_b64encode as *const () as usize as u64),
-        "molt_base64_urlsafe_b64decode" => Some(crate::molt_base64_urlsafe_b64decode as *const () as usize as u64),
-        "molt_base64_b32encode" => Some(crate::molt_base64_b32encode as *const () as usize as u64),
-        "molt_base64_b32decode" => Some(crate::molt_base64_b32decode as *const () as usize as u64),
-        "molt_base64_b32hexencode" => Some(crate::molt_base64_b32hexencode as *const () as usize as u64),
-        "molt_base64_b32hexdecode" => Some(crate::molt_base64_b32hexdecode as *const () as usize as u64),
-        "molt_base64_b16encode" => Some(crate::molt_base64_b16encode as *const () as usize as u64),
-        "molt_base64_b16decode" => Some(crate::molt_base64_b16decode as *const () as usize as u64),
-        "molt_base64_a85encode" => Some(crate::molt_base64_a85encode as *const () as usize as u64),
-        "molt_base64_a85decode" => Some(crate::molt_base64_a85decode as *const () as usize as u64),
-        "molt_base64_b85encode" => Some(crate::molt_base64_b85encode as *const () as usize as u64),
-        "molt_base64_b85decode" => Some(crate::molt_base64_b85decode as *const () as usize as u64),
-        "molt_base64_encodebytes" => Some(crate::molt_base64_encodebytes as *const () as usize as u64),
-        "molt_base64_decodebytes" => Some(crate::molt_base64_decodebytes as *const () as usize as u64),
-        "molt_copy_copy" => Some(crate::molt_copy_copy as *const () as usize as u64),
-        "molt_copy_deepcopy" => Some(crate::molt_copy_deepcopy as *const () as usize as u64),
-        "molt_copy_memo_new" => Some(crate::molt_copy_memo_new as *const () as usize as u64),
-        "molt_copy_memo_drop" => Some(crate::molt_copy_memo_drop as *const () as usize as u64),
-        "molt_copy_error" => Some(crate::molt_copy_error as *const () as usize as u64),
-        "molt_pprint_safe_repr" => Some(crate::molt_pprint_safe_repr as *const () as usize as u64),
-        "molt_pprint_isreadable" => Some(crate::molt_pprint_isreadable as *const () as usize as u64),
-        "molt_pprint_isrecursive" => Some(crate::molt_pprint_isrecursive as *const () as usize as u64),
-        "molt_pprint_pformat" => Some(crate::molt_pprint_pformat as *const () as usize as u64),
-        "molt_warnings_warn" => Some(crate::molt_warnings_warn as *const () as usize as u64),
-        "molt_warnings_warn_explicit" => Some(crate::molt_warnings_warn_explicit as *const () as usize as u64),
-        "molt_warnings_formatwarning" => Some(crate::molt_warnings_formatwarning as *const () as usize as u64),
-        "molt_warnings_showwarning" => Some(crate::molt_warnings_showwarning as *const () as usize as u64),
-        "molt_warnings_simplefilter" => Some(crate::molt_warnings_simplefilter as *const () as usize as u64),
-        "molt_warnings_filterwarnings" => Some(crate::molt_warnings_filterwarnings as *const () as usize as u64),
-        "molt_warnings_resetwarnings" => Some(crate::molt_warnings_resetwarnings as *const () as usize as u64),
-        "molt_warnings_filters_get" => Some(crate::molt_warnings_filters_get as *const () as usize as u64),
-        "molt_logging_record_new" => Some(crate::molt_logging_record_new as *const () as usize as u64),
-        "molt_logging_record_get_message" => Some(crate::molt_logging_record_get_message as *const () as usize as u64),
-        "molt_logging_record_get_attr" => Some(crate::molt_logging_record_get_attr as *const () as usize as u64),
-        "molt_logging_record_drop" => Some(crate::molt_logging_record_drop as *const () as usize as u64),
-        "molt_logging_formatter_new" => Some(crate::molt_logging_formatter_new as *const () as usize as u64),
-        "molt_logging_formatter_format" => Some(crate::molt_logging_formatter_format as *const () as usize as u64),
-        "molt_logging_formatter_format_time" => Some(crate::molt_logging_formatter_format_time as *const () as usize as u64),
-        "molt_logging_formatter_drop" => Some(crate::molt_logging_formatter_drop as *const () as usize as u64),
-        "molt_logging_handler_new" => Some(crate::molt_logging_handler_new as *const () as usize as u64),
-        "molt_logging_handler_emit" => Some(crate::molt_logging_handler_emit as *const () as usize as u64),
-        "molt_logging_handler_set_level" => Some(crate::molt_logging_handler_set_level as *const () as usize as u64),
-        "molt_logging_handler_set_formatter" => Some(crate::molt_logging_handler_set_formatter as *const () as usize as u64),
-        "molt_logging_handler_flush" => Some(crate::molt_logging_handler_flush as *const () as usize as u64),
-        "molt_logging_handler_close" => Some(crate::molt_logging_handler_close as *const () as usize as u64),
-        "molt_logging_handler_drop" => Some(crate::molt_logging_handler_drop as *const () as usize as u64),
-        "molt_logging_stream_handler_new" => Some(crate::molt_logging_stream_handler_new as *const () as usize as u64),
-        "molt_logging_stream_handler_emit" => Some(crate::molt_logging_stream_handler_emit as *const () as usize as u64),
-        "molt_logging_logger_new" => Some(crate::molt_logging_logger_new as *const () as usize as u64),
-        "molt_logging_logger_set_level" => Some(crate::molt_logging_logger_set_level as *const () as usize as u64),
-        "molt_logging_logger_add_handler" => Some(crate::molt_logging_logger_add_handler as *const () as usize as u64),
-        "molt_logging_logger_remove_handler" => Some(crate::molt_logging_logger_remove_handler as *const () as usize as u64),
-        "molt_logging_logger_log" => Some(crate::molt_logging_logger_log as *const () as usize as u64),
-        "molt_logging_logger_is_enabled_for" => Some(crate::molt_logging_logger_is_enabled_for as *const () as usize as u64),
-        "molt_logging_logger_get_effective_level" => Some(crate::molt_logging_logger_get_effective_level as *const () as usize as u64),
-        "molt_logging_logger_drop" => Some(crate::molt_logging_logger_drop as *const () as usize as u64),
-        "molt_logging_manager_get_logger" => Some(crate::molt_logging_manager_get_logger as *const () as usize as u64),
-        "molt_logging_root_logger" => Some(crate::molt_logging_root_logger as *const () as usize as u64),
-        "molt_logging_basic_config" => Some(crate::molt_logging_basic_config as *const () as usize as u64),
-        "molt_logging_shutdown" => Some(crate::molt_logging_shutdown as *const () as usize as u64),
-        "molt_logging_get_level_name" => Some(crate::molt_logging_get_level_name as *const () as usize as u64),
-        "molt_logging_add_level_name" => Some(crate::molt_logging_add_level_name as *const () as usize as u64),
-        "molt_logging_level_to_int" => Some(crate::molt_logging_level_to_int as *const () as usize as u64),
-        "molt_asyncio_future_new" => Some(crate::molt_asyncio_future_new as *const () as usize as u64),
-        "molt_asyncio_future_result" => Some(crate::molt_asyncio_future_result as *const () as usize as u64),
-        "molt_asyncio_future_exception" => Some(crate::molt_asyncio_future_exception as *const () as usize as u64),
-        "molt_asyncio_future_set_result_fast" => Some(crate::molt_asyncio_future_set_result_fast as *const () as usize as u64),
-        "molt_asyncio_future_set_exception_fast" => Some(crate::molt_asyncio_future_set_exception_fast as *const () as usize as u64),
-        "molt_asyncio_future_cancel_fast" => Some(crate::molt_asyncio_future_cancel_fast as *const () as usize as u64),
-        "molt_asyncio_future_done" => Some(crate::molt_asyncio_future_done as *const () as usize as u64),
-        "molt_asyncio_future_cancelled" => Some(crate::molt_asyncio_future_cancelled as *const () as usize as u64),
-        "molt_asyncio_future_add_done_callback_fast" => Some(crate::molt_asyncio_future_add_done_callback_fast as *const () as usize as u64),
-        "molt_asyncio_future_drop" => Some(crate::molt_asyncio_future_drop as *const () as usize as u64),
-        "molt_asyncio_event_new" => Some(crate::molt_asyncio_event_new as *const () as usize as u64),
-        "molt_asyncio_event_is_set" => Some(crate::molt_asyncio_event_is_set as *const () as usize as u64),
-        "molt_asyncio_event_set_fast" => Some(crate::molt_asyncio_event_set_fast as *const () as usize as u64),
-        "molt_asyncio_event_clear" => Some(crate::molt_asyncio_event_clear as *const () as usize as u64),
-        "molt_asyncio_event_drop" => Some(crate::molt_asyncio_event_drop as *const () as usize as u64),
-        "molt_asyncio_lock_new" => Some(crate::molt_asyncio_lock_new as *const () as usize as u64),
-        "molt_asyncio_lock_locked" => Some(crate::molt_asyncio_lock_locked as *const () as usize as u64),
-        "molt_asyncio_lock_acquire_fast" => Some(crate::molt_asyncio_lock_acquire_fast as *const () as usize as u64),
-        "molt_asyncio_lock_release_fast" => Some(crate::molt_asyncio_lock_release_fast as *const () as usize as u64),
-        "molt_asyncio_lock_drop" => Some(crate::molt_asyncio_lock_drop as *const () as usize as u64),
-        "molt_asyncio_semaphore_new" => Some(crate::molt_asyncio_semaphore_new as *const () as usize as u64),
-        "molt_asyncio_semaphore_acquire_fast" => Some(crate::molt_asyncio_semaphore_acquire_fast as *const () as usize as u64),
-        "molt_asyncio_semaphore_release_fast" => Some(crate::molt_asyncio_semaphore_release_fast as *const () as usize as u64),
-        "molt_asyncio_semaphore_value" => Some(crate::molt_asyncio_semaphore_value as *const () as usize as u64),
-        "molt_asyncio_semaphore_drop" => Some(crate::molt_asyncio_semaphore_drop as *const () as usize as u64),
-        "molt_asyncio_queue_new" => Some(crate::molt_asyncio_queue_new as *const () as usize as u64),
-        "molt_asyncio_queue_put_nowait" => Some(crate::molt_asyncio_queue_put_nowait as *const () as usize as u64),
-        "molt_asyncio_queue_get_nowait" => Some(crate::molt_asyncio_queue_get_nowait as *const () as usize as u64),
-        "molt_asyncio_queue_qsize" => Some(crate::molt_asyncio_queue_qsize as *const () as usize as u64),
-        "molt_asyncio_queue_maxsize" => Some(crate::molt_asyncio_queue_maxsize as *const () as usize as u64),
-        "molt_asyncio_queue_empty" => Some(crate::molt_asyncio_queue_empty as *const () as usize as u64),
-        "molt_asyncio_queue_full" => Some(crate::molt_asyncio_queue_full as *const () as usize as u64),
-        "molt_asyncio_queue_task_done" => Some(crate::molt_asyncio_queue_task_done as *const () as usize as u64),
-        "molt_asyncio_queue_unfinished_tasks" => Some(crate::molt_asyncio_queue_unfinished_tasks as *const () as usize as u64),
-        "molt_asyncio_queue_putter_count" => Some(crate::molt_asyncio_queue_putter_count as *const () as usize as u64),
-        "molt_asyncio_queue_getter_count" => Some(crate::molt_asyncio_queue_getter_count as *const () as usize as u64),
-        "molt_asyncio_queue_add_putter" => Some(crate::molt_asyncio_queue_add_putter as *const () as usize as u64),
-        "molt_asyncio_queue_add_getter" => Some(crate::molt_asyncio_queue_add_getter as *const () as usize as u64),
-        "molt_asyncio_queue_notify_putters" => Some(crate::molt_asyncio_queue_notify_putters as *const () as usize as u64),
-        "molt_asyncio_queue_notify_getters" => Some(crate::molt_asyncio_queue_notify_getters as *const () as usize as u64),
-        "molt_asyncio_queue_shutdown" => Some(crate::molt_asyncio_queue_shutdown as *const () as usize as u64),
-        "molt_asyncio_queue_is_shutdown" => Some(crate::molt_asyncio_queue_is_shutdown as *const () as usize as u64),
-        "molt_asyncio_queue_drop" => Some(crate::molt_asyncio_queue_drop as *const () as usize as u64),
-        "molt_tk_event_build_from_args" => Some(crate::molt_tk_event_build_from_args as *const () as usize as u64),
-        "molt_tk_event_int" => Some(crate::molt_tk_event_int as *const () as usize as u64),
-        "molt_tk_event_state_decode" => Some(crate::molt_tk_event_state_decode as *const () as usize as u64),
-        "molt_tk_splitdict" => Some(crate::molt_tk_splitdict as *const () as usize as u64),
-        "molt_tk_flatten_args" => Some(crate::molt_tk_flatten_args as *const () as usize as u64),
-        "molt_tk_cnfmerge" => Some(crate::molt_tk_cnfmerge as *const () as usize as u64),
-        "molt_tk_normalize_option" => Some(crate::molt_tk_normalize_option as *const () as usize as u64),
-        "molt_tk_hex_to_rgb" => Some(crate::molt_tk_hex_to_rgb as *const () as usize as u64),
-        "molt_tk_normalize_delay_ms" => Some(crate::molt_tk_normalize_delay_ms as *const () as usize as u64),
-        "molt_tk_convert_stringval" => Some(crate::molt_tk_convert_stringval as *const () as usize as u64),
-        "molt_pathlib_join" => Some(crate::molt_pathlib_join as *const () as usize as u64),
-        "molt_pathlib_str" => Some(crate::molt_pathlib_str as *const () as usize as u64),
-        "molt_pathlib_parts" => Some(crate::molt_pathlib_parts as *const () as usize as u64),
-        "molt_pathlib_splitroot" => Some(crate::molt_pathlib_splitroot as *const () as usize as u64),
-        "molt_pathlib_drive" => Some(crate::molt_pathlib_drive as *const () as usize as u64),
-        "molt_pathlib_root" => Some(crate::molt_pathlib_root as *const () as usize as u64),
-        "molt_pathlib_anchor" => Some(crate::molt_pathlib_anchor as *const () as usize as u64),
-        "molt_pathlib_name" => Some(crate::molt_pathlib_name as *const () as usize as u64),
-        "molt_pathlib_suffix" => Some(crate::molt_pathlib_suffix as *const () as usize as u64),
-        "molt_pathlib_suffixes" => Some(crate::molt_pathlib_suffixes as *const () as usize as u64),
-        "molt_pathlib_stem" => Some(crate::molt_pathlib_stem as *const () as usize as u64),
-        "molt_pathlib_parent" => Some(crate::molt_pathlib_parent as *const () as usize as u64),
-        "molt_pathlib_parents" => Some(crate::molt_pathlib_parents as *const () as usize as u64),
-        "molt_pathlib_is_absolute" => Some(crate::molt_pathlib_is_absolute as *const () as usize as u64),
-        "molt_pathlib_is_relative_to" => Some(crate::molt_pathlib_is_relative_to as *const () as usize as u64),
-        "molt_pathlib_relative_to" => Some(crate::molt_pathlib_relative_to as *const () as usize as u64),
-        "molt_pathlib_with_name" => Some(crate::molt_pathlib_with_name as *const () as usize as u64),
-        "molt_pathlib_with_stem" => Some(crate::molt_pathlib_with_stem as *const () as usize as u64),
-        "molt_pathlib_with_suffix" => Some(crate::molt_pathlib_with_suffix as *const () as usize as u64),
-        "molt_pathlib_match" => Some(crate::molt_pathlib_match as *const () as usize as u64),
-        "molt_pathlib_hash" => Some(crate::molt_pathlib_hash as *const () as usize as u64),
-        "molt_pathlib_eq" => Some(crate::molt_pathlib_eq as *const () as usize as u64),
-        "molt_pathlib_lt" => Some(crate::molt_pathlib_lt as *const () as usize as u64),
-        "molt_pathlib_as_posix" => Some(crate::molt_pathlib_as_posix as *const () as usize as u64),
-        "molt_pathlib_cwd" => Some(crate::molt_pathlib_cwd as *const () as usize as u64),
-        "molt_pathlib_home" => Some(crate::molt_pathlib_home as *const () as usize as u64),
-        "molt_pathlib_resolve" => Some(crate::molt_pathlib_resolve as *const () as usize as u64),
-        "molt_pathlib_expanduser" => Some(crate::molt_pathlib_expanduser as *const () as usize as u64),
-        "molt_pathlib_exists" => Some(crate::molt_pathlib_exists as *const () as usize as u64),
-        "molt_pathlib_is_file" => Some(crate::molt_pathlib_is_file as *const () as usize as u64),
-        "molt_pathlib_is_dir" => Some(crate::molt_pathlib_is_dir as *const () as usize as u64),
-        "molt_pathlib_is_symlink" => Some(crate::molt_pathlib_is_symlink as *const () as usize as u64),
-        "molt_pathlib_is_mount" => Some(crate::molt_pathlib_is_mount as *const () as usize as u64),
-        "molt_pathlib_stat" => Some(crate::molt_pathlib_stat as *const () as usize as u64),
-        "molt_pathlib_lstat" => Some(crate::molt_pathlib_lstat as *const () as usize as u64),
-        "molt_pathlib_iterdir" => Some(crate::molt_pathlib_iterdir as *const () as usize as u64),
-        "molt_pathlib_glob" => Some(crate::molt_pathlib_glob as *const () as usize as u64),
-        "molt_pathlib_rglob" => Some(crate::molt_pathlib_rglob as *const () as usize as u64),
-        "molt_pathlib_mkdir" => Some(crate::molt_pathlib_mkdir as *const () as usize as u64),
-        "molt_pathlib_rmdir" => Some(crate::molt_pathlib_rmdir as *const () as usize as u64),
-        "molt_pathlib_unlink" => Some(crate::molt_pathlib_unlink as *const () as usize as u64),
-        "molt_pathlib_rename" => Some(crate::molt_pathlib_rename as *const () as usize as u64),
-        "molt_pathlib_replace" => Some(crate::molt_pathlib_replace as *const () as usize as u64),
-        "molt_pathlib_touch" => Some(crate::molt_pathlib_touch as *const () as usize as u64),
-        "molt_pathlib_symlink_to" => Some(crate::molt_pathlib_symlink_to as *const () as usize as u64),
-        "molt_pathlib_hardlink_to" => Some(crate::molt_pathlib_hardlink_to as *const () as usize as u64),
-        "molt_pathlib_readlink" => Some(crate::molt_pathlib_readlink as *const () as usize as u64),
-        "molt_pathlib_read_text" => Some(crate::molt_pathlib_read_text as *const () as usize as u64),
-        "molt_pathlib_read_bytes" => Some(crate::molt_pathlib_read_bytes as *const () as usize as u64),
-        "molt_pathlib_write_text" => Some(crate::molt_pathlib_write_text as *const () as usize as u64),
-        "molt_pathlib_write_bytes" => Some(crate::molt_pathlib_write_bytes as *const () as usize as u64),
-        "molt_pathlib_chmod" => Some(crate::molt_pathlib_chmod as *const () as usize as u64),
-        "molt_pathlib_owner" => Some(crate::molt_pathlib_owner as *const () as usize as u64),
-        "molt_pathlib_group" => Some(crate::molt_pathlib_group as *const () as usize as u64),
-        "molt_pathlib_samefile" => Some(crate::molt_pathlib_samefile as *const () as usize as u64),
-        "molt_pathlib_sep" => Some(crate::molt_pathlib_sep as *const () as usize as u64),
-        #[cfg(feature = "stdlib_fs_extra")]
-        "molt_glob_glob" => Some(crate::molt_glob_glob as *const () as usize as u64),
-        #[cfg(feature = "stdlib_fs_extra")]
-        "molt_glob_iglob" => Some(crate::molt_glob_iglob as *const () as usize as u64),
-        "molt_fnmatch_fnmatch" => Some(crate::molt_fnmatch_fnmatch as *const () as usize as u64),
-        "molt_fnmatch_fnmatchcase" => Some(crate::molt_fnmatch_fnmatchcase as *const () as usize as u64),
+        "molt_sys_getdefaultencoding" => Some(crate::molt_sys_getdefaultencoding as *const () as usize as u64),
+        "molt_sys_getfilesystemencoding" => Some(crate::molt_sys_getfilesystemencoding as *const () as usize as u64),
+        "molt_sys_getswitchinterval" => Some(crate::molt_sys_getswitchinterval as *const () as usize as u64),
+        "molt_sys_setswitchinterval" => Some(crate::molt_sys_setswitchinterval as *const () as usize as u64),
+        "molt_sys_get_int_max_str_digits" => Some(crate::molt_sys_get_int_max_str_digits as *const () as usize as u64),
+        "molt_sys_set_int_max_str_digits" => Some(crate::molt_sys_set_int_max_str_digits as *const () as usize as u64),
+        "molt_sys_call_tracing_validate" => Some(crate::molt_sys_call_tracing_validate as *const () as usize as u64),
+        "molt_sys_addaudithook" => Some(crate::molt_sys_addaudithook as *const () as usize as u64),
+        "molt_sys_audit_hook_count" => Some(crate::molt_sys_audit_hook_count as *const () as usize as u64),
+        "molt_sys_audit_get_hooks" => Some(crate::molt_sys_audit_get_hooks as *const () as usize as u64),
+        "molt_sys_exit" => Some(crate::molt_sys_exit as *const () as usize as u64),
+        "molt_sys_displayhook_write" => Some(crate::molt_sys_displayhook_write as *const () as usize as u64),
+        "molt_sys_excepthook_write" => Some(crate::molt_sys_excepthook_write as *const () as usize as u64),
+        "molt_sys_argv" => Some(crate::molt_sys_argv as *const () as usize as u64),
+        "molt_sys_modules" => Some(crate::molt_sys_modules as *const () as usize as u64),
+        "molt_sys_path" => Some(crate::molt_sys_path as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_tempfile_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
         #[cfg(feature = "stdlib_fs_extra")]
         "molt_tempfile_gettempdir" => Some(crate::molt_tempfile_gettempdir as *const () as usize as u64),
         #[cfg(feature = "stdlib_fs_extra")]
@@ -4812,120 +6101,529 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_tempfile_cleanup" => Some(crate::molt_tempfile_cleanup as *const () as usize as u64),
         #[cfg(feature = "stdlib_fs_extra")]
         "molt_tempfile_tempdir_path" => Some(crate::molt_tempfile_tempdir_path as *const () as usize as u64),
-        "molt_sys_getdefaultencoding" => Some(crate::molt_sys_getdefaultencoding as *const () as usize as u64),
-        "molt_sys_getfilesystemencoding" => Some(crate::molt_sys_getfilesystemencoding as *const () as usize as u64),
-        "molt_sys_getswitchinterval" => Some(crate::molt_sys_getswitchinterval as *const () as usize as u64),
-        "molt_sys_setswitchinterval" => Some(crate::molt_sys_setswitchinterval as *const () as usize as u64),
-        "molt_sys_get_int_max_str_digits" => Some(crate::molt_sys_get_int_max_str_digits as *const () as usize as u64),
-        "molt_sys_set_int_max_str_digits" => Some(crate::molt_sys_set_int_max_str_digits as *const () as usize as u64),
-        "molt_sys_call_tracing_validate" => Some(crate::molt_sys_call_tracing_validate as *const () as usize as u64),
-        "molt_sys_addaudithook" => Some(crate::molt_sys_addaudithook as *const () as usize as u64),
-        "molt_sys_audit_hook_count" => Some(crate::molt_sys_audit_hook_count as *const () as usize as u64),
-        "molt_sys_audit_get_hooks" => Some(crate::molt_sys_audit_get_hooks as *const () as usize as u64),
-        "molt_sys_exit" => Some(crate::molt_sys_exit as *const () as usize as u64),
-        "molt_sys_displayhook_write" => Some(crate::molt_sys_displayhook_write as *const () as usize as u64),
-        "molt_sys_excepthook_write" => Some(crate::molt_sys_excepthook_write as *const () as usize as u64),
-        "molt_os_wifexited" => Some(crate::molt_os_wifexited as *const () as usize as u64),
-        "molt_os_wexitstatus" => Some(crate::molt_os_wexitstatus as *const () as usize as u64),
-        "molt_os_wifsignaled" => Some(crate::molt_os_wifsignaled as *const () as usize as u64),
-        "molt_os_wtermsig" => Some(crate::molt_os_wtermsig as *const () as usize as u64),
-        "molt_os_wifstopped" => Some(crate::molt_os_wifstopped as *const () as usize as u64),
-        "molt_os_wstopsig" => Some(crate::molt_os_wstopsig as *const () as usize as u64),
-        "molt_os_fspath" => Some(crate::molt_os_fspath as *const () as usize as u64),
-        "molt_os_environ" => Some(crate::molt_os_environ as *const () as usize as u64),
-        "molt_os_makedirs" => Some(crate::molt_os_makedirs as *const () as usize as u64),
-        "molt_os_path_join" => Some(crate::molt_os_path_join as *const () as usize as u64),
-        "molt_os_path_exists" => Some(crate::molt_os_path_exists as *const () as usize as u64),
-        "molt_os_path_isfile" => Some(crate::molt_os_path_isfile as *const () as usize as u64),
-        "molt_os_path_isdir" => Some(crate::molt_os_path_isdir as *const () as usize as u64),
-        "molt_sys_argv" => Some(crate::molt_sys_argv as *const () as usize as u64),
-        "molt_sys_modules" => Some(crate::molt_sys_modules as *const () as usize as u64),
-        "molt_sys_path" => Some(crate::molt_sys_path as *const () as usize as u64),
-        "molt_tokenize_scan" => Some(crate::molt_tokenize_scan as *const () as usize as u64),
-        "molt_codecs_charmap_build" => Some(crate::molt_codecs_charmap_build as *const () as usize as u64),
-        "molt_codecs_charmap_decode" => Some(crate::molt_codecs_charmap_decode as *const () as usize as u64),
-        "molt_codecs_charmap_encode" => Some(crate::molt_codecs_charmap_encode as *const () as usize as u64),
-        "molt_codecs_make_identity_dict" => Some(crate::molt_codecs_make_identity_dict as *const () as usize as u64),
-        #[cfg(feature = "stdlib_ast")]
-        "molt_ast_iter_fields" => Some(crate::molt_ast_iter_fields as *const () as usize as u64),
-        #[cfg(feature = "stdlib_ast")]
-        "molt_ast_iter_child_nodes" => Some(crate::molt_ast_iter_child_nodes as *const () as usize as u64),
-        "molt_linecache_detect_encoding" => Some(crate::molt_linecache_detect_encoding as *const () as usize as u64),
-        "molt_copy_replace" => Some(crate::molt_copy_replace as *const () as usize as u64),
-        "molt_csv_normalize_row" => Some(crate::molt_csv_normalize_row as *const () as usize as u64),
-        "molt_dataclasses_eq" => Some(crate::molt_dataclasses_eq as *const () as usize as u64),
-        "molt_dataclasses_hash_fn" => Some(crate::molt_dataclasses_hash_fn as *const () as usize as u64),
-        "molt_dataclasses_repr" => Some(crate::molt_dataclasses_repr as *const () as usize as u64),
-        "molt_datetime_as_int" => Some(crate::molt_datetime_as_int as *const () as usize as u64),
-        "molt_datetime_date_repr" => Some(crate::molt_datetime_date_repr as *const () as usize as u64),
-        "molt_datetime_datetime_repr" => Some(crate::molt_datetime_datetime_repr as *const () as usize as u64),
-        "molt_datetime_format_time" => Some(crate::molt_datetime_format_time as *const () as usize as u64),
-        "molt_datetime_time_repr" => Some(crate::molt_datetime_time_repr as *const () as usize as u64),
-        "molt_datetime_timetuple" => Some(crate::molt_datetime_timetuple as *const () as usize as u64),
-        "molt_enum_is_auto" => Some(crate::molt_enum_is_auto as *const () as usize as u64),
-        "molt_enum_is_descriptor" => Some(crate::molt_enum_is_descriptor as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_gzip_flush" => Some(crate::molt_gzip_flush as *const () as usize as u64),
-        "molt_json_calc_lineno_col" => Some(crate::molt_json_calc_lineno_col as *const () as usize as u64),
-        "molt_json_coerce_text" => Some(crate::molt_json_coerce_text as *const () as usize as u64),
-        "molt_logging_file_handler_emit" => Some(crate::molt_logging_file_handler_emit as *const () as usize as u64),
-        "molt_logging_filter_check" => Some(crate::molt_logging_filter_check as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_file_close" => Some(crate::molt_lzma_file_close as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_file_drop" => Some(crate::molt_lzma_file_drop as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_file_open" => Some(crate::molt_lzma_file_open as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_file_read" => Some(crate::molt_lzma_file_read as *const () as usize as u64),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_file_write" => Some(crate::molt_lzma_file_write as *const () as usize as u64),
-        "molt_pprint_format_object" => Some(crate::molt_pprint_format_object as *const () as usize as u64),
-        "molt_random_randbytes" => Some(crate::molt_random_randbytes as *const () as usize as u64),
-        "molt_random_randrange" => Some(crate::molt_random_randrange as *const () as usize as u64),
-        "molt_re_escape" => Some(crate::molt_re_escape as *const () as usize as u64),
-        "molt_re_match_group" => Some(crate::molt_re_match_group as *const () as usize as u64),
-        "molt_re_match_groups" => Some(crate::molt_re_match_groups as *const () as usize as u64),
-        "molt_re_match_groupdict" => Some(crate::molt_re_match_groupdict as *const () as usize as u64),
-        "molt_re_split" => Some(crate::molt_re_split as *const () as usize as u64),
-        "molt_re_sub" => Some(crate::molt_re_sub as *const () as usize as u64),
-        "molt_re_sub_callable" => Some(crate::molt_re_sub_callable as *const () as usize as u64),
-        "molt_textwrap_dedent" => Some(crate::molt_textwrap_dedent as *const () as usize as u64),
-        "molt_textwrap_shorten" => Some(crate::molt_textwrap_shorten as *const () as usize as u64),
-        "molt_timedelta_repr" => Some(crate::molt_timedelta_repr as *const () as usize as u64),
-        "molt_timedelta_str" => Some(crate::molt_timedelta_str as *const () as usize as u64),
-        "molt_timezone_tzname" => Some(crate::molt_timezone_tzname as *const () as usize as u64),
-        "molt_timezone_validate" => Some(crate::molt_timezone_validate as *const () as usize as u64),
-        "molt_typing_cast" => Some(crate::molt_typing_cast as *const () as usize as u64),
-        "molt_typing_get_origin" => Some(crate::molt_typing_get_origin as *const () as usize as u64),
-        "molt_typing_get_args" => Some(crate::molt_typing_get_args as *const () as usize as u64),
-        "molt_configparser_defaults" => Some(crate::molt_configparser_defaults as *const () as usize as u64),
-        "molt_configparser_get_raw" => Some(crate::molt_configparser_get_raw as *const () as usize as u64),
-        "molt_configparser_interpolate_basic" => Some(crate::molt_configparser_interpolate_basic as *const () as usize as u64),
-        "molt_configparser_interpolate_extended" => Some(crate::molt_configparser_interpolate_extended as *const () as usize as u64),
-        "molt_configparser_read_file" => Some(crate::molt_configparser_read_file as *const () as usize as u64),
-        "molt_configparser_write_string" => Some(crate::molt_configparser_write_string as *const () as usize as u64),
-        "molt_csv_dialect_lookup_name" => Some(crate::molt_csv_dialect_lookup_name as *const () as usize as u64),
-        "molt_csv_validate_dialect" => Some(crate::molt_csv_validate_dialect as *const () as usize as u64),
-        "molt_csv_validate_fmtparams" => Some(crate::molt_csv_validate_fmtparams as *const () as usize as u64),
-        "molt_dataclasses_check_default_order" => Some(crate::molt_dataclasses_check_default_order as *const () as usize as u64),
-        "molt_dataclasses_field_flags" => Some(crate::molt_dataclasses_field_flags as *const () as usize as u64),
-        "molt_json_default_separators" => Some(crate::molt_json_default_separators as *const () as usize as u64),
-        "molt_json_format_decode_error" => Some(crate::molt_json_format_decode_error as *const () as usize as u64),
-        "molt_json_parse_error_msg" => Some(crate::molt_json_parse_error_msg as *const () as usize as u64),
-        "molt_namedtuple_validate_fields" => Some(crate::molt_namedtuple_validate_fields as *const () as usize as u64),
-        "molt_random_binomialvariate" => Some(crate::molt_random_binomialvariate as *const () as usize as u64),
-        "molt_fcntl" => Some(crate::molt_fcntl as *const () as usize as u64),
-        "molt_fcntl_f_getfl" => Some(crate::molt_fcntl_f_getfl as *const () as usize as u64),
-        "molt_fcntl_f_setfl" => Some(crate::molt_fcntl_f_setfl as *const () as usize as u64),
-        "molt_fcntl_f_getfd" => Some(crate::molt_fcntl_f_getfd as *const () as usize as u64),
-        "molt_fcntl_f_setfd" => Some(crate::molt_fcntl_f_setfd as *const () as usize as u64),
-        "molt_fcntl_fd_cloexec" => Some(crate::molt_fcntl_fd_cloexec as *const () as usize as u64),
-        "molt_fcntl_o_nonblock" => Some(crate::molt_fcntl_o_nonblock as *const () as usize as u64),
-        "molt_type_of_borrowed" => Some(crate::molt_type_of_borrowed as *const () as usize as u64),
-        "molt_dict_getitem_borrowed" => Some(crate::molt_dict_getitem_borrowed as *const () as usize as u64),
-        "molt_list_getitem_borrowed" => Some(crate::molt_list_getitem_borrowed as *const () as usize as u64),
-        "molt_tuple_getitem_borrowed" => Some(crate::molt_tuple_getitem_borrowed as *const () as usize as u64),
         _ => None,
     }
 }
+
+#[inline(never)]
+#[cold]
+fn resolve_textwrap_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_textwrap_wrap" => Some(crate::molt_textwrap_wrap as *const () as usize as u64),
+        "molt_textwrap_wrap_ex" => Some(crate::molt_textwrap_wrap_ex as *const () as usize as u64),
+        "molt_textwrap_fill" => Some(crate::molt_textwrap_fill as *const () as usize as u64),
+        "molt_textwrap_fill_ex" => Some(crate::molt_textwrap_fill_ex as *const () as usize as u64),
+        "molt_textwrap_indent" => Some(crate::molt_textwrap_indent as *const () as usize as u64),
+        "molt_textwrap_indent_ex" => Some(crate::molt_textwrap_indent_ex as *const () as usize as u64),
+        "molt_textwrap_dedent" => Some(crate::molt_textwrap_dedent as *const () as usize as u64),
+        "molt_textwrap_shorten" => Some(crate::molt_textwrap_shorten as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_this_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_this_payload" => Some(crate::molt_this_payload as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_threading_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_thread_submit" => Some(crate::molt_thread_submit as *const () as usize as u64),
+        "molt_thread_spawn" => Some(crate::molt_thread_spawn as *const () as usize as u64),
+        "molt_thread_spawn_shared" => Some(crate::molt_thread_spawn_shared as *const () as usize as u64),
+        "molt_thread_join" => Some(crate::molt_thread_join as *const () as usize as u64),
+        "molt_thread_is_alive" => Some(crate::molt_thread_is_alive as *const () as usize as u64),
+        "molt_thread_ident" => Some(crate::molt_thread_ident as *const () as usize as u64),
+        "molt_thread_native_id" => Some(crate::molt_thread_native_id as *const () as usize as u64),
+        "molt_thread_current_ident" => Some(crate::molt_thread_current_ident as *const () as usize as u64),
+        "molt_thread_current_native_id" => Some(crate::molt_thread_current_native_id as *const () as usize as u64),
+        "molt_thread_drop" => Some(crate::molt_thread_drop as *const () as usize as u64),
+        "molt_thread_stack_size_get" => Some(crate::molt_thread_stack_size_get as *const () as usize as u64),
+        "molt_thread_stack_size_set" => Some(crate::molt_thread_stack_size_set as *const () as usize as u64),
+        "molt_thread_registry_set_main" => Some(crate::molt_thread_registry_set_main as *const () as usize as u64),
+        "molt_thread_registry_register" => Some(crate::molt_thread_registry_register as *const () as usize as u64),
+        "molt_thread_registry_forget" => Some(crate::molt_thread_registry_forget as *const () as usize as u64),
+        "molt_thread_registry_snapshot" => Some(crate::molt_thread_registry_snapshot as *const () as usize as u64),
+        "molt_thread_registry_current" => Some(crate::molt_thread_registry_current as *const () as usize as u64),
+        "molt_thread_registry_active_count" => Some(crate::molt_thread_registry_active_count as *const () as usize as u64),
+        "molt_rlock_new" => Some(crate::molt_rlock_new as *const () as usize as u64),
+        "molt_rlock_acquire" => Some(crate::molt_rlock_acquire as *const () as usize as u64),
+        "molt_rlock_release" => Some(crate::molt_rlock_release as *const () as usize as u64),
+        "molt_rlock_locked" => Some(crate::molt_rlock_locked as *const () as usize as u64),
+        "molt_rlock_is_owned" => Some(crate::molt_rlock_is_owned as *const () as usize as u64),
+        "molt_rlock_release_save" => Some(crate::molt_rlock_release_save as *const () as usize as u64),
+        "molt_rlock_acquire_restore" => Some(crate::molt_rlock_acquire_restore as *const () as usize as u64),
+        "molt_rlock_drop" => Some(crate::molt_rlock_drop as *const () as usize as u64),
+        "molt_condition_new" => Some(crate::molt_condition_new as *const () as usize as u64),
+        "molt_condition_wait" => Some(crate::molt_condition_wait as *const () as usize as u64),
+        "molt_condition_wait_for" => Some(crate::molt_condition_wait_for as *const () as usize as u64),
+        "molt_condition_notify" => Some(crate::molt_condition_notify as *const () as usize as u64),
+        "molt_condition_drop" => Some(crate::molt_condition_drop as *const () as usize as u64),
+        "molt_semaphore_new" => Some(crate::molt_semaphore_new as *const () as usize as u64),
+        "molt_semaphore_acquire" => Some(crate::molt_semaphore_acquire as *const () as usize as u64),
+        "molt_semaphore_release" => Some(crate::molt_semaphore_release as *const () as usize as u64),
+        "molt_semaphore_drop" => Some(crate::molt_semaphore_drop as *const () as usize as u64),
+        "molt_barrier_new" => Some(crate::molt_barrier_new as *const () as usize as u64),
+        "molt_barrier_wait" => Some(crate::molt_barrier_wait as *const () as usize as u64),
+        "molt_barrier_abort" => Some(crate::molt_barrier_abort as *const () as usize as u64),
+        "molt_barrier_reset" => Some(crate::molt_barrier_reset as *const () as usize as u64),
+        "molt_barrier_parties" => Some(crate::molt_barrier_parties as *const () as usize as u64),
+        "molt_barrier_n_waiting" => Some(crate::molt_barrier_n_waiting as *const () as usize as u64),
+        "molt_barrier_broken" => Some(crate::molt_barrier_broken as *const () as usize as u64),
+        "molt_barrier_drop" => Some(crate::molt_barrier_drop as *const () as usize as u64),
+        "molt_local_new" => Some(crate::molt_local_new as *const () as usize as u64),
+        "molt_local_get_dict" => Some(crate::molt_local_get_dict as *const () as usize as u64),
+        "molt_local_drop" => Some(crate::molt_local_drop as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_time_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_time_monotonic" => Some(crate::molt_time_monotonic as *const () as usize as u64),
+        "molt_time_monotonic_ns" => Some(crate::molt_time_monotonic_ns as *const () as usize as u64),
+        "molt_time_perf_counter" => Some(crate::molt_time_perf_counter as *const () as usize as u64),
+        "molt_time_perf_counter_ns" => Some(crate::molt_time_perf_counter_ns as *const () as usize as u64),
+        "molt_time_time" => Some(crate::molt_time_time as *const () as usize as u64),
+        "molt_time_time_ns" => Some(crate::molt_time_time_ns as *const () as usize as u64),
+        "molt_time_process_time" => Some(crate::molt_time_process_time as *const () as usize as u64),
+        "molt_time_process_time_ns" => Some(crate::molt_time_process_time_ns as *const () as usize as u64),
+        "molt_time_localtime" => Some(crate::molt_time_localtime as *const () as usize as u64),
+        "molt_time_gmtime" => Some(crate::molt_time_gmtime as *const () as usize as u64),
+        "molt_time_strftime" => Some(crate::molt_time_strftime as *const () as usize as u64),
+        "molt_time_timezone" => Some(crate::molt_time_timezone as *const () as usize as u64),
+        "molt_time_daylight" => Some(crate::molt_time_daylight as *const () as usize as u64),
+        "molt_time_altzone" => Some(crate::molt_time_altzone as *const () as usize as u64),
+        "molt_time_tzname" => Some(crate::molt_time_tzname as *const () as usize as u64),
+        "molt_time_asctime" => Some(crate::molt_time_asctime as *const () as usize as u64),
+        "molt_time_mktime" => Some(crate::molt_time_mktime as *const () as usize as u64),
+        "molt_time_timegm" => Some(crate::molt_time_timegm as *const () as usize as u64),
+        "molt_time_get_clock_info" => Some(crate::molt_time_get_clock_info as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_tk_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_available" => Some(crate::molt_tk_available as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_app_new" => Some(crate::molt_tk_app_new as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_quit" => Some(crate::molt_tk_quit as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_mainloop" => Some(crate::molt_tk_mainloop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_do_one_event" => Some(crate::molt_tk_do_one_event as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_after" => Some(crate::molt_tk_after as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_after_idle" => Some(crate::molt_tk_after_idle as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_after_cancel" => Some(crate::molt_tk_after_cancel as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_after_info" => Some(crate::molt_tk_after_info as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_call" => Some(crate::molt_tk_call as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_trace_add" => Some(crate::molt_tk_trace_add as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_trace_remove" => Some(crate::molt_tk_trace_remove as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_trace_info" => Some(crate::molt_tk_trace_info as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_trace_clear" => Some(crate::molt_tk_trace_clear as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_tkwait_variable" => Some(crate::molt_tk_tkwait_variable as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_tkwait_window" => Some(crate::molt_tk_tkwait_window as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_tkwait_visibility" => Some(crate::molt_tk_tkwait_visibility as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_bind_callback_register" => Some(crate::molt_tk_bind_callback_register as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_bind_callback_unregister" => Some(crate::molt_tk_bind_callback_unregister as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_widget_bind_callback_register" => Some(crate::molt_tk_widget_bind_callback_register as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_widget_bind_callback_unregister" => Some(crate::molt_tk_widget_bind_callback_unregister as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_text_tag_bind_callback_register" => Some(crate::molt_tk_text_tag_bind_callback_register as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_text_tag_bind_callback_unregister" => Some(crate::molt_tk_text_tag_bind_callback_unregister as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_treeview_tag_bind_callback_register" => Some(crate::molt_tk_treeview_tag_bind_callback_register as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_treeview_tag_bind_callback_unregister" => Some(crate::molt_tk_treeview_tag_bind_callback_unregister as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_bind_command" => Some(crate::molt_tk_bind_command as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_unbind_command" => Some(crate::molt_tk_unbind_command as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_filehandler_create" => Some(crate::molt_tk_filehandler_create as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_filehandler_delete" => Some(crate::molt_tk_filehandler_delete as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_destroy_widget" => Some(crate::molt_tk_destroy_widget as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_last_error" => Some(crate::molt_tk_last_error as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_getboolean" => Some(crate::molt_tk_getboolean as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_getdouble" => Some(crate::molt_tk_getdouble as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_splitlist" => Some(crate::molt_tk_splitlist as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_event_subst_parse" => Some(crate::molt_tk_event_subst_parse as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_bind_script_remove_command" => Some(crate::molt_tk_bind_script_remove_command as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_errorinfo_append" => Some(crate::molt_tk_errorinfo_append as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_dialog_show" => Some(crate::molt_tk_dialog_show as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_commondialog_show" => Some(crate::molt_tk_commondialog_show as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_messagebox_show" => Some(crate::molt_tk_messagebox_show as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_filedialog_show" => Some(crate::molt_tk_filedialog_show as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_simpledialog_query" => Some(crate::molt_tk_simpledialog_query as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_event_build_from_args" => Some(crate::molt_tk_event_build_from_args as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_event_int" => Some(crate::molt_tk_event_int as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_event_state_decode" => Some(crate::molt_tk_event_state_decode as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_splitdict" => Some(crate::molt_tk_splitdict as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_flatten_args" => Some(crate::molt_tk_flatten_args as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_cnfmerge" => Some(crate::molt_tk_cnfmerge as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_normalize_option" => Some(crate::molt_tk_normalize_option as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_hex_to_rgb" => Some(crate::molt_tk_hex_to_rgb as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_normalize_delay_ms" => Some(crate::molt_tk_normalize_delay_ms as *const () as usize as u64),
+        #[cfg(feature = "stdlib_tk")]
+        "molt_tk_convert_stringval" => Some(crate::molt_tk_convert_stringval as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_tokenize_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_tokenize_runtime_ready" => Some(crate::molt_tokenize_runtime_ready as *const () as usize as u64),
+        "molt_token_payload_312_json" => Some(crate::molt_token_payload_312_json as *const () as usize as u64),
+        "molt_token_payload_312" => Some(crate::molt_token_payload_312 as *const () as usize as u64),
+        "molt_tokenize_scan" => Some(crate::molt_tokenize_scan as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_tomllib_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_tomllib_runtime_ready" => Some(crate::molt_tomllib_runtime_ready as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_traceback_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_traceback_source_line" => Some(crate::molt_traceback_source_line as *const () as usize as u64),
+        "molt_traceback_infer_col_offsets" => Some(crate::molt_traceback_infer_col_offsets as *const () as usize as u64),
+        "molt_traceback_format_caret_line" => Some(crate::molt_traceback_format_caret_line as *const () as usize as u64),
+        "molt_traceback_format_exception_only" => Some(crate::molt_traceback_format_exception_only as *const () as usize as u64),
+        "molt_traceback_format_exception" => Some(crate::molt_traceback_format_exception as *const () as usize as u64),
+        "molt_traceback_format_tb" => Some(crate::molt_traceback_format_tb as *const () as usize as u64),
+        "molt_traceback_format_stack" => Some(crate::molt_traceback_format_stack as *const () as usize as u64),
+        "molt_traceback_extract_tb" => Some(crate::molt_traceback_extract_tb as *const () as usize as u64),
+        "molt_traceback_exception_components" => Some(crate::molt_traceback_exception_components as *const () as usize as u64),
+        "molt_traceback_exception_chain_payload" => Some(crate::molt_traceback_exception_chain_payload as *const () as usize as u64),
+        "molt_traceback_exception_suppress_context" => Some(crate::molt_traceback_exception_suppress_context as *const () as usize as u64),
+        "molt_traceback_payload" => Some(crate::molt_traceback_payload as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_typing_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_typing_type_param" => Some(crate::molt_typing_type_param as *const () as usize as u64),
+        "molt_typing_private_payload" => Some(crate::molt_typing_private_payload as *const () as usize as u64),
+        "molt_typing_cast" => Some(crate::molt_typing_cast as *const () as usize as u64),
+        "molt_typing_get_origin" => Some(crate::molt_typing_get_origin as *const () as usize as u64),
+        "molt_typing_get_args" => Some(crate::molt_typing_get_args as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_unicodedata_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_unicodedata_runtime_ready" => Some(crate::molt_unicodedata_runtime_ready as *const () as usize as u64),
+        "molt_unicodedata_bidirectional" => Some(crate::molt_unicodedata_bidirectional as *const () as usize as u64),
+        "molt_unicodedata_category" => Some(crate::molt_unicodedata_category as *const () as usize as u64),
+        "molt_unicodedata_combining" => Some(crate::molt_unicodedata_combining as *const () as usize as u64),
+        "molt_unicodedata_decimal" => Some(crate::molt_unicodedata_decimal as *const () as usize as u64),
+        "molt_unicodedata_decomposition" => Some(crate::molt_unicodedata_decomposition as *const () as usize as u64),
+        "molt_unicodedata_digit" => Some(crate::molt_unicodedata_digit as *const () as usize as u64),
+        "molt_unicodedata_east_asian_width" => Some(crate::molt_unicodedata_east_asian_width as *const () as usize as u64),
+        "molt_unicodedata_is_normalized" => Some(crate::molt_unicodedata_is_normalized as *const () as usize as u64),
+        "molt_unicodedata_lookup" => Some(crate::molt_unicodedata_lookup as *const () as usize as u64),
+        "molt_unicodedata_mirrored" => Some(crate::molt_unicodedata_mirrored as *const () as usize as u64),
+        "molt_unicodedata_name" => Some(crate::molt_unicodedata_name as *const () as usize as u64),
+        "molt_unicodedata_normalize" => Some(crate::molt_unicodedata_normalize as *const () as usize as u64),
+        "molt_unicodedata_numeric" => Some(crate::molt_unicodedata_numeric as *const () as usize as u64),
+        "molt_unicodedata_unidata_version" => Some(crate::molt_unicodedata_unidata_version as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_urllib_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_quote" => Some(crate::molt_urllib_quote as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_quote_plus" => Some(crate::molt_urllib_quote_plus as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_unquote" => Some(crate::molt_urllib_unquote as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_unquote_plus" => Some(crate::molt_urllib_unquote_plus as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_parse_qsl" => Some(crate::molt_urllib_parse_qsl as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_parse_qs" => Some(crate::molt_urllib_parse_qs as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_urlencode" => Some(crate::molt_urllib_urlencode as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_urlsplit" => Some(crate::molt_urllib_urlsplit as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_urlparse" => Some(crate::molt_urllib_urlparse as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_urlunsplit" => Some(crate::molt_urllib_urlunsplit as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_urlunparse" => Some(crate::molt_urllib_urlunparse as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_urldefrag" => Some(crate::molt_urllib_urldefrag as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_urljoin" => Some(crate::molt_urllib_urljoin as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_error_urlerror_init" => Some(crate::molt_urllib_error_urlerror_init as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_error_urlerror_str" => Some(crate::molt_urllib_error_urlerror_str as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_error_httperror_init" => Some(crate::molt_urllib_error_httperror_init as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_error_httperror_str" => Some(crate::molt_urllib_error_httperror_str as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_error_content_too_short_init" => Some(crate::molt_urllib_error_content_too_short_init as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_request_init" => Some(crate::molt_urllib_request_request_init as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_opener_init" => Some(crate::molt_urllib_request_opener_init as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_add_handler" => Some(crate::molt_urllib_request_add_handler as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_open" => Some(crate::molt_urllib_request_open as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_process_http_error" => Some(crate::molt_urllib_request_process_http_error as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_read" => Some(crate::molt_urllib_request_response_read as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_readinto" => Some(crate::molt_urllib_request_response_readinto as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_read1" => Some(crate::molt_urllib_request_response_read1 as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_readinto1" => Some(crate::molt_urllib_request_response_readinto1 as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_readline" => Some(crate::molt_urllib_request_response_readline as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_readlines" => Some(crate::molt_urllib_request_response_readlines as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_readable" => Some(crate::molt_urllib_request_response_readable as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_writable" => Some(crate::molt_urllib_request_response_writable as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_seekable" => Some(crate::molt_urllib_request_response_seekable as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_tell" => Some(crate::molt_urllib_request_response_tell as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_seek" => Some(crate::molt_urllib_request_response_seek as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_close" => Some(crate::molt_urllib_request_response_close as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_drop" => Some(crate::molt_urllib_request_response_drop as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_geturl" => Some(crate::molt_urllib_request_response_geturl as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_getcode" => Some(crate::molt_urllib_request_response_getcode as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_getreason" => Some(crate::molt_urllib_request_response_getreason as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_getheader" => Some(crate::molt_urllib_request_response_getheader as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_getheaders" => Some(crate::molt_urllib_request_response_getheaders as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_getheaders_list" => Some(crate::molt_urllib_request_response_getheaders_list as *const () as usize as u64),
+        #[cfg(feature = "stdlib_net")]
+        "molt_urllib_request_response_message" => Some(crate::molt_urllib_request_response_message as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_uu_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_uu_codec_encode" => Some(crate::molt_uu_codec_encode as *const () as usize as u64),
+        "molt_uu_codec_decode" => Some(crate::molt_uu_codec_decode as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_uuid_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_uuid_getnode" => Some(crate::molt_uuid_getnode as *const () as usize as u64),
+        "molt_uuid_uuid4_bytes" => Some(crate::molt_uuid_uuid4_bytes as *const () as usize as u64),
+        "molt_uuid_uuid1_bytes" => Some(crate::molt_uuid_uuid1_bytes as *const () as usize as u64),
+        "molt_uuid_uuid3_bytes" => Some(crate::molt_uuid_uuid3_bytes as *const () as usize as u64),
+        "molt_uuid_uuid5_bytes" => Some(crate::molt_uuid_uuid5_bytes as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_warnings_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_warnings_warn" => Some(crate::molt_warnings_warn as *const () as usize as u64),
+        "molt_warnings_warn_explicit" => Some(crate::molt_warnings_warn_explicit as *const () as usize as u64),
+        "molt_warnings_formatwarning" => Some(crate::molt_warnings_formatwarning as *const () as usize as u64),
+        "molt_warnings_showwarning" => Some(crate::molt_warnings_showwarning as *const () as usize as u64),
+        "molt_warnings_simplefilter" => Some(crate::molt_warnings_simplefilter as *const () as usize as u64),
+        "molt_warnings_filterwarnings" => Some(crate::molt_warnings_filterwarnings as *const () as usize as u64),
+        "molt_warnings_resetwarnings" => Some(crate::molt_warnings_resetwarnings as *const () as usize as u64),
+        "molt_warnings_filters_get" => Some(crate::molt_warnings_filters_get as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_weakref_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_weakref_register" => Some(crate::molt_weakref_register as *const () as usize as u64),
+        "molt_weakref_get" => Some(crate::molt_weakref_get as *const () as usize as u64),
+        "molt_weakref_callback" => Some(crate::molt_weakref_callback as *const () as usize as u64),
+        "molt_weakref_peek" => Some(crate::molt_weakref_peek as *const () as usize as u64),
+        "molt_weakref_drop" => Some(crate::molt_weakref_drop as *const () as usize as u64),
+        "molt_weakref_collect" => Some(crate::molt_weakref_collect as *const () as usize as u64),
+        "molt_weakref_find_nocallback" => Some(crate::molt_weakref_find_nocallback as *const () as usize as u64),
+        "molt_weakref_refs" => Some(crate::molt_weakref_refs as *const () as usize as u64),
+        "molt_weakref_count" => Some(crate::molt_weakref_count as *const () as usize as u64),
+        "molt_weakref_finalize_track" => Some(crate::molt_weakref_finalize_track as *const () as usize as u64),
+        "molt_weakref_finalize_untrack" => Some(crate::molt_weakref_finalize_untrack as *const () as usize as u64),
+        "molt_weakkeydict_set" => Some(crate::molt_weakkeydict_set as *const () as usize as u64),
+        "molt_weakkeydict_get" => Some(crate::molt_weakkeydict_get as *const () as usize as u64),
+        "molt_weakkeydict_del" => Some(crate::molt_weakkeydict_del as *const () as usize as u64),
+        "molt_weakkeydict_contains" => Some(crate::molt_weakkeydict_contains as *const () as usize as u64),
+        "molt_weakkeydict_len" => Some(crate::molt_weakkeydict_len as *const () as usize as u64),
+        "molt_weakkeydict_items" => Some(crate::molt_weakkeydict_items as *const () as usize as u64),
+        "molt_weakkeydict_keyrefs" => Some(crate::molt_weakkeydict_keyrefs as *const () as usize as u64),
+        "molt_weakkeydict_popitem" => Some(crate::molt_weakkeydict_popitem as *const () as usize as u64),
+        "molt_weakkeydict_clear" => Some(crate::molt_weakkeydict_clear as *const () as usize as u64),
+        "molt_weakvaluedict_set" => Some(crate::molt_weakvaluedict_set as *const () as usize as u64),
+        "molt_weakvaluedict_get" => Some(crate::molt_weakvaluedict_get as *const () as usize as u64),
+        "molt_weakvaluedict_del" => Some(crate::molt_weakvaluedict_del as *const () as usize as u64),
+        "molt_weakvaluedict_contains" => Some(crate::molt_weakvaluedict_contains as *const () as usize as u64),
+        "molt_weakvaluedict_len" => Some(crate::molt_weakvaluedict_len as *const () as usize as u64),
+        "molt_weakvaluedict_items" => Some(crate::molt_weakvaluedict_items as *const () as usize as u64),
+        "molt_weakvaluedict_valuerefs" => Some(crate::molt_weakvaluedict_valuerefs as *const () as usize as u64),
+        "molt_weakvaluedict_popitem" => Some(crate::molt_weakvaluedict_popitem as *const () as usize as u64),
+        "molt_weakvaluedict_clear" => Some(crate::molt_weakvaluedict_clear as *const () as usize as u64),
+        "molt_weakset_add" => Some(crate::molt_weakset_add as *const () as usize as u64),
+        "molt_weakset_discard" => Some(crate::molt_weakset_discard as *const () as usize as u64),
+        "molt_weakset_remove" => Some(crate::molt_weakset_remove as *const () as usize as u64),
+        "molt_weakset_pop" => Some(crate::molt_weakset_pop as *const () as usize as u64),
+        "molt_weakset_contains" => Some(crate::molt_weakset_contains as *const () as usize as u64),
+        "molt_weakset_len" => Some(crate::molt_weakset_len as *const () as usize as u64),
+        "molt_weakset_items" => Some(crate::molt_weakset_items as *const () as usize as u64),
+        "molt_weakset_clear" => Some(crate::molt_weakset_clear as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_websocket_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_ws_wait_new" => Some(crate::molt_ws_wait_new as *const () as usize as u64),
+        "molt_ws_pair_obj" => Some(crate::molt_ws_pair_obj as *const () as usize as u64),
+        "molt_ws_connect_obj" => Some(crate::molt_ws_connect_obj as *const () as usize as u64),
+        "molt_ws_send_obj" => Some(crate::molt_ws_send_obj as *const () as usize as u64),
+        "molt_ws_recv" => Some(crate::molt_ws_recv as *const () as usize as u64),
+        "molt_ws_close" => Some(crate::molt_ws_close as *const () as usize as u64),
+        "molt_ws_drop" => Some(crate::molt_ws_drop as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_wsgiref_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_wsgiref_runtime_ready" => Some(crate::molt_wsgiref_runtime_ready as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_xmlrpc_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_xmlrpc_runtime_ready" => Some(crate::molt_xmlrpc_runtime_ready as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+#[cold]
+fn resolve_zoneinfo_symbol(symbol: &str) -> Option<u64> {
+    match symbol {
+        "molt_zoneinfo_runtime_ready" => Some(crate::molt_zoneinfo_runtime_ready as *const () as usize as u64),
+        "molt_zoneinfo_available_timezones" => Some(crate::molt_zoneinfo_available_timezones as *const () as usize as u64),
+        "molt_zoneinfo_drop" => Some(crate::molt_zoneinfo_drop as *const () as usize as u64),
+        "molt_zoneinfo_dst" => Some(crate::molt_zoneinfo_dst as *const () as usize as u64),
+        "molt_zoneinfo_key" => Some(crate::molt_zoneinfo_key as *const () as usize as u64),
+        "molt_zoneinfo_new" => Some(crate::molt_zoneinfo_new as *const () as usize as u64),
+        "molt_zoneinfo_tzname" => Some(crate::molt_zoneinfo_tzname as *const () as usize as u64),
+        "molt_zoneinfo_utcoffset" => Some(crate::molt_zoneinfo_utcoffset as *const () as usize as u64),
+        _ => None,
+    }
+}
+

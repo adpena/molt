@@ -1,6 +1,9 @@
 [workspace]
 members = [
     "runtime/molt-runtime",
+    "runtime/molt-runtime-crypto",
+    "runtime/molt-runtime-compression",
+    "runtime/molt-runtime-tk",
     "runtime/molt-obj-model",
     "runtime/molt-backend",
     "runtime/molt-db",

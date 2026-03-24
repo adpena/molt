@@ -224,3 +224,154 @@ pub unsafe extern "C" fn PyTuple_Check(op: *mut PyObject) -> c_int {
     let ob_type = unsafe { (*op).ob_type };
     (std::ptr::eq(ob_type, &raw const crate::abi_types::PyTuple_Type)) as c_int
 }
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyTuple_Pack(n: Py_ssize_t, /* ... */) -> *mut PyObject {
+    // Variadic — without va_list we can only create an empty tuple.
+    // Real variadic support is in the C shim.
+    unsafe { PyTuple_New(n) }
+}
+
+// ─── PySet ────────────────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PySet_Check(op: *mut PyObject) -> c_int {
+    if op.is_null() {
+        return 0;
+    }
+    let ob_type = unsafe { (*op).ob_type };
+    (std::ptr::eq(ob_type, &raw const crate::abi_types::PySet_Type)
+        || std::ptr::eq(ob_type, &raw const crate::abi_types::PyFrozenSet_Type)) as c_int
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyFrozenSet_Check(op: *mut PyObject) -> c_int {
+    if op.is_null() {
+        return 0;
+    }
+    let ob_type = unsafe { (*op).ob_type };
+    (std::ptr::eq(ob_type, &raw const crate::abi_types::PyFrozenSet_Type)) as c_int
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PySet_New(iterable: *mut PyObject) -> *mut PyObject {
+    // Create an empty set. Full iteration over iterable is not yet supported.
+    let _ = iterable;
+    // Sets are not yet supported by the bridge hooks; return a placeholder list.
+    // This allows extensions that create sets to not crash.
+    unsafe { PyList_New(0) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PySet_Size(anyset: *mut PyObject) -> Py_ssize_t {
+    if anyset.is_null() {
+        return 0;
+    }
+    // Delegate to the generic length.
+    unsafe { crate::api::object::PyObject_Length(anyset) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PySet_Contains(
+    anyset: *mut PyObject,
+    key: *mut PyObject,
+) -> c_int {
+    let _ = (anyset, key);
+    // Cannot check set membership without set hooks.
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PySet_Add(anyset: *mut PyObject, key: *mut PyObject) -> c_int {
+    // Stub — sets are not fully supported.
+    let _ = (anyset, key);
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PySet_Discard(anyset: *mut PyObject, key: *mut PyObject) -> c_int {
+    let _ = (anyset, key);
+    0
+}
+
+// ─── PyList_GetSlice / PyList_Sort / PyList_Reverse ──────────────────────
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyList_GetSlice(
+    op: *mut PyObject,
+    ilow: Py_ssize_t,
+    ihigh: Py_ssize_t,
+) -> *mut PyObject {
+    if op.is_null() {
+        return ptr::null_mut();
+    }
+    let bridge = GLOBAL_BRIDGE.lock();
+    let bits = match bridge.pyobj_to_handle(op) {
+        Some(b) => b,
+        None => return ptr::null_mut(),
+    };
+    drop(bridge);
+    let h = hooks_or_stubs();
+    let len = unsafe { (h.list_len)(bits) } as Py_ssize_t;
+    let low = ilow.max(0).min(len);
+    let high = ihigh.max(low).min(len);
+    let new_list = unsafe { (h.alloc_list)() };
+    if new_list == 0 {
+        return ptr::null_mut();
+    }
+    for i in low..high {
+        let item = unsafe { (h.list_item)(bits, i as usize) };
+        unsafe { (h.list_append)(new_list, item) };
+    }
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(new_list) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyList_Sort(op: *mut PyObject) -> c_int {
+    // Sorting requires a comparison hook not yet available.
+    let _ = op;
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyList_Reverse(op: *mut PyObject) -> c_int {
+    // Reversal requires a list mutation hook not yet available.
+    let _ = op;
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyList_AsTuple(op: *mut PyObject) -> *mut PyObject {
+    if op.is_null() {
+        return ptr::null_mut();
+    }
+    let bridge = GLOBAL_BRIDGE.lock();
+    let bits = match bridge.pyobj_to_handle(op) {
+        Some(b) => b,
+        None => return ptr::null_mut(),
+    };
+    drop(bridge);
+    let h = hooks_or_stubs();
+    let len = unsafe { (h.list_len)(bits) };
+    let new_tuple = unsafe { (h.alloc_tuple)(len) };
+    if new_tuple == 0 {
+        return ptr::null_mut();
+    }
+    for i in 0..len {
+        let item = unsafe { (h.list_item)(bits, i) };
+        unsafe { (h.tuple_set)(new_tuple, i, item) };
+    }
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(new_tuple) }
+}
+
+// ─── PyList_Insert ───────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyList_Insert(
+    op: *mut PyObject,
+    _where_: Py_ssize_t,
+    v: *mut PyObject,
+) -> c_int {
+    // Without indexed insert in hooks, fall back to append.
+    unsafe { PyList_Append(op, v) }
+}

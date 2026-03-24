@@ -889,7 +889,13 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         return MoltObject::none().bits();
                     }
                     dec_ref_bits(_py, item_bits);
-                    let next_bits = molt_add(idx_bits, MoltObject::from_int(1).bits());
+                    // Integer increment — enumerate counter is always int.
+                    // molt_add is polymorphic and promotes to float if idx is float.
+                    let next_bits = if let Some(i) = to_i64(obj_from_bits(idx_bits)) {
+                        int_bits_from_i64(_py, i + 1)
+                    } else {
+                        molt_add(idx_bits, MoltObject::from_int(1).bits())
+                    };
                     if obj_from_bits(next_bits).is_none() {
                         return MoltObject::none().bits();
                     }
@@ -1319,6 +1325,12 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                 let target_bits = iter_target_bits(ptr);
                 let target_obj = obj_from_bits(target_bits);
                 let idx = iter_index(ptr);
+                // Validate the target pointer before reading.
+                // If the iterator or its target was freed, target_bits
+                // will be garbage — return done to prevent crash.
+                if !target_obj.is_ptr() {
+                    return generator_done_tuple(_py, MoltObject::none().bits());
+                }
                 if let Some(target_ptr) = target_obj.as_ptr() {
                     let target_type = object_type_id(target_ptr);
                     if target_type == TYPE_ID_SET || target_type == TYPE_ID_FROZENSET {

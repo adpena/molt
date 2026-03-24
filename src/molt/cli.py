@@ -100,6 +100,7 @@ _BACKEND_DAEMON_PROTOCOL_VERSION = 1
 _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 1
 _DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 1
 _NATIVE_CODEGEN_ENV_KNOBS = (
+    "MOLT_BACKEND_OPT_LEVEL",
     "MOLT_BACKEND_REGALLOC_ALGORITHM",
     "MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2",
     "MOLT_BACKEND_LIBCALL_CALL_CONV",
@@ -4744,7 +4745,7 @@ _CORE_STDLIB_MODULES_MICRO = (
 def _ensure_core_stdlib_modules(
     module_graph: dict[str, Path], stdlib_root: Path
 ) -> None:
-    stdlib_profile = os.environ.get("MOLT_STDLIB_PROFILE")
+    stdlib_profile = os.environ.get("MOLT_STDLIB_PROFILE", "micro")
     if stdlib_profile == "micro":
         core_modules = _CORE_STDLIB_MODULES_MICRO
     else:
@@ -6609,6 +6610,73 @@ _BUILTIN_FEATURE_MODULE_MAP: dict[str, str] = {
     "cmath": "builtin_complex",
 }
 
+# Mapping from imported module name (or prefix) to stdlib_* Cargo feature.
+# When the micro profile is active and the module is not in the import graph,
+# the feature is omitted so the linker can strip the corresponding intrinsics.
+_STDLIB_DOMAIN_FEATURE_MAP: dict[str, str] = {
+    # tk
+    "tkinter": "stdlib_tk",
+    "_tkinter": "stdlib_tk",
+    # networking
+    "ssl": "stdlib_net",
+    "_ssl": "stdlib_net",
+    "http": "stdlib_net",
+    "http.client": "stdlib_net",
+    "http.server": "stdlib_net",
+    "http.cookiejar": "stdlib_net",
+    "urllib": "stdlib_net",
+    "urllib.request": "stdlib_net",
+    "urllib.parse": "stdlib_net",
+    "urllib.error": "stdlib_net",
+    "urllib3": "stdlib_net",
+    "ipaddress": "stdlib_net",
+    # asyncio
+    "asyncio": "stdlib_asyncio",
+    # email
+    "email": "stdlib_email",
+    "email.message": "stdlib_email",
+    "email.mime": "stdlib_email",
+    "email.parser": "stdlib_email",
+    "email.policy": "stdlib_email",
+    # decimal
+    "decimal": "stdlib_decimal",
+    "_decimal": "stdlib_decimal",
+    # logging
+    "logging": "stdlib_logging",
+    "logging.handlers": "stdlib_logging",
+    "logging.config": "stdlib_logging",
+    # concurrent
+    "concurrent": "stdlib_concurrent",
+    "concurrent.futures": "stdlib_concurrent",
+    # dbm
+    "dbm": "stdlib_dbm",
+    "dbm.dumb": "stdlib_dbm",
+    # importlib extras
+    "importlib.resources": "stdlib_importlib_extra",
+    "importlib.metadata": "stdlib_importlib_extra",
+    # csv
+    "csv": "stdlib_csv",
+    # signal
+    "signal": "stdlib_signal",
+    # select
+    "select": "stdlib_select",
+    "selectors": "stdlib_select",
+}
+
+# Prefix-based domain feature mapping: module names that start with
+# these prefixes imply the corresponding feature.
+_STDLIB_DOMAIN_PREFIX_MAP: tuple[tuple[str, str], ...] = (
+    ("asyncio.", "stdlib_asyncio"),
+    ("email.", "stdlib_email"),
+    ("http.", "stdlib_net"),
+    ("urllib.", "stdlib_net"),
+    ("logging.", "stdlib_logging"),
+    ("concurrent.", "stdlib_concurrent"),
+    ("dbm.", "stdlib_dbm"),
+    ("importlib.resources.", "stdlib_importlib_extra"),
+    ("importlib.metadata.", "stdlib_importlib_extra"),
+)
+
 _SET_IMPLYING_MODULES = frozenset({
     "email",
     "urllib",
@@ -6636,24 +6704,43 @@ _ALL_BUILTIN_FEATURES: tuple[str, ...] = (
     "builtin_fcntl",
 )
 
+# All domain features that can be individually toggled.
+_ALL_DOMAIN_FEATURES: tuple[str, ...] = (
+    "stdlib_tk",
+    "stdlib_net",
+    "stdlib_asyncio",
+    "stdlib_email",
+    "stdlib_decimal",
+    "stdlib_logging",
+    "stdlib_concurrent",
+    "stdlib_dbm",
+    "stdlib_importlib_extra",
+    "stdlib_csv",
+    "stdlib_signal",
+    "stdlib_select",
+)
+
 
 def _builtin_features_from_import_graph(
     resolved_modules: set[str] | None,
     stdlib_profile: str | None,
 ) -> list[str]:
-    """Return the ``builtin_*`` cargo features required for *resolved_modules*.
+    """Return the ``builtin_*`` and ``stdlib_*`` cargo features required for
+    *resolved_modules*.
 
-    For ``stdlib_full`` (or *None*) profiles every builtin feature is enabled
+    For ``stdlib_full`` (or *None*) profiles every feature is enabled
     unconditionally.  For ``micro`` profiles the import graph is inspected so
-    that only the builtins actually reachable from user code are compiled in.
+    that only the features actually reachable from user code are compiled in.
     """
+    all_features = list(_ALL_BUILTIN_FEATURES) + list(_ALL_DOMAIN_FEATURES)
+
     # Full / default profile: enable everything.
     if stdlib_profile != "micro":
-        return list(_ALL_BUILTIN_FEATURES)
+        return all_features
 
     # No module information available: be safe and enable everything.
     if resolved_modules is None:
-        return list(_ALL_BUILTIN_FEATURES)
+        return all_features
 
     features: list[str] = []
 
@@ -6673,6 +6760,18 @@ def _builtin_features_from_import_graph(
     # memoryview: included if struct/array/io/_io/mmap is present.
     if _MEMORYVIEW_IMPLYING_MODULES & resolved_modules:
         features.append("builtin_memoryview")
+
+    # Domain features: direct module name match.
+    for module_name, feature in _STDLIB_DOMAIN_FEATURE_MAP.items():
+        if module_name in resolved_modules and feature not in features:
+            features.append(feature)
+
+    # Domain features: prefix-based match for submodules.
+    for prefix, feature in _STDLIB_DOMAIN_PREFIX_MAP:
+        if feature in features:
+            continue
+        if any(r.startswith(prefix) for r in resolved_modules):
+            features.append(feature)
 
     return features
 
@@ -7035,6 +7134,21 @@ def _is_valid_cached_backend_artifact(path: Path, *, is_wasm: bool) -> bool:
         return False
 
 
+def _maybe_enable_native_cpu(env: dict[str, str]) -> None:
+    """Enable target-cpu=native for the Rust runtime compilation.
+
+    When MOLT_NATIVE_CPU=1 is set (or when building for the local machine
+    in release mode), add -C target-cpu=native to RUSTFLAGS.  This enables
+    AVX2/NEON/etc. in the compiled runtime for maximum performance.
+    Skipped for cross-compilation and WASM targets.
+    """
+    if env.get("MOLT_NATIVE_CPU", "").strip().lower() in ("1", "true", "yes"):
+        existing = env.get("CARGO_BUILD_RUSTFLAGS", env.get("RUSTFLAGS", ""))
+        if "target-cpu" not in existing:
+            flags = f"{existing} -C target-cpu=native".strip()
+            env["CARGO_BUILD_RUSTFLAGS"] = flags
+
+
 def _maybe_enable_sccache(env: dict[str, str]) -> None:
     if env.get("RUSTC_WRAPPER"):
         return
@@ -7130,6 +7244,8 @@ def _build_lock(project_root: Path, name: str):
         lock_timeout = parsed if parsed > 0 else None
     try:
         deadline = time.monotonic() + lock_timeout if lock_timeout is not None else None
+        stale_checked = False
+        wait_start = time.monotonic()
         while True:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -7137,13 +7253,50 @@ def _build_lock(project_root: Path, name: str):
             except OSError as exc:
                 if exc.errno not in (errno.EACCES, errno.EAGAIN):
                     raise
+                # After 5s of waiting, check if the holding process is still alive.
+                # If no process holds the lock (stale), force-acquire it.
+                if not stale_checked and time.monotonic() - wait_start > 5.0:
+                    stale_checked = True
+                    try:
+                        # Read PID from lock file (if written by holder)
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        pid_bytes = os.read(fd, 32)
+                        if pid_bytes:
+                            holder_pid = int(pid_bytes.strip())
+                            try:
+                                os.kill(holder_pid, 0)  # check if alive
+                            except ProcessLookupError:
+                                # Holder is dead — force unlock and reacquire
+                                fcntl.flock(fd, fcntl.LOCK_UN)
+                                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                                break
+                            except (PermissionError, OSError):
+                                pass  # process exists or can't check
+                    except (ValueError, OSError):
+                        pass  # no PID or read error — continue waiting
                 if deadline is not None and time.monotonic() >= deadline:
+                    # Last resort: force-remove the lock file and retry once
+                    try:
+                        os.unlink(lock_path)
+                        os.close(fd)
+                        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except OSError:
+                        pass
                     raise RuntimeError(
                         "Timed out waiting for build lock "
                         f"{lock_path} after {lock_timeout:.1f}s. "
                         "Check for stale molt build/backend helper processes."
                     ) from exc
                 time.sleep(0.05)
+        # Write our PID so stale-lock detection works for future waiters
+        try:
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, str(os.getpid()).encode())
+        except OSError:
+            pass
         yield
     finally:
         try:
@@ -7843,6 +7996,273 @@ def _backend_bin_path_cached(
         features_tag = "_".join(sorted(backend_features)).replace("-", "_")
         return target_root / profile_dir / f"molt-backend.{features_tag}{exe_suffix}"
     return target_root / profile_dir / f"molt-backend{exe_suffix}"
+
+
+
+
+def _codesign_binary(binary_path: Path) -> None:
+    """Ad-hoc codesign a binary on macOS.
+
+    macOS Gatekeeper may kill unsigned binaries with SIGKILL (exit 137).
+    After cargo build or binary copy, re-sign with an ad-hoc signature.
+    No-op on non-macOS platforms.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        subprocess.run(
+            ["codesign", "-f", "-s", "-", str(binary_path)],
+            capture_output=True, timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass  # codesign not available or failed — proceed optimistically
+
+
+
+
+def _generate_split_worker_js() -> str:
+    """Generate a Cloudflare Workers shim for split-runtime deployment.
+
+    The runtime WASM module is loaded separately and can be cached by the
+    CDN independently of the app module.  Both modules share linear memory
+    through WASI imports.
+    """
+    return """// Molt split-runtime Cloudflare Workers shim
+// Runtime module is cached independently by the CDN.
+import runtimeModule from "./molt_runtime.wasm";
+import appModule from "./app.wasm";
+
+class ProcExit { constructor(code) { this.code = code; } }
+
+export default {
+  async fetch(request) {
+    const url = new URL(request.url);
+    const urlPath = url.pathname;
+    const queryString = url.search ? url.search.slice(1) : "";
+
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    let wasmMemory = null;
+
+    const wasiArgs = ["molt", urlPath, queryString];
+    const argsEncoded = wasiArgs.map(a => encoder.encode(a + "\0"));
+    const argsTotalSize = argsEncoded.reduce((s, a) => s + a.length, 0);
+
+    const envVars = [
+      "MOLT_TRUSTED=1",
+      ...(queryString ? [`QUERY_STRING=${queryString}`] : []),
+    ];
+    const envEncoded = envVars.map(e => encoder.encode(e + "\0"));
+    const envTotalSize = envEncoded.reduce((s, e) => s + e.length, 0);
+
+    const wasi = {
+      fd_write(fd, iovs, iovsLen, nwritten) {
+        if ((fd === 1 || fd === 2) && wasmMemory) {
+          const view = new DataView(wasmMemory.buffer);
+          let totalWritten = 0;
+          for (let i = 0; i < iovsLen; i++) {
+            const ptr = view.getUint32(iovs + i * 8, true);
+            const len = view.getUint32(iovs + i * 8 + 4, true);
+            const bytes = new Uint8Array(wasmMemory.buffer, ptr, len);
+            const text = decoder.decode(bytes, { stream: true });
+            if (fd === 1) stdoutChunks.push(text);
+            else stderrChunks.push(text);
+            totalWritten += len;
+          }
+          view.setUint32(nwritten, totalWritten, true);
+        }
+        return 0;
+      },
+      fd_read() { return 0; },
+      fd_close() { return 0; },
+      fd_seek() { return 0; },
+      fd_prestat_get() { return 8; },
+      fd_prestat_dir_name() { return 8; },
+      fd_fdstat_get(fd, statPtr) {
+        if (wasmMemory) {
+          const view = new DataView(wasmMemory.buffer);
+          const filetype = (fd <= 2) ? 2 : 4;
+          view.setUint8(statPtr, filetype);
+          view.setUint16(statPtr + 2, 0, true);
+          view.setBigUint64(statPtr + 8, 0xFFFFFFFFFFFFFFFFn, true);
+          view.setBigUint64(statPtr + 16, 0xFFFFFFFFFFFFFFFFn, true);
+        }
+        return 0;
+      },
+      fd_tell() { return 0; },
+      fd_filestat_get(fd, bufPtr) {
+        if (wasmMemory) new Uint8Array(wasmMemory.buffer, bufPtr, 64).fill(0);
+        return 0;
+      },
+      fd_filestat_set_size() { return 0; },
+      fd_readdir() { return 0; },
+      environ_sizes_get(countPtr, sizePtr) {
+        if (wasmMemory) {
+          const view = new DataView(wasmMemory.buffer);
+          view.setUint32(countPtr, envVars.length, true);
+          view.setUint32(sizePtr, envTotalSize, true);
+        }
+        return 0;
+      },
+      environ_get(environPtr, environBufPtr) {
+        if (wasmMemory) {
+          const view = new DataView(wasmMemory.buffer);
+          let bufOffset = environBufPtr;
+          for (let i = 0; i < envEncoded.length; i++) {
+            view.setUint32(environPtr + i * 4, bufOffset, true);
+            new Uint8Array(wasmMemory.buffer, bufOffset, envEncoded[i].length).set(envEncoded[i]);
+            bufOffset += envEncoded[i].length;
+          }
+        }
+        return 0;
+      },
+      args_sizes_get(countPtr, sizePtr) {
+        if (wasmMemory) {
+          const view = new DataView(wasmMemory.buffer);
+          view.setUint32(countPtr, wasiArgs.length, true);
+          view.setUint32(sizePtr, argsTotalSize, true);
+        }
+        return 0;
+      },
+      args_get(argvPtr, argvBufPtr) {
+        if (wasmMemory) {
+          const view = new DataView(wasmMemory.buffer);
+          let bufOffset = argvBufPtr;
+          for (let i = 0; i < argsEncoded.length; i++) {
+            view.setUint32(argvPtr + i * 4, bufOffset, true);
+            new Uint8Array(wasmMemory.buffer, bufOffset, argsEncoded[i].length).set(argsEncoded[i]);
+            bufOffset += argsEncoded[i].length;
+          }
+        }
+        return 0;
+      },
+      clock_time_get(id, precision, outPtr) {
+        if (wasmMemory) {
+          new DataView(wasmMemory.buffer).setBigUint64(outPtr, BigInt(Date.now()) * 1000000n, true);
+        }
+        return 0;
+      },
+      random_get(ptr, len) {
+        if (wasmMemory) crypto.getRandomValues(new Uint8Array(wasmMemory.buffer, ptr, len));
+        return 0;
+      },
+      proc_exit(code) { throw new ProcExit(code); },
+      sched_yield() { return 0; },
+      poll_oneoff() { return 0; },
+      path_open() { return 44; },
+      path_filestat_get() { return 44; },
+      path_rename() { return 44; },
+      path_readlink() { return 44; },
+      path_unlink_file() { return 44; },
+      path_create_directory() { return 44; },
+      path_remove_directory() { return 44; },
+    };
+
+    // Host stubs for platform features not available in Workers
+    const hostEnv = {
+      molt_time_timezone_host()  { return 0n; },
+      molt_time_local_offset_host() { return 0n; },
+      molt_getpid_host()         { return 1n; },
+      molt_socket_clone_host()   { return -1n; },
+      molt_socket_detach_host()  { return -1n; },
+      molt_socket_accept_host()  { return -1n; },
+      molt_socket_new_host()     { return -1n; },
+      molt_time_tzname_host()    { return -1; },
+      molt_process_write_host()  { return -1; },
+      molt_process_close_stdin_host() { return -1; },
+      molt_socket_wait_host()    { return -1; },
+      molt_db_exec_host()        { return -1; },
+      molt_db_query_host()       { return -1; },
+      molt_ws_recv_host()        { return -1; },
+      molt_ws_send_host()        { return -1; },
+      molt_ws_close_host()       { return -1; },
+      molt_socket_poll_host()    { return 0; },
+      molt_ws_poll_host()        { return 0; },
+      molt_process_terminate_host() { return -1; },
+      molt_os_close_host()       { return 0; },
+      molt_process_kill_host()   { return -1; },
+      molt_process_wait_host()   { return -1; },
+      molt_process_spawn_host()  { return -1; },
+      molt_process_stdio_host()  { return -1; },
+      molt_socket_bind_host()    { return -1; },
+      molt_socket_close_host()   { return 0; },
+      molt_socket_connect_host() { return -1; },
+      molt_socket_connect_ex_host() { return -1; },
+      molt_socket_getaddrinfo_host() { return -1; },
+      molt_socket_gethostname_host() { return -1; },
+      molt_socket_getpeername_host() { return -1; },
+      molt_socket_getservbyname_host() { return -1; },
+      molt_socket_getservbyport_host() { return -1; },
+      molt_socket_getsockname_host() { return -1; },
+      molt_socket_getsockopt_host() { return -1; },
+      molt_socket_has_ipv6_host() { return 0; },
+      molt_socket_listen_host()  { return -1; },
+      molt_socket_recv_host()    { return -1; },
+      molt_socket_recvfrom_host() { return -1; },
+      molt_socket_recvmsg_host() { return -1; },
+      molt_socket_send_host()    { return -1; },
+      molt_socket_sendmsg_host() { return -1; },
+      molt_socket_sendto_host()  { return -1; },
+      molt_socket_setsockopt_host() { return -1; },
+      molt_socket_shutdown_host() { return -1; },
+      molt_socket_socketpair_host() { return -1; },
+      molt_db_host_poll()        { return 0; },
+      molt_process_host_poll()   { return 0; },
+      molt_ws_connect_host()     { return -1; },
+    };
+
+    // Shared table for indirect calls — both modules reference the same table.
+    const sharedTable = new WebAssembly.Table({ initial: 8192, element: "anyfunc" });
+
+    try {
+      // 1. Instantiate the runtime module first.
+      //    The runtime defines its own memory (exported as "memory").
+      //    We pass WASI + host env imports, plus the shared table.
+      const rtImports = {
+        wasi_snapshot_preview1: wasi,
+        env: { ...hostEnv, __indirect_function_table: sharedTable },
+      };
+      const rtInstance = await WebAssembly.instantiate(runtimeModule, rtImports);
+
+      // Use the runtime's exported memory as the shared linear memory.
+      wasmMemory = rtInstance.exports.memory;
+
+      // 2. Instantiate the app module.
+      //    It imports from molt_runtime (the runtime's exports) plus WASI/env.
+      //    Memory and table come from the runtime so both modules share them.
+      const appImports = {
+        wasi_snapshot_preview1: wasi,
+        env: {
+          ...hostEnv,
+          memory: wasmMemory,
+          __indirect_function_table: sharedTable,
+        },
+        molt_runtime: rtInstance.exports,
+      };
+      const appInstance = await WebAssembly.instantiate(appModule, appImports);
+
+      // 3. Initialize and run
+      if (rtInstance.exports._initialize) rtInstance.exports._initialize();
+      if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();
+      if (appInstance.exports.molt_main) appInstance.exports.molt_main();
+      else if (appInstance.exports._start) appInstance.exports._start();
+    } catch (err) {
+      if (!(err instanceof ProcExit)) throw err;
+    }
+
+    const output = stdoutChunks.join("");
+    const trimmed = output.trimStart();
+    const contentType = (trimmed.startsWith("<!DOCTYPE html>") || trimmed.startsWith("<html"))
+      ? "text/html; charset=utf-8"
+      : "text/plain; charset=utf-8";
+    return new Response(output, {
+      headers: { "content-type": contentType },
+    });
+  }
+};
+"""
 
 
 def _backend_bin_path(
@@ -11393,7 +11813,7 @@ def _prepare_backend_ir(
         # module is actually imported (lazy=True).  The standard profile keeps
         # the eager init for backwards compatibility with code that expects
         # sys to be available before the first explicit import.
-        lazy_sys = stdlib_profile == "micro"
+        lazy_sys = stdlib_profile != "full"  # lazy by default, eager only with full profile
         next_var = _append_entry_sys_init_op(
             entry_ops,
             entry_init=entry_init,
@@ -11850,9 +12270,13 @@ def _build_native_link_command(
         deployment_target = _detect_macos_deployment_target()
         if deployment_target:
             link_cmd.append(f"-mmacosx-version-min={deployment_target}")
-    link_cmd.extend(
-        [str(stub_path), str(output_obj), str(runtime_lib), "-o", str(output_binary)]
-    )
+    # Include cached stdlib .o if it exists (incremental compilation)
+    _stdlib_obj_path = os.environ.get("MOLT_STDLIB_OBJ")
+    _link_inputs = [str(stub_path), str(output_obj)]
+    if _stdlib_obj_path and Path(_stdlib_obj_path).exists():
+        _link_inputs.append(_stdlib_obj_path)
+    _link_inputs.extend([str(runtime_lib), "-o", str(output_binary)])
+    link_cmd.extend(_link_inputs)
     if target_triple:
         if "apple" in target_triple or "darwin" in target_triple:
             link_cmd.append("-Wl,-dead_strip")
@@ -11862,6 +12286,10 @@ def _build_native_link_command(
             link_cmd.append("-Wl,--gc-sections")
             link_cmd.append("-lstdc++")
             link_cmd.append("-lm")
+        elif "windows" in target_triple or "msvc" in target_triple:
+            # MSVC linker: /OPT:REF eliminates unreferenced functions/data,
+            # /OPT:ICF folds identical COMDATs — equivalent to --gc-sections.
+            link_cmd.extend(["-Wl,/OPT:REF", "-Wl,/OPT:ICF"])
     else:
         if sys.platform == "darwin":
             link_cmd.append("-Wl,-dead_strip")
@@ -11871,6 +12299,8 @@ def _build_native_link_command(
             link_cmd.append("-Wl,--gc-sections")
             link_cmd.append("-lstdc++")
             link_cmd.append("-lm")
+        elif sys.platform == "win32":
+            link_cmd.extend(["-Wl,/OPT:REF", "-Wl,/OPT:ICF"])
     return link_cmd, linker_hint, normalized_target
 
 
@@ -12394,6 +12824,10 @@ def _resolve_build_output_layout(
 
     output_binary: Path | None = None
     linked_output_path: Path | None = None
+    # Luau has a ~200 concurrent local register limit.  Use aggressive
+    # module chunking (500 ops) to keep each function under ~150 locals.
+    if is_luau_transpile and "MOLT_MODULE_CHUNK_OPS" not in os.environ:
+        os.environ["MOLT_MODULE_CHUNK_OPS"] = "1500"
     if is_luau_transpile:
         output_artifact = _resolve_output_path(
             output,
@@ -12571,7 +13005,7 @@ def _augment_module_graph_for_entry_and_runtime(
     explicit_imports = set(entry_imports)
     stub_skip_modules = STUB_MODULES - entry_imports
     stub_parents = STUB_PARENT_MODULES - entry_imports
-    stdlib_profile = os.environ.get("MOLT_STDLIB_PROFILE")
+    stdlib_profile = os.environ.get("MOLT_STDLIB_PROFILE", "micro")
     if stdlib_profile == "micro":
         core_module_names = _CORE_STDLIB_MODULES_MICRO
     else:
@@ -13045,13 +13479,19 @@ def _prepare_frontend_lowering_config(
     # module-level names (including ABC) are fully defined before any downstream
     # module tries to access them.
     if not is_wasm:
+        # Default native chunk size: 3000 ops per module init function.
+        # This prevents OOM when compiling large stdlib modules (like
+        # _collections_abc at 23K+ ops) into a single Cranelift ObjectModule.
+        # The default of 3000 produces ~100-300 functions per compilation
+        # unit, well within Cranelift's comfort zone.
+        module_chunk_max_ops = 3000
         env_native_chunk_ops = os.environ.get("MOLT_MODULE_CHUNK_OPS")
         if env_native_chunk_ops:
             try:
                 module_chunk_max_ops = max(0, int(env_native_chunk_ops))
             except ValueError:
                 warnings.append(
-                    "Invalid MOLT_MODULE_CHUNK_OPS; using default."
+                    "Invalid MOLT_MODULE_CHUNK_OPS; using default of 3000."
                 )
     module_chunking = module_chunk_max_ops > 0
     if target_triple:
@@ -13418,7 +13858,11 @@ def _prepare_backend_dispatch(
                     json_output,
                     command="build",
                 )
-        if runtime_wasm is not None and runtime_wasm.exists():
+        if (
+            "MOLT_WASM_DATA_BASE" not in backend_env
+            and runtime_wasm is not None
+            and runtime_wasm.exists()
+        ):
             data_base_candidates: list[int] = []
             data_end = _read_wasm_data_end(runtime_wasm)
             if data_end is not None:
@@ -13567,6 +14011,7 @@ def _execute_backend_compile(
     molt_root: Path,
     backend_cargo_profile: str,
     _ensure_backend_ir_bytes: Callable[[], bytes],
+    _get_backend_ir_fmt: Callable[[], str],
     cache_hit: bool,
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
@@ -13741,6 +14186,17 @@ def _execute_backend_compile(
         if not backend_compiled:
             if diagnostics_enabled and "backend_subprocess_compile" not in phase_starts:
                 phase_starts["backend_subprocess_compile"] = time.perf_counter()
+            # ── Incremental compilation: cache stdlib .o ──
+            # For native builds, set MOLT_STDLIB_OBJ so the backend caches
+            # stdlib compilation separately.  Second builds skip stdlib entirely.
+            _is_transpile = is_rust_transpile or is_luau_transpile
+            if not is_wasm and not _is_transpile and backend_env is None:
+                backend_env = os.environ.copy()
+            # NOTE: stdlib obj caching disabled — the user/stdlib partition
+            # creates cross-object undefined symbols that ld cannot resolve
+            # from separate .o files.  All functions compile into output.o.
+            # TODO: fix partitioning to account for cross-module references
+            # before re-enabling (see molt_isolate_import dispatch table).
             cmd = [str(backend_bin)]
             if is_luau_transpile:
                 cmd.extend(["--target", "luau"])
@@ -13752,7 +14208,11 @@ def _execute_backend_compile(
                 cmd.extend(["--target-triple", target_triple])
             cmd_with_output = cmd + ["--output", str(backend_output)]
             ir_bytes = _ensure_backend_ir_bytes()
+            ir_fmt = _get_backend_ir_fmt()
+            if ir_fmt != "json":
+                cmd_with_output.extend(["--ir-format", ir_fmt])
             ir_file_path: str | None = None
+            ir_suffix = ".msgpack" if ir_fmt == "msgpack" else ".json"
             try:
                 # For large IRs (>50MB), write to a temp file to avoid
                 # stdin pipe buffer issues with non-finite float encoding.
@@ -13760,13 +14220,16 @@ def _execute_backend_compile(
                     import tempfile as _tempfile
 
                     ir_fd, ir_file_path = _tempfile.mkstemp(
-                        suffix=".json", prefix="molt_ir_"
+                        suffix=ir_suffix, prefix="molt_ir_"
                     )
                     try:
                         os.write(ir_fd, ir_bytes)
                     finally:
                         os.close(ir_fd)
                     cmd_with_output.extend(["--ir-file", ir_file_path])
+
+                    if backend_env is not None:
+                        backend_env.setdefault("MOLT_BACKEND_BATCH_SIZE", "0")
                     backend_process = subprocess.run(
                         cmd_with_output,
                         capture_output=True,
@@ -13801,8 +14264,32 @@ def _execute_backend_compile(
                         print(backend_stderr, end="", file=sys.stderr)
                     if backend_stdout:
                         print(backend_stdout, end="")
+                # Build a more informative error message
+                _fail_detail_parts = ["Backend compilation failed"]
+                _fail_detail_parts.append(
+                    f" (exit code {backend_process.returncode})"
+                )
+                if not backend_stderr and not backend_stdout:
+                    _fail_detail_parts.append(
+                        ".\nNo output from the backend. "
+                        "Run with --verbose for more details."
+                    )
+                elif json_output:
+                    # For JSON output, include stderr in the message since
+                    # we didn't print it above.
+                    _stderr_tail = (backend_stderr or "").strip()
+                    if _stderr_tail:
+                        # Include the last few lines of stderr for context
+                        _stderr_lines = _stderr_tail.splitlines()
+                        if len(_stderr_lines) > 10:
+                            _stderr_tail = "\n".join(
+                                ["...(truncated)"] + _stderr_lines[-10:]
+                            )
+                        _fail_detail_parts.append(f":\n{_stderr_tail}")
+                else:
+                    _fail_detail_parts.append(".")
                 return None, _fail(
-                    "Backend compilation failed",
+                    "".join(_fail_detail_parts),
                     json_output,
                     backend_process.returncode or 1,
                     command="build",
@@ -13890,6 +14377,7 @@ def _prepare_backend_compile(
     artifacts_root: Path,
     ir: Mapping[str, Any],
     _ensure_backend_ir_bytes: Callable[[], bytes],
+    _get_backend_ir_fmt: Callable[[], str],
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
     backend_daemon_health: dict[str, Any] | None,
@@ -13992,6 +14480,7 @@ def _prepare_backend_compile(
                 molt_root=molt_root,
                 backend_cargo_profile=backend_cargo_profile,
                 _ensure_backend_ir_bytes=_ensure_backend_ir_bytes,
+                _get_backend_ir_fmt=_get_backend_ir_fmt,
                 cache_hit=cache_hit,
                 backend_daemon_cached=backend_daemon_cached,
                 backend_daemon_cache_tier=backend_daemon_cache_tier,
@@ -14184,11 +14673,12 @@ def _run_backend_pipeline(
     if prepared_build_preamble.diagnostics_enabled:
         prepared_build_preamble.phase_starts["runtime_setup"] = time.perf_counter()
     backend_ir_bytes: bytes | None = None
+    backend_ir_fmt: str = "json"
 
     def _ensure_backend_ir_bytes() -> bytes:
-        nonlocal backend_ir_bytes
+        nonlocal backend_ir_bytes, backend_ir_fmt
         if backend_ir_bytes is None:
-            backend_ir_bytes = _backend_ir_bytes(ir)
+            backend_ir_fmt, backend_ir_bytes = _backend_ir_format_and_bytes(ir)
         return backend_ir_bytes
 
     prepared_backend_setup, prepared_backend_setup_error = _prepare_backend_setup(
@@ -14260,6 +14750,7 @@ def _run_backend_pipeline(
         artifacts_root=artifacts_root,
         ir=ir,
         _ensure_backend_ir_bytes=_ensure_backend_ir_bytes,
+        _get_backend_ir_fmt=lambda: backend_ir_fmt,
         backend_daemon_cached=prepared_build_preamble.backend_daemon_cached,
         backend_daemon_cache_tier=prepared_build_preamble.backend_daemon_cache_tier,
         backend_daemon_health=prepared_build_preamble.backend_daemon_health,
@@ -14596,8 +15087,10 @@ def _prepare_non_native_build_result(
             rt_size = rt_wasm.stat().st_size
 
             manifest_data = {
-                "version": 1,
+                "version": 2,
                 "mode": "split-runtime",
+                "tree_shaken": True,
+                "shared_table_initial": 8192,
                 "modules": {
                     "runtime": {
                         "path": "molt_runtime.wasm",
@@ -14608,44 +15101,44 @@ def _prepare_non_native_build_result(
                         "size": app_size,
                     },
                 },
+                "total_size": app_size + rt_size,
                 "instantiation_order": ["runtime", "app"],
                 "entry": {"module": "app", "function": "molt_main"},
             }
             manifest.write_text(_json.dumps(manifest_data, indent=2) + "\n")
 
-            # Generate Cloudflare Workers shim
+            # Generate split-runtime Cloudflare Workers shim with full
+            # WASI support and multi-module instantiation.
             worker_js = split_dir / "worker.js"
-            worker_js.write_text(
-                '// Auto-generated split-runtime Cloudflare Workers shim\n'
-                'import runtimeModule from "./molt_runtime.wasm";\n'
-                'import appModule from "./app.wasm";\n\n'
-                'export default {\n'
-                '  async fetch(request) {\n'
-                '    const stdoutChunks = [];\n'
-                '    const decoder = new TextDecoder();\n'
-                '    let wasmMemory = null;\n'
-                '    // Instantiate runtime first, then app with runtime exports\n'
-                '    const rtInstance = await WebAssembly.instantiate(runtimeModule, {});\n'
-                '    const appInstance = await WebAssembly.instantiate(appModule, {\n'
-                '      molt_runtime: rtInstance.exports,\n'
-                '    });\n'
-                '    wasmMemory = appInstance.exports.memory || rtInstance.exports.memory;\n'
-                '    if (appInstance.exports.molt_table_init) {\n'
-                '      appInstance.exports.molt_table_init();\n'
-                '    }\n'
-                '    appInstance.exports.molt_main();\n'
-                '    const output = stdoutChunks.join("");\n'
-                '    const trimmed = output.trimStart();\n'
-                '    const contentType = (trimmed.startsWith("<!DOCTYPE html>") || trimmed.startsWith("<html"))\n'
-                '        ? "text/html; charset=utf-8"\n'
-                '        : "text/plain; charset=utf-8";\n'
-                '    return new Response(output, {\n'
-                '      headers: { "content-type": contentType },\n'
-                '    });\n'
-                '  }\n'
-                '};\n'
-            )
+            worker_js.write_text(_generate_split_worker_js())
 
+            # Generate wrangler.toml for Cloudflare Workers deployment
+            wrangler_toml = split_dir / "wrangler.toml"
+            if not wrangler_toml.exists():
+                wrangler_toml.write_text(
+                    '# Auto-generated by molt build --split-runtime\n'
+                    'name = "molt-app"\n'
+                    'main = "worker.js"\n'
+                    'compatibility_date = "2024-01-01"\n\n'
+                    '[build]\n'
+                    'command = ""\n\n'
+                    '# Split-runtime: tree-shaken runtime is cached\n'
+                    '# independently by the CDN. Only app.wasm changes\n'
+                    '# per deployment.\n'
+                    '[wasm_modules]\n'
+                    'RUNTIME = "molt_runtime.wasm"\n'
+                    'APP = "app.wasm"\n'
+                )
+
+            # Cloudflare Workers isolate memory limit: 128MB.
+            # Warn if the combined WASM size exceeds a safe threshold.
+            combined_mb = (app_size + rt_size) / (1024 * 1024)
+            if combined_mb > 100:
+                success_messages.append(
+                    f"WARNING: Combined WASM size ({combined_mb:.1f}MB) approaches "
+                    f"Cloudflare Workers 128MB isolate memory limit. "
+                    f"Consider enabling --stdlib-profile micro for smaller builds."
+                )
             success_messages.append(
                 f"Split runtime: {app_wasm.name} ({app_size // 1024}KB) "
                 f"+ {rt_wasm.name} ({rt_size // 1024}KB)"
@@ -17013,6 +17506,7 @@ def _ensure_backend_binary(
             cmd.extend(["--features", ",".join(backend_features)])
         build_env = os.environ.copy()
         _maybe_enable_sccache(build_env)
+        _maybe_enable_native_cpu(build_env)
         try:
             build = _run_cargo_with_sccache_retry(
                 cmd,
@@ -17049,6 +17543,8 @@ def _ensure_backend_binary(
                 cargo_output = cargo_output.with_suffix(exe_suffix)
             if cargo_output.exists() and cargo_output != backend_bin:
                 shutil.copy2(cargo_output, backend_bin)
+                _codesign_binary(backend_bin)
+        _codesign_binary(backend_bin)
         # -- Post-build feature probe (defense-in-depth) -----------------
         # Cargo's incremental cache may skip recompilation when only
         # features change, leaving a binary built for the wrong target.
@@ -17103,6 +17599,7 @@ def _ensure_backend_binary(
                 if backend_features != _DEFAULT_BACKEND_FEATURES:
                     if cargo_output.exists() and cargo_output != backend_bin:
                         shutil.copy2(cargo_output, backend_bin)
+                        _codesign_binary(backend_bin)
         except (subprocess.TimeoutExpired, OSError):
             pass  # Probe failed; proceed optimistically
         # -- End post-build feature probe --------------------------------
@@ -18907,6 +19404,19 @@ def _backend_ir_bytes(ir: dict[str, Any]) -> bytes:
     return _backend_ir_text(ir).encode("utf-8")
 
 
+# IR formats: json (default, human-readable), msgpack (3x smaller, fast),
+# cbor (schema evolution), ndjson (streaming, one function per line).
+# Set MOLT_IR_FORMAT=ndjson to use streaming NDJSON for large builds.
+def _backend_ir_format_and_bytes(ir: dict[str, Any]) -> tuple[str, bytes]:
+    """Return (format, bytes) for the IR: msgpack if available, else JSON."""
+    try:
+        import msgpack  # type: ignore[import-untyped]
+
+        return "msgpack", msgpack.packb(ir)
+    except ImportError:
+        return "json", _backend_ir_bytes(ir)
+
+
 def _subprocess_output_text(value: str | bytes | None) -> str:
     if value is None:
         return ""
@@ -19313,6 +19823,351 @@ def build(
         snapshot=snapshot,
         stdlib_profile=stdlib_profile,
     )
+
+
+def _run_script_cross(
+    target: str,
+    file_path: str | None,
+    module: str | None,
+    script_args: list[str],
+    json_output: bool = False,
+    verbose: bool = False,
+    timing: bool = False,
+    trusted: bool = False,
+    capabilities: CapabilityInput | None = None,
+    build_args: list[str] | None = None,
+    build_profile: BuildProfile | None = None,
+) -> int:
+    """Build with a cross target (wasm or luau) and run with the appropriate runtime."""
+    if file_path and module:
+        return _fail("Use a file path or --module, not both.", json_output, command="run")
+    if not file_path and not module:
+        return _fail("Missing entry file or module.", json_output, command="run")
+
+    project_root = (
+        _find_project_root(Path(file_path).resolve())
+        if file_path
+        else _find_project_root(Path.cwd())
+    )
+    molt_root = _find_molt_root(project_root, Path.cwd())
+    env = _base_env(project_root, Path(file_path) if file_path else None, molt_root=molt_root)
+    if file_path:
+        env.update(_collect_env_overrides(file_path))
+
+    build_args = list(build_args or [])
+    if build_profile is not None and not _build_args_has_profile_flag(build_args):
+        build_args.extend(["--build-profile", build_profile])
+    if trusted and not _build_args_has_trusted_flag(build_args):
+        build_args.append("--trusted")
+
+    build_cmd = [sys.executable, "-m", "molt.cli", "build", *build_args]
+    if module:
+        build_cmd.extend(["--module", module])
+    else:
+        build_cmd.append(file_path)
+
+    if not json_output:
+        target_label = "WASM" if target == "wasm" else "Luau"
+        print(f"Building for {target_label}...", file=sys.stderr)
+
+    t_start = time.monotonic()
+    build_res = subprocess.run(
+        build_cmd,
+        env=env,
+        cwd=project_root,
+        capture_output=json_output,
+        text=json_output,
+    )
+    t_build = time.monotonic() - t_start
+
+    if build_res.returncode != 0:
+        if json_output:
+            data: dict[str, Any] = {"returncode": build_res.returncode}
+            if build_res.stdout:
+                data["build_stdout"] = build_res.stdout
+            if build_res.stderr:
+                data["build_stderr"] = build_res.stderr
+            payload = _json_payload("run", "error", data=data, errors=["build failed"])
+            _emit_json(payload, json_output=True)
+        return build_res.returncode
+
+    # Resolve the output artifact path
+    source_path = Path(file_path) if file_path else None
+    entry_module_name: str | None = None
+    if module:
+        cwd_root = _find_project_root(Path.cwd())
+        module_roots = _resolve_module_roots(project_root, cwd_root, respect_pythonpath=False)
+        resolved = _resolve_entry_module(module, module_roots)
+        if resolved is not None:
+            entry_module_name, source_path = resolved
+    if source_path is not None and entry_module_name is None:
+        cwd_root = _find_project_root(Path.cwd())
+        module_roots = _resolve_module_roots(project_root, cwd_root, respect_pythonpath=False)
+        module_roots.append(source_path.parent.resolve())
+        module_roots = list(dict.fromkeys(module_roots))
+        entry_module_name = _module_name_from_path(
+            source_path, module_roots, _stdlib_root_path()
+        )
+
+    if entry_module_name is None or source_path is None:
+        return _fail("Failed to resolve entry module.", json_output, command="run")
+
+    output_base = _output_base_for_entry(entry_module_name, source_path)
+    out_dir = _extract_out_dir_arg(build_args)
+    out_dir_path = _resolve_out_dir(project_root, out_dir)
+    _artifacts_root, bin_root, _output_root = _resolve_output_roots(
+        project_root, out_dir_path, output_base
+    )
+
+    if target == "wasm":
+        wasm_artifact = _resolve_output_path(
+            _extract_output_arg_str(build_args),
+            _output_root / f"{output_base}.wasm",
+            out_dir=out_dir_path,
+            project_root=project_root,
+        )
+        # Also check for linked wasm
+        linked_path = wasm_artifact.parent / f"{wasm_artifact.stem}_linked.wasm"
+        run_artifact = linked_path if linked_path.exists() else wasm_artifact
+        if not run_artifact.exists():
+            return _fail(
+                f"WASM artifact not found: {run_artifact}\n"
+                "Hint: the build may have succeeded but placed output elsewhere. "
+                "Try `molt build --target wasm --verbose` to see the output path.",
+                json_output,
+                command="run",
+            )
+        wasmtime = shutil.which("wasmtime")
+        if wasmtime is None:
+            return _fail(
+                "wasmtime not found on PATH. Install it: https://wasmtime.dev\n"
+                "Hint: curl https://wasmtime.dev/install.sh -sSf | bash",
+                json_output,
+                command="run",
+            )
+        run_cmd = [wasmtime, "run", str(run_artifact), "--", *script_args]
+    elif target == "luau":
+        luau_artifact = _resolve_output_path(
+            _extract_output_arg_str(build_args),
+            _output_root / f"{output_base}.luau",
+            out_dir=out_dir_path,
+            project_root=project_root,
+        )
+        if not luau_artifact.exists():
+            return _fail(
+                f"Luau artifact not found: {luau_artifact}\n"
+                "Hint: the build may have succeeded but placed output elsewhere. "
+                "Try `molt build --target luau --verbose` to see the output path.",
+                json_output,
+                command="run",
+            )
+        lune = shutil.which("lune")
+        if lune is None:
+            return _fail(
+                "lune not found on PATH. Install it: https://lune-org.github.io/docs/getting-started/installation\n"
+                "Hint: cargo install lune",
+                json_output,
+                command="run",
+            )
+        run_cmd = [lune, "run", str(luau_artifact), "--", *script_args]
+    else:
+        return _fail(f"Unsupported cross target: {target}", json_output, command="run")
+
+    if not json_output and verbose:
+        print(f"Running: {shlex.join(run_cmd)}", file=sys.stderr)
+
+    t_run_start = time.monotonic()
+    run_res = subprocess.run(run_cmd, env=env, cwd=project_root)
+    t_run = time.monotonic() - t_run_start
+
+    if timing and not json_output:
+        print(
+            f"\n--- timing: build {t_build:.3f}s | run {t_run:.3f}s | "
+            f"total {t_build + t_run:.3f}s ---",
+            file=sys.stderr,
+        )
+    return run_res.returncode
+
+
+def _extract_output_arg_str(build_args: list[str]) -> str | None:
+    """Extract --output value from build_args as a string (or None)."""
+    raw = _extract_output_arg(build_args)
+    return str(raw) if raw is not None else None
+
+
+def _deploy(
+    platform: str,
+    file_path: str | None,
+    module: str | None,
+    build_profile: str | None,
+    output: str | None,
+    out_dir: str | None,
+    roblox_project: str | None,
+    wrangler_args: str,
+    dry_run: bool,
+    build_args: list[str],
+    json_output: bool,
+    verbose: bool,
+) -> int:
+    """Build and deploy to the specified platform."""
+    if file_path and module:
+        return _fail("Use a file path or --module, not both.", json_output, command="deploy")
+    if not file_path and not module:
+        return _fail("Missing entry file or module.", json_output, command="deploy")
+
+    project_root = (
+        _find_project_root(Path(file_path).resolve())
+        if file_path
+        else _find_project_root(Path.cwd())
+    )
+    molt_root = _find_molt_root(project_root, Path.cwd())
+    env = _base_env(project_root, Path(file_path) if file_path else None, molt_root=molt_root)
+    if file_path:
+        env.update(_collect_env_overrides(file_path))
+
+    # Construct build command
+    build_cmd_args = list(build_args)
+
+    if platform == "cloudflare":
+        if not any(a.startswith("--target") for a in build_cmd_args):
+            build_cmd_args.extend(["--target", "wasm"])
+        if not any(a.startswith("--profile") or a.startswith("--platform") for a in build_cmd_args):
+            build_cmd_args.extend(["--profile", "cloudflare"])
+        if not any(a == "--split-runtime" for a in build_cmd_args):
+            build_cmd_args.append("--split-runtime")
+    elif platform == "roblox":
+        if not any(a.startswith("--target") for a in build_cmd_args):
+            build_cmd_args.extend(["--target", "luau"])
+
+    if build_profile and not _build_args_has_profile_flag(build_cmd_args):
+        build_cmd_args.extend(["--build-profile", build_profile])
+    if output:
+        build_cmd_args.extend(["--output", output])
+    if out_dir:
+        build_cmd_args.extend(["--out-dir", out_dir])
+    if verbose:
+        build_cmd_args.append("--verbose")
+    if json_output:
+        build_cmd_args.append("--json")
+
+    build_cmd = [sys.executable, "-m", "molt.cli", "build", *build_cmd_args]
+    if module:
+        build_cmd.extend(["--module", module])
+    else:
+        build_cmd.append(file_path)
+
+    if not json_output:
+        platform_label = "Cloudflare Workers" if platform == "cloudflare" else "Roblox"
+        print(f"Building for {platform_label}...", file=sys.stderr)
+        if verbose:
+            print(f"Build command: {shlex.join(build_cmd)}", file=sys.stderr)
+
+    build_res = subprocess.run(
+        build_cmd, env=env, cwd=project_root,
+        capture_output=json_output,
+    )
+    if build_res.returncode != 0:
+        detail = f"Build for {platform} failed (exit code {build_res.returncode})."
+        if json_output:
+            stderr_text = (build_res.stderr or b"").decode(errors="replace").strip()
+            if stderr_text:
+                stderr_lines = stderr_text.splitlines()
+                if len(stderr_lines) > 15:
+                    stderr_text = "\n".join(["...(truncated)"] + stderr_lines[-15:])
+                detail += f"\n{stderr_text}"
+        else:
+            detail += "\nRun with --verbose for details."
+        return _fail(
+            detail,
+            json_output,
+            code=build_res.returncode,
+            command="deploy",
+        )
+
+    if dry_run:
+        if not json_output:
+            print("Build succeeded (dry run, skipping deploy).", file=sys.stderr)
+        return 0
+
+    if platform == "cloudflare":
+        wrangler = shutil.which("wrangler")
+        if wrangler is None:
+            return _fail(
+                "wrangler not found on PATH. Install it:\n"
+                "  npm install -g wrangler\n"
+                "  # or: npx wrangler deploy",
+                json_output,
+                command="deploy",
+            )
+        deploy_cmd_parts = [wrangler, "deploy"]
+        if wrangler_args:
+            deploy_cmd_parts.extend(shlex.split(wrangler_args))
+        if not json_output:
+            print(f"Deploying with wrangler...", file=sys.stderr)
+            if verbose:
+                print(f"Deploy command: {shlex.join(deploy_cmd_parts)}", file=sys.stderr)
+        deploy_res = subprocess.run(deploy_cmd_parts, env=env, cwd=project_root)
+        return deploy_res.returncode
+
+    elif platform == "roblox":
+        if roblox_project is None:
+            if not json_output:
+                print(
+                    "Build succeeded. Use --roblox-project <dir> to auto-copy "
+                    "Luau output into your Roblox project.",
+                    file=sys.stderr,
+                )
+            return 0
+        roblox_dir = Path(roblox_project)
+        if not roblox_dir.is_dir():
+            return _fail(
+                f"Roblox project directory not found: {roblox_dir}",
+                json_output,
+                command="deploy",
+            )
+        # Find the Luau output
+        source_path = Path(file_path) if file_path else None
+        entry_module_name: str | None = None
+        if module:
+            cwd_root = _find_project_root(Path.cwd())
+            module_roots = _resolve_module_roots(project_root, cwd_root, respect_pythonpath=False)
+            resolved = _resolve_entry_module(module, module_roots)
+            if resolved is not None:
+                entry_module_name, source_path = resolved
+        if source_path is not None and entry_module_name is None:
+            cwd_root = _find_project_root(Path.cwd())
+            module_roots = _resolve_module_roots(project_root, cwd_root, respect_pythonpath=False)
+            module_roots.append(source_path.parent.resolve())
+            module_roots = list(dict.fromkeys(module_roots))
+            entry_module_name = _module_name_from_path(
+                source_path, module_roots, _stdlib_root_path()
+            )
+        if entry_module_name is None or source_path is None:
+            return _fail(
+                "Failed to resolve entry module for Roblox deploy.",
+                json_output,
+                command="deploy",
+            )
+        output_base = _output_base_for_entry(entry_module_name, source_path)
+        out_dir_path = _resolve_out_dir(project_root, out_dir)
+        _artifacts_root, _bin_root, output_root = _resolve_output_roots(
+            project_root, out_dir_path, output_base
+        )
+        luau_artifact = output_root / f"{output_base}.luau"
+        if not luau_artifact.exists():
+            return _fail(
+                f"Luau artifact not found at {luau_artifact}. "
+                "Build may have placed it elsewhere; check --verbose output.",
+                json_output,
+                command="deploy",
+            )
+        dest = roblox_dir / luau_artifact.name
+        shutil.copy2(luau_artifact, dest)
+        if not json_output:
+            print(f"Copied {luau_artifact.name} -> {dest}", file=sys.stderr)
+        return 0
+
+    return _fail(f"Unknown deploy platform: {platform}", json_output, command="deploy")
 
 
 def run_script(
@@ -23699,12 +24554,118 @@ def _ensure_cli_hash_seed() -> None:
     os.execvpe(sys.executable, [sys.executable, *sys.argv], env)
 
 
+_BUILD_ESSENTIAL_FLAGS = frozenset({
+    "file", "module", "target", "release", "output", "out_dir",
+    "verbose", "json", "rebuild", "profile", "platform", "help",
+})
+
+
+class _BuildHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Formatter for `molt build` that hides advanced flags.
+
+    Shows only essential flags by default. Advanced flags still work
+    but are hidden from --help to reduce noise for new users.
+    """
+
+    def _format_action(self, action):
+        if action.option_strings:
+            dest = action.dest
+            if dest not in _BUILD_ESSENTIAL_FLAGS:
+                return ""
+        return super()._format_action(action)
+
+    def _format_usage(self, usage, actions, groups, prefix):
+        filtered = [a for a in actions if not a.option_strings or a.dest in _BUILD_ESSENTIAL_FLAGS]
+        return super()._format_usage(usage, filtered, groups, prefix)
+
+
+class _MoltHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Custom formatter that groups subcommands by category in --help."""
+
+    def _format_action(self, action: argparse.Action) -> str:
+        if isinstance(action, argparse._SubParsersAction):
+            parts: list[str] = []
+            _core = ["build", "run", "test", "bench", "check", "deploy"]
+            _package = ["package", "publish", "deps", "vendor"]
+            _toolchain = ["clean", "doctor", "config", "completion"]
+            _dev = [
+                "compare", "diff", "parity-run", "profile",
+                "lint", "extension", "verify",
+            ]
+
+            groups = [
+                ("Core commands:", _core),
+                ("Package commands:", _package),
+                ("Toolchain commands:", _toolchain),
+                ("Development commands:", _dev),
+            ]
+
+            # Build a lookup from dest -> subaction for ordered iteration
+            _action_map: dict[str, argparse.Action] = {}
+            for subaction in action._get_subactions():
+                _action_map[subaction.dest] = subaction
+
+            for title, names in groups:
+                section_actions = [_action_map[n] for n in names if n in _action_map]
+                if not section_actions:
+                    continue
+                parts.append(f"\n  {title}")
+                for sa in section_actions:
+                    help_text = sa.help or ""
+                    parts.append(f"    {sa.dest:<22s}{help_text}")
+
+            listed: set[str] = set()
+            for _, names in groups:
+                listed.update(names)
+            extras = []
+            for subaction in action._get_subactions():
+                if subaction.dest not in listed and subaction.help != argparse.SUPPRESS:
+                    extras.append(subaction)
+            if extras:
+                parts.append("\n  Other commands:")
+                for sa in extras:
+                    help_text = sa.help or ""
+                    parts.append(f"    {sa.dest:<22s}{help_text}")
+
+            return "\n".join(parts) + "\n"
+        return super()._format_action(action)
+
+
 def main() -> int:
     _ensure_cli_hash_seed()
-    parser = argparse.ArgumentParser(prog="molt")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(
+        prog="molt",
+        usage="molt [-h] <command> [options]",
+        description="The Molt Python compiler",
+        formatter_class=_MoltHelpFormatter,
+        epilog=(
+            "Run 'molt <command> --help' for more information on a command.\n"
+            "\n"
+            "Examples:\n"
+            "  molt build app.py                  Build a Python program\n"
+            "  molt run app.py                    Build and run\n"
+            "  molt run app.py --release          Build optimized and run\n"
+            "  molt build app.py --target wasm    Build for WebAssembly\n"
+            "  molt deploy cloudflare app.py      Deploy to Cloudflare Workers\n"
+            "  molt test                          Run test suites\n"
+        ),
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True, title="commands")
 
-    build_parser = subparsers.add_parser("build", help="Compile a Python file")
+    build_parser = subparsers.add_parser(
+        "build",
+        help="Build a Python program",
+        description="Compile a Python file to a native binary, WASM module, or Luau script.",
+        formatter_class=_BuildHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt build app.py                      Build with default settings\n"
+            "  molt build app.py --release             Optimized release build\n"
+            "  molt build app.py --target wasm         Build for WebAssembly\n"
+            "  molt build app.py --target luau         Build for Luau/Roblox\n"
+            "  molt build --module mypackage           Build a package by module name\n"
+        ),
+    )
     build_parser.add_argument("file", nargs="?", help="Path to Python source")
     build_parser.add_argument(
         "--module",
@@ -23713,7 +24674,16 @@ def main() -> int:
     build_parser.add_argument(
         "--target",
         default=None,
-        help="Target backend: native, wasm, or a target triple.",
+        help=(
+            "Build target: native (default), wasm, luau, or a target triple "
+            "(e.g., aarch64-unknown-linux-gnu, x86_64-unknown-linux-musl)."
+        ),
+    )
+    build_parser.add_argument(
+        "--release",
+        action="store_true",
+        default=False,
+        help="Optimized release build (alias for --build-profile release).",
     )
     build_parser.add_argument(
         "--codec",
@@ -23849,9 +24819,11 @@ def main() -> int:
         default=False,
         help=(
             "Produce separate runtime and app WASM modules instead of a single "
-            "linked binary. Outputs app.wasm + molt_runtime.wasm + manifest.json. "
-            "On Cloudflare Workers, this reduces total compressed size from ~2.8MB "
-            "to ~850KB by allowing separate module caching."
+            "linked binary. The runtime is tree-shaken to include only the "
+            "builtins your program uses, then optimized with wasm-opt. "
+            "Outputs app.wasm (~50-100KB) + molt_runtime.wasm (~1-2MB) "
+            "+ worker.js + manifest.json. Typically reduces total size from "
+            "~3MB gzip to ~1.2MB gzip."
         ),
     )
     build_parser.add_argument(
@@ -23887,9 +24859,10 @@ def main() -> int:
     )
     build_parser.add_argument(
         "--profile",
+        "--platform",
         choices=["cloudflare", "browser", "wasi", "fastly"],
         default=None,
-        help="Deployment profile (sets optimization defaults).",
+        help="Deployment platform/profile (sets optimization defaults for the target platform).",
     )
     build_parser.add_argument(
         "--deterministic",
@@ -24106,7 +25079,21 @@ def main() -> int:
     )
 
     check_parser = subparsers.add_parser(
-        "check", help="Generate a type facts artifact (ty-backed when available)"
+        "check",
+        help="Type-check without compiling",
+        description=(
+            "Analyze a Python file or package and emit type facts without compiling.\n"
+            "Type facts can be fed into `molt build --type-facts` for guided specialization."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt check src/app.py                  Type-check a file\n"
+            "  molt check src/                        Type-check a package directory\n"
+            "  molt check src/app.py --strict         Emit strict-tier type facts\n"
+            "  molt check src/app.py --output facts.json\n"
+            "                                         Write facts to a custom path\n"
+        ),
     )
     check_parser.add_argument("path", help="Python file or package directory")
     check_parser.add_argument(
@@ -24139,12 +25126,40 @@ def main() -> int:
     )
 
     run_parser = subparsers.add_parser(
-        "run", help="Compile with Molt and run the native binary"
+        "run",
+        help="Build and run a Python program",
+        description=(
+            "Compile a Python file with Molt and execute it.\n"
+            "Supports native, WASM (via wasmtime), and Luau (via lune) targets."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt run app.py                       Build and run natively\n"
+            "  molt run app.py --release              Optimized build and run\n"
+            "  molt run app.py --target wasm          Build and run with wasmtime\n"
+            "  molt run app.py --target luau          Build and run with lune\n"
+            "  molt run app.py -- --arg1 val          Pass args to your script\n"
+        ),
     )
     run_parser.add_argument("file", nargs="?", help="Path to Python source")
     run_parser.add_argument(
         "--module",
         help="Entry module name (uses pkg.__main__ when present).",
+    )
+    run_parser.add_argument(
+        "--target",
+        default=None,
+        help=(
+            "Build target: native (default), wasm (build + run with wasmtime), "
+            "luau (build + run with lune), or a target triple."
+        ),
+    )
+    run_parser.add_argument(
+        "--release",
+        action="store_true",
+        default=False,
+        help="Optimized release build (alias for --build-profile release).",
     )
     run_parser.add_argument(
         "--build-arg",
@@ -24192,7 +25207,16 @@ def main() -> int:
     )
 
     compare_parser = subparsers.add_parser(
-        "compare", help="Compare CPython vs Molt outputs and timing"
+        "compare",
+        help="Compare CPython vs Molt output",
+        description="Build and run a Python file with both CPython and Molt, then compare output.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt compare app.py                    Compare output side by side\n"
+            "  molt compare app.py --python 3.13      Compare against Python 3.13\n"
+            "  molt compare app.py -- --flag           Pass args to both interpreters\n"
+        ),
     )
     compare_parser.add_argument("file", nargs="?", help="Path to Python source")
     compare_parser.add_argument(
@@ -24280,7 +25304,24 @@ def main() -> int:
         help="Arguments passed to the script (use -- to separate).",
     )
 
-    test_parser = subparsers.add_parser("test", help="Run Molt test suites")
+    test_parser = subparsers.add_parser(
+        "test",
+        help="Discover and run tests",
+        description=(
+            "Discover and run test suites.\n"
+            "Supports Molt's built-in dev suite, CPython differential tests, and pytest."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt test                             Run the default dev test suite\n"
+            "  molt test --suite diff                Run differential tests against CPython\n"
+            "  molt test --suite pytest              Run tests with pytest\n"
+            "  molt test tests/test_math.py          Run a specific test file\n"
+            "  molt test --suite diff --profile release\n"
+            "                                        Diff tests with release builds\n"
+        ),
+    )
     test_parser.add_argument(
         "--suite",
         choices=["dev", "diff", "pytest"],
@@ -24318,7 +25359,16 @@ def main() -> int:
     )
 
     diff_parser = subparsers.add_parser(
-        "diff", help="Run differential tests against CPython"
+        "diff",
+        help="Run differential tests against CPython",
+        description="Run differential tests that compare Molt output against CPython.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt diff                              Run all diff tests\n"
+            "  molt diff tests/parity/               Run diff tests in a directory\n"
+            "  molt diff --python-version 3.13        Test against Python 3.13\n"
+        ),
     )
     diff_parser.add_argument("path", nargs="?", help="File or directory to test.")
     diff_parser.add_argument(
@@ -24344,7 +25394,22 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
-    bench_parser = subparsers.add_parser("bench", help="Run benchmark suites")
+    bench_parser = subparsers.add_parser(
+        "bench",
+        help="Run benchmarks",
+        description=(
+            "Run performance benchmarks.\n"
+            "Uses the native bench harness by default, or the WASM harness with --wasm."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt bench                             Run all benchmarks\n"
+            "  molt bench --wasm                      Run WASM benchmarks\n"
+            "  molt bench --script bench/fib.py       Benchmark a custom script\n"
+            "  molt bench -- --filter sort             Pass args to bench tool\n"
+        ),
+    )
     bench_parser.add_argument(
         "--wasm", action="store_true", help="Use the WASM bench harness."
     )
@@ -24367,7 +25432,11 @@ def main() -> int:
         help="Arguments passed to the bench tool (use -- to separate).",
     )
 
-    profile_parser = subparsers.add_parser("profile", help="Profile benchmarks")
+    profile_parser = subparsers.add_parser(
+        "profile",
+        help="Profile benchmarks",
+        description="Profile Molt benchmarks with detailed performance instrumentation.",
+    )
     profile_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
@@ -24380,7 +25449,11 @@ def main() -> int:
         help="Arguments passed to the profile tool (use -- to separate).",
     )
 
-    lint_parser = subparsers.add_parser("lint", help="Run linting checks")
+    lint_parser = subparsers.add_parser(
+        "lint",
+        help="Run linting checks",
+        description="Run Molt-specific linting checks on the project.",
+    )
     lint_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
@@ -24388,7 +25461,14 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
-    doctor_parser = subparsers.add_parser("doctor", help="Check toolchain setup")
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Check toolchain setup",
+        description=(
+            "Verify that the Molt toolchain is installed and configured correctly.\n"
+            "Checks for Rust/Cargo, wasm-opt, wasmtime, and other dependencies."
+        ),
+    )
     doctor_parser.add_argument(
         "--strict",
         action="store_true",
@@ -24402,7 +25482,7 @@ def main() -> int:
     )
 
     package_parser = subparsers.add_parser(
-        "package", help="Bundle a Molt package artifact"
+        "package", help="Bundle a distributable package"
     )
     package_parser.add_argument("artifact", help="Path to the package artifact.")
     package_parser.add_argument(
@@ -24484,7 +25564,7 @@ def main() -> int:
     )
 
     publish_parser = subparsers.add_parser(
-        "publish", help="Publish a Molt package to a registry path or URL"
+        "publish", help="Publish to registry"
     )
     publish_parser.add_argument("package", help="Path to the .moltpkg file.")
     publish_parser.add_argument(
@@ -24567,7 +25647,7 @@ def main() -> int:
     )
 
     verify_parser = subparsers.add_parser(
-        "verify", help="Verify a Molt package manifest and checksum"
+        "verify", help="Verify a package manifest and checksum"
     )
     verify_parser.add_argument(
         "--package",
@@ -24641,7 +25721,7 @@ def main() -> int:
     )
 
     deps_parser = subparsers.add_parser(
-        "deps", help="Show dependency compatibility info"
+        "deps", help="Show dependency info"
     )
     deps_parser.add_argument(
         "--include-dev", action="store_true", help="Include dev dependencies"
@@ -24653,7 +25733,7 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
     vendor_parser = subparsers.add_parser(
-        "vendor", help="Vendor pure Python dependencies"
+        "vendor", help="Vendor pure-Python dependencies"
     )
     vendor_parser.add_argument(
         "--include-dev", action="store_true", help="Include dev dependencies"
@@ -24697,7 +25777,7 @@ def main() -> int:
     )
 
     clean_parser = subparsers.add_parser(
-        "clean", help="Remove Molt caches, build artifacts, and repo outputs"
+        "clean", help="Remove build artifacts and caches"
     )
     clean_parser.add_argument(
         "--all",
@@ -24747,7 +25827,7 @@ def main() -> int:
     )
 
     config_parser = subparsers.add_parser(
-        "config", help="Show Molt configuration defaults"
+        "config", help="Show/set configuration"
     )
     config_parser.add_argument(
         "--file",
@@ -24761,7 +25841,7 @@ def main() -> int:
     )
 
     completion_parser = subparsers.add_parser(
-        "completion", help="Generate shell completion scripts"
+        "completion", help="Generate shell completions"
     )
     completion_parser.add_argument(
         "--shell",
@@ -24773,6 +25853,86 @@ def main() -> int:
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
     completion_parser.add_argument(
+        "--verbose", action="store_true", help="Emit verbose diagnostics."
+    )
+
+    # --- deploy command ---
+    deploy_parser = subparsers.add_parser(
+        "deploy",
+        help="Build and deploy to a platform",
+        description=(
+            "Build and deploy a Python program to a target platform.\n"
+            "Automatically sets the correct build target and optimization defaults."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt deploy cloudflare src/app.py      Deploy to Cloudflare Workers\n"
+            "  molt deploy roblox src/game.py          Deploy to Roblox Studio\n"
+            "  molt deploy cloudflare app.py --release  Optimized production deploy\n"
+            "  molt deploy roblox app.py --roblox-project ./my-game\n"
+            "                                          Deploy and copy to Roblox project\n"
+            "  molt deploy cloudflare app.py --dry-run  Build only, skip wrangler\n"
+            "\n"
+            "Platforms:\n"
+            "  cloudflare    Build as WASM with --split-runtime, deploy via wrangler\n"
+            "  roblox        Build as Luau, optionally copy to a Roblox project dir\n"
+        ),
+    )
+    deploy_parser.add_argument(
+        "platform",
+        choices=["cloudflare", "roblox"],
+        help="Deployment target: cloudflare (WASM Workers) or roblox (Luau).",
+    )
+    deploy_parser.add_argument("file", nargs="?", help="Path to Python source")
+    deploy_parser.add_argument(
+        "--module",
+        help="Entry module name (uses pkg.__main__ when present).",
+    )
+    deploy_parser.add_argument(
+        "--release",
+        action="store_true",
+        default=False,
+        help="Optimized release build (alias for --build-profile release).",
+    )
+    deploy_parser.add_argument(
+        "--build-profile",
+        choices=["dev", "release"],
+        default=None,
+        help="Build profile for backend/runtime (default: release).",
+    )
+    deploy_parser.add_argument(
+        "--output",
+        help="Output path for the build artifact.",
+    )
+    deploy_parser.add_argument(
+        "--out-dir",
+        help="Output directory for build artifacts.",
+    )
+    deploy_parser.add_argument(
+        "--roblox-project",
+        help="Path to the Roblox project directory to copy Luau output into.",
+    )
+    deploy_parser.add_argument(
+        "--wrangler-args",
+        default="",
+        help="Extra arguments passed to wrangler deploy (cloudflare only).",
+    )
+    deploy_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Build only; do not run wrangler deploy or copy to project.",
+    )
+    deploy_parser.add_argument(
+        "--build-arg",
+        action="append",
+        default=[],
+        help="Extra args passed to `molt build`.",
+    )
+    deploy_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+    deploy_parser.add_argument(
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
@@ -24826,7 +25986,8 @@ def main() -> int:
             or build_cfg.get("runtime-feedback")
         )
         build_profile = (
-            args.build_profile
+            ("release" if getattr(args, "release", False) else None)
+            or args.build_profile
             or build_cfg.get("profile")
             or build_cfg.get("build_profile")
             or "release"
@@ -25134,8 +26295,10 @@ def main() -> int:
         build_args = _strip_leading_double_dash(args.build_arg)
         if args.rebuild and not _build_args_has_cache_flag(build_args):
             build_args.append("--no-cache")
+        run_target = getattr(args, "target", None) or run_cfg.get("target") or "native"
         run_profile = (
-            args.profile
+            ("release" if getattr(args, "release", False) else None)
+            or args.profile
             or run_cfg.get("profile")
             or run_cfg.get("build_profile")
             or build_cfg.get("profile")
@@ -25154,6 +26317,23 @@ def main() -> int:
         capabilities = (
             args.capabilities or run_cfg.get("capabilities") or cfg_capabilities
         )
+        if run_target in ("wasm", "luau"):
+            # Inject --target into build_args so run_script_cross handles it
+            if not any(a.startswith("--target") for a in build_args):
+                build_args.extend(["--target", run_target])
+            return _run_script_cross(
+                run_target,
+                args.file,
+                args.module,
+                _strip_leading_double_dash(args.script_args),
+                args.json,
+                args.verbose,
+                args.timing,
+                trusted,
+                capabilities,
+                build_args,
+                cast(BuildProfile | None, run_profile),
+            )
         return run_script(
             args.file,
             args.module,
@@ -25471,6 +26651,25 @@ def main() -> int:
         return show_config(config_root, config, args.json, args.verbose)
     if args.command == "completion":
         return completion(args.shell, args.json, args.verbose)
+
+    if args.command == "deploy":
+        deploy_build_profile = args.build_profile
+        if getattr(args, "release", False) and not deploy_build_profile:
+            deploy_build_profile = "release"
+        return _deploy(
+            platform=args.platform,
+            file_path=args.file,
+            module=args.module,
+            build_profile=deploy_build_profile,
+            output=args.output,
+            out_dir=args.out_dir,
+            roblox_project=getattr(args, "roblox_project", None),
+            wrangler_args=getattr(args, "wrangler_args", ""),
+            dry_run=args.dry_run,
+            build_args=_strip_leading_double_dash(args.build_arg),
+            json_output=args.json,
+            verbose=args.verbose,
+        )
 
     return 2
 

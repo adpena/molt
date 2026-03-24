@@ -1825,14 +1825,18 @@ pub(crate) fn current_task_ptr() -> *mut u8 {
 }
 
 pub(crate) fn current_task_key() -> Option<PtrSlot> {
-    CURRENT_TASK.with(|cell| {
-        let value = cell.get();
-        if value.is_null() {
-            None
-        } else {
-            Some(PtrSlot(value))
-        }
-    })
+    // Use try_with to avoid panicking during TLS destruction (e.g.,
+    // when exception_pending is called from ThreadLocalGuard::drop).
+    CURRENT_TASK
+        .try_with(|cell| {
+            let value = cell.get();
+            if value.is_null() {
+                None
+            } else {
+                Some(PtrSlot(value))
+            }
+        })
+        .unwrap_or(None)
 }
 
 pub(crate) fn await_waiter_register(_py: &PyToken<'_>, waiter_ptr: *mut u8, awaited_ptr: *mut u8) {

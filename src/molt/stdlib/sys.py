@@ -383,7 +383,7 @@ _SYS_FLAGS_SEQUENCE_FIELDS = (
     "int_max_str_digits",
 )
 _SYS_FLAGS_SEQUENCE_INDEX = {
-    name: index for index, name in enumerate(_SYS_FLAGS_SEQUENCE_FIELDS)
+    name: int(index) for index, name in enumerate(_SYS_FLAGS_SEQUENCE_FIELDS)
 }
 _SYS_FLAGS_GIL = 1
 
@@ -429,7 +429,7 @@ class flags(tuple):
 # --- version_info structured tuple ---
 
 _VERSION_INFO_FIELDS = ("major", "minor", "micro", "releaselevel", "serial")
-_VERSION_INFO_INDEX = {name: i for i, name in enumerate(_VERSION_INFO_FIELDS)}
+_VERSION_INFO_INDEX = {name: int(i) for i, name in enumerate(_VERSION_INFO_FIELDS)}
 
 
 class version_info(tuple):
@@ -470,7 +470,7 @@ _FLOAT_INFO_FIELDS = (
     "radix",
     "rounds",
 )
-_FLOAT_INFO_INDEX = {name: i for i, name in enumerate(_FLOAT_INFO_FIELDS)}
+_FLOAT_INFO_INDEX = {name: int(i) for i, name in enumerate(_FLOAT_INFO_FIELDS)}
 
 
 class float_info(tuple):
@@ -501,7 +501,7 @@ _INT_INFO_FIELDS = (
     "default_max_str_digits",
     "str_digits_check_threshold",
 )
-_INT_INFO_INDEX = {name: i for i, name in enumerate(_INT_INFO_FIELDS)}
+_INT_INFO_INDEX = {name: int(i) for i, name in enumerate(_INT_INFO_FIELDS)}
 
 
 class int_info(tuple):
@@ -537,7 +537,7 @@ _HASH_INFO_FIELDS = (
     "seed_bits",
     "cutoff",
 )
-_HASH_INFO_INDEX = {name: i for i, name in enumerate(_HASH_INFO_FIELDS)}
+_HASH_INFO_INDEX = {name: int(i) for i, name in enumerate(_HASH_INFO_FIELDS)}
 
 
 class hash_info(tuple):
@@ -567,7 +567,7 @@ _THREAD_INFO_FIELDS = (
     "lock",
     "version",
 )
-_THREAD_INFO_INDEX = {name: i for i, name in enumerate(_THREAD_INFO_FIELDS)}
+_THREAD_INFO_INDEX = {name: int(i) for i, name in enumerate(_THREAD_INFO_FIELDS)}
 
 
 class thread_info(tuple):

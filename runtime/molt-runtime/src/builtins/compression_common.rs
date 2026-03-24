@@ -1,10 +1,10 @@
-use crate::builtins::numbers::int_bits_from_i64;
-
-const COMPRESSION_STREAMS_BUFFER_SIZE: i64 = 8192;
+//! Re-export bridge: delegates to `molt_runtime_compression::compression_common`.
+//!
+//! The canonical implementation lives in the extracted `molt_runtime_compression` crate.
+//! This file provides `#[unsafe(no_mangle)]` entry points so the linker
+//! exports them with the expected symbol names.
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_compression_streams_buffer_size() -> u64 {
-    crate::with_gil_entry!(_py, {
-        int_bits_from_i64(_py, COMPRESSION_STREAMS_BUFFER_SIZE)
-    })
+    molt_runtime_compression::compression_common::molt_compression_streams_buffer_size()
 }

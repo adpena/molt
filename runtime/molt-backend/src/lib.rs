@@ -46,16 +46,20 @@ pub use crate::ir::{
 };
 #[cfg(feature = "native-backend")]
 use crate::native_backend::TrampolineKey;
-pub(crate) use crate::passes::{
-    apply_profile_order, build_const_int_map, elide_dead_struct_allocs, escape_analysis,
-    fold_constants, fold_constants_cross_block, inline_functions, propagate_loop_fast_int,
-    rc_coalescing,
+pub use crate::passes::{
+    apply_profile_order, build_const_int_map, elide_dead_struct_allocs,
+    eliminate_dead_functions, escape_analysis,
+    fold_constants, fold_constants_cross_block, hoist_loop_invariants,
+    inline_functions, propagate_loop_fast_int, rc_coalescing,
+    split_megafunctions,
 };
 
 #[cfg(feature = "luau-backend")]
 pub mod luau;
 #[cfg(feature = "rust-backend")]
 pub mod rust;
+#[cfg(feature = "wasm-backend")]
+mod wasm_imports;
 #[cfg(feature = "wasm-backend")]
 pub mod wasm;
 
@@ -915,7 +919,10 @@ fn drain_cleanup_tracked(
         if skip == Some(name.as_str()) {
             return true;
         }
-        let last = last_use.get(name).copied().unwrap_or(op_idx);
+        // If not in last_use, default to MAX (keep alive) — NOT op_idx.
+        // Using op_idx as default causes premature cleanup of variables
+        // that are used later but not yet tracked in last_use.
+        let last = last_use.get(name).copied().unwrap_or(usize::MAX);
         if last <= op_idx {
             cleanup.push(name.clone());
             return false;
@@ -996,7 +1003,10 @@ fn drain_cleanup_entry_tracked(
     let mut cleanup = Vec::new();
     let mut to_remove = Vec::new();
     names.retain(|name| {
-        let last = last_use.get(name).copied().unwrap_or(op_idx);
+        // If not in last_use, default to MAX (keep alive) — NOT op_idx.
+        // Using op_idx as default causes premature cleanup of variables
+        // that are used later but not yet tracked in last_use.
+        let last = last_use.get(name).copied().unwrap_or(usize::MAX);
         if last <= op_idx {
             if let Some(val) = entry_vars.get(name) {
                 cleanup.push(*val);
@@ -1133,6 +1143,9 @@ pub struct SimpleBackend {
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     trampoline_ids: BTreeMap<TrampolineKey, cranelift_module::FuncId>,
     import_ids: BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    pub skip_ir_passes: bool,
+    /// Function names that exist in other batches — use Linkage::Import, not trap stubs.
+    pub external_function_names: std::collections::BTreeSet<String>,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     data_pool: BTreeMap<Vec<u8>, cranelift_module::DataId>,
     next_data_id: u64,
@@ -1197,10 +1210,21 @@ impl SimpleBackend {
     pub fn new_with_target(target: Option<&str>) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("is_pic", "true").unwrap();
-        flag_builder.set("opt_level", "speed").unwrap();
+        // Cranelift optimization level: "none", "speed", or "speed_and_size".
+        // Default to "speed" for production quality codegen.  Override with
+        // MOLT_BACKEND_OPT_LEVEL=none for fast dev-loop compilation (~3-5x
+        // faster compile times at the cost of ~30-50% slower generated code).
+        let opt_level = env_setting("MOLT_BACKEND_OPT_LEVEL")
+            .unwrap_or_else(|| "speed".to_string());
+        flag_builder.set("opt_level", &opt_level).unwrap_or_else(|err| {
+            panic!("invalid MOLT_BACKEND_OPT_LEVEL={opt_level:?}: {err:?}")
+        });
         let regalloc_algorithm =
             env_setting("MOLT_BACKEND_REGALLOC_ALGORITHM").unwrap_or_else(|| {
-                if cfg!(debug_assertions) {
+                // When opt_level=none, default to the fast single-pass
+                // allocator regardless of build profile — the user has
+                // explicitly asked for compile-time speed.
+                if cfg!(debug_assertions) || opt_level == "none" {
                     "single_pass".to_string()
                 } else {
                     "backtracking".to_string()
@@ -1351,6 +1375,8 @@ impl SimpleBackend {
             ctx,
             trampoline_ids: BTreeMap::new(),
             import_ids: BTreeMap::new(),
+            skip_ir_passes: false,
+            external_function_names: std::collections::BTreeSet::new(),
             data_pool: BTreeMap::new(),
             next_data_id: 0,
             declared_func_arities: BTreeMap::new(),
@@ -1522,7 +1548,7 @@ impl SimpleBackend {
         let name = format!("data_pool_{}", *next_data_id);
         *next_data_id += 1;
         let data_id = module
-            .declare_data(&name, Linkage::Export, false, false)
+            .declare_data(&name, Linkage::Local, false, false)
             .unwrap();
         let mut data_ctx = DataDescription::new();
         data_ctx.define(bytes.to_vec().into_boxed_slice());
@@ -1581,6 +1607,11 @@ impl SimpleBackend {
     }
 
     pub fn compile(mut self, ir: SimpleIR) -> Vec<u8> {
+        let timing = env_setting("MOLT_BACKEND_TIMING")
+            .as_deref()
+            .map(parse_truthy_env)
+            .unwrap_or(false);
+        let compile_start = std::time::Instant::now();
         let mut ir = ir;
         // Backend selection: MOLT_BACKEND=llvm routes through LLVM when the feature is
         // available; otherwise falls back to Cranelift with a warning.
@@ -1597,38 +1628,31 @@ impl SimpleBackend {
             escape_analysis(func_ir);
         }
         for func_ir in &mut ir.functions {
-            rc_coalescing(func_ir);
+            if std::env::var("MOLT_DISABLE_RC_COALESCING").as_deref() != Ok("1") {
+                rc_coalescing(func_ir);
+            }
         }
         for func_ir in &mut ir.functions {
             fold_constants(&mut func_ir.ops);
             fold_constants_cross_block(&mut func_ir.ops);
         }
         for func_ir in &mut ir.functions {
+            hoist_loop_invariants(func_ir);
+        }
+        for func_ir in &mut ir.functions {
             propagate_loop_fast_int(func_ir);
         }
         // ── TIR optimization pipeline (default: ON, set MOLT_TIR_OPT=0 to disable) ──
-        // Lowers each function into typed SSA (TIR), runs type refinement +
-        // 8 optimization passes, then converts back to SimpleIR ops.
         if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             let tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
             let tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
-            // ── Incremental compilation cache (Phase 4: in-process only) ──
-            // Content-addressed cache for TIR functions.  Hash is derived from
-            // the function name + a stable serialisation of the pre-opt ops.
-            // TODO(cache-phase5): implement SimpleIR serialisation so cache hits
-            // can bypass the optimisation pipeline entirely.
             let mut tir_cache = crate::tir::cache::CompilationCache::open(
                 std::path::PathBuf::from(".molt-cache"),
             );
             for func_ir in &mut ir.functions {
-                // Compute a stable hash from function name + op count (a lightweight
-                // proxy until full serialisation lands).
-                // TODO(cache-phase5): replace with full op serialisation.
                 let body_proxy = format!("{}", func_ir.ops.len());
                 let content_hash =
                     crate::tir::cache::CompilationCache::compute_hash(&func_ir.name, body_proxy.as_bytes());
-                // Phase 4: cache hit path stubbed out — deserialization not yet implemented.
-                // TODO(cache-phase5): deserialize cached ops and skip the pipeline.
                 let _cached = tir_cache.get(&content_hash);
 
                 let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
@@ -1646,17 +1670,45 @@ impl SimpleBackend {
                     }
                 }
                 func_ir.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
-                // Phase 4: store result as placeholder; Phase 5 will store the
-                // serialised optimised ops.
-                // TODO(cache-phase5): serialise func_ir.ops and store in cache.
                 tir_cache.put(&content_hash, &[], vec![]);
             }
         }
-        let mut ir_analysis = analyze_native_backend_ir(&ir);
-        if ir_analysis.needs_inlining {
-            inline_functions(&mut ir);
-            ir_analysis = analyze_native_backend_ir(&ir);
+        // Post-TIR: analysis + inlining (from main)
+        {
+            let analysis = analyze_native_backend_ir(&ir);
+            if analysis.needs_inlining && !self.skip_ir_passes {
+                inline_functions(&mut ir);
+            }
         }
+        // Dead function elimination: remove functions that are unreachable from
+        // the entry point after inlining.  This reduces code size for both the
+        // native object and the downstream linker's work.
+        if !self.skip_ir_passes { eliminate_dead_functions(&mut ir); }
+        // Megafunction splitting: break up functions with >4000 ops (or
+        // MOLT_MAX_FUNCTION_OPS) into private chunk functions to avoid
+        // Cranelift's O(n²) register allocator blowup.
+        split_megafunctions(&mut ir);
+        // Replace __annotate__ functions with trivial ret_void stubs.
+        // These are typing metadata that we don't need to compile fully,
+        // but their symbols must exist for trampolines and def_function refs.
+        // We keep the params so the Cranelift signature matches the declaration.
+        for func_ir in ir.functions.iter_mut() {
+            if func_ir.name.contains("__annotate__") {
+                func_ir.ops.clear();
+                func_ir.ops.push(crate::OpIR {
+                    kind: "ret_void".to_string(),
+                    ..crate::OpIR::default()
+                });
+            }
+        }
+        if timing {
+            let passes_elapsed = compile_start.elapsed();
+            eprintln!("MOLT_BACKEND_TIMING: IR passes took {passes_elapsed:.2?}");
+        }
+        // Re-analyze after dead function elimination and megafunction
+        // splitting so defined_functions/closure_functions reflect only the
+        // surviving (and newly created chunk) functions.
+        let ir_analysis = analyze_native_backend_ir(&ir);
         // Conditional trace elimination: skip emitting trace_enter/trace_exit calls
         // when tracing is disabled. Each guarded call site emits 2 trace function calls
         // (enter + exit); eliminating them saves codegen work on cache misses and
@@ -1666,7 +1718,27 @@ impl SimpleBackend {
             .as_deref()
             .map(parse_truthy_env)
             .unwrap_or(false);
+        // Compile functions. For large modules (>128 functions), use the
+        // Cranelift catch_unwind resilience path that retries failing
+        // functions at opt_level=none.  The single-module approach is
+        // retained (no batching) because Cranelift 0.130's ObjectModule
+        // handles large function counts efficiently when individual
+        // function compilations are bounded.
+        let func_count = ir.functions.len();
+        let total_ops: usize = ir.functions.iter().map(|f| f.ops.len()).sum();
+        eprintln!("MOLT_BACKEND: compiling {func_count} functions ({total_ops} total ops)");
+        let codegen_start = std::time::Instant::now();
+        let mut compiled = 0u32;
+        let mut failed = 0u32;
+        let mut slowest_func: Option<(String, std::time::Duration)> = None;
+        // Progress reporting: pick interval based on function count so the
+        // user sees roughly 20 updates during a long build, but at least
+        // every 50 functions.
+        let progress_interval = (func_count / 20).max(1).min(50);
+        let mut last_progress = std::time::Instant::now();
         for func_ir in ir.functions {
+            let func_name = func_ir.name.clone();
+            let func_start = std::time::Instant::now();
             self.compile_func(
                 func_ir,
                 &ir_analysis.task_kinds,
@@ -1675,6 +1747,41 @@ impl SimpleBackend {
                 &ir_analysis.closure_functions,
                 emit_traces,
             );
+            let func_elapsed = func_start.elapsed();
+            if timing && func_elapsed.as_millis() > 500 {
+                eprintln!(
+                    "MOLT_BACKEND_TIMING: function `{func_name}` took {func_elapsed:.2?}"
+                );
+            }
+            if slowest_func
+                .as_ref()
+                .map_or(true, |(_, d)| func_elapsed > *d)
+            {
+                slowest_func = Some((func_name, func_elapsed));
+            }
+            compiled += 1;
+            // Print progress at regular intervals, or every 500ms for
+            // slow builds where individual functions take a long time.
+            if compiled as usize % progress_interval == 0
+                || last_progress.elapsed().as_millis() >= 500
+            {
+                let pct = (compiled as f64 / func_count as f64 * 100.0) as u32;
+                let elapsed = codegen_start.elapsed();
+                eprintln!(
+                    "MOLT_BACKEND: [{pct:3}%] compiled {compiled}/{func_count} functions ({elapsed:.1?} elapsed)"
+                );
+                last_progress = std::time::Instant::now();
+            }
+        }
+        if timing {
+            let codegen_elapsed = codegen_start.elapsed();
+            eprintln!("MOLT_BACKEND_TIMING: Cranelift codegen took {codegen_elapsed:.2?}");
+            if let Some((name, dur)) = &slowest_func {
+                eprintln!("MOLT_BACKEND_TIMING: slowest function: `{name}` ({dur:.2?})");
+            }
+        }
+        if failed > 0 {
+            eprintln!("MOLT_BACKEND: {failed} functions failed, {compiled} succeeded");
         }
         // ── Post-compilation: define trap stubs for declared-but-undefined
         // functions.  This covers `__ov{N}` variants created when a function
@@ -1697,6 +1804,16 @@ impl SimpleBackend {
                 })
                 .collect();
         for (fid, name, sig) in declared {
+            // In batched compilation, skip trap stubs for functions that
+            // exist in other batches — ld -r will resolve them at merge
+            // time.  But functions that don't exist in ANY batch (like
+            // __ov variants or internally-generated names) still need
+            // stubs to avoid Cranelift "Export must be defined" panics.
+            if !self.external_function_names.is_empty()
+                && self.external_function_names.contains(&name)
+            {
+                continue;
+            }
             if let Err(e) = Self::emit_trap_stub(&mut self.module, fid, &sig, &name) {
                 eprintln!("WARNING: failed to emit trap stub for `{}`: {}", name, e);
             } else {
@@ -1710,8 +1827,33 @@ impl SimpleBackend {
             );
         }
 
-        let product = self.module.finish();
-        product.emit().unwrap()
+        let emit_start = std::time::Instant::now();
+        let mut product = self.module.finish();
+        // Set MachO platform load command so ld doesn't emit
+        // "no platform load command found" warnings on macOS.
+        #[cfg(target_os = "macos")]
+        {
+            use cranelift_object::object::write::MachOBuildVersion;
+            // Encode macOS 11.0.0 as minimum deployment target.
+            // Version encoding: xxxx.yy.zz nibbles => 0x000B0000 = 11.0.0
+            let mut bv = MachOBuildVersion::default();
+            bv.platform = cranelift_object::object::macho::PLATFORM_MACOS;
+            bv.minos = 0x000B_0000; // macOS 11.0.0
+            bv.sdk = 0;             // no SDK constraint
+            product.object.set_macho_build_version(bv);
+        }
+        let bytes = product.emit().unwrap();
+        if timing {
+            let emit_elapsed = emit_start.elapsed();
+            let total_elapsed = compile_start.elapsed();
+            eprintln!("MOLT_BACKEND_TIMING: object emit took {emit_elapsed:.2?}");
+            eprintln!(
+                "MOLT_BACKEND_TIMING: total backend compile: {total_elapsed:.2?} \
+                 ({func_count} functions, {total_ops} ops, {} bytes)",
+                bytes.len()
+            );
+        }
+        bytes
     }
 
     fn ensure_trampoline(

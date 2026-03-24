@@ -2,7 +2,7 @@
 use molt_backend::luau::LuauBackend;
 #[cfg(feature = "native-backend")]
 use molt_backend::SimpleBackend;
-use molt_backend::SimpleIR;
+use molt_backend::{SimpleIR, OpIR};
 #[cfg(feature = "rust-backend")]
 use molt_backend::rust::RustBackend;
 #[cfg(feature = "wasm-backend")]
@@ -405,9 +405,9 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
     #[cfg(not(any(feature = "native-backend", feature = "wasm-backend")))]
     {
         let unsupported = if job.is_wasm {
-            "backend binary was built without wasm-backend support"
+            "backend binary was built without wasm-backend support; rebuild with: cargo build -p molt-backend --features wasm-backend"
         } else {
-            "backend binary was built without native-backend support"
+            "backend binary was built without native-backend support; rebuild with: cargo build -p molt-backend --features native-backend"
         };
         return DaemonJobResponse {
             id: job.id,
@@ -534,7 +534,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                     output_written: false,
                     needs_ir: false,
                     message: Some(
-                        "backend binary was built without wasm-backend support".to_string(),
+                        "backend binary was built without wasm-backend support; rebuild with: cargo build -p molt-backend --features wasm-backend".to_string(),
                     ),
                 };
             }
@@ -554,7 +554,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                     output_written: false,
                     needs_ir: false,
                     message: Some(
-                        "backend binary was built without native-backend support".to_string(),
+                        "backend binary was built without native-backend support; rebuild with: cargo build -p molt-backend --features native-backend".to_string(),
                     ),
                 };
             }
@@ -848,7 +848,77 @@ fn run_daemon(_socket_path: &str) -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
+    // Hard memory guard: set rlimit on virtual memory to prevent OOM
+    // from crashing the entire machine.  Default 4GB, override with
+    // MOLT_BACKEND_MAX_RSS_GB env var.
+    #[cfg(unix)]
+    {
+        let max_gb: u64 = std::env::var("MOLT_BACKEND_MAX_RSS_GB")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4);
+        let max_bytes = max_gb * 1024 * 1024 * 1024;
+        unsafe {
+            let rlim = libc::rlimit {
+                rlim_cur: max_bytes,
+                rlim_max: max_bytes,
+            };
+            if libc::setrlimit(libc::RLIMIT_AS, &rlim) != 0 {
+                eprintln!(
+                    "WARNING: failed to set memory limit (RLIMIT_AS={max_gb}GB).                      OOM guard not active."
+                );
+            }
+        }
+    }
+    
+    // Windows memory guard: use job objects to limit working set.
+    // Less effective than Unix RLIMIT_AS but prevents unbounded growth.
+    #[cfg(windows)]
+    {
+        let max_gb: u64 = std::env::var("MOLT_BACKEND_MAX_RSS_GB")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4);
+        let max_bytes = max_gb * 1024 * 1024 * 1024;
+        unsafe {
+            use windows_sys::Win32::System::JobObjects::*;
+            use windows_sys::Win32::System::Threading::*;
+            let job = CreateJobObjectW(core::ptr::null(), core::ptr::null());
+            if job != 0 {
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = core::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+                info.ProcessMemoryLimit = max_bytes as usize;
+                SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const _,
+                    core::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                AssignProcessToJobObject(job, GetCurrentProcess());
+            }
+        }
+    }
+
     let args: Vec<String> = env::args().collect();
+    if args.iter().any(|arg| arg == "--features") {
+        let mut features = Vec::new();
+        #[cfg(feature = "native-backend")]
+        features.push("native-backend");
+        #[cfg(feature = "luau-backend")]
+        features.push("luau-backend");
+        #[cfg(feature = "wasm-backend")]
+        features.push("wasm-backend");
+        #[cfg(feature = "rust-backend")]
+        features.push("rust-backend");
+        #[cfg(feature = "cbor")]
+        features.push("cbor");
+        if features.is_empty() {
+            println!("molt-backend: no features enabled");
+        } else {
+            println!("molt-backend features: {}", features.join(", "));
+        }
+        return Ok(());
+    }
     if args.iter().any(|arg| arg == "--daemon") {
         let socket_path = args
             .iter()
@@ -881,22 +951,144 @@ fn main() -> io::Result<()> {
         .and_then(|idx| args.get(idx + 1))
         .map(String::as_str);
 
-    let mut buffer = String::new();
-    if let Some(ir_path) = ir_file_path {
-        std::fs::File::open(ir_path)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?
-            .read_to_string(&mut buffer)?;
-    } else {
-        io::stdin().read_to_string(&mut buffer)?;
-    }
+    let ir_format = args
+        .iter()
+        .position(|arg| arg == "--ir-format")
+        .and_then(|idx| args.get(idx + 1))
+        .map(String::as_str)
+        .unwrap_or("json");
 
-    let mut ir: SimpleIR = match SimpleIR::from_json_str(&buffer) {
-        Ok(ir) => ir,
-        Err(err) => {
-            eprintln!("{err}");
-            std::process::exit(1);
+    // Read and parse IR.  Drop the raw buffer immediately after
+    // deserialization to avoid holding two copies in memory simultaneously.
+    let mut ir: SimpleIR = {
+        if ir_format == "msgpack" {
+            // msgpack binary format — deserialize directly via serde
+            if let Some(ir_path) = ir_file_path {
+                let file = std::fs::File::open(ir_path)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?;
+                let reader = io::BufReader::new(file);
+                match rmp_serde::from_read(reader) {
+                    Ok(ir) => ir,
+                    Err(err) => {
+                        eprintln!("invalid msgpack IR: {err}");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                // Streaming msgpack from stdin via BufReader — avoids
+                // loading the entire IR into a Vec<u8> first.
+                let reader = io::BufReader::with_capacity(1 << 20, io::stdin().lock());
+                match rmp_serde::from_read::<_, SimpleIR>(reader) {
+                    Ok(ir) => ir,
+                    Err(err) => {
+                        eprintln!("invalid msgpack IR: {err}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+        } else if ir_format == "cbor" {
+            // CBOR binary format — deserialize via ciborium
+            #[cfg(not(feature = "cbor"))]
+            {
+                eprintln!("CBOR support requires the 'cbor' feature");
+                std::process::exit(1);
+            }
+            #[cfg(feature = "cbor")]
+            {
+                if let Some(ir_path) = ir_file_path {
+                    let file = std::fs::File::open(ir_path)
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?;
+                    let reader = io::BufReader::new(file);
+                    match ciborium::de::from_reader(reader) {
+                        Ok(ir) => ir,
+                        Err(err) => {
+                            eprintln!("invalid CBOR IR: {err}");
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    let mut buf = Vec::new();
+                    io::stdin().read_to_end(&mut buf)?;
+                    match ciborium::de::from_reader::<SimpleIR, _>(&buf[..]) {
+                        Ok(ir) => { drop(buf); ir },
+                        Err(err) => {
+                            eprintln!("invalid CBOR IR: {err}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+        } else if ir_format == "ndjson" {
+            // NDJSON streaming format — one function per line
+            if let Some(ir_path) = ir_file_path {
+                let file = std::fs::File::open(ir_path)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?;
+                let reader = io::BufReader::new(file);
+                match SimpleIR::from_ndjson_reader(reader) {
+                    Ok(ir) => ir,
+                    Err(err) => {
+                        eprintln!("invalid NDJSON IR: {err}");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                let reader = io::BufReader::new(io::stdin());
+                match SimpleIR::from_ndjson_reader(reader) {
+                    Ok(ir) => ir,
+                    Err(err) => {
+                        eprintln!("invalid NDJSON IR: {err}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+        } else if let Some(ir_path) = ir_file_path {
+            // Stream JSON directly from file — never holds raw JSON string in memory.
+            let file = std::fs::File::open(ir_path)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?;
+            let reader = io::BufReader::with_capacity(1 << 20, file);
+            match serde_json::from_reader::<_, SimpleIR>(reader) {
+                Ok(ir) => ir,
+                Err(err) => {
+                    eprintln!("invalid IR JSON: {err}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            // Stdin: read into string then deserialize directly (skips DOM intermediate).
+            let mut buffer = String::new();
+            io::stdin().read_to_string(&mut buffer)?;
+            let result = serde_json::from_str::<SimpleIR>(&buffer);
+            drop(buffer);
+            match result {
+                Ok(ir) => ir,
+                Err(err) => {
+                    eprintln!("invalid IR JSON: {err}");
+                    std::process::exit(1);
+                }
+            }
         }
     };
+
+    // Replace __annotate__ typing stubs with trivial return-None bodies.
+    // The symbols must exist (trampolines and module chunks reference them)
+    // but the bodies are typing metadata not needed at runtime.
+    for func in ir.functions.iter_mut() {
+        if func.name.contains("__annotate__") {
+            func.ops.clear();
+            // Keep params unchanged so the function signature matches callers.
+            func.ops.push(OpIR {
+                kind: "const_int".to_string(),
+                out: Some("__ret".to_string()),
+                value: Some(0x7FF8_0000_0000_0000_u64 as i64),
+                ..OpIR::default()
+            });
+            func.ops.push(OpIR {
+                kind: "ret".to_string(),
+                var: Some("__ret".to_string()),
+                ..OpIR::default()
+            });
+        }
+    }
 
     // Tree-shake for Luau: remove unreachable stdlib functions.
     if is_luau {
@@ -938,7 +1130,7 @@ fn main() -> io::Result<()> {
         {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "backend binary was built without luau-backend support",
+                "backend binary was built without luau-backend support; rebuild with: cargo build -p molt-backend --features luau-backend",
             ));
         }
     } else if is_rust {
@@ -953,7 +1145,7 @@ fn main() -> io::Result<()> {
         {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "backend binary was built without rust-backend support",
+                "backend binary was built without rust-backend support; rebuild with: cargo build -p molt-backend --features rust-backend",
             ));
         }
     } else if is_wasm {
@@ -968,22 +1160,256 @@ fn main() -> io::Result<()> {
         {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "backend binary was built without wasm-backend support",
+                "backend binary was built without wasm-backend support; rebuild with: cargo build -p molt-backend --features wasm-backend",
             ));
         }
     } else {
         #[cfg(feature = "native-backend")]
         {
-            let backend = SimpleBackend::new_with_target(target_triple);
-            let obj_bytes = backend.compile(ir);
-            file.write_all(&obj_bytes)?;
-            println!("Successfully compiled to output.o");
+            // ── Incremental compilation ──
+            // When MOLT_STDLIB_OBJ is set to a path, the backend caches
+            // stdlib compilation: stdlib functions compile once to that path,
+            // subsequent builds skip them entirely.  User functions always
+            // recompile.  This reduces builds from ~5min to ~3sec.
+            let stdlib_obj_path = std::env::var("MOLT_STDLIB_OBJ").ok();
+            let entry_module = std::env::var("MOLT_ENTRY_MODULE")
+                .unwrap_or_else(|_| "__main__".to_string());
+
+            if let Some(ref stdlib_path) = stdlib_obj_path {
+                let stdlib_path = std::path::Path::new(stdlib_path);
+                let is_user_func = |name: &str| -> bool {
+                    name.starts_with(&format!("{entry_module}__"))
+                        || name == "molt_main"
+                        || name.starts_with(&format!("molt_init_{entry_module}"))
+                        || name == "molt_init___main__"
+                        || name == "molt_isolate_import"
+                        || name == "molt_isolate_bootstrap"
+                        || name.starts_with("molt_init_")
+                };
+                if stdlib_path.exists() {
+                    // Cached stdlib exists — compile only user functions
+                    let total = ir.functions.len();
+                    ir.functions.retain(|f| is_user_func(&f.name));
+                    let kept = ir.functions.len();
+                    eprintln!(
+                        "MOLT_BACKEND: incremental — compiling {kept} user functions (cached {} stdlib in {})",
+                        total - kept,
+                        stdlib_path.display()
+                    );
+                } else {
+                    // First build — compile stdlib separately, cache it
+                    let total = ir.functions.len();
+                    let user_funcs: Vec<_> = ir.functions.iter()
+                        .filter(|f| is_user_func(&f.name))
+                        .map(|f| f.name.clone())
+                        .collect();
+                    let user_func_set: std::collections::BTreeSet<_> = user_funcs.iter().cloned().collect();
+                    let all_funcs: Vec<_> = ir.functions.drain(..).collect();
+                    let (user_remaining, stdlib_funcs): (Vec<_>, Vec<_>) = all_funcs
+                        .into_iter()
+                        .partition(|f| user_func_set.contains(&f.name));
+                    // Compile stdlib
+                    eprintln!(
+                        "MOLT_BACKEND: first build — caching {} stdlib functions to {}",
+                        stdlib_funcs.len(),
+                        stdlib_path.display()
+                    );
+                    // Use batched compilation for stdlib to avoid OOM
+                    // (1079 functions in one ObjectModule uses 30+GB).
+                    let stdlib_batch_size: usize = std::env::var("MOLT_BACKEND_BATCH_SIZE")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(64);
+                    let stdlib_count = stdlib_funcs.len();
+
+                    if stdlib_count <= stdlib_batch_size {
+                        let stdlib_ir = SimpleIR {
+                            functions: stdlib_funcs,
+                            profile: ir.profile.clone(),
+                        };
+                        let mut stdlib_backend = SimpleBackend::new_with_target(target_triple);
+                        stdlib_backend.skip_ir_passes = true;
+                        let stdlib_bytes = stdlib_backend.compile(stdlib_ir);
+                        std::fs::write(stdlib_path, &stdlib_bytes)
+                            .expect("failed to write cached stdlib .o");
+                    } else {
+                        // Batched stdlib compilation
+                        let all_stdlib_names: std::collections::BTreeSet<String> =
+                            stdlib_funcs.iter().map(|f| f.name.clone()).collect();
+                        let mut stdlib_remaining = stdlib_funcs;
+                        let stdlib_total_batches = (stdlib_remaining.len() + stdlib_batch_size - 1) / stdlib_batch_size;
+                        let mut stdlib_batch_paths: Vec<std::path::PathBuf> = Vec::new();
+                        let stdlib_tmp_dir = std::env::temp_dir()
+                            .join(format!("molt_stdlib_batch_{}", std::process::id()));
+                        let _ = std::fs::create_dir_all(&stdlib_tmp_dir);
+                        let mut stdlib_batch_idx = 0usize;
+
+                        while !stdlib_remaining.is_empty() {
+                            let take = stdlib_remaining.len().min(stdlib_batch_size);
+                            let batch_funcs: Vec<_> = stdlib_remaining.drain(..take).collect();
+                            eprintln!(
+                                "MOLT_BACKEND: stdlib batch {}/{} ({} functions)",
+                                stdlib_batch_idx + 1, stdlib_total_batches, batch_funcs.len()
+                            );
+                            let batch_ir = SimpleIR {
+                                functions: batch_funcs,
+                                profile: ir.profile.clone(),
+                            };
+                            let mut batch_backend = SimpleBackend::new_with_target(target_triple);
+                            batch_backend.skip_ir_passes = true;
+                            batch_backend.external_function_names = all_stdlib_names.clone();
+                            let batch_bytes = batch_backend.compile(batch_ir);
+                            let batch_path = stdlib_tmp_dir.join(format!("batch_{stdlib_batch_idx}.o"));
+                            std::fs::write(&batch_path, &batch_bytes)
+                                .expect("write stdlib batch .o");
+                            stdlib_batch_paths.push(batch_path);
+                            stdlib_batch_idx += 1;
+                        }
+
+                        // Merge stdlib batches with ld -r
+                        if stdlib_batch_paths.len() == 1 {
+                            std::fs::copy(&stdlib_batch_paths[0], stdlib_path)
+                                .expect("copy single stdlib batch");
+                        } else {
+                            let linker = std::env::var("MOLT_LINKER")
+                                .unwrap_or_else(|_| "ld".to_string());
+                            let status = std::process::Command::new(&linker)
+                                .arg("-r")
+                                .args(stdlib_batch_paths.iter().map(|p| p.as_os_str()))
+                                .arg("-o")
+                                .arg(stdlib_path.as_os_str())
+                                .status()
+                                .unwrap_or_else(|e| panic!("ld -r failed: {e}"));
+                            if !status.success() {
+                                panic!("stdlib partial link failed: exit {status}");
+                            }
+                            eprintln!(
+                                "MOLT_BACKEND: merged {} stdlib batches → {}",
+                                stdlib_batch_paths.len(),
+                                stdlib_path.display()
+                            );
+                        }
+                        let _ = std::fs::remove_dir_all(&stdlib_tmp_dir);
+                    }
+                    // Now compile user functions only
+                    ir.functions = user_remaining;
+                    eprintln!(
+                        "MOLT_BACKEND: compiling {} user functions",
+                        ir.functions.len()
+                    );
+                }
+            }
+
+            let func_count = ir.functions.len();
+            let batch_size: usize = std::env::var("MOLT_BACKEND_BATCH_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(64);
+
+            if func_count <= batch_size || batch_size == 0 {
+                // Small IR (or user-only mode): compile in one shot
+                let backend = SimpleBackend::new_with_target(target_triple);
+                let obj_bytes = backend.compile(ir);
+                file.write_all(&obj_bytes)?;
+                eprintln!(
+                    "Successfully compiled to output.o ({func_count} functions)"
+                );
+            } else {
+                // Large IR: split into batches, compile each independently,
+                // then merge with ld -r (partial link).  This prevents OOM
+                // when compiling 1000+ stdlib functions into one ObjectModule.
+                let mut all_functions: Vec<_> = ir.functions
+                    .into_iter()
+                    .collect();
+                let profile = ir.profile;
+                let total_batches = (all_functions.len() + batch_size - 1) / batch_size;
+                let mut batch_paths: Vec<std::path::PathBuf> = Vec::new();
+                let tmp_dir = std::env::temp_dir().join(format!("molt_batch_{}", std::process::id()));
+                let _ = std::fs::create_dir_all(&tmp_dir);
+
+                let mut batch_idx = 0usize;
+                // Pre-collect all function names for cross-batch import resolution.
+                let all_func_names: std::collections::BTreeSet<String> =
+                    all_functions.iter().map(|f| f.name.clone()).collect();
+
+                while !all_functions.is_empty() {
+                    let remaining = all_functions.len();
+                    let take = remaining.min(batch_size);
+                    // drain from the front to keep order
+                    let batch_funcs: Vec<_> = all_functions.drain(..take).collect();
+                    eprintln!(
+                        "MOLT_BACKEND: batch {}/{total_batches} ({} functions)",
+                        batch_idx + 1,
+                        batch_funcs.len()
+                    );
+                    let batch_ir = SimpleIR {
+                        functions: batch_funcs,
+                        profile: profile.clone(),
+                    };
+                    let mut backend = SimpleBackend::new_with_target(target_triple);
+                    // CRITICAL: skip IR-level passes (inline, dead func elim)
+                    // for batched compilation — those were already run on the
+                    // full IR above. Each batch only does Cranelift codegen.
+                    backend.skip_ir_passes = true;
+                    backend.external_function_names = all_func_names.clone();
+                    let obj_bytes = backend.compile(batch_ir);
+
+                    let batch_path = tmp_dir.join(format!("batch_{batch_idx}.o"));
+                    std::fs::write(&batch_path, &obj_bytes)?;
+                    batch_paths.push(batch_path);
+                    batch_idx += 1;
+                }
+
+                // Merge batch objects with ld -r (relocatable partial link)
+                drop(file); // close the output file handle
+                if batch_paths.len() == 1 {
+                    std::fs::copy(&batch_paths[0], output_file)?;
+                } else {
+                    // Use the system linker for partial linking.
+                    // Respect CC/LD env vars for cross-compilation.
+                    let ld_bin = std::env::var("LD")
+                        .or_else(|_| std::env::var("CC"))
+                        .unwrap_or_else(|_| "ld".to_string());
+                    let mut cmd = std::process::Command::new(&ld_bin);
+                    if ld_bin.contains("clang") || ld_bin.contains("gcc") {
+                        // When using a compiler driver, pass -r via -Wl
+                        cmd.arg("-Wl,-r").arg("-o").arg(output_file);
+                    } else {
+                        cmd.arg("-r").arg("-o").arg(output_file);
+                    }
+                    for p in &batch_paths {
+                        cmd.arg(p);
+                    }
+                    let ld_result = cmd.output().map_err(|e| {
+                        io::Error::new(
+                            io::ErrorKind::Other,
+                            format!("failed to run ld -r for batch merge: {e}"),
+                        )
+                    })?;
+                    if !ld_result.status.success() {
+                        let stderr = String::from_utf8_lossy(&ld_result.stderr);
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            format!("ld -r failed: {stderr}"),
+                        ));
+                    }
+                }
+
+                // Cleanup
+                for p in &batch_paths {
+                    let _ = std::fs::remove_file(p);
+                }
+                let _ = std::fs::remove_dir(&tmp_dir);
+                eprintln!(
+                    "Successfully compiled to output.o ({func_count} functions, {total_batches} batches)"
+                );
+            }
         }
         #[cfg(not(feature = "native-backend"))]
         {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "backend binary was built without native-backend support",
+                "backend binary was built without native-backend support; rebuild with: cargo build -p molt-backend --features native-backend",
             ));
         }
     }
