@@ -2410,6 +2410,8 @@ dependencies = [
  "mio",
  "molt-lang-obj-model",
  "molt-runtime-core",
+ "molt-runtime-crypto",
+ "molt-runtime-tk",
  "num-bigint",
  "num-integer",
  "num-traits",
@@ -2444,10 +2446,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-runtime-compression"
+version = "0.1.0"
+
+[[package]]
 name = "molt-runtime-core"
 version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",
+]
+
+[[package]]
+name = "molt-runtime-crypto"
+version = "0.1.0"
+dependencies = [
+ "blake2",
+ "blake2b_simd",
+ "blake2s_simd",
+ "digest",
+ "hmac",
+ "md-5",
+ "md4",
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+ "num-bigint",
+ "num-traits",
+ "pbkdf2",
+ "ripemd",
+ "scrypt",
+ "sha1",
+ "sha2",
+ "sha3",
+ "subtle",
+]
+
+[[package]]
+name = "molt-runtime-tk"
+version = "0.1.0"
+dependencies = [
+ "libloading",
+ "molt-lang-obj-model",
+ "molt-runtime-core",
 ]
 
 [[package]]
