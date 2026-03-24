@@ -1730,9 +1730,11 @@ impl SimpleBackend {
                 })
                 .collect();
         for (fid, name, sig) in declared {
-            // In batched compilation, don't emit trap stubs for functions
-            // that exist in other batches — ld -r will resolve them.
-            if self.external_function_names.contains(&name) {
+            // In batched compilation, skip ALL trap stubs — cross-batch
+            // references (including internally-generated names like
+            // sys____molt_globals_builtin__) are left undefined for
+            // ld -r to resolve at merge time.
+            if !self.external_function_names.is_empty() {
                 continue;
             }
             if let Err(e) = Self::emit_trap_stub(&mut self.module, fid, &sig, &name) {
