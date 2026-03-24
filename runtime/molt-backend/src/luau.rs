@@ -7623,6 +7623,44 @@ fn eliminate_goto_labels(source: &mut String) {
     );
 }
 
+
+
+/// Strip orphaned label definitions that have no corresponding goto.
+/// The `eliminate_goto_labels` pass removes gotos but may leave the
+/// `::label_N::` definitions behind, which Luau's parser rejects.
+fn strip_orphaned_labels(source: &mut String) {
+    let lines: Vec<&str> = source.lines().collect();
+    // Collect all goto targets
+    let mut goto_targets: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("goto ") {
+            let target = trimmed.strip_prefix("goto ").unwrap().trim().to_string();
+            goto_targets.insert(target);
+        }
+    }
+    // Remove label definitions that have no goto
+    let mut remove: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("::") && trimmed.ends_with("::") {
+            let label_name = &trimmed[2..trimmed.len()-2];
+            if !goto_targets.contains(label_name) {
+                remove.insert(i);
+            }
+        }
+    }
+    if !remove.is_empty() {
+        let count = remove.len();
+        let new_lines: Vec<&str> = lines.into_iter().enumerate()
+            .filter(|(i, _)| !remove.contains(i))
+            .map(|(_, l)| l)
+            .collect();
+        *source = new_lines.join("\n");
+        eprintln!("[molt-luau] Stripped {count} orphaned label definitions");
+    }
+}
+
 /// Strip dead code after terminators (`break`, `return`, `error(...)`, `continue`).
 ///
 /// In Luau, statements after `break`/`return`/`error()` within the same block
