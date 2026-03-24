@@ -15,6 +15,7 @@ Usage:
 
 import math
 import struct
+import time
 from . import Buffer, alloc, to_device, from_device
 
 
@@ -254,14 +255,32 @@ class Tensor:
         return self._broadcast_op(other, lambda a, b: a * b)
 
     def __truediv__(self, other) -> 'Tensor':
-        return self._broadcast_op(other, lambda a, b: a / b)
+        def _safe_div(a, b):
+            try:
+                return a / b
+            except ZeroDivisionError:
+                if a > 0:
+                    return float('inf')
+                elif a < 0:
+                    return float('-inf')
+                else:
+                    return float('nan')
+        return self._broadcast_op(other, _safe_div)
 
     def __rtruediv__(self, other) -> 'Tensor':
         if isinstance(other, (int, float)):
             data = self._data_list()
-            return self._from_flat(
-                [float(other) / x for x in data], self._shape
-            )
+            def _safe_rdiv(x):
+                try:
+                    return float(other) / x
+                except ZeroDivisionError:
+                    if other > 0:
+                        return float('inf')
+                    elif other < 0:
+                        return float('-inf')
+                    else:
+                        return float('nan')
+            return self._from_flat([_safe_rdiv(x) for x in data], self._shape)
         return NotImplemented
 
     def __neg__(self) -> 'Tensor':
@@ -606,8 +625,7 @@ def randn(*shape, seed=None) -> Tensor:
     size = _product(shape)
 
     # Simple LCG PRNG (no external deps)
-    if seed is None:
-        seed = 42
+    seed = seed if seed is not None else int(time.time() * 1000) % (2**31)
     state = seed
     TWO_PI = 2.0 * math.pi
 
@@ -636,8 +654,7 @@ def rand(*shape, seed=None) -> Tensor:
         shape = tuple(shape[0])
     size = _product(shape)
 
-    if seed is None:
-        seed = 42
+    seed = seed if seed is not None else int(time.time() * 1000) % (2**31)
     state = seed
     result = []
     for _ in range(size):

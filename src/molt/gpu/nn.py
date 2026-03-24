@@ -99,7 +99,7 @@ class Linear:
         self.out_features = out_features
         self.has_bias = bias
 
-        # Kaiming uniform initialization (like PyTorch default)
+        # Gaussian initialization scaled by 1/sqrt(in_features)
         bound = 1.0 / math.sqrt(in_features)
         self.weight = randn(out_features, in_features, seed=hash((in_features, out_features)) & 0xFFFFFFFF) * bound
         if bias:
