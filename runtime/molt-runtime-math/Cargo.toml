@@ -1,0 +1,11 @@
+[package]
+name = "molt-runtime-math"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+molt-runtime-core = { path = "../molt-runtime-core" }
+molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
+num-bigint = "0.4"
+num-traits = "0.2"
+libm = "0.2"

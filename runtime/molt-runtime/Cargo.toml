@@ -47,15 +47,15 @@ stdlib_fs_extra = ["dep:glob", "dep:tempfile"]
 # Granular domain feature gates for resolve_symbol: when disabled, the
 # linker can strip the implementation code for unused domains.
 stdlib_tk = ["dep:molt-runtime-tk"]
-stdlib_net = []
-stdlib_asyncio = []
+stdlib_net = ["dep:molt-runtime-net"]
+stdlib_asyncio = ["dep:molt-runtime-asyncio"]
 stdlib_email = []
-stdlib_decimal = []
+stdlib_decimal = ["dep:molt-runtime-math"]
 stdlib_logging = []
 stdlib_concurrent = []
 stdlib_dbm = []
 stdlib_importlib_extra = []
-stdlib_csv = []
+stdlib_csv = ["dep:molt-runtime-serial"]
 stdlib_signal = []
 stdlib_select = []
 
@@ -82,6 +82,10 @@ molt-runtime-core = { path = "../molt-runtime-core" }
 molt-runtime-crypto = { path = "../molt-runtime-crypto", optional = true }
 molt-runtime-tk = { path = "../molt-runtime-tk", optional = true }
 molt-runtime-compression = { path = "../molt-runtime-compression", optional = true }
+molt-runtime-net = { path = "../molt-runtime-net", optional = true }
+molt-runtime-asyncio = { path = "../molt-runtime-asyncio", optional = true }
+molt-runtime-math = { path = "../molt-runtime-math", optional = true }
+molt-runtime-serial = { path = "../molt-runtime-serial", optional = true }
 serde_json = "1.0"
 crossbeam-deque = "0.8"
 crossbeam-channel = "0.5"

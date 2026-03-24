@@ -1,0 +1,13 @@
+[package]
+name = "molt-runtime-asyncio"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+molt-runtime-core = { path = "../molt-runtime-core" }
+molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
+crossbeam-channel = { version = "0.5", optional = true }
+
+[features]
+default = ["asyncio"]
+asyncio = ["dep:crossbeam-channel"]
