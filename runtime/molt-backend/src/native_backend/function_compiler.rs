@@ -10799,13 +10799,13 @@ impl SimpleBackend {
                         let cleanup =
                             drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
                         for name in cleanup {
-                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                panic!(
-                                    "Tracked obj var not found in {} op {}: {}",
-                                    func_ir.name, op_idx, name
-                                )
-                            });
-                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                            // Use entry_vars (definition-time Value) for dec_ref,
+                            // not var_get (current SSA Value). If the variable was
+                            // redefined, var_get returns the WRONG object.
+                            let val = entry_vars.get(&name).copied()
+                                .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                            let Some(val) = val else { continue; };
+                            builder.ins().call(local_dec_ref_obj, &[val]);
                             // Remove from entry_vars AND from exception handler
                             // block_tracked_obj so neither path double-frees.
                             entry_vars.remove(&name);
@@ -10819,13 +10819,10 @@ impl SimpleBackend {
                         let cleanup =
                             drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
                         for name in cleanup {
-                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                panic!(
-                                    "Tracked ptr var not found in {} op {}: {}",
-                                    func_ir.name, op_idx, name
-                                )
-                            });
-                            builder.ins().call(local_dec_ref, &[*val]);
+                            let val = entry_vars.get(&name).copied()
+                                .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                            let Some(val) = val else { continue; };
+                            builder.ins().call(local_dec_ref, &[val]);
                             // Remove from entry_vars AND from exception handler
                             // block_tracked_obj so neither path double-frees.
                             entry_vars.remove(&name);
@@ -11762,25 +11759,22 @@ impl SimpleBackend {
                     if let Some(names) = block_tracked_obj.get_mut(&current_block) {
                         let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
                         for name in cleanup {
-                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                panic!(
-                                    "Tracked obj var not found in {} op {}: {}",
-                                    func_ir.name, op_idx, name
-                                )
-                            });
-                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                            // Use entry_vars (definition-time Value) for dec_ref,
+                            // not var_get (current SSA Value). If the variable was
+                            // redefined, var_get returns the WRONG object.
+                            let val = entry_vars.get(&name).copied()
+                                .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                            let Some(val) = val else { continue; };
+                            builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                     }
                     if let Some(names) = block_tracked_ptr.get_mut(&current_block) {
                         let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
                         for name in cleanup {
-                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                panic!(
-                                    "Tracked ptr var not found in {} op {}: {}",
-                                    func_ir.name, op_idx, name
-                                )
-                            });
-                            builder.ins().call(local_dec_ref, &[*val]);
+                            let val = entry_vars.get(&name).copied()
+                                .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                            let Some(val) = val else { continue; };
+                            builder.ins().call(local_dec_ref, &[val]);
                         }
                     }
                     reachable_blocks.insert(frame.after_block);
@@ -11821,25 +11815,22 @@ impl SimpleBackend {
                     if let Some(names) = block_tracked_obj.get_mut(&current_block) {
                         let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
                         for name in cleanup {
-                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                panic!(
-                                    "Tracked obj var not found in {} op {}: {}",
-                                    func_ir.name, op_idx, name
-                                )
-                            });
-                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                            // Use entry_vars (definition-time Value) for dec_ref,
+                            // not var_get (current SSA Value). If the variable was
+                            // redefined, var_get returns the WRONG object.
+                            let val = entry_vars.get(&name).copied()
+                                .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                            let Some(val) = val else { continue; };
+                            builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                     }
                     if let Some(names) = block_tracked_ptr.get_mut(&current_block) {
                         let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
                         for name in cleanup {
-                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                panic!(
-                                    "Tracked ptr var not found in {} op {}: {}",
-                                    func_ir.name, op_idx, name
-                                )
-                            });
-                            builder.ins().call(local_dec_ref, &[*val]);
+                            let val = entry_vars.get(&name).copied()
+                                .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                            let Some(val) = val else { continue; };
+                            builder.ins().call(local_dec_ref, &[val]);
                         }
                     }
                     reachable_blocks.insert(frame.loop_block);
@@ -12990,13 +12981,13 @@ impl SimpleBackend {
                         let cleanup =
                             drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
                         for name in cleanup {
-                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                panic!(
-                                    "Tracked obj var not found in {} op {}: {}",
-                                    func_ir.name, op_idx, name
-                                )
-                            });
-                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                            // Use entry_vars (definition-time Value) for dec_ref,
+                            // not var_get (current SSA Value). If the variable was
+                            // redefined, var_get returns the WRONG object.
+                            let val = entry_vars.get(&name).copied()
+                                .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                            let Some(val) = val else { continue; };
+                            builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                         if !carry_obj.is_empty() {
                             extend_unique_tracked(
@@ -13009,13 +13000,10 @@ impl SimpleBackend {
                         let cleanup =
                             drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
                         for name in cleanup {
-                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                panic!(
-                                    "Tracked ptr var not found in {} op {}: {}",
-                                    func_ir.name, op_idx, name
-                                )
-                            });
-                            builder.ins().call(local_dec_ref, &[*val]);
+                            let val = entry_vars.get(&name).copied()
+                                .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                            let Some(val) = val else { continue; };
+                            builder.ins().call(local_dec_ref, &[val]);
                         }
                         if !carry_ptr.is_empty() {
                             extend_unique_tracked(
