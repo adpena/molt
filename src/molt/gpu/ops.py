@@ -159,6 +159,8 @@ def gather(buf: Buffer, indices: Buffer) -> Buffer:
 
     for i in range(n):
         idx = struct.unpack_from(idx_fmt, indices._data, i * 8)[0]
+        if idx < 0 or idx >= buf.size:
+            raise IndexError(f"gather index {idx} out of range [0, {buf.size})")
         val = struct.unpack_from(val_fmt, buf._data, idx * 8)[0]
         struct.pack_into(val_fmt, result._data, i * 8, val)
 
@@ -179,6 +181,8 @@ def scatter(buf: Buffer, indices: Buffer, values: Buffer) -> Buffer:
     n = min(indices.size, values.size)
     for i in range(n):
         idx = struct.unpack_from(idx_fmt, indices._data, i * 8)[0]
+        if idx < 0 or idx >= buf.size:
+            raise IndexError(f"scatter index {idx} out of range [0, {buf.size})")
         val = struct.unpack_from(val_fmt, values._data, i * 8)[0]
         struct.pack_into(val_fmt, result._data, idx * 8, val)
 

@@ -32,18 +32,22 @@ def top_k_sample(model, prompt_tokens, max_new_tokens=100, k=50, temperature=1.0
         logits = model(tokens)
         last_logits = get_last_logits(logits)
 
-        # Apply temperature
-        if temperature != 1.0:
-            last_logits = [l / temperature for l in last_logits]
+        # temperature=0 or None → greedy (argmax)
+        if temperature is None or temperature == 0:
+            next_token = argmax(last_logits)
+        else:
+            # Apply temperature
+            if temperature != 1.0:
+                last_logits = [l / temperature for l in last_logits]
 
-        # Top-k: zero out everything except top k
-        indexed = sorted(enumerate(last_logits), key=lambda x: -x[1])
-        top_k_indices = set(i for i, _ in indexed[:k])
-        filtered = [l if i in top_k_indices else -1e9 for i, l in enumerate(last_logits)]
+            # Top-k: zero out everything except top k
+            indexed = sorted(enumerate(last_logits), key=lambda x: -x[1])
+            top_k_indices = set(i for i, _ in indexed[:k])
+            filtered = [l if i in top_k_indices else -1e9 for i, l in enumerate(last_logits)]
 
-        # Softmax + sample
-        probs = softmax_list(filtered)
-        next_token = sample_from_probs(probs)
+            # Softmax + sample
+            probs = softmax_list(filtered)
+            next_token = sample_from_probs(probs)
 
         if eos_token_id is not None and next_token == eos_token_id:
             break
@@ -58,29 +62,34 @@ def top_p_sample(model, prompt_tokens, max_new_tokens=100, p=0.9, temperature=1.
         logits = model(tokens)
         last_logits = get_last_logits(logits)
 
-        if temperature != 1.0:
-            last_logits = [l / temperature for l in last_logits]
+        # temperature=0 or None → greedy (argmax)
+        if temperature is None or temperature == 0:
+            next_token = argmax(last_logits)
+        else:
+            if temperature != 1.0:
+                last_logits = [l / temperature for l in last_logits]
 
-        # Sort by probability
-        probs = softmax_list(last_logits)
-        indexed = sorted(enumerate(probs), key=lambda x: -x[1])
+            # Sort by probability
+            probs = softmax_list(last_logits)
+            indexed = sorted(enumerate(probs), key=lambda x: -x[1])
 
-        # Accumulate until we reach p
-        cumsum = 0.0
-        allowed = set()
-        for idx, prob in indexed:
-            cumsum += prob
-            allowed.add(idx)
-            if cumsum >= p:
-                break
+            # Accumulate until we reach p
+            cumsum = 0.0
+            allowed = set()
+            for idx, prob in indexed:
+                cumsum += prob
+                allowed.add(idx)
+                if cumsum >= p:
+                    break
 
-        # Zero out non-allowed, re-normalize
-        filtered_probs = [prob if i in allowed else 0.0 for i, prob in enumerate(probs)]
-        total = sum(filtered_probs)
-        if total > 0:
-            filtered_probs = [fp / total for fp in filtered_probs]
+            # Zero out non-allowed, re-normalize
+            filtered_probs = [prob if i in allowed else 0.0 for i, prob in enumerate(probs)]
+            total = sum(filtered_probs)
+            if total > 0:
+                filtered_probs = [fp / total for fp in filtered_probs]
 
-        next_token = sample_from_probs(filtered_probs)
+            next_token = sample_from_probs(filtered_probs)
+
         if eos_token_id is not None and next_token == eos_token_id:
             break
         tokens.append(next_token)
