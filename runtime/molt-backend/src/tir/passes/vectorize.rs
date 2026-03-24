@@ -742,6 +742,7 @@ mod tests {
             next_value: 5,
             next_block: 3,
             attrs: crate::tir::ops::AttrDict::new(),
+        has_exception_handling: false,
         };
 
         let stats = run(&mut func);
@@ -839,6 +840,7 @@ mod tests {
             next_value: 2,
             next_block: 3,
             attrs: crate::tir::ops::AttrDict::new(),
+        has_exception_handling: false,
         };
 
         run(&mut func);
@@ -936,6 +938,7 @@ mod tests {
             next_value: 3,
             next_block: 3,
             attrs: crate::tir::ops::AttrDict::new(),
+        has_exception_handling: false,
         };
 
         run(&mut func);

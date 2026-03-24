@@ -24,6 +24,11 @@ pub struct TirFunction {
     pub next_block: u32,
     /// Function-level attributes (e.g. "fast_math", "closure_specialized").
     pub attrs: AttrDict,
+    /// Set to `true` during lift when the function contains TryStart/TryEnd
+    /// or StateBlockStart/StateBlockEnd ops.  When true, aggressive
+    /// optimization passes (DCE, SCCP, type refinement, type guard hoist)
+    /// must be conservative around exception regions to preserve correctness.
+    pub has_exception_handling: bool,
 }
 
 impl TirFunction {
@@ -67,6 +72,7 @@ impl TirFunction {
             next_value,
             next_block: 1,
             attrs: AttrDict::new(),
+            has_exception_handling: false,
         }
     }
 

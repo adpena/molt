@@ -78,6 +78,7 @@ mod tests {
             next_value: 1,
             next_block: 1,
             attrs: AttrDict::new(),
+        has_exception_handling: false,
         }
     }
 
@@ -114,6 +115,7 @@ mod tests {
             next_value: 3,
             next_block: 1,
             attrs: AttrDict::new(),
+        has_exception_handling: false,
         }
     }
 

@@ -12345,10 +12345,15 @@ def _build_native_link_command(
             # Mark only _main as an exported symbol so the linker can
             # dead-strip all unreferenced global (no_mangle) functions.
             link_cmd.append("-Wl,-exported_symbol,_main")
+            # Strip local symbols (-x) and debug symbols (-S) from the
+            # final binary to minimize size.
+            link_cmd.extend(["-Wl,-x", "-Wl,-S"])
             link_cmd.append("-lc++")
         elif "linux" in target_triple:
             link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
             link_cmd.append("-Wl,--gc-sections")
+            # Strip all symbols from the final binary.
+            link_cmd.append("-Wl,--strip-all")
             link_cmd.append("-lstdc++")
             link_cmd.append("-lm")
         elif "windows" in target_triple or "msvc" in target_triple:
@@ -12364,6 +12369,7 @@ def _build_native_link_command(
         elif sys.platform.startswith("linux"):
             link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
             link_cmd.append("-Wl,--gc-sections")
+            link_cmd.append("-Wl,--strip-all")
             link_cmd.append("-lstdc++")
             link_cmd.append("-lm")
         elif sys.platform == "win32":
