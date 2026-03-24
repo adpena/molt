@@ -111,6 +111,14 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         return stats;
     }
 
+    // When exception handling is present, bail out entirely — hoisting a
+    // TypeGuard out of a loop that is inside a try region could move the
+    // guard across an exception boundary, changing semantics if the
+    // exception handler resets the type.
+    if func.has_exception_handling {
+        return stats;
+    }
+
     // Build def map and predecessor map.
     let def_map = build_def_map(func);
     let pred_map = build_pred_map(func);

@@ -178,10 +178,12 @@ pub(crate) use crate::builtins::classes::{
     BuiltinClasses, builtin_classes, builtin_classes_if_initialized, builtin_classes_shutdown,
     builtin_type_bits, class_name_for_error, is_builtin_class_bits, molt_builtin_class_lookup,
 };
+#[cfg(not(feature = "stdlib_math"))]
 pub use crate::builtins::cmath_mod::*;
 pub use crate::builtins::codecs::*;
 pub use crate::builtins::codecs_ext::*;
 pub use crate::builtins::collections_ext::*;
+#[cfg(not(feature = "stdlib_math"))]
 pub use crate::builtins::colorsys::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::compression_common::*;

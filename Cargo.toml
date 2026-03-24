@@ -17,7 +17,7 @@ opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
-strip = false
+strip = "symbols"
 debug = 1
 
 [profile.dev.package.molt-backend]
@@ -239,10 +239,10 @@ debug = 0
 [profile.release-fast]
 inherits = "release"
 opt-level = 2
-lto = "off"
-codegen-units = 128
-strip = false
-panic = "unwind"
+lto = "thin"
+codegen-units = 16
+strip = "symbols"
+panic = "abort"
 
 # Size-optimized release profile for micro stdlib builds.
 # Uses opt-level "z" (minimize binary size) with full LTO.
