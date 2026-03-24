@@ -137,7 +137,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         }),
         OpCode::ConstFloat => Some(OpIR {
             kind: "const".to_string(),
-            f_value: attr_float(&op.attrs, "value"),
+            f_value: attr_float(&op.attrs, "f_value").or_else(|| attr_float(&op.attrs, "value")),
             out: out_var,
             ..OpIR::default()
         }),
