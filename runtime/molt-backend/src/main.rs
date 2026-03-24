@@ -1056,8 +1056,7 @@ fn main() -> io::Result<()> {
     for func in ir.functions.iter_mut() {
         if func.name.contains("__annotate__") {
             func.ops.clear();
-            func.params.clear();
-            // Return None bits (0x7FF8_0000_0000_0000) — matches MoltObject::none().
+            // Keep params unchanged so the function signature matches callers.
             func.ops.push(OpIR {
                 kind: "const_int".to_string(),
                 out: Some("__ret".to_string()),

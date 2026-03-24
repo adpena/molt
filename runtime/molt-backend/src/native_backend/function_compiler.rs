@@ -8237,27 +8237,22 @@ impl SimpleBackend {
                         func_sig.params.push(AbiParam::new(types::I64));
                     }
                     func_sig.returns.push(AbiParam::new(types::I64));
-                    let mut actual_builtin_name = func_name.clone();
-                    let func_id = match self
-                        .module
-                        .declare_function(&actual_builtin_name, Linkage::Import, &func_sig)
+                    // Reuse existing declaration if the name is already known
+                    // (avoids __ov disambiguation when sig differs).
+                    let actual_builtin_name = func_name.clone();
+                    let func_id = if let Some(cranelift_module::FuncOrDataId::Func(id)) =
+                        self.module.get_name(&actual_builtin_name)
                     {
-                        Ok(id) => id,
-                        Err(_) => {
-                            let mut suffix = 1u32;
-                            loop {
-                                actual_builtin_name =
-                                    format!("{}__ov{}", func_name, suffix);
-                                match self.module.declare_function(
-                                    &actual_builtin_name,
-                                    Linkage::Import,
-                                    &func_sig,
-                                ) {
-                                    Ok(id) => break id,
-                                    Err(_) => suffix += 1,
-                                }
-                            }
-                        }
+                        id
+                    } else {
+                        self.module
+                            .declare_function(&actual_builtin_name, Linkage::Import, &func_sig)
+                            .unwrap_or_else(|e| {
+                                panic!(
+                                    "builtin_func: failed to declare '{}': {:?}",
+                                    actual_builtin_name, e
+                                )
+                            })
                     };
                     self.declared_func_arities.insert(func_name.clone(), arity as usize);
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
@@ -8320,34 +8315,25 @@ impl SimpleBackend {
                     }
                     func_sig.returns.push(AbiParam::new(types::I64));
                     self.declared_func_arities.insert(func_name.clone(), func_sig.params.len());
-                    // Use Import linkage if the function is defined in another batch
-                    // (i.e., listed in external_function_names). Otherwise use Export
-                    // so it's defined in this batch.
-                    let linkage = if self.external_function_names.contains(func_name) {
-                        Linkage::Import
-                    } else {
-                        Linkage::Export
-                    };
-                    let mut actual_name = func_name.clone();
-                    let func_id = match self
-                        .module
-                        .declare_function(&actual_name, linkage, &func_sig)
+                    // func_new references an existing function. If the symbol is
+                    // already declared in this module (same or different sig),
+                    // reuse the existing FuncId. This avoids __ov disambiguation
+                    // that creates broken stub symbols.
+                    let actual_name = func_name.clone();
+                    let func_id = if let Some(cranelift_module::FuncOrDataId::Func(id)) =
+                        self.module.get_name(&actual_name)
                     {
-                        Ok(id) => id,
-                        Err(_) => {
-                            let mut suffix = 1u32;
-                            loop {
-                                actual_name = format!("{}__ov{}", func_name, suffix);
-                                match self.module.declare_function(
-                                    &actual_name,
-                                    linkage,
-                                    &func_sig,
-                                ) {
-                                    Ok(id) => break id,
-                                    Err(_) => suffix += 1,
-                                }
-                            }
-                        }
+                        id
+                    } else {
+                        // Not yet declared — use Import linkage (resolved at link time).
+                        self.module
+                            .declare_function(&actual_name, Linkage::Import, &func_sig)
+                            .unwrap_or_else(|e| {
+                                panic!(
+                                    "func_new: failed to declare '{}': {:?}",
+                                    actual_name, e
+                                )
+                            })
                     };
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
