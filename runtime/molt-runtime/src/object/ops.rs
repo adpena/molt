@@ -30165,7 +30165,18 @@ pub extern "C" fn molt_inc_ref_obj(bits: u64) {
 pub extern "C" fn molt_dec_ref_obj(bits: u64) {
     crate::with_gil_entry!(_py, {
         if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-            unsafe { molt_dec_ref(ptr) };
+            unsafe {
+                // Validate type_id before dec_ref to prevent use-after-free
+                // from codegen double-free bugs. A freed object's header is
+                // overwritten by the allocator's freelist metadata, producing
+                // invalid type_ids (>300 or 0). Skip dec_ref for these.
+                let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *const MoltHeader;
+                let type_id = (*header_ptr).type_id;
+                if type_id == 0 || type_id > 300 {
+                    return;
+                }
+                molt_dec_ref(ptr);
+            };
         }
     })
 }
@@ -30237,6 +30248,13 @@ pub extern "C" fn molt_unpack_sequence(
             };
 
             let actual = elems.len();
+            if actual != expected {
+                let elem_strs: Vec<String> = elems.iter().take(8).map(|b| format!("0x{:x}", b)).collect();
+                eprintln!(
+                    "UNPACK MISMATCH: seq_bits=0x{:x} type_id={} expected={} actual={} ptr={:?} elems=[{}]",
+                    seq_bits, type_id, expected, actual, ptr as *const u8, elem_strs.join(", ")
+                );
+            }
             if actual < expected {
                 let msg = format!(
                     "not enough values to unpack (expected {}, got {})",
