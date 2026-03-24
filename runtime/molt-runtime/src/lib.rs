@@ -180,11 +180,15 @@ pub(crate) use crate::builtins::classes::{
 };
 #[cfg(not(feature = "stdlib_math"))]
 pub use crate::builtins::cmath_mod::*;
+#[cfg(feature = "stdlib_math")]
+pub use molt_runtime_math::cmath_mod::*;
 pub use crate::builtins::codecs::*;
 pub use crate::builtins::codecs_ext::*;
 pub use crate::builtins::collections_ext::*;
 #[cfg(not(feature = "stdlib_math"))]
 pub use crate::builtins::colorsys::*;
+#[cfg(feature = "stdlib_math")]
+pub use molt_runtime_math::colorsys::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::compression_common::*;
 pub use crate::builtins::concurrent::*;
