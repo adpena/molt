@@ -41,12 +41,15 @@ mod concurrency;
 mod constants;
 #[cfg(feature = "stdlib_crypto")]
 mod crypto_bridge;
+// Re-export extracted crates so their symbols are available at link time.
+#[cfg(feature = "stdlib_crypto")]
+pub use molt_runtime_crypto;
+#[cfg(feature = "stdlib_compression")]
+pub use molt_runtime_compression;
 #[cfg(feature = "stdlib_tk")]
 mod gui;
 #[cfg(feature = "stdlib_tk")]
 mod tk_bridge;
-// Re-export the extracted tk crate so its #[no_mangle] symbols
-// are linked into the final binary.
 #[cfg(feature = "stdlib_tk")]
 pub use molt_runtime_tk;
 mod intrinsics;

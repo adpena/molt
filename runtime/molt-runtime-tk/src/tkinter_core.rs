@@ -273,7 +273,6 @@ const MODIFIER_NAMES: &[&str] = &[
 ///   strings: char, keysym, type, widget_path
 ///
 /// Returns None on malformed input.
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_event_build_from_args(_widget_path_bits: u64, args_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(elems) = read_seq_elements(args_bits) else {
@@ -345,7 +344,6 @@ pub extern "C" fn molt_tk_event_build_from_args(_widget_path_bits: u64, args_bit
 ///   - If value is already int, return it.
 ///   - If value is a string and `value.lstrip("-").isdigit()`, parse as int.
 ///   - Otherwise return value unchanged.
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_event_int(value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, { event_int_convert(value_bits) })
 }
@@ -361,7 +359,6 @@ pub extern "C" fn molt_tk_event_int(value_bits: u64) -> u64 {
 /// just "0x0".
 ///
 /// Returns a Molt list of strings, or the "|"-joined string representation.
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_event_state_decode(state_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(state_value) = bits_as_i64(state_bits) else {
@@ -423,7 +420,6 @@ pub extern "C" fn molt_tk_event_state_decode(state_bits: u64) -> u64 {
 ///
 /// Returns a Molt list of [key, value] pairs (each pair is a 2-element list).
 /// Raises RuntimeError if the element count is odd.
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_splitdict(tcl_str_bits: u64, cut_minus_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(tcl_str) = bits_to_string(tcl_str_bits) else {
@@ -620,7 +616,6 @@ fn cleanup_list(items: &[u64]) {
 ///
 /// Recursively descends into list/tuple elements, collecting non-None leaf
 /// values into a flat list. None values are skipped.
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_flatten_args(args_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let mut out: Vec<u64> = Vec::new();
@@ -662,7 +657,6 @@ fn flatten_recursive(bits: u64, out: &mut Vec<u64>) {
 ///   - Append "-key" and value to output list
 ///
 /// Returns a Molt list of alternating "-key", value elements.
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_cnfmerge(cnf_bits: u64, kw_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let mut out: Vec<u64> = Vec::new();
@@ -775,7 +769,6 @@ fn normalize_option_str(name: &str) -> String {
 /// Input is a Molt string. Returns a new Molt string with:
 ///   - Leading "-" prepended if missing
 ///   - (Underscores preserved — tkinter convention)
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_normalize_option(name_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(name) = bits_to_string(name_bits) else {
@@ -805,7 +798,6 @@ pub extern "C" fn molt_tk_normalize_option(name_bits: u64) -> u64 {
 ///   - "#RRRRGGGGBBBB" — each component 0-65535, scaled to 0-255 (component >> 8)
 ///
 /// Returns None on failure (not a valid hex color string).
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_hex_to_rgb(color_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(color) = bits_to_string(color_bits) else {
@@ -879,7 +871,6 @@ pub extern "C" fn molt_tk_hex_to_rgb(color_bits: u64) -> u64 {
 ///   - string of digits: parsed as int
 ///
 /// Returns None if the value cannot be interpreted as a delay.
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_normalize_delay_ms(delay_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         // Already an integer?
@@ -924,7 +915,6 @@ pub extern "C" fn molt_tk_normalize_delay_ms(delay_bits: u64) -> u64 {
 ///
 /// This mirrors the tkinter `_convert_stringval` / `getint`/`getdouble`
 /// cascade used when reading widget configuration values from Tcl.
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_convert_stringval(text_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         // If already int or float, return as-is
