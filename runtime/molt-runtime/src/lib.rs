@@ -45,6 +45,10 @@ mod crypto_bridge;
 mod gui;
 #[cfg(feature = "stdlib_tk")]
 mod tk_bridge;
+// Re-export the extracted tk crate so its #[no_mangle] symbols
+// are linked into the final binary.
+#[cfg(feature = "stdlib_tk")]
+pub use molt_runtime_tk;
 mod intrinsics;
 #[cfg(target_arch = "wasm32")]
 mod libc_compat;
