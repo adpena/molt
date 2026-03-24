@@ -6618,6 +6618,8 @@ _STDLIB_DOMAIN_FEATURE_MAP: dict[str, str] = {
     "tkinter": "stdlib_tk",
     "_tkinter": "stdlib_tk",
     # networking
+    "socket": "stdlib_net",
+    "_socket": "stdlib_net",
     "ssl": "stdlib_net",
     "_ssl": "stdlib_net",
     "http": "stdlib_net",
@@ -6661,6 +6663,43 @@ _STDLIB_DOMAIN_FEATURE_MAP: dict[str, str] = {
     # select
     "select": "stdlib_select",
     "selectors": "stdlib_select",
+    # --- Heavy domains (previously always excluded in micro) ---
+    # crypto
+    "hashlib": "stdlib_crypto",
+    "_hashlib": "stdlib_crypto",
+    "hmac": "stdlib_crypto",
+    # compression
+    "zlib": "stdlib_compression",
+    "gzip": "stdlib_compression",
+    "bz2": "stdlib_compression",
+    "_bz2": "stdlib_compression",
+    "lzma": "stdlib_compression",
+    "_lzma": "stdlib_compression",
+    # math
+    "math": "stdlib_math",
+    "cmath": "stdlib_math",
+    "statistics": "stdlib_math",
+    "random": "stdlib_math",
+    "fractions": "stdlib_math",
+    # serialization (msgpack, cbor)
+    "msgpack": "stdlib_serialization",
+    "cbor": "stdlib_serialization",
+    # serial (json, struct)
+    "json": "stdlib_serial",
+    "struct": "stdlib_serial",
+    "_struct": "stdlib_serial",
+    # archive
+    "zipfile": "stdlib_archive",
+    "tarfile": "stdlib_archive",
+    # ast
+    "ast": "stdlib_ast",
+    "_ast": "stdlib_ast",
+    # unicode names (unicodedata.name)
+    "unicodedata": "stdlib_unicode_names",
+    # fs extras (glob, tempfile)
+    "glob": "stdlib_fs_extra",
+    "tempfile": "stdlib_fs_extra",
+    "fnmatch": "stdlib_fs_extra",
 }
 
 # Prefix-based domain feature mapping: module names that start with
@@ -6675,6 +6714,10 @@ _STDLIB_DOMAIN_PREFIX_MAP: tuple[tuple[str, str], ...] = (
     ("dbm.", "stdlib_dbm"),
     ("importlib.resources.", "stdlib_importlib_extra"),
     ("importlib.metadata.", "stdlib_importlib_extra"),
+    ("json.", "stdlib_serial"),
+    ("xml.", "stdlib_serial"),
+    ("zipfile.", "stdlib_archive"),
+    ("tarfile.", "stdlib_archive"),
 )
 
 _SET_IMPLYING_MODULES = frozenset({
@@ -6718,6 +6761,16 @@ _ALL_DOMAIN_FEATURES: tuple[str, ...] = (
     "stdlib_csv",
     "stdlib_signal",
     "stdlib_select",
+    # Heavy domains — now gated by import graph in micro profile
+    "stdlib_crypto",
+    "stdlib_compression",
+    "stdlib_math",
+    "stdlib_serialization",
+    "stdlib_serial",
+    "stdlib_archive",
+    "stdlib_ast",
+    "stdlib_unicode_names",
+    "stdlib_fs_extra",
 )
 
 
