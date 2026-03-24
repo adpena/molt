@@ -6,7 +6,7 @@ CausalMask, and a complete TransformerDecoder for text generation.
 """
 
 from .tensor import Tensor
-from .nn import Linear, LayerNorm, Dropout, Sequential
+from .nn import Linear, LayerNorm, Dropout, Sequential, GELU
 import math
 
 
@@ -30,31 +30,63 @@ class MultiHeadAttention:
         self.out_proj = Linear(embed_dim, embed_dim, bias=False)
 
     def __call__(self, x: Tensor, mask=None) -> Tensor:
-        # x: (batch, seq_len, embed_dim)
-        batch_size = x.shape[0] if x.ndim == 3 else 1
+        # x: (seq_len, embed_dim) — 2D tensor
         seq_len = x.shape[-2] if x.ndim >= 2 else x.shape[0]
 
-        # Project Q, K, V
-        q = self.q_proj(x)  # (batch, seq, embed)
+        # Project Q, K, V — each is (seq_len, embed_dim)
+        q = self.q_proj(x)
         k = self.k_proj(x)
         v = self.v_proj(x)
 
-        # Reshape to (batch, heads, seq, head_dim) — simplified for 2D
-        # For interpreted mode, do the attention computation directly
-        # Full multi-head reshape requires 4D tensor support
+        # Multi-head attention via chunking along embed_dim.
+        # Split each (seq_len, embed_dim) into num_heads chunks of head_dim,
+        # compute attention per head, then concatenate.
+        q_data = q._data_list()
+        k_data = k._data_list()
+        v_data = v._data_list()
 
-        # Scaled dot-product attention: softmax(Q @ K.T / sqrt(d)) @ V
-        scores = q @ k.T  # (seq, seq)
-        scores = scores * self.scale
+        head_outputs = []  # will collect (seq_len, head_dim) per head
 
-        # Apply causal mask (upper triangle = -inf)
-        if self.causal:
-            scores = apply_causal_mask(scores, seq_len)
+        for h in range(self.num_heads):
+            hd = self.head_dim
+            # Extract head slice: columns [h*hd : (h+1)*hd] from (seq_len, embed_dim)
+            q_head = []
+            k_head = []
+            v_head = []
+            for s in range(seq_len):
+                row_start = s * self.embed_dim + h * hd
+                q_head.extend(q_data[row_start:row_start + hd])
+                k_head.extend(k_data[row_start:row_start + hd])
+                v_head.extend(v_data[row_start:row_start + hd])
 
-        attn_weights = scores.softmax(axis=-1)
-        attn_output = attn_weights @ v
+            # q_head, k_head, v_head are each (seq_len, head_dim)
+            q_h = Tensor(q_head, shape=(seq_len, hd))
+            k_h = Tensor(k_head, shape=(seq_len, hd))
+            v_h = Tensor(v_head, shape=(seq_len, hd))
 
-        return self.out_proj(attn_output)
+            # Scaled dot-product attention: softmax(Q @ K.T / sqrt(d)) @ V
+            scores = q_h @ k_h.T  # (seq_len, seq_len)
+            scores = scores * self.scale
+
+            if self.causal:
+                scores = apply_causal_mask(scores, seq_len)
+
+            attn_weights = scores.softmax(axis=-1)
+            attn_out = attn_weights @ v_h  # (seq_len, head_dim)
+            head_outputs.append(attn_out._data_list())
+
+        # Concatenate heads: interleave head_dim columns back to embed_dim
+        concat = [0.0] * (seq_len * self.embed_dim)
+        for s in range(seq_len):
+            for h in range(self.num_heads):
+                hd = self.head_dim
+                src_start = s * hd
+                dst_start = s * self.embed_dim + h * hd
+                for d in range(hd):
+                    concat[dst_start + d] = head_outputs[h][src_start + d]
+
+        concat_tensor = Tensor(concat, shape=(seq_len, self.embed_dim))
+        return self.out_proj(concat_tensor)
 
     def load_weights(self, prefix, weights):
         self.q_proj.load_weights(
@@ -78,7 +110,7 @@ def apply_causal_mask(scores: Tensor, seq_len: int) -> Tensor:
         for i in range(min(seq_len, len(data))):
             for j in range(min(seq_len, len(data[i]))):
                 if j > i:
-                    data[i][j] = -1e9
+                    data[i][j] = float('-inf')
         # Flatten nested list for Tensor constructor
         flat = []
         for row in data:
@@ -98,7 +130,7 @@ class TransformerBlock:
         self.ln2 = LayerNorm(embed_dim)
         self.ff = Sequential(
             Linear(embed_dim, ff_dim),
-            # GELU approximation
+            GELU(),
             Linear(ff_dim, embed_dim),
         )
 

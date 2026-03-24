@@ -10,6 +10,7 @@ Usage:
 
 import os
 import json
+import re
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -28,6 +29,9 @@ def download_model(repo_id: str, filename: str = None, revision: str = "main",
     Example:
         path = download_model("bert-base-uncased", "model.safetensors")
     """
+    if not re.match(r'^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$', repo_id):
+        raise ValueError(f"Invalid repo_id: {repo_id}")
+
     cache = Path(cache_dir) if cache_dir else CACHE_DIR
     repo_dir = cache / repo_id.replace("/", "--")
     repo_dir.mkdir(parents=True, exist_ok=True)
@@ -40,6 +44,9 @@ def download_model(repo_id: str, filename: str = None, revision: str = "main",
             except Exception:
                 continue
         raise FileNotFoundError(f"No model file found in {repo_id}")
+
+    if '/' in filename or '..' in filename:
+        raise ValueError(f"Invalid filename: {filename}")
 
     local_path = repo_dir / filename
     if local_path.exists():
@@ -56,12 +63,13 @@ def download_model(repo_id: str, filename: str = None, revision: str = "main",
         if token:
             req.add_header("Authorization", f"Bearer {token}")
 
+        tmp_path = str(local_path) + ".tmp"
         with urllib.request.urlopen(req) as response:
             total = int(response.headers.get('Content-Length', 0))
             downloaded = 0
             chunk_size = 8 * 1024 * 1024  # 8MB chunks
 
-            with open(local_path, 'wb') as f:
+            with open(tmp_path, 'wb') as f:
                 while True:
                     chunk = response.read(chunk_size)
                     if not chunk:
@@ -74,6 +82,8 @@ def download_model(repo_id: str, filename: str = None, revision: str = "main",
 
             print(f"\n  Saved to {local_path}")
 
+        # Atomic rename on success — avoids partial files on interrupt
+        os.rename(tmp_path, str(local_path))
         return str(local_path)
 
     except urllib.error.HTTPError as e:

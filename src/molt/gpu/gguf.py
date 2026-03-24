@@ -94,6 +94,11 @@ def load_gguf(path: str) -> GGUFModel:
         n_tensors = struct.unpack('<Q', f.read(8))[0]
         n_metadata = struct.unpack('<Q', f.read(8))[0]
 
+        if n_metadata > 100_000:
+            raise ValueError("GGUF metadata count too large")
+        if n_tensors > 100_000:
+            raise ValueError("GGUF tensor count too large")
+
         # Read metadata key-value pairs
         for _ in range(n_metadata):
             key = _read_string(f, version)
@@ -140,6 +145,8 @@ def load_gguf(path: str) -> GGUFModel:
 
 def _read_string(f, version):
     length = struct.unpack('<Q', f.read(8))[0]
+    if length > 10_000_000:
+        raise ValueError("GGUF string too long")
     return f.read(length).decode('utf-8')
 
 def _read_meta_value(f, version):
