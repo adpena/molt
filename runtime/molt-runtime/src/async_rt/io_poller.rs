@@ -5,16 +5,16 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use mio::net::TcpStream as MioTcpStream;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use mio::{Events, Interest, Poll, Registry, Token, Waker};
-#[cfg(all(not(target_arch = "wasm32"), unix))]
+#[cfg(all(molt_has_net_io, unix))]
 use std::os::unix::io::AsRawFd;
-#[cfg(all(not(target_arch = "wasm32"), windows))]
+#[cfg(all(molt_has_net_io, windows))]
 use std::os::windows::io::AsRawSocket;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use super::sockets::{socket_ptr_from_bits_or_fd, socket_ref_inc, with_socket_mut};
 use super::{await_waiters_take, wake_task_ptr};
 use crate::require_net_capability;
@@ -26,7 +26,7 @@ use crate::{
 };
 #[cfg(target_arch = "wasm32")]
 use crate::{IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use crate::{IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, raise_os_error};
 
 fn trace_io_poller() -> bool {
@@ -39,7 +39,7 @@ fn trace_io_wait_errors() -> bool {
     *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_IO_WAIT_ERRORS").as_deref() == Ok("1"))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn socket_debug_fd(socket_ptr: *mut u8) -> Option<i64> {
     with_socket_mut(socket_ptr, |inner| {
         #[cfg(unix)]
@@ -60,12 +60,12 @@ fn socket_debug_fd(socket_ptr: *mut u8) -> Option<i64> {
     .ok()
 }
 
-#[cfg(all(not(target_arch = "wasm32"), unix))]
+#[cfg(all(molt_has_net_io, unix))]
 fn stream_debug_fd(stream: &MioTcpStream) -> i64 {
     stream.as_raw_fd() as i64
 }
 
-#[cfg(all(not(target_arch = "wasm32"), windows))]
+#[cfg(all(molt_has_net_io, windows))]
 fn stream_debug_fd(stream: &MioTcpStream) -> i64 {
     stream.as_raw_socket() as i64
 }
@@ -75,20 +75,20 @@ fn stream_debug_fd(_stream: &MioTcpStream) -> i64 {
     -1
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 struct IoWaiter {
     socket_id: usize,
     events: u32,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 #[derive(Default)]
 struct WaiterList {
     order: Vec<PtrSlot>,
     index: HashMap<PtrSlot, usize>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 impl WaiterList {
     fn insert(&mut self, waiter: PtrSlot) -> bool {
         if self.index.contains_key(&waiter) {
@@ -136,7 +136,7 @@ impl WaiterList {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 enum IoSource {
     Socket(PtrSlot),
     WebSocket(MioTcpStream),
@@ -149,7 +149,7 @@ struct IoWaiter {
     is_ws: bool,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 struct IoSocketEntry {
     token: Token,
     interests: Interest,
@@ -159,7 +159,7 @@ struct IoSocketEntry {
     debug_fd: i64,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub(crate) struct IoPoller {
     poll: Mutex<Poll>,
     registry: Registry,
@@ -321,26 +321,26 @@ impl IoPoller {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 struct BlockingWaiter {
     events: u32,
     ready: Mutex<Option<u32>>,
     condvar: Condvar,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 #[derive(Default)]
 struct BlockingWaiterList {
     order: Vec<Arc<BlockingWaiter>>,
     index: HashMap<usize, usize>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn blocking_waiter_id(waiter: &Arc<BlockingWaiter>) -> usize {
     Arc::as_ptr(waiter) as usize
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 impl BlockingWaiterList {
     fn insert(&mut self, waiter: Arc<BlockingWaiter>) -> bool {
         let waiter_id = blocking_waiter_id(&waiter);
@@ -402,7 +402,7 @@ impl BlockingWaiterList {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 impl IoPoller {
     pub(crate) fn new() -> Self {
         let poll = Poll::new().expect("io poller");
@@ -878,7 +878,7 @@ impl IoPoller {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn interest_from_events(events: u32) -> Interest {
     let mut interest = None;
     if (events & IO_EVENT_READ) != 0 {
@@ -893,7 +893,7 @@ fn interest_from_events(events: u32) -> Interest {
     interest.unwrap_or(Interest::READABLE)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn io_worker(poller: Arc<IoPoller>) {
     loop {
         if !poller.running.load(AtomicOrdering::Acquire) {
@@ -993,7 +993,7 @@ fn io_worker(poller: Arc<IoPoller>) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass a valid io-wait awaitable object bits value and ensure the
 /// runtime is initialized. The function enters the GIL-guarded runtime state.
@@ -1112,7 +1112,7 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
