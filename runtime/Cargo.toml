@@ -5,6 +5,7 @@ members = [
     "molt-runtime-core",
     "molt-runtime-tk",
     "molt-runtime-compression",
+    "molt-runtime-crypto",
     "molt-runtime-net",
     "molt-runtime-asyncio",
     "molt-runtime-math",
