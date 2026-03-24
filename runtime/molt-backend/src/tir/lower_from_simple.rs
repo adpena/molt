@@ -76,6 +76,7 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         entry_block,
         next_value,
         next_block,
+        attrs: super::ops::AttrDict::new(),
     }
 }
 

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use super::blocks::{BlockId, TirBlock};
+use super::ops::AttrDict;
 use super::types::TirType;
 use super::values::ValueId;
 use crate::tir::passes::cha::ClassHierarchy;
@@ -21,6 +22,8 @@ pub struct TirFunction {
     pub next_value: u32,
     /// Counter for allocating fresh BlockIds.
     pub next_block: u32,
+    /// Function-level attributes (e.g. "fast_math", "closure_specialized").
+    pub attrs: AttrDict,
 }
 
 impl TirFunction {
@@ -63,6 +66,7 @@ impl TirFunction {
             entry_block: entry_id,
             next_value,
             next_block: 1,
+            attrs: AttrDict::new(),
         }
     }
 
