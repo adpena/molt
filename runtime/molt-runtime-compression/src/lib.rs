@@ -6,9 +6,9 @@
 pub mod bridge;
 pub mod compression_common;
 pub mod bz2;
-// pub mod gzip;
-// pub mod zlib;
-// pub mod lzma;
-// pub mod lzma_wasm;
-// pub mod tarfile;
-// pub mod zipfile;
+pub mod gzip;
+pub mod zlib;
+pub mod lzma;
+pub mod lzma_wasm;
+pub mod tarfile;
+pub mod zipfile;
