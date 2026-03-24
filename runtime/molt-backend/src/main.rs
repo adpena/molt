@@ -870,6 +870,34 @@ fn main() -> io::Result<()> {
             }
         }
     }
+    
+    // Windows memory guard: use job objects to limit working set.
+    // Less effective than Unix RLIMIT_AS but prevents unbounded growth.
+    #[cfg(windows)]
+    {
+        let max_gb: u64 = std::env::var("MOLT_BACKEND_MAX_RSS_GB")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4);
+        let max_bytes = max_gb * 1024 * 1024 * 1024;
+        unsafe {
+            use windows_sys::Win32::System::JobObjects::*;
+            use windows_sys::Win32::System::Threading::*;
+            let job = CreateJobObjectW(core::ptr::null(), core::ptr::null());
+            if job != 0 {
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = core::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+                info.ProcessMemoryLimit = max_bytes as usize;
+                SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const _,
+                    core::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                AssignProcessToJobObject(job, GetCurrentProcess());
+            }
+        }
+    }
 
     let args: Vec<String> = env::args().collect();
     if args.iter().any(|arg| arg == "--daemon") {
@@ -928,10 +956,11 @@ fn main() -> io::Result<()> {
                     }
                 }
             } else {
-                let mut buf = Vec::new();
-                io::stdin().read_to_end(&mut buf)?;
-                match rmp_serde::from_slice::<SimpleIR>(&buf) {
-                    Ok(ir) => { drop(buf); ir },
+                // Streaming msgpack from stdin via BufReader — avoids
+                // loading the entire IR into a Vec<u8> first.
+                let reader = io::BufReader::with_capacity(1 << 20, io::stdin().lock());
+                match rmp_serde::from_read::<_, SimpleIR>(reader) {
+                    Ok(ir) => ir,
                     Err(err) => {
                         eprintln!("invalid msgpack IR: {err}");
                         std::process::exit(1);

@@ -51,3 +51,51 @@ mod cbor_tests {
         assert!(ir2.profile.is_none());
     }
 }
+
+
+#[test]
+#[cfg(feature = "cbor")]
+fn test_cbor_nan_infinity_round_trip() {
+    use molt_backend::ir::{SimpleIR, FunctionIR, OpIR};
+    
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "test_nan".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const_float".to_string(),
+                    f_value: Some(f64::NAN),
+                    out: Some("v0".to_string()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "const_float".to_string(),
+                    f_value: Some(f64::INFINITY),
+                    out: Some("v1".to_string()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "const_float".to_string(),
+                    f_value: Some(f64::NEG_INFINITY),
+                    out: Some("v2".to_string()),
+                    ..Default::default()
+                },
+            ],
+            param_types: None,
+        }],
+        profile: None,
+    };
+    
+    let mut buf = Vec::new();
+    ciborium::ser::into_writer(&ir, &mut buf).unwrap();
+    let decoded: SimpleIR = ciborium::de::from_reader(&buf[..]).unwrap();
+    
+    assert_eq!(decoded.functions.len(), 1);
+    let ops = &decoded.functions[0].ops;
+    assert_eq!(ops.len(), 3);
+    // NaN != NaN, so check with is_nan()
+    assert!(ops[0].f_value.unwrap().is_nan());
+    assert_eq!(ops[1].f_value.unwrap(), f64::INFINITY);
+    assert_eq!(ops[2].f_value.unwrap(), f64::NEG_INFINITY);
+}
