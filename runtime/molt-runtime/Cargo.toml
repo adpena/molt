@@ -39,7 +39,7 @@ stdlib_crypto = [
     "dep:md4", "dep:ripemd",
     "dep:hmac", "dep:pbkdf2", "dep:scrypt", "dep:subtle",
 ]
-stdlib_compression = ["dep:bzip2", "dep:flate2", "dep:xz2"]
+stdlib_compression = ["dep:bzip2", "dep:flate2", "dep:xz2", "dep:molt-runtime-compression"]
 stdlib_serialization = ["dep:rmpv", "dep:serde_cbor"]
 stdlib_archive = ["dep:zip"]
 stdlib_ast = ["dep:rustpython-parser"]
@@ -81,6 +81,7 @@ molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-runtime-crypto = { path = "../molt-runtime-crypto", optional = true }
 molt-runtime-tk = { path = "../molt-runtime-tk", optional = true }
+molt-runtime-compression = { path = "../molt-runtime-compression", optional = true }
 serde_json = "1.0"
 crossbeam-deque = "0.8"
 crossbeam-channel = "0.5"
