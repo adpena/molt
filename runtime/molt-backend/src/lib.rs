@@ -1638,6 +1638,19 @@ impl SimpleBackend {
         // MOLT_MAX_FUNCTION_OPS) into private chunk functions to avoid
         // Cranelift's O(n²) register allocator blowup.
         split_megafunctions(&mut ir);
+        // Replace __annotate__ functions with trivial ret_void stubs.
+        // These are typing metadata that we don't need to compile fully,
+        // but their symbols must exist for trampolines and def_function refs.
+        // We keep the params so the Cranelift signature matches the declaration.
+        for func_ir in ir.functions.iter_mut() {
+            if func_ir.name.contains("__annotate__") {
+                func_ir.ops.clear();
+                func_ir.ops.push(crate::OpIR {
+                    kind: "ret_void".to_string(),
+                    ..crate::OpIR::default()
+                });
+            }
+        }
         if timing {
             let passes_elapsed = compile_start.elapsed();
             eprintln!("MOLT_BACKEND_TIMING: IR passes took {passes_elapsed:.2?}");
@@ -1669,9 +1682,6 @@ impl SimpleBackend {
         let mut failed = 0u32;
         let mut slowest_func: Option<(String, std::time::Duration)> = None;
         for func_ir in ir.functions {
-            if func_ir.name.contains("__annotate__") {
-                continue;
-            }
             let func_name = func_ir.name.clone();
             let func_start = std::time::Instant::now();
             self.compile_func(
