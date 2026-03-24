@@ -598,53 +598,398 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.value_types.insert(result_id, TirType::DynBox);
             }
 
-            // ── Stubs for remaining opcodes ──
+            // ── CallMethod: receiver.method(args...) ──
+            // Protocol: molt_call_method(receiver, method_name_bits, args_builder) -> u64
+            // operands: [receiver, method_name, arg0, arg1, ...]
             OpCode::CallMethod => {
-                todo!("LLVM lowering: CallMethod not yet implemented")
+                let i64_ty = self.backend.context.i64_type();
+                let receiver = self.resolve(op.operands[0]);
+                let receiver_i64 = self.ensure_i64(receiver);
+
+                let method_name = if op.operands.len() > 1 {
+                    let mv = self.resolve(op.operands[1]);
+                    self.ensure_i64(mv)
+                } else {
+                    i64_ty.const_int(0, false)
+                };
+
+                // Build positional args (operands[2..])
+                let n_args = op.operands.len().saturating_sub(2) as u64;
+                let new_fn = self.backend.module.get_function("molt_callargs_new").unwrap();
+                let args_builder = self
+                    .backend
+                    .builder
+                    .build_call(
+                        new_fn,
+                        &[i64_ty.const_int(n_args, false).into(), i64_ty.const_int(0, false).into()],
+                        "cm_args",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                let push_fn = self.backend.module.get_function("molt_callargs_push_pos").unwrap();
+                for &arg_id in op.operands.get(2..).unwrap_or(&[]) {
+                    let arg = self.resolve(arg_id);
+                    let arg_i64 = self.ensure_i64(arg);
+                    self.backend
+                        .builder
+                        .build_call(push_fn, &[args_builder.into(), arg_i64.into()], "cm_push")
+                        .unwrap();
+                }
+
+                let call_method_fn = self.backend.module.get_function("molt_call_method").unwrap();
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        call_method_fn,
+                        &[receiver_i64.into(), method_name.into(), args_builder.into()],
+                        "call_method",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
+
+            // ── CallBuiltin: builtin_name(args...) ──
+            // Protocol: molt_call_builtin(name_bits, args_builder) -> u64
+            // operands: [builtin_name, arg0, arg1, ...]
             OpCode::CallBuiltin => {
-                todo!("LLVM lowering: CallBuiltin not yet implemented")
+                let i64_ty = self.backend.context.i64_type();
+                let builtin_name = if !op.operands.is_empty() {
+                    let bv = self.resolve(op.operands[0]);
+                    self.ensure_i64(bv)
+                } else {
+                    i64_ty.const_int(0, false)
+                };
+
+                let n_args = op.operands.len().saturating_sub(1) as u64;
+                let new_fn = self.backend.module.get_function("molt_callargs_new").unwrap();
+                let args_builder = self
+                    .backend
+                    .builder
+                    .build_call(
+                        new_fn,
+                        &[i64_ty.const_int(n_args, false).into(), i64_ty.const_int(0, false).into()],
+                        "cb_args",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                let push_fn = self.backend.module.get_function("molt_callargs_push_pos").unwrap();
+                for &arg_id in op.operands.get(1..).unwrap_or(&[]) {
+                    let arg = self.resolve(arg_id);
+                    let arg_i64 = self.ensure_i64(arg);
+                    self.backend
+                        .builder
+                        .build_call(push_fn, &[args_builder.into(), arg_i64.into()], "cb_push")
+                        .unwrap();
+                }
+
+                let call_builtin_fn = self.backend.module.get_function("molt_call_builtin").unwrap();
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        call_builtin_fn,
+                        &[builtin_name.into(), args_builder.into()],
+                        "call_builtin",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
+
+            // ── StackAlloc: alloca for stack-resident slots ──
+            // attrs: { "type": "i64" | "dynbox" | ... }
+            // result: pointer stored as i64 (ptrtoint)
             OpCode::StackAlloc => {
-                todo!("LLVM lowering: StackAlloc not yet implemented")
+                let i64_ty = self.backend.context.i64_type();
+                let ptr = self
+                    .backend
+                    .builder
+                    .build_alloca(i64_ty, "stack_slot")
+                    .unwrap();
+                let ptr_as_i64 = self
+                    .backend
+                    .builder
+                    .build_ptr_to_int(ptr, i64_ty, "slot_ptr")
+                    .unwrap();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, ptr_as_i64.into());
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
+
+            // ── Free: stack-allocated slots are freed automatically — no-op ──
             OpCode::Free => {
-                todo!("LLVM lowering: Free not yet implemented")
+                // Stack memory is reclaimed by the function epilogue; nothing to emit.
             }
+
+            // ── BuildList: [item0, item1, ...] ──
+            // Strategy: molt_list_new(capacity) then molt_list_push for each item.
             OpCode::BuildList => {
-                todo!("LLVM lowering: BuildList not yet implemented")
+                let i64_ty = self.backend.context.i64_type();
+                let n = op.operands.len() as u64;
+                let list_new_fn = self.backend.module.get_function("molt_list_new").unwrap();
+                let list = self
+                    .backend
+                    .builder
+                    .build_call(list_new_fn, &[i64_ty.const_int(n, false).into()], "list")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                let push_fn = self.backend.module.get_function("molt_list_push").unwrap();
+                for &item_id in &op.operands {
+                    let item = self.resolve(item_id);
+                    let item_i64 = self.ensure_i64(item);
+                    self.backend
+                        .builder
+                        .build_call(push_fn, &[list.into(), item_i64.into()], "list_push")
+                        .unwrap();
+                }
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, list);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
+
+            // ── BuildDict: {k0: v0, k1: v1, ...} ──
+            // operands: [k0, v0, k1, v1, ...]  (pairs)
             OpCode::BuildDict => {
-                todo!("LLVM lowering: BuildDict not yet implemented")
+                let i64_ty = self.backend.context.i64_type();
+                let n_pairs = (op.operands.len() / 2) as u64;
+                let dict_new_fn = self.backend.module.get_function("molt_dict_new").unwrap();
+                let dict = self
+                    .backend
+                    .builder
+                    .build_call(dict_new_fn, &[i64_ty.const_int(n_pairs, false).into()], "dict")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                let dict_set_fn = self.backend.module.get_function("molt_dict_set").unwrap();
+                let mut i = 0;
+                while i + 1 < op.operands.len() {
+                    let k = self.resolve(op.operands[i]);
+                    let v = self.resolve(op.operands[i + 1]);
+                    let k_i64 = self.ensure_i64(k);
+                    let v_i64 = self.ensure_i64(v);
+                    self.backend
+                        .builder
+                        .build_call(dict_set_fn, &[dict.into(), k_i64.into(), v_i64.into()], "dict_set")
+                        .unwrap();
+                    i += 2;
+                }
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, dict);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
+
+            // ── BuildTuple: (item0, item1, ...) ──
             OpCode::BuildTuple => {
-                todo!("LLVM lowering: BuildTuple not yet implemented")
+                let i64_ty = self.backend.context.i64_type();
+                let n = op.operands.len() as u64;
+                let tup_new_fn = self.backend.module.get_function("molt_tuple_new").unwrap();
+                let tup = self
+                    .backend
+                    .builder
+                    .build_call(tup_new_fn, &[i64_ty.const_int(n, false).into()], "tuple")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                let push_fn = self.backend.module.get_function("molt_tuple_push").unwrap();
+                for &item_id in &op.operands {
+                    let item = self.resolve(item_id);
+                    let item_i64 = self.ensure_i64(item);
+                    self.backend
+                        .builder
+                        .build_call(push_fn, &[tup.into(), item_i64.into()], "tup_push")
+                        .unwrap();
+                }
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, tup);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
+
+            // ── BuildSet: {item0, item1, ...} ──
             OpCode::BuildSet => {
-                todo!("LLVM lowering: BuildSet not yet implemented")
+                let i64_ty = self.backend.context.i64_type();
+                let n = op.operands.len() as u64;
+                let set_new_fn = self.backend.module.get_function("molt_set_new").unwrap();
+                let set = self
+                    .backend
+                    .builder
+                    .build_call(set_new_fn, &[i64_ty.const_int(n, false).into()], "set")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                let push_fn = self.backend.module.get_function("molt_set_push").unwrap();
+                for &item_id in &op.operands {
+                    let item = self.resolve(item_id);
+                    let item_i64 = self.ensure_i64(item);
+                    self.backend
+                        .builder
+                        .build_call(push_fn, &[set.into(), item_i64.into()], "set_push")
+                        .unwrap();
+                }
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, set);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
+
+            // ── BuildSlice: slice(start, stop, step) ──
+            // operands: [start, stop, step]   (already declared as molt_slice_new)
             OpCode::BuildSlice => {
-                todo!("LLVM lowering: BuildSlice not yet implemented")
+                let i64_ty = self.backend.context.i64_type();
+                let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
+                let none_val: BasicValueEnum<'ctx> = i64_ty.const_int(none_bits, false).into();
+
+                let start = if op.operands.len() > 0 {
+                    let v = self.resolve(op.operands[0]);
+                    self.ensure_i64(v).into()
+                } else {
+                    none_val
+                };
+                let stop = if op.operands.len() > 1 {
+                    let v = self.resolve(op.operands[1]);
+                    self.ensure_i64(v).into()
+                } else {
+                    none_val
+                };
+                let step = if op.operands.len() > 2 {
+                    let v = self.resolve(op.operands[2]);
+                    self.ensure_i64(v).into()
+                } else {
+                    none_val
+                };
+
+                let slice_fn = self.backend.module.get_function("molt_slice_new").unwrap();
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(slice_fn, &[start.into(), stop.into(), step.into()], "slice")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
+
+            // ── GetIter: iter(obj) ──
             OpCode::GetIter => {
-                todo!("LLVM lowering: GetIter not yet implemented")
+                let obj = self.resolve(op.operands[0]);
+                let obj_i64 = self.ensure_i64(obj);
+                let get_iter_fn = self.backend.module.get_function("molt_get_iter").unwrap();
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(get_iter_fn, &[obj_i64.into()], "get_iter")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
+
+            // ── IterNext: next(iter) -> value (or StopIteration sentinel) ──
             OpCode::IterNext => {
-                todo!("LLVM lowering: IterNext not yet implemented")
+                let iter = self.resolve(op.operands[0]);
+                let iter_i64 = self.ensure_i64(iter);
+                let iter_next_fn = self.backend.module.get_function("molt_iter_next").unwrap();
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(iter_next_fn, &[iter_i64.into()], "iter_next")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
+
+            // ── ForIter: advance iterator, returning next value or exhaustion sentinel ──
             OpCode::ForIter => {
                 // Vectorization hint: when `vectorize = true` is set on this op (by the
                 // vectorize analysis pass), the enclosing loop body is safe to vectorize.
-                // See the ScfFor branch above for the full TODO description.
-                let _ = has_attr(op, "vectorize"); // attr is read; lowering is a no-op for now
-                todo!("LLVM lowering: ForIter not yet implemented")
+                // TODO(titan-phase-3): attach loop vectorize metadata to back-edge branch.
+                let _ = has_attr(op, "vectorize"); // attr consumed; lowering handles below
+
+                let iter = self.resolve(op.operands[0]);
+                let iter_i64 = self.ensure_i64(iter);
+                let for_iter_fn = self.backend.module.get_function("molt_for_iter").unwrap();
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(for_iter_fn, &[iter_i64.into()], "for_iter")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
+
+            // ── Yield: suspend generator, yield value ──
             OpCode::Yield => {
-                todo!("LLVM lowering: Yield not yet implemented")
+                let val = if !op.operands.is_empty() {
+                    let v = self.resolve(op.operands[0]);
+                    self.ensure_i64(v)
+                } else {
+                    // yield without value yields None
+                    let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
+                    self.backend.context.i64_type().const_int(none_bits, false)
+                };
+                let yield_fn = self.backend.module.get_function("molt_yield").unwrap();
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(yield_fn, &[val.into()], "yield")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
+
+            // ── YieldFrom: delegate to sub-generator ──
             OpCode::YieldFrom => {
-                todo!("LLVM lowering: YieldFrom not yet implemented")
+                let subiter = self.resolve(op.operands[0]);
+                let subiter_i64 = self.ensure_i64(subiter);
+                let yield_from_fn = self.backend.module.get_function("molt_yield_from").unwrap();
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(yield_from_fn, &[subiter_i64.into()], "yield_from")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
+
+            // ── Raise: raise exception ──
             OpCode::Raise => {
                 let exc = self.resolve(op.operands[0]);
                 let exc_i64 = self.ensure_i64(exc);
@@ -661,9 +1006,24 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     self.value_types.insert(op.results[0], TirType::DynBox);
                 }
             }
+
+            // ── CheckException: inspect the current exception state ──
             OpCode::CheckException => {
-                todo!("LLVM lowering: CheckException not yet implemented")
+                let check_fn = self.backend.module.get_function("molt_check_exception").unwrap();
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(check_fn, &[], "check_exc")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
+
+            // ── Import: import module by name ──
             OpCode::Import => {
                 let result_id = op.results[0];
                 let name = self.resolve(op.operands[0]);
@@ -679,27 +1039,176 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.values.insert(result_id, result);
                 self.value_types.insert(result_id, TirType::DynBox);
             }
+
+            // ── ImportFrom: from module import name ──
+            // operands: [module, attr_name]
             OpCode::ImportFrom => {
-                todo!("LLVM lowering: ImportFrom not yet implemented")
+                let module_val = self.resolve(op.operands[0]);
+                let attr_val = self.resolve(op.operands[1]);
+                let result = self.call_runtime_2("molt_module_get_attr", module_val, attr_val);
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
-            OpCode::ScfIf | OpCode::ScfFor | OpCode::ScfWhile | OpCode::ScfYield => {
-                // Vectorization hint: when `vectorize = true` is set on a ScfFor/ForIter
-                // op (by the vectorize analysis pass), the loop body is safe to vectorize.
-                // inkwell 0.8 does not expose a direct API for attaching `!llvm.loop`
-                // metadata to basic blocks.  The recommended approach is to build an
-                // MDNode containing `{ "llvm.loop.vectorize.enable", i1 true }` and
-                // attach it to the loop's back-edge branch instruction.
-                //
-                // TODO(titan-phase-3): once SCF ops are fully lowered to LLVM basic
-                // blocks, attach loop vectorize metadata to the back-edge branch when
-                // `vectorize = true` is present on this op.  Until then, the
-                // function-level `unsafe-fp-math` attribute (set above when any fast-math
-                // op exists) is the primary hint reaching the LLVM vectorizer.
-                let _ = has_attr(op, "vectorize"); // attr is read; lowering is a no-op for now
-                todo!("LLVM lowering: SCF dialect ops not yet implemented")
+
+            // ── SCF dialect ops ──
+            // These structured control flow ops are emitted when the SCF → LLVM
+            // lowering pass has not yet been applied. We lower them via runtime
+            // helper stubs so compilation does not fail.
+            //
+            // TODO(titan-phase-3): fully desugar SCF ops into LLVM basic blocks
+            // before this point so the stubs are never reached.
+            OpCode::ScfIf => {
+                // Vectorization hint consumed; lowering handles below.
+                let _ = has_attr(op, "vectorize");
+                // operands: [cond, then_fn, else_fn]
+                let i64_ty = self.backend.context.i64_type();
+                let cond = if !op.operands.is_empty() {
+                    let v = self.resolve(op.operands[0]);
+                    self.ensure_i64(v)
+                } else {
+                    i64_ty.const_int(0, false)
+                };
+                let then_fn_bits = if op.operands.len() > 1 {
+                    let v = self.resolve(op.operands[1]);
+                    self.ensure_i64(v)
+                } else {
+                    i64_ty.const_int(0, false)
+                };
+                let else_fn_bits = if op.operands.len() > 2 {
+                    let v = self.resolve(op.operands[2]);
+                    self.ensure_i64(v)
+                } else {
+                    i64_ty.const_int(0, false)
+                };
+                let scf_if_fn = self.backend.module.get_function("molt_scf_if").unwrap();
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        scf_if_fn,
+                        &[cond.into(), then_fn_bits.into(), else_fn_bits.into()],
+                        "scf_if",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
+            OpCode::ScfFor => {
+                // Vectorization hint: see TODO above.
+                let _ = has_attr(op, "vectorize");
+                // operands: [lb, ub, step, body_fn]
+                let i64_ty = self.backend.context.i64_type();
+                let get_op = |idx: usize| -> inkwell::values::IntValue<'ctx> {
+                    if op.operands.len() > idx {
+                        // Can't call self methods in closure; inline the pattern.
+                        i64_ty.const_int(0, false) // placeholder — overridden below
+                    } else {
+                        i64_ty.const_int(0, false)
+                    }
+                };
+                let _ = get_op; // suppress unused warning; use explicit resolution below
+                let lb = if op.operands.len() > 0 {
+                    let v = self.resolve(op.operands[0]); self.ensure_i64(v)
+                } else { i64_ty.const_int(0, false) };
+                let ub = if op.operands.len() > 1 {
+                    let v = self.resolve(op.operands[1]); self.ensure_i64(v)
+                } else { i64_ty.const_int(0, false) };
+                let step = if op.operands.len() > 2 {
+                    let v = self.resolve(op.operands[2]); self.ensure_i64(v)
+                } else { i64_ty.const_int(1, false) };
+                let body_fn_bits = if op.operands.len() > 3 {
+                    let v = self.resolve(op.operands[3]); self.ensure_i64(v)
+                } else { i64_ty.const_int(0, false) };
+                let scf_for_fn = self.backend.module.get_function("molt_scf_for").unwrap();
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        scf_for_fn,
+                        &[lb.into(), ub.into(), step.into(), body_fn_bits.into()],
+                        "scf_for",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
+            OpCode::ScfWhile => {
+                let _ = has_attr(op, "vectorize");
+                let i64_ty = self.backend.context.i64_type();
+                let cond_fn_bits = if op.operands.len() > 0 {
+                    let v = self.resolve(op.operands[0]); self.ensure_i64(v)
+                } else { i64_ty.const_int(0, false) };
+                let body_fn_bits = if op.operands.len() > 1 {
+                    let v = self.resolve(op.operands[1]); self.ensure_i64(v)
+                } else { i64_ty.const_int(0, false) };
+                let scf_while_fn = self.backend.module.get_function("molt_scf_while").unwrap();
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        scf_while_fn,
+                        &[cond_fn_bits.into(), body_fn_bits.into()],
+                        "scf_while",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
+            OpCode::ScfYield => {
+                let _ = has_attr(op, "vectorize");
+                let i64_ty = self.backend.context.i64_type();
+                let val = if !op.operands.is_empty() {
+                    let v = self.resolve(op.operands[0]); self.ensure_i64(v)
+                } else { i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false) };
+                let scf_yield_fn = self.backend.module.get_function("molt_scf_yield").unwrap();
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(scf_yield_fn, &[val.into()], "scf_yield")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
+
+            // ── Deopt: transfer execution back to interpreter ──
             OpCode::Deopt => {
-                todo!("LLVM lowering: Deopt not yet implemented")
+                let i64_ty = self.backend.context.i64_type();
+                let frame_bits = if !op.operands.is_empty() {
+                    let v = self.resolve(op.operands[0]);
+                    self.ensure_i64(v)
+                } else {
+                    i64_ty.const_int(0, false)
+                };
+                let deopt_fn = self.backend.module.get_function("molt_deopt_transfer").unwrap();
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(deopt_fn, &[frame_bits.into()], "deopt")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
         }
     }
