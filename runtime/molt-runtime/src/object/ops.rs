@@ -30236,46 +30236,89 @@ pub extern "C" fn molt_unpack_sequence(
         };
         unsafe {
             let type_id = object_type_id(ptr);
-            let elems: &[u64] = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                seq_vec_ref(ptr)
+            if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                let elems: &[u64] = seq_vec_ref(ptr);
+                let actual = elems.len();
+                if actual < expected {
+                    let msg = format!(
+                        "not enough values to unpack (expected {}, got {})",
+                        expected, actual
+                    );
+                    raise_exception::<u64>(_py, "ValueError", &msg);
+                    return MoltObject::none().bits();
+                }
+                if actual > expected {
+                    let msg = format!(
+                        "too many values to unpack (expected {})",
+                        expected
+                    );
+                    raise_exception::<u64>(_py, "ValueError", &msg);
+                    return MoltObject::none().bits();
+                }
+                let out_slice = std::slice::from_raw_parts_mut(output_ptr, expected);
+                for (i, &bits) in elems.iter().enumerate().take(expected) {
+                    inc_ref_bits(_py, bits);
+                    out_slice[i] = bits;
+                }
             } else {
-                raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "cannot unpack non-sequence",
-                );
-                return MoltObject::none().bits();
-            };
-
-            let actual = elems.len();
-            if actual != expected {
-                let elem_strs: Vec<String> = elems.iter().take(8).map(|b| format!("0x{:x}", b)).collect();
-                eprintln!(
-                    "UNPACK MISMATCH: seq_bits=0x{:x} type_id={} expected={} actual={} ptr={:?} elems=[{}]",
-                    seq_bits, type_id, expected, actual, ptr as *const u8, elem_strs.join(", ")
-                );
-            }
-            if actual < expected {
-                let msg = format!(
-                    "not enough values to unpack (expected {}, got {})",
-                    expected, actual
-                );
-                raise_exception::<u64>(_py, "ValueError", &msg);
-                return MoltObject::none().bits();
-            }
-            if actual > expected {
-                let msg = format!(
-                    "too many values to unpack (expected {})",
-                    expected
-                );
-                raise_exception::<u64>(_py, "ValueError", &msg);
-                return MoltObject::none().bits();
-            }
-
-            let out_slice = std::slice::from_raw_parts_mut(output_ptr, expected);
-            for (i, &bits) in elems.iter().enumerate().take(expected) {
-                inc_ref_bits(_py, bits);
-                out_slice[i] = bits;
+                // Generic iterable: materialize via iter/next.
+                let iter_bits = molt_iter(seq_bits);
+                if obj_from_bits(iter_bits).is_none() {
+                    raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        "cannot unpack non-sequence",
+                    );
+                    return MoltObject::none().bits();
+                }
+                let out_slice = std::slice::from_raw_parts_mut(output_ptr, expected);
+                let mut count = 0usize;
+                loop {
+                    let pair_bits = molt_iter_next(iter_bits);
+                    let pair_obj = obj_from_bits(pair_bits);
+                    let Some(pair_ptr) = pair_obj.as_ptr() else {
+                        break;
+                    };
+                    if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                        break;
+                    }
+                    let pair_elems = seq_vec_ref(pair_ptr);
+                    if pair_elems.len() < 2 {
+                        break;
+                    }
+                    let done = is_truthy(_py, obj_from_bits(pair_elems[1]));
+                    if done {
+                        break;
+                    }
+                    let val_bits = pair_elems[0];
+                    if count < expected {
+                        inc_ref_bits(_py, val_bits);
+                        out_slice[count] = val_bits;
+                    }
+                    count += 1;
+                    if count > expected {
+                        dec_ref_bits(_py, iter_bits);
+                        let msg = format!(
+                            "too many values to unpack (expected {})",
+                            expected
+                        );
+                        raise_exception::<u64>(_py, "ValueError", &msg);
+                        return MoltObject::none().bits();
+                    }
+                }
+                dec_ref_bits(_py, iter_bits);
+                if count < expected {
+                    let msg = format!(
+                        "not enough values to unpack (expected {}, got {})",
+                        expected, count
+                    );
+                    raise_exception::<u64>(_py, "ValueError", &msg);
+                    // Dec-ref any already-extracted values.
+                    for i in 0..count {
+                        dec_ref_bits(_py, out_slice[i]);
+                    }
+                    return MoltObject::none().bits();
+                }
             }
         }
         0u64
