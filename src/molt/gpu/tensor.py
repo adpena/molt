@@ -469,19 +469,40 @@ class Tensor:
         return self._from_flat(result, self._shape)
 
     def exp(self) -> 'Tensor':
-        """Element-wise exponential."""
+        """Element-wise exponential.
+
+        Inputs are clamped to [-709, 709] to prevent float64 overflow.
+        """
         data = self._data_list()
-        return self._from_flat([math.exp(x) for x in data], self._shape)
+        return self._from_flat(
+            [math.exp(max(-709.0, min(709.0, x))) for x in data],
+            self._shape,
+        )
 
     def log(self) -> 'Tensor':
-        """Element-wise natural logarithm."""
+        """Element-wise natural logarithm.
+
+        Values <= 0 are clamped to a tiny positive epsilon to avoid
+        math domain errors.  This matches the safe-log convention used
+        in most ML frameworks.
+        """
         data = self._data_list()
-        return self._from_flat([math.log(x) for x in data], self._shape)
+        _EPS = 1e-45
+        return self._from_flat(
+            [math.log(x) if x > 0 else math.log(_EPS) for x in data],
+            self._shape,
+        )
 
     def sqrt(self) -> 'Tensor':
-        """Element-wise square root."""
+        """Element-wise square root.
+
+        Negative values produce NaN (matches IEEE 754 / NumPy behavior).
+        """
         data = self._data_list()
-        return self._from_flat([math.sqrt(x) for x in data], self._shape)
+        return self._from_flat(
+            [math.sqrt(x) if x >= 0 else float('nan') for x in data],
+            self._shape,
+        )
 
     def abs(self) -> 'Tensor':
         """Element-wise absolute value."""
