@@ -1050,18 +1050,19 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                                 let needed = std::mem::size_of::<MoltHeader>()
                                     + std::mem::size_of::<usize>()
                                     + content_len;
-                                if header.size >= needed {
+                                let total_sz = super::total_size_from_header(header, ptr);
+                                if total_sz >= needed {
                                     // Fast: spare capacity — append in place, zero alloc
                                     let l_data = string_bytes(ptr) as *mut u8;
                                     let r_data = string_bytes(r_ptr);
                                     std::ptr::copy_nonoverlapping(r_data, l_data.add(l_len), r_len);
                                     *(ptr as *mut usize) = l_len + r_len;
-                                    header.state = 0; // invalidate hash
+                                    super::object_set_state(ptr, 0); // invalidate hash
                                     inc_ref_bits(_py, a);
                                     return a;
                                 }
                                 // Slow: allocate 2x, amortised growth
-                                let new_cap = std::cmp::max(header.size * 2, needed + 64);
+                                let new_cap = std::cmp::max(total_sz * 2, needed + 64);
                                 let new_ptr = alloc_object(_py, new_cap, TYPE_ID_STRING);
                                 if !new_ptr.is_null() {
                                     let l_data = string_bytes(ptr);
@@ -31622,30 +31623,24 @@ unsafe fn simd_max_byte_wasm32(bytes: &[u8]) -> u32 {
 }
 
 fn hash_string(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
-    let header = unsafe { header_from_obj_ptr(ptr) };
-    let cached = unsafe { (*header).state };
+    let cached = super::object_state(ptr);
     if cached != 0 {
         return cached.wrapping_sub(1);
     }
     let len = unsafe { string_len(ptr) };
     let bytes = unsafe { std::slice::from_raw_parts(string_bytes(ptr), len) };
     let hash = hash_string_bytes(_py, bytes);
-    unsafe {
-        (*header).state = hash.wrapping_add(1);
-    }
+    super::object_set_state(ptr, hash.wrapping_add(1));
     hash
 }
 
 fn hash_bytes_cached(_py: &PyToken<'_>, ptr: *mut u8, bytes: &[u8]) -> i64 {
-    let header = unsafe { header_from_obj_ptr(ptr) };
-    let cached = unsafe { (*header).state };
+    let cached = super::object_state(ptr);
     if cached != 0 {
         return cached.wrapping_sub(1);
     }
     let hash = hash_bytes(_py, bytes);
-    unsafe {
-        (*header).state = hash.wrapping_add(1);
-    }
+    super::object_set_state(ptr, hash.wrapping_add(1));
     hash
 }
 
@@ -34399,5 +34394,225 @@ pub(crate) fn bytes_ascii_title(bytes: &[u8]) -> Vec<u8> {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// CPython specialized bytecode fast paths (BINARY_SUBSCR_LIST_INT,
+// STORE_SUBSCR_LIST_INT, COMPARE_OP_INT, COMPARE_OP_STR).
+// These functions are extern "C" so they can be emitted as direct calls by
+// the AOT compiler back-end instead of routing through the generic dispatch.
+// ---------------------------------------------------------------------------
+
+/// Fast path: integer index into a list (BINARY_SUBSCR_LIST_INT).
+///
+/// Handles positive and negative indexing with direct array access.
+/// On any failure (wrong type tags, out-of-bounds) falls through to
+/// the full `molt_index` slow path.
+///
+/// Returns the element bits on success, or `u64::MAX` as a sentinel to
+/// signal the caller to fall back to `molt_index`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_getitem_int_fast(list_bits: u64, index_bits: u64) -> u64 {
+    // 1. Fast tag check: index must be a NaN-boxed int.
+    let index_obj = obj_from_bits(index_bits);
+    if !index_obj.is_int() {
+        return molt_index(list_bits, index_bits);
+    }
+    // 2. List must be a heap pointer.
+    let list_obj = obj_from_bits(list_bits);
+    let Some(ptr) = list_obj.as_ptr() else {
+        return molt_index(list_bits, index_bits);
+    };
+    unsafe {
+        // 3. Must actually be a list.
+        if object_type_id(ptr) != TYPE_ID_LIST {
+            return molt_index(list_bits, index_bits);
+        }
+        // 4. Extract index and list length.
+        let mut idx = index_obj.as_int_unchecked();
+        let elems = seq_vec_ref(ptr);
+        let len = elems.len() as i64;
+        // 5. Handle negative indexing.
+        if idx < 0 {
+            idx += len;
+        }
+        // 6. Bounds check.
+        if idx < 0 || idx >= len {
+            return molt_index(list_bits, index_bits);
+        }
+        // 7. Direct array load and reference-count increment.
+        crate::with_gil_entry!(_py, {
+            let val = elems[idx as usize];
+            inc_ref_bits(_py, val);
+            val
+        })
+    }
+}
+
+/// Fast path: integer index store into a list (STORE_SUBSCR_LIST_INT).
+///
+/// On any failure falls through to the full `molt_store_index` slow path.
+/// Returns the container bits on success (matching `molt_store_index`),
+/// or `MoltObject::none().bits()` on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_setitem_int_fast(
+    list_bits: u64,
+    index_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    // 1. Fast tag check: index must be a NaN-boxed int.
+    let index_obj = obj_from_bits(index_bits);
+    if !index_obj.is_int() {
+        return molt_store_index(list_bits, index_bits, val_bits);
+    }
+    // 2. List must be a heap pointer.
+    let list_obj = obj_from_bits(list_bits);
+    let Some(ptr) = list_obj.as_ptr() else {
+        return molt_store_index(list_bits, index_bits, val_bits);
+    };
+    unsafe {
+        // 3. Must actually be a list.
+        if object_type_id(ptr) != TYPE_ID_LIST {
+            return molt_store_index(list_bits, index_bits, val_bits);
+        }
+        // 4. Extract index and list length.
+        let mut idx = index_obj.as_int_unchecked();
+        let len = list_len(ptr) as i64;
+        // 5. Handle negative indexing.
+        if idx < 0 {
+            idx += len;
+        }
+        // 6. Bounds check — fall through to slow path which raises IndexError.
+        if idx < 0 || idx >= len {
+            return molt_store_index(list_bits, index_bits, val_bits);
+        }
+        // 7. Direct array store with reference count update.
+        crate::with_gil_entry!(_py, {
+            let elems = seq_vec(ptr);
+            let old_bits = elems[idx as usize];
+            if old_bits != val_bits {
+                dec_ref_bits(_py, old_bits);
+                inc_ref_bits(_py, val_bits);
+                elems[idx as usize] = val_bits;
+            }
+            list_bits
+        })
+    }
+}
+
+/// Fast path: compare two NaN-boxed integers (COMPARE_OP_INT).
+///
+/// `op` encodes the comparison:
+///   0 = Lt, 1 = Le, 2 = Eq, 3 = Ne, 4 = Gt, 5 = Ge
+///
+/// If either operand is not a NaN-boxed int the call falls through to the
+/// appropriate generic comparison function.  Both booleans and int subclasses
+/// are handled by the slow path.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_compare_int_fast(a: u64, b: u64, op: u32) -> u64 {
+    let lhs = obj_from_bits(a);
+    let rhs = obj_from_bits(b);
+    // Both operands must be plain NaN-boxed ints (not bools, not subclasses).
+    if lhs.is_int() && rhs.is_int() {
+        let li = lhs.as_int_unchecked();
+        let ri = rhs.as_int_unchecked();
+        let result = match op {
+            0 => li < ri,
+            1 => li <= ri,
+            2 => li == ri,
+            3 => li != ri,
+            4 => li > ri,
+            5 => li >= ri,
+            _ => return molt_eq(a, b), // unknown op: safe fallback
+        };
+        return MoltObject::from_bool(result).bits();
+    }
+    // Slow path: delegate to the full generic comparison.
+    match op {
+        0 => molt_lt(a, b),
+        1 => molt_le(a, b),
+        2 => molt_eq(a, b),
+        3 => molt_ne(a, b),
+        4 => molt_gt(a, b),
+        5 => molt_ge(a, b),
+        _ => molt_eq(a, b),
+    }
+}
+
+/// Fast path: string equality using pointer identity (COMPARE_OP_STR).
+///
+/// In Molt, every string object has a unique allocation, so pointer equality
+/// immediately proves equality.  If the pointers are the same we return `true`
+/// without touching the bytes.  If they differ we fall back to the byte-wise
+/// comparison already inside `molt_string_eq`.
+///
+/// This function is intentionally `unsafe`-free at the call site — it wraps
+/// the unsafe pointer dereferences internally and returns an `Option`:
+///   `Some(true)`  — pointers equal → strings equal
+///   `Some(false)` — strings are TYPE_ID_STRING but different lengths
+///   `None`        — one or both operands are not strings; caller should
+///                   fall through to `molt_eq`
+#[inline]
+fn string_eq_fast(a: u64, b: u64) -> Option<bool> {
+    let lhs = obj_from_bits(a);
+    let rhs = obj_from_bits(b);
+    let lp = lhs.as_ptr()?;
+    let rp = rhs.as_ptr()?;
+    unsafe {
+        if object_type_id(lp) != TYPE_ID_STRING || object_type_id(rp) != TYPE_ID_STRING {
+            return None;
+        }
+        // Pointer equality: same allocation → same content.
+        if lp == rp {
+            return Some(true);
+        }
+        // Length mismatch: definitely not equal (avoids byte scan).
+        let l_len = string_len(lp);
+        let r_len = string_len(rp);
+        if l_len != r_len {
+            return Some(false);
+        }
+        // Fall through to byte comparison.
+        None
+    }
+}
+
+/// Extern fast-path wrapper for string equality (COMPARE_OP_STR).
+///
+/// Uses `string_eq_fast` for the pointer/length checks, then delegates to
+/// `molt_string_eq` for byte comparison when needed.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_eq_fast(a: u64, b: u64) -> u64 {
+    match string_eq_fast(a, b) {
+        Some(result) => MoltObject::from_bool(result).bits(),
+        None => molt_string_eq(a, b),
+    }
+}
+
+/// Unchecked list getitem — used when BCE (Bounds Check Elimination) has proven
+/// the index is in bounds.
+///
+/// # Safety
+/// The caller guarantees:
+///   - `list_bits` is a valid NaN-boxed heap pointer to a TYPE_ID_LIST object.
+///   - `0 <= index < len(list)` — no bounds check is performed.
+///   - The list is not mutated concurrently (GIL must be held by the caller).
+///
+/// Violating any of these preconditions causes undefined behaviour.
+#[unsafe(no_mangle)]
+#[inline(always)]
+pub extern "C" fn molt_list_getitem_unchecked(list_bits: u64, index: i64) -> u64 {
+    let list_obj = obj_from_bits(list_bits);
+    // Safety: caller guarantees list_bits is a valid list heap pointer.
+    let ptr = unsafe { list_obj.as_ptr().unwrap_unchecked() };
+    unsafe {
+        let elems = seq_vec_ref(ptr);
+        // Safety: caller guarantees 0 <= index < len.
+        let val = *elems.get_unchecked(index as usize);
+        crate::with_gil_entry!(_py, {
+            inc_ref_bits(_py, val);
+            val
+        })
+    }
 }
 
