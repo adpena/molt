@@ -8,6 +8,7 @@
 pub mod types;
 pub mod runtime_imports;
 pub mod lowering;
+pub mod pgo;
 
 #[cfg(feature = "llvm")]
 use inkwell::context::Context;
