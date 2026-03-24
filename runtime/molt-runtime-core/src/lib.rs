@@ -125,10 +125,352 @@ macro_rules! with_gil_entry {
 }
 
 // ---------------------------------------------------------------------------
+// FFI — extern "C" declarations resolved by the linker from molt-runtime.
+//
+// These are the REAL runtime functions.  Each one has a matching
+// `#[no_mangle] pub extern "C"` definition in molt-runtime (object/ops.rs,
+// object/builders.rs, builtins/exceptions.rs, c_api.rs, etc.).
+//
+// Because every final binary links both molt-runtime and the extracted
+// crates into a single artifact, the linker resolves these symbols
+// automatically — no function-pointer tables, no traits, no init step.
+// ---------------------------------------------------------------------------
+
+pub mod ffi {
+    //! Raw `extern "C"` imports from `molt-runtime`.
+    //!
+    //! Extracted crates can call these directly.  Safe wrappers are provided
+    //! in the parent module for the most common operations.
+
+    unsafe extern "C" {
+        // -- Object allocation (c_api.rs) ------------------------------------
+
+        /// Allocate a new string object from raw UTF-8 bytes.
+        /// Returns the NaN-boxed `u64` handle (0/None on OOM).
+        pub fn molt_string_from(data: *const u8, len: u64) -> u64;
+
+        /// Allocate a new bytes object from raw data.
+        /// Returns the NaN-boxed `u64` handle.
+        pub fn molt_bytes_from(data: *const u8, len: u64) -> u64;
+
+        /// Read the raw data pointer from a string handle.
+        /// Writes the byte length into `*out_len`.
+        pub fn molt_string_as_ptr(string_bits: u64, out_len: *mut u64) -> *const u8;
+
+        /// Read the raw data pointer from a bytes handle.
+        /// Writes the byte length into `*out_len`.
+        pub fn molt_bytes_as_ptr(bytes_bits: u64, out_len: *mut u64) -> *const u8;
+
+        /// Allocate a generic object with `size` user-data bytes.
+        pub fn molt_alloc(size_bits: u64) -> u64;
+
+        /// Allocate a tuple from a C array of NaN-boxed elements.
+        pub fn molt_tuple_from_array(items: *const u64, len: u64) -> u64;
+
+        /// Allocate a list from a C array of NaN-boxed elements.
+        pub fn molt_list_from_array(items: *const u64, len: u64) -> u64;
+
+        /// Allocate a dict from parallel key/value C arrays.
+        pub fn molt_dict_from_pairs(keys: *const u64, values: *const u64, len: u64) -> u64;
+
+        /// Allocate a new empty dict with the given capacity hint.
+        pub fn molt_dict_new(capacity_bits: u64) -> u64;
+
+        // -- Scalar constructors (c_api.rs) ----------------------------------
+
+        /// Return the singleton `None` handle.
+        pub fn molt_none() -> u64;
+
+        /// Box an `i64` into a NaN-boxed int handle.
+        pub fn molt_int_from_i64(value: i64) -> u64;
+
+        /// Box an `f64` into a NaN-boxed float handle.
+        pub fn molt_float_from_f64(value: f64) -> u64;
+
+        // -- Reference counting (object/ops.rs) ------------------------------
+
+        /// Increment the reference count for a NaN-boxed object.
+        pub fn molt_inc_ref_obj(bits: u64);
+
+        /// Decrement the reference count for a NaN-boxed object.
+        pub fn molt_dec_ref_obj(bits: u64);
+
+        /// Batched inc-ref: adds `count` to the refcount in one atomic op.
+        /// Returns `bits` unchanged (for chaining).
+        pub fn molt_inc_ref_n(bits: u64, count: u32) -> u64;
+
+        /// Batched dec-ref: decrements `count` times (each may trigger dealloc).
+        pub fn molt_dec_ref_n(bits: u64, count: u32);
+
+        // -- Low-level pointer refcount (object/mod.rs) ----------------------
+
+        /// Increment refcount given a raw object pointer.
+        pub fn molt_inc_ref(ptr: *mut u8);
+
+        /// Decrement refcount given a raw object pointer.
+        pub fn molt_dec_ref(ptr: *mut u8);
+
+        // -- Exception machinery (builtins/exceptions.rs) --------------------
+
+        /// Create a new exception object.
+        /// `kind_bits`: NaN-boxed string for the exception class name.
+        /// `args_bits`: NaN-boxed tuple of arguments.
+        pub fn molt_exception_new(kind_bits: u64, args_bits: u64) -> u64;
+
+        /// Raise an already-constructed exception object.
+        /// Records it into the current exception slot. Returns None bits.
+        pub fn molt_raise(exc_bits: u64) -> u64;
+
+        /// Returns 1 if an exception is pending, 0 otherwise.
+        pub fn molt_exception_pending() -> u64;
+
+        /// Fast-path pending check (skips GIL entry when possible).
+        pub fn molt_exception_pending_fast() -> u64;
+
+        /// Returns the currently active exception handle (or None).
+        pub fn molt_exception_active() -> u64;
+
+        /// Clears the pending exception, returning None.
+        pub fn molt_exception_clear() -> u64;
+
+        /// Returns the last recorded exception handle (for `sys.last_value`).
+        pub fn molt_exception_last() -> u64;
+
+        /// Push an exception-handler frame onto the exception stack.
+        pub fn molt_exception_stack_enter() -> u64;
+
+        /// Pop an exception-handler frame from the exception stack.
+        pub fn molt_exception_stack_exit(prev_bits: u64) -> u64;
+
+        /// Get the exception kind string from an exception handle.
+        pub fn molt_exception_kind(exc_bits: u64) -> u64;
+
+        /// Get the message string from an exception handle.
+        pub fn molt_exception_message(exc_bits: u64) -> u64;
+
+        // -- Truthiness / type introspection (object/ops.rs) -----------------
+
+        /// Returns 1 if the value is truthy, 0 otherwise, -1 on error.
+        pub fn molt_is_truthy(val: u64) -> i64;
+
+        /// Returns a NaN-boxed `type` object for the given value.
+        pub fn molt_type_of(val_bits: u64) -> u64;
+
+        // -- Conversions (object/ops.rs) -------------------------------------
+
+        /// Convert any value to its `str()` representation (NaN-boxed string).
+        pub fn molt_str_from_obj(val_bits: u64) -> u64;
+
+        /// Convert any value to its `repr()` representation (NaN-boxed string).
+        pub fn molt_repr_from_obj(val_bits: u64) -> u64;
+
+        /// Convert a value to int (like `int(x)`).
+        pub fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits: u64) -> u64;
+
+        /// Convert a value to float (like `float(x)`).
+        pub fn molt_float_from_obj(val_bits: u64) -> u64;
+
+        // -- Collection operations -------------------------------------------
+
+        /// Append a value to a list. Returns None on success.
+        pub fn molt_list_append(list_bits: u64, val_bits: u64) -> u64;
+
+        /// Pop an element from a list at the given index.
+        pub fn molt_list_pop(list_bits: u64, index_bits: u64) -> u64;
+
+        /// Extend a list with elements from another iterable.
+        pub fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64;
+
+        /// Dict subscript get with default.
+        pub fn molt_dict_get(dict_bits: u64, key_bits: u64, default_bits: u64) -> u64;
+
+        /// Dict subscript set.
+        pub fn molt_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) -> u64;
+
+        /// Check if a string contains a substring. Returns bool bits.
+        pub fn molt_str_contains(container_bits: u64, item_bits: u64) -> u64;
+
+        /// Check if a list contains a value. Returns bool bits.
+        pub fn molt_list_contains(container_bits: u64, item_bits: u64) -> u64;
+
+        /// Check if a dict contains a key. Returns bool bits.
+        pub fn molt_dict_contains(container_bits: u64, item_bits: u64) -> u64;
+
+        /// String equality check. Returns bool bits.
+        pub fn molt_string_eq(a: u64, b: u64) -> u64;
+
+        // -- Sequence unpacking (object/ops.rs) ------------------------------
+
+        /// Unpack a sequence into `expected_count` elements written to `output_ptr`.
+        /// Returns 0 on success, None bits on error.
+        pub fn molt_unpack_sequence(
+            seq_bits: u64,
+            expected_count: u64,
+            output_ptr: *mut u64,
+        ) -> u64;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Safe wrapper helpers — ergonomic Rust API over the raw FFI.
+//
+// These let extracted crates write idiomatic Rust without unsafe blocks
+// for the most common runtime operations.
+// ---------------------------------------------------------------------------
+
+/// Allocate a new Molt string from a Rust `&str`. Returns the NaN-boxed handle.
+/// Returns `MoltObject::none().bits()` on allocation failure.
+#[inline]
+pub fn rt_string_from(s: &str) -> u64 {
+    unsafe { ffi::molt_string_from(s.as_ptr(), s.len() as u64) }
+}
+
+/// Allocate a new Molt string from raw bytes. Returns the NaN-boxed handle.
+#[inline]
+pub fn rt_string_from_bytes(bytes: &[u8]) -> u64 {
+    unsafe { ffi::molt_string_from(bytes.as_ptr(), bytes.len() as u64) }
+}
+
+/// Allocate a new Molt bytes object. Returns the NaN-boxed handle.
+#[inline]
+pub fn rt_bytes_from(bytes: &[u8]) -> u64 {
+    unsafe { ffi::molt_bytes_from(bytes.as_ptr(), bytes.len() as u64) }
+}
+
+/// Return the singleton `None` handle.
+#[inline]
+pub fn rt_none() -> u64 {
+    unsafe { ffi::molt_none() }
+}
+
+/// Box a Rust `i64` into a NaN-boxed int handle.
+#[inline]
+pub fn rt_int(value: i64) -> u64 {
+    unsafe { ffi::molt_int_from_i64(value) }
+}
+
+/// Box a Rust `f64` into a NaN-boxed float handle.
+#[inline]
+pub fn rt_float(value: f64) -> u64 {
+    unsafe { ffi::molt_float_from_f64(value) }
+}
+
+/// Allocate a tuple from a slice of NaN-boxed elements.
+#[inline]
+pub fn rt_tuple(elems: &[u64]) -> u64 {
+    unsafe { ffi::molt_tuple_from_array(elems.as_ptr(), elems.len() as u64) }
+}
+
+/// Allocate a list from a slice of NaN-boxed elements.
+#[inline]
+pub fn rt_list(elems: &[u64]) -> u64 {
+    unsafe { ffi::molt_list_from_array(elems.as_ptr(), elems.len() as u64) }
+}
+
+/// Allocate a new empty dict with optional capacity hint.
+#[inline]
+pub fn rt_dict(capacity: usize) -> u64 {
+    unsafe { ffi::molt_dict_new(MoltObject::from_int(capacity as i64).bits()) }
+}
+
+/// Increment the reference count for a NaN-boxed object handle.
+#[inline]
+pub fn rt_inc_ref(bits: u64) {
+    unsafe { ffi::molt_inc_ref_obj(bits) }
+}
+
+/// Decrement the reference count for a NaN-boxed object handle.
+#[inline]
+pub fn rt_dec_ref(bits: u64) {
+    unsafe { ffi::molt_dec_ref_obj(bits) }
+}
+
+/// Check whether an exception is currently pending.
+#[inline]
+pub fn rt_exception_pending() -> bool {
+    unsafe { ffi::molt_exception_pending() != 0 }
+}
+
+/// Fast-path exception check (avoids full GIL entry when possible).
+#[inline]
+pub fn rt_exception_pending_fast() -> bool {
+    unsafe { ffi::molt_exception_pending_fast() != 0 }
+}
+
+/// Raise an already-constructed exception. Returns None bits.
+#[inline]
+pub fn rt_raise(exc_bits: u64) -> u64 {
+    unsafe { ffi::molt_raise(exc_bits) }
+}
+
+/// Create and raise an exception from kind name + message strings.
+/// Returns None bits (the caller should return early on exception).
+pub fn rt_raise_str(kind: &str, message: &str) -> u64 {
+    let kind_bits = rt_string_from(kind);
+    let msg_bits = rt_string_from(message);
+    let args_bits = rt_tuple(&[msg_bits]);
+    let exc_bits = unsafe { ffi::molt_exception_new(kind_bits, args_bits) };
+    rt_dec_ref(kind_bits);
+    rt_dec_ref(args_bits);
+    unsafe { ffi::molt_raise(exc_bits) }
+}
+
+/// Clear the pending exception. Returns None bits.
+#[inline]
+pub fn rt_exception_clear() -> u64 {
+    unsafe { ffi::molt_exception_clear() }
+}
+
+/// Check truthiness of a NaN-boxed value.
+#[inline]
+pub fn rt_is_truthy(bits: u64) -> bool {
+    unsafe { ffi::molt_is_truthy(bits) == 1 }
+}
+
+/// Get the `str()` of a NaN-boxed value. Returns a NaN-boxed string handle.
+#[inline]
+pub fn rt_str(bits: u64) -> u64 {
+    unsafe { ffi::molt_str_from_obj(bits) }
+}
+
+/// Get the `repr()` of a NaN-boxed value. Returns a NaN-boxed string handle.
+#[inline]
+pub fn rt_repr(bits: u64) -> u64 {
+    unsafe { ffi::molt_repr_from_obj(bits) }
+}
+
+/// Read the UTF-8 bytes from a Molt string handle.
+///
+/// Returns `None` if the handle is not a valid string or if the pointer is null.
+pub fn rt_string_as_bytes(string_bits: u64) -> Option<&'static [u8]> {
+    let mut len: u64 = 0;
+    let ptr = unsafe { ffi::molt_string_as_ptr(string_bits, &mut len) };
+    if ptr.is_null() {
+        return None;
+    }
+    Some(unsafe { std::slice::from_raw_parts(ptr, len as usize) })
+}
+
+/// Read the raw bytes from a Molt bytes handle.
+///
+/// Returns `None` if the handle is not a valid bytes object or if the pointer is null.
+pub fn rt_bytes_as_slice(bytes_bits: u64) -> Option<&'static [u8]> {
+    let mut len: u64 = 0;
+    let ptr = unsafe { ffi::molt_bytes_as_ptr(bytes_bits, &mut len) };
+    if ptr.is_null() {
+        return None;
+    }
+    Some(unsafe { std::slice::from_raw_parts(ptr, len as usize) })
+}
+
+// ---------------------------------------------------------------------------
 // Prelude — single glob-import for extracted crates
 // ---------------------------------------------------------------------------
 
 /// Prelude for extracted stdlib crates.
+///
+/// Provides type IDs, object model types, the GIL token, convenience
+/// helpers, and safe wrappers over the runtime FFI.
 pub mod prelude {
     pub use crate::type_ids::*;
     pub use crate::{
@@ -136,4 +478,13 @@ pub mod prelude {
         MoltObject, PyToken,
     };
     pub use crate::with_gil_entry;
+
+    // Safe runtime wrappers
+    pub use crate::{
+        rt_bytes_as_slice, rt_bytes_from, rt_dec_ref, rt_dict,
+        rt_exception_clear, rt_exception_pending, rt_exception_pending_fast,
+        rt_float, rt_inc_ref, rt_int, rt_is_truthy, rt_list, rt_none,
+        rt_raise, rt_raise_str, rt_repr, rt_str, rt_string_as_bytes,
+        rt_string_from, rt_string_from_bytes, rt_tuple,
+    };
 }
