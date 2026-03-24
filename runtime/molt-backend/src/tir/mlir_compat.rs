@@ -175,6 +175,8 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::GetIter => "get_iter", OpCode::IterNext => "iter_next", OpCode::ForIter => "for_iter",
         OpCode::Yield => "yield", OpCode::YieldFrom => "yield_from",
         OpCode::Raise => "raise", OpCode::CheckException => "check_exception",
+        OpCode::TryStart => "try_start", OpCode::TryEnd => "try_end",
+        OpCode::StateBlockStart => "state_block_start", OpCode::StateBlockEnd => "state_block_end",
         OpCode::ConstInt => "const_int", OpCode::ConstFloat => "const_float",
         OpCode::ConstStr => "const_str", OpCode::ConstBool => "const_bool",
         OpCode::ConstNone => "const_none", OpCode::ConstBytes => "const_bytes",

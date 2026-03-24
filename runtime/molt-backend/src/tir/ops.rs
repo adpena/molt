@@ -89,6 +89,10 @@ pub enum OpCode {
     // Exception
     Raise,
     CheckException,
+    TryStart,
+    TryEnd,
+    StateBlockStart,
+    StateBlockEnd,
     // Constants
     ConstInt,
     ConstFloat,
