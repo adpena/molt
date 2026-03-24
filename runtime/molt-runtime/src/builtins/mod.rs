@@ -96,6 +96,7 @@ pub(crate) mod tarfile;
 #[cfg(feature = "stdlib_fs_extra")]
 pub(crate) mod tempfile_mod;
 pub(crate) mod threading_helpers;
+#[cfg(feature = "stdlib_tk")]
 pub(crate) mod tkinter_core;
 pub(crate) mod type_ops;
 pub(crate) mod types;
