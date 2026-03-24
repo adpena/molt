@@ -38,13 +38,13 @@ class QuantizedTensor:
             raise ValueError(f"Unsupported bit width: {bits}")
 
         scale = (max_val - min_val) / (qmax - qmin) if max_val != min_val else 1.0
-        zero_point = int(round(qmin - min_val / scale)) if scale != 0 else 0
+        zero_point = int(round(qmin - min_val / scale)) if scale != 0.0 else 0
         zero_point = max(qmin, min(qmax, zero_point))
 
         # Quantize values
         quantized = []
         for v in flat:
-            q = int(round(v / scale)) + zero_point if scale != 0 else 0
+            q = int(round(v / scale + zero_point)) if scale != 0.0 else 0
             q = max(qmin, min(qmax, q))
             quantized.append(q)
 

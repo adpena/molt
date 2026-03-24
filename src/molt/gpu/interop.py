@@ -87,6 +87,8 @@ def load_safetensors(path: str) -> dict:
 
     # Parse header length
     header_len = struct.unpack_from("<Q", data, 0)[0]
+    if header_len > len(data) - 8:
+        raise ValueError("SafeTensors header length exceeds file size")
     header_json = data[8:8 + header_len].decode("utf-8")
     header = json.loads(header_json)
 
