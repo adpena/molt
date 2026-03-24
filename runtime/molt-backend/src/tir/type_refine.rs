@@ -9,6 +9,53 @@ use super::values::ValueId;
 /// Maximum number of fixpoint iterations before conservative fallback.
 const MAX_ROUNDS: usize = 20;
 
+/// Extract a map from every [`ValueId`] to its refined [`TirType`] in a
+/// **post-refinement** TIR function.  Block argument types come from the
+/// function directly (they were written back by [`refine_types`]); op result
+/// types are re-inferred in a single forward pass (safe because refinement
+/// has already converged).
+pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
+    let mut env: HashMap<ValueId, TirType> = HashMap::new();
+
+    // Sorted block order for deterministic iteration.
+    let mut block_order: Vec<BlockId> = func.blocks.keys().copied().collect();
+    block_order.sort_by_key(|b| b.0);
+
+    for &bid in &block_order {
+        let block = &func.blocks[&bid];
+
+        // Block arguments already carry refined types.
+        for arg in &block.args {
+            env.insert(arg.id, arg.ty.clone());
+        }
+
+        // Re-infer op result types from operand types (single pass — the
+        // fixpoint has already converged so one pass is sufficient).
+        for op in &block.ops {
+            if op.results.is_empty() {
+                continue;
+            }
+            let operand_types: Vec<TirType> = op
+                .operands
+                .iter()
+                .map(|id| env.get(id).cloned().unwrap_or(TirType::DynBox))
+                .collect();
+            if let Some(inferred) = infer_result_type(op.opcode, &operand_types) {
+                for &result_id in &op.results {
+                    env.insert(result_id, inferred.clone());
+                }
+            } else {
+                // No inference possible — record DynBox so the map is complete.
+                for &result_id in &op.results {
+                    env.entry(result_id).or_insert(TirType::DynBox);
+                }
+            }
+        }
+    }
+
+    env
+}
+
 /// Refine types in a TIR function.
 /// Iterates to fixpoint (max 20 rounds, conservative fallback on timeout).
 /// Returns the number of values refined from DynBox to concrete types.
