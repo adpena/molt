@@ -19877,49 +19877,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
             self._emit_raise_exit()
 
+        # For the no-star case without an indexable hint, we used to inline
+        # a materialization loop that appended elements to a LIST_NEW list.
+        # That caused heap corruption when the same list was reused across
+        # outer-loop iterations.  Now we always pass value_node directly to
+        # UNPACK_SEQUENCE and let the runtime handle validation + extraction.
         if star_index is None and not self._iterable_is_indexable(value_node):
-            expected_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(
-                MoltOp(kind="CONST", args=[len(target.elts)], result=expected_val)
-            )
-            seq_val = MoltValue(self.next_var(), type_hint="list")
-            self.emit(MoltOp(kind="LIST_NEW", args=[], result=seq_val))
-            iter_obj = self._emit_iter_new(value_node)
-            zero = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-            one = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[1], result=one))
-            for idx in range(len(target.elts)):
-                pair = self._emit_iter_next_checked(iter_obj)
-                done = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
-                self.emit(MoltOp(kind="IF", args=[done], result=MoltValue("none")))
-                got_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[idx], result=got_val))
-                emit_unpack_error(
-                    "not enough values to unpack (expected ",
-                    expected_val,
-                    got_val,
-                )
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                item = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
-                self.emit(
-                    MoltOp(
-                        kind="LIST_APPEND",
-                        args=[seq_val, item],
-                        result=MoltValue("none"),
-                    )
-                )
-            pair = self._emit_iter_next_checked(iter_obj)
-            done = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
-            self.emit(MoltOp(kind="IF", args=[done], result=MoltValue("none")))
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            emit_unpack_error(
-                "too many values to unpack (expected ", expected_val, None
-            )
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            pass  # seq_val stays None → handled below
         if star_index is not None:
             if seq_val is None:
                 seq_val = self._emit_list_from_iter(value_node)
@@ -19928,7 +19892,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="LEN", args=[seq_val], result=length))
         if star_index is None:
             if seq_val is None:
-                seq_val = self._emit_list_from_iter(value_node)
+                seq_val = value_node
             # Emit a single outlined unpack_sequence op that validates the
             # length and extracts all elements in one runtime call.
             item_vals: list[MoltValue] = []
