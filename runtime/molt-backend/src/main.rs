@@ -1053,7 +1053,27 @@ fn main() -> io::Result<()> {
     // Strip __annotate__ typing stubs — they're metadata, not executable code.
     // Done once here so all compilation paths (Luau, WASM, native, batched,
     // incremental) see a clean IR without scattered per-path filters.
+    let annotate_names: std::collections::BTreeSet<String> = ir.functions
+        .iter()
+        .filter(|f| f.name.contains("__annotate__"))
+        .map(|f| f.name.clone())
+        .collect();
     ir.functions.retain(|f| !f.name.contains("__annotate__"));
+    // Also strip ops in remaining functions that CALL __annotate__ functions.
+    // Without this, module_chunk functions reference undefined symbols.
+    if !annotate_names.is_empty() {
+        for func in &mut ir.functions {
+            func.ops.retain(|op| {
+                if let Some(ref s) = op.s_value {
+                    if annotate_names.contains(s) { return false; }
+                }
+                if let Some(ref args) = op.args {
+                    if args.iter().any(|a| annotate_names.contains(a)) { return false; }
+                }
+                true
+            });
+        }
+    }
 
     // Tree-shake for Luau: remove unreachable stdlib functions.
     if is_luau {
