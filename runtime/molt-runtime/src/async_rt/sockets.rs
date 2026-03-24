@@ -431,9 +431,7 @@ pub(crate) fn io_wait_release_socket(_py: &PyToken<'_>, future_ptr: *mut u8) {
     }
     let header = unsafe { header_from_obj_ptr(future_ptr) };
     let payload_bytes = unsafe {
-        (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>())
+        crate::object::object_payload_size(future_ptr)
     };
     if payload_bytes < std::mem::size_of::<u64>() {
         return;
@@ -461,9 +459,7 @@ pub(crate) fn io_wait_release_socket(_py: &PyToken<'_>, future_ptr: *mut u8) {
     }
     let header = unsafe { header_from_obj_ptr(future_ptr) };
     let payload_bytes = unsafe {
-        (*header)
-            .size
-            .saturating_sub(std::mem::size_of::<MoltHeader>())
+        crate::object::object_payload_size(future_ptr)
     };
     if payload_bytes < 2 * std::mem::size_of::<u64>() {
         return;
