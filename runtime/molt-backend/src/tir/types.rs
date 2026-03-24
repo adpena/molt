@@ -105,6 +105,11 @@ impl TirType {
             return members.into_iter().next().unwrap();
         }
         if members.len() <= 3 {
+            // Sort members for canonical ordering so that
+            // I64.meet(&Str) == Str.meet(&I64) == Union([I64, Str]).
+            // Uses Debug string as a stable ordering key since TirType
+            // doesn't implement Ord (and shouldn't — it's a lattice, not a total order).
+            members.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
             return TirType::Union(members);
         }
         TirType::DynBox
@@ -159,7 +164,10 @@ mod tests {
     #[test]
     fn meet_different_scalars_produces_union() {
         let result = TirType::I64.meet(&TirType::Str);
+        // Sorted canonically: "I64" < "Str" alphabetically
         assert_eq!(result, TirType::Union(vec![TirType::I64, TirType::Str]));
+        // Verify commutativity: Str.meet(&I64) == I64.meet(&Str)
+        assert_eq!(TirType::Str.meet(&TirType::I64), result);
     }
 
     #[test]
@@ -175,9 +183,11 @@ mod tests {
         let a = TirType::Box(Box::new(TirType::I64));
         let b = TirType::Box(Box::new(TirType::F64));
         let result = a.meet(&b);
+        // After union canonicalization (M2 fix), members are sorted by Debug repr:
+        // "F64" < "I64" alphabetically.
         assert_eq!(
             result,
-            TirType::Box(Box::new(TirType::Union(vec![TirType::I64, TirType::F64])))
+            TirType::Box(Box::new(TirType::Union(vec![TirType::F64, TirType::I64])))
         );
     }
 

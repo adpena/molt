@@ -672,22 +672,68 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 (v.into(), TirType::I64)
             }
             (TirType::I64, TirType::I64, "div") => {
-                let v = self.backend.builder.build_int_signed_div(
-                    lhs.into_int_value(), rhs.into_int_value(), "div",
+                // Python `/` on ints always returns float (7 / 2 == 3.5)
+                let f64_ty = self.backend.context.f64_type();
+                let lhs_f = self.backend.builder.build_signed_int_to_float(
+                    lhs.into_int_value(), f64_ty, "div_lhs_f",
                 ).unwrap();
-                (v.into(), TirType::I64)
+                let rhs_f = self.backend.builder.build_signed_int_to_float(
+                    rhs.into_int_value(), f64_ty, "div_rhs_f",
+                ).unwrap();
+                let v = self.backend.builder.build_float_div(lhs_f, rhs_f, "div_f").unwrap();
+                (v.into(), TirType::F64)
             }
             (TirType::I64, TirType::I64, "floordiv") => {
-                let v = self.backend.builder.build_int_signed_div(
-                    lhs.into_int_value(), rhs.into_int_value(), "floordiv",
+                // Python `//`: rounds toward negative infinity (not toward zero like C sdiv).
+                // Emit: q = sdiv(lhs, rhs); r = srem(lhs, rhs);
+                //       if (r != 0 && (lhs ^ rhs) < 0) q -= 1
+                let lhs_i = lhs.into_int_value();
+                let rhs_i = rhs.into_int_value();
+                let i64_ty = self.backend.context.i64_type();
+                let q = self.backend.builder.build_int_signed_div(lhs_i, rhs_i, "fdiv_q").unwrap();
+                let r = self.backend.builder.build_int_signed_rem(lhs_i, rhs_i, "fdiv_r").unwrap();
+                let zero = i64_ty.const_zero();
+                let one = i64_ty.const_int(1, false);
+                let r_ne_0 = self.backend.builder.build_int_compare(
+                    inkwell::IntPredicate::NE, r, zero, "r_ne_0",
                 ).unwrap();
-                (v.into(), TirType::I64)
+                let xor = self.backend.builder.build_xor(lhs_i, rhs_i, "signs_xor").unwrap();
+                let signs_differ = self.backend.builder.build_int_compare(
+                    inkwell::IntPredicate::SLT, xor, zero, "signs_differ",
+                ).unwrap();
+                let needs_adjust = self.backend.builder.build_and(r_ne_0, signs_differ, "needs_adj").unwrap();
+                let q_minus_1 = self.backend.builder.build_int_sub(q, one, "q_m1").unwrap();
+                let q_m1_basic: inkwell::values::BasicValueEnum = q_minus_1.into();
+                let q_basic: inkwell::values::BasicValueEnum = q.into();
+                let adj = self.backend.builder.build_select(
+                    needs_adjust, q_m1_basic, q_basic, "floordiv",
+                ).unwrap();
+                (adj, TirType::I64)
             }
             (TirType::I64, TirType::I64, "mod") => {
-                let v = self.backend.builder.build_int_signed_rem(
-                    lhs.into_int_value(), rhs.into_int_value(), "mod",
+                // Python `%`: result has sign of the divisor (not dividend like C srem).
+                // Emit: r = srem(lhs, rhs);
+                //       if (r != 0 && (r ^ rhs) < 0) r += rhs
+                let lhs_i = lhs.into_int_value();
+                let rhs_i = rhs.into_int_value();
+                let i64_ty = self.backend.context.i64_type();
+                let zero = i64_ty.const_zero();
+                let r = self.backend.builder.build_int_signed_rem(lhs_i, rhs_i, "mod_r").unwrap();
+                let r_ne_0 = self.backend.builder.build_int_compare(
+                    inkwell::IntPredicate::NE, r, zero, "mod_r_ne_0",
                 ).unwrap();
-                (v.into(), TirType::I64)
+                let xor = self.backend.builder.build_xor(r, rhs_i, "mod_signs_xor").unwrap();
+                let signs_differ = self.backend.builder.build_int_compare(
+                    inkwell::IntPredicate::SLT, xor, zero, "mod_signs_differ",
+                ).unwrap();
+                let needs_adjust = self.backend.builder.build_and(r_ne_0, signs_differ, "mod_adj").unwrap();
+                let r_plus_rhs = self.backend.builder.build_int_add(r, rhs_i, "mod_adjusted").unwrap();
+                let r_adj_basic: inkwell::values::BasicValueEnum = r_plus_rhs.into();
+                let r_basic: inkwell::values::BasicValueEnum = r.into();
+                let result = self.backend.builder.build_select(
+                    needs_adjust, r_adj_basic, r_basic, "pymod",
+                ).unwrap();
+                (result, TirType::I64)
             }
 
             // F64 + F64 -> F64 (direct machine instruction)
