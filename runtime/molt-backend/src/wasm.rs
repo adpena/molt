@@ -1571,6 +1571,28 @@ impl WasmBackend {
         for func_ir in &mut ir.functions {
             crate::fold_constants(&mut func_ir.ops);
         }
+        // ── TIR optimization pipeline (opt-in via MOLT_TIR_OPT=1) ──
+        if crate::env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
+            let tir_dump = crate::env_setting("TIR_DUMP").as_deref() == Some("1");
+            let tir_stats = crate::env_setting("TIR_OPT_STATS").as_deref() == Some("1");
+            for func_ir in &mut ir.functions {
+                let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
+                crate::tir::type_refine::refine_types(&mut tir_func);
+                let stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                if tir_dump {
+                    eprintln!("{}", crate::tir::printer::print_function(&tir_func));
+                }
+                if tir_stats {
+                    for s in &stats {
+                        eprintln!(
+                            "[TIR] {}: {} changed, {} removed, {} added",
+                            s.name, s.values_changed, s.ops_removed, s.ops_added
+                        );
+                    }
+                }
+                func_ir.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
+            }
+        }
         crate::inline_functions(&mut ir);
 
         // Multi-value return candidate detection (§3.1).
