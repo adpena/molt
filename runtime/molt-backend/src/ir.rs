@@ -33,8 +33,7 @@ pub struct FunctionIR {
     pub param_types: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[cfg_attr(feature = "cbor", derive(serde::Serialize))]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct OpIR {
     pub kind: String,
