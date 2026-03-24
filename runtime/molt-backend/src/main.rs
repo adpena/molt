@@ -405,9 +405,9 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
     #[cfg(not(any(feature = "native-backend", feature = "wasm-backend")))]
     {
         let unsupported = if job.is_wasm {
-            "backend binary was built without wasm-backend support"
+            "backend binary was built without wasm-backend support; rebuild with: cargo build -p molt-backend --features wasm-backend"
         } else {
-            "backend binary was built without native-backend support"
+            "backend binary was built without native-backend support; rebuild with: cargo build -p molt-backend --features native-backend"
         };
         return DaemonJobResponse {
             id: job.id,
@@ -534,7 +534,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                     output_written: false,
                     needs_ir: false,
                     message: Some(
-                        "backend binary was built without wasm-backend support".to_string(),
+                        "backend binary was built without wasm-backend support; rebuild with: cargo build -p molt-backend --features wasm-backend".to_string(),
                     ),
                 };
             }
@@ -554,7 +554,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                     output_written: false,
                     needs_ir: false,
                     message: Some(
-                        "backend binary was built without native-backend support".to_string(),
+                        "backend binary was built without native-backend support; rebuild with: cargo build -p molt-backend --features native-backend".to_string(),
                     ),
                 };
             }
@@ -900,6 +900,25 @@ fn main() -> io::Result<()> {
     }
 
     let args: Vec<String> = env::args().collect();
+    if args.iter().any(|arg| arg == "--features") {
+        let mut features = Vec::new();
+        #[cfg(feature = "native-backend")]
+        features.push("native-backend");
+        #[cfg(feature = "luau-backend")]
+        features.push("luau-backend");
+        #[cfg(feature = "wasm-backend")]
+        features.push("wasm-backend");
+        #[cfg(feature = "rust-backend")]
+        features.push("rust-backend");
+        #[cfg(feature = "cbor")]
+        features.push("cbor");
+        if features.is_empty() {
+            println!("molt-backend: no features enabled");
+        } else {
+            println!("molt-backend features: {}", features.join(", "));
+        }
+        return Ok(());
+    }
     if args.iter().any(|arg| arg == "--daemon") {
         let socket_path = args
             .iter()
@@ -1111,7 +1130,7 @@ fn main() -> io::Result<()> {
         {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "backend binary was built without luau-backend support",
+                "backend binary was built without luau-backend support; rebuild with: cargo build -p molt-backend --features luau-backend",
             ));
         }
     } else if is_rust {
@@ -1126,7 +1145,7 @@ fn main() -> io::Result<()> {
         {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "backend binary was built without rust-backend support",
+                "backend binary was built without rust-backend support; rebuild with: cargo build -p molt-backend --features rust-backend",
             ));
         }
     } else if is_wasm {
@@ -1141,7 +1160,7 @@ fn main() -> io::Result<()> {
         {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "backend binary was built without wasm-backend support",
+                "backend binary was built without wasm-backend support; rebuild with: cargo build -p molt-backend --features wasm-backend",
             ));
         }
     } else {
@@ -1390,7 +1409,7 @@ fn main() -> io::Result<()> {
         {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "backend binary was built without native-backend support",
+                "backend binary was built without native-backend support; rebuild with: cargo build -p molt-backend --features native-backend",
             ));
         }
     }
