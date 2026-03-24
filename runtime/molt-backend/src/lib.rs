@@ -1683,6 +1683,11 @@ impl SimpleBackend {
         let mut compiled = 0u32;
         let mut failed = 0u32;
         let mut slowest_func: Option<(String, std::time::Duration)> = None;
+        // Progress reporting: pick interval based on function count so the
+        // user sees roughly 20 updates during a long build, but at least
+        // every 50 functions.
+        let progress_interval = (func_count / 20).max(1).min(50);
+        let mut last_progress = std::time::Instant::now();
         for func_ir in ir.functions {
             let func_name = func_ir.name.clone();
             let func_start = std::time::Instant::now();
@@ -1707,8 +1712,17 @@ impl SimpleBackend {
                 slowest_func = Some((func_name, func_elapsed));
             }
             compiled += 1;
-            if compiled % 100 == 0 {
-                eprintln!("MOLT_BACKEND: compiled {compiled}/{func_count} functions");
+            // Print progress at regular intervals, or every 500ms for
+            // slow builds where individual functions take a long time.
+            if compiled as usize % progress_interval == 0
+                || last_progress.elapsed().as_millis() >= 500
+            {
+                let pct = (compiled as f64 / func_count as f64 * 100.0) as u32;
+                let elapsed = codegen_start.elapsed();
+                eprintln!(
+                    "MOLT_BACKEND: [{pct:3}%] compiled {compiled}/{func_count} functions ({elapsed:.1?} elapsed)"
+                );
+                last_progress = std::time::Instant::now();
             }
         }
         if timing {
@@ -1766,7 +1780,20 @@ impl SimpleBackend {
         }
 
         let emit_start = std::time::Instant::now();
-        let product = self.module.finish();
+        let mut product = self.module.finish();
+        // Set MachO platform load command so ld doesn't emit
+        // "no platform load command found" warnings on macOS.
+        #[cfg(target_os = "macos")]
+        {
+            use cranelift_object::object::write::MachOBuildVersion;
+            // Encode macOS 11.0.0 as minimum deployment target.
+            // Version encoding: xxxx.yy.zz nibbles => 0x000B0000 = 11.0.0
+            let mut bv = MachOBuildVersion::default();
+            bv.platform = cranelift_object::object::macho::PLATFORM_MACOS;
+            bv.minos = 0x000B_0000; // macOS 11.0.0
+            bv.sdk = 0;             // no SDK constraint
+            product.object.set_macho_build_version(bv);
+        }
         let bytes = product.emit().unwrap();
         if timing {
             let emit_elapsed = emit_start.elapsed();
