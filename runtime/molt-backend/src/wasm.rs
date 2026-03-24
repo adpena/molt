@@ -1422,8 +1422,12 @@ impl WasmBackend {
         }
         for func_ir in &mut ir.functions {
             crate::fold_constants(&mut func_ir.ops);
+            crate::passes::hoist_loop_invariants(func_ir);
         }
         crate::inline_functions(&mut ir);
+
+        // Megafunction splitting: prevent O(n²) in wasm-encoder for huge functions.
+        crate::split_megafunctions(&mut ir);
 
         // Dead function elimination: remove unreachable functions after inlining.
         crate::eliminate_dead_functions(&mut ir);
