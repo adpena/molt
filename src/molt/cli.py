@@ -12824,6 +12824,10 @@ def _resolve_build_output_layout(
 
     output_binary: Path | None = None
     linked_output_path: Path | None = None
+    # Luau has a ~200 concurrent local register limit.  Use aggressive
+    # module chunking (500 ops) to keep each function under ~150 locals.
+    if is_luau_transpile and "MOLT_MODULE_CHUNK_OPS" not in os.environ:
+        os.environ["MOLT_MODULE_CHUNK_OPS"] = "1500"
     if is_luau_transpile:
         output_artifact = _resolve_output_path(
             output,
@@ -14188,18 +14192,11 @@ def _execute_backend_compile(
             _is_transpile = is_rust_transpile or is_luau_transpile
             if not is_wasm and not _is_transpile and backend_env is None:
                 backend_env = os.environ.copy()
-            if not is_wasm and not _is_transpile and backend_env is not None:
-                _stdlib_cache_dir = Path(
-                    os.environ.get("MOLT_HOME", str(Path.home() / ".molt"))
-                ) / "cache" / "stdlib"
-                _stdlib_cache_dir.mkdir(parents=True, exist_ok=True)
-                _stdlib_fingerprint = _cache_fingerprint()[:16]
-                _stdlib_obj = _stdlib_cache_dir / f"stdlib_{_stdlib_fingerprint}.o"
-                backend_env["MOLT_STDLIB_OBJ"] = str(_stdlib_obj)
-                # Determine entry module name from the source file
-                _entry_base = Path(output_artifact).stem if output_artifact else "__main__"
-                _entry_module = _entry_base.replace("-", "_").replace(".", "_")
-                backend_env["MOLT_ENTRY_MODULE"] = _entry_module
+            # NOTE: stdlib obj caching disabled — the user/stdlib partition
+            # creates cross-object undefined symbols that ld cannot resolve
+            # from separate .o files.  All functions compile into output.o.
+            # TODO: fix partitioning to account for cross-module references
+            # before re-enabling (see molt_isolate_import dispatch table).
             cmd = [str(backend_bin)]
             if is_luau_transpile:
                 cmd.extend(["--target", "luau"])
@@ -14230,6 +14227,9 @@ def _execute_backend_compile(
                     finally:
                         os.close(ir_fd)
                     cmd_with_output.extend(["--ir-file", ir_file_path])
+
+                    if backend_env is not None:
+                        backend_env.setdefault("MOLT_BACKEND_BATCH_SIZE", "0")
                     backend_process = subprocess.run(
                         cmd_with_output,
                         capture_output=True,
