@@ -18585,7 +18585,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     return res
                 return self._emit_tuple_from_iter(iterable)
             if func_id == "dict":
-                if len(node.args) > 1:
+                has_starargs = len(node.args) > 1 or any(
+                    isinstance(a, ast.Starred) for a in node.args
+                )
+                if has_starargs:
+                    # dict(*args, ...) must unpack star-args into positional
+                    # arguments at runtime, so route through CALL_BIND.
                     callee = self.visit(node.func)
                     if callee is None:
                         raise NotImplementedError("Unsupported call target")
@@ -18593,19 +18598,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res = MoltValue(self.next_var(), type_hint="dict")
                 if not node.args:
                     self.emit(MoltOp(kind="DICT_NEW", args=[], result=res))
-                elif isinstance(node.args[0], ast.Starred):
-                    # dict(*args, **kwargs) — create empty dict, then update
-                    self.emit(MoltOp(kind="DICT_NEW", args=[], result=res))
-                    starred_val = self.visit(node.args[0].value)
-                    if starred_val is None:
-                        raise NotImplementedError("Unsupported dict * input")
-                    self.emit(
-                        MoltOp(
-                            kind="DICT_UPDATE",
-                            args=[res, starred_val],
-                            result=MoltValue("none"),
-                        )
-                    )
                 else:
                     iterable = self.visit(node.args[0])
                     if iterable is None:
