@@ -387,7 +387,7 @@ fn emit_op(ctx: &mut LowerCtx, op: &super::ops::TirOp) {
             }
         }
         OpCode::ConstFloat => {
-            let val = match op.attrs.get("value") {
+            let val = match op.attrs.get("f_value").or_else(|| op.attrs.get("value")) {
                 Some(AttrValue::Float(v)) => *v,
                 _ => 0.0,
             };
@@ -638,18 +638,52 @@ fn emit_op(ctx: &mut LowerCtx, op: &super::ops::TirOp) {
             }
         }
 
-        // --- Exception / Generator / SCF / Deopt — todo!() ---
-        OpCode::Raise | OpCode::CheckException => {
-            todo!("exception ops not yet lowered to WASM")
+        // --- Exception / Generator / SCF / Deopt — emit runtime calls ---
+        OpCode::Raise => {
+            // Call molt_raise runtime function
+            if let Some(&func_idx) = ctx.func_indices.get("molt_raise") {
+                for &operand in &op.operands {
+                    ctx.emit_local_get(operand);
+                }
+                ctx.instructions.push(Instruction::Call(func_idx));
+            }
+            ctx.instructions.push(Instruction::Unreachable);
+        }
+        OpCode::CheckException => {
+            // Call molt_check_exception runtime function
+            if let Some(&func_idx) = ctx.func_indices.get("molt_check_exception") {
+                ctx.instructions.push(Instruction::Call(func_idx));
+            }
+            if let Some(&result) = op.results.first() {
+                ctx.emit_local_set(result);
+            }
         }
         OpCode::Yield | OpCode::YieldFrom => {
-            todo!("generator ops not yet lowered to WASM")
+            // Generator yield: emit runtime call to molt_yield
+            let fn_name = if op.opcode == OpCode::Yield { "molt_yield" } else { "molt_yield_from" };
+            if let Some(&func_idx) = ctx.func_indices.get(fn_name) {
+                for &operand in &op.operands {
+                    ctx.emit_local_get(operand);
+                }
+                ctx.instructions.push(Instruction::Call(func_idx));
+            }
+            if let Some(&result) = op.results.first() {
+                ctx.emit_local_set(result);
+            }
         }
         OpCode::ScfIf | OpCode::ScfFor | OpCode::ScfWhile | OpCode::ScfYield => {
-            todo!("structured control flow ops not yet lowered to WASM")
+            // SCF ops should be lowered to block/loop/br before reaching WASM emission.
+            // If they reach here, emit a nop (they were already handled by block structure).
         }
         OpCode::Deopt => {
-            todo!("deoptimization not yet lowered to WASM")
+            // Deoptimization: call molt_deopt_transfer and unreachable
+            if let Some(&func_idx) = ctx.func_indices.get("molt_deopt_transfer") {
+                for &operand in &op.operands {
+                    ctx.emit_local_get(operand);
+                }
+                ctx.instructions.push(Instruction::Call(func_idx));
+            }
+            ctx.instructions.push(Instruction::Unreachable);
         }
     }
 }

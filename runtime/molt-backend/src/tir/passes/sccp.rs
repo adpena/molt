@@ -283,7 +283,7 @@ fn evaluate_op(opcode: OpCode, operands: &[Option<&ConstVal>]) -> Option<ConstVa
         OpCode::Neg => {
             let a = operands.first().copied().flatten()?;
             match a {
-                ConstVal::Int(v) => Some(ConstVal::Int(-v)),
+                ConstVal::Int(v) => v.checked_neg().map(ConstVal::Int),
                 ConstVal::Float(v) => Some(ConstVal::Float(-v)),
                 _ => None,
             }
