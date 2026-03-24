@@ -43,6 +43,8 @@ mod constants;
 mod crypto_bridge;
 #[cfg(feature = "stdlib_math")]
 mod math_bridge;
+#[cfg(feature = "stdlib_serial")]
+mod serial_bridge;
 // Re-export extracted crates so their symbols are available at link time.
 #[cfg(feature = "stdlib_crypto")]
 pub use molt_runtime_crypto;
@@ -50,6 +52,8 @@ pub use molt_runtime_crypto;
 pub use molt_runtime_compression;
 #[cfg(feature = "stdlib_math")]
 pub use molt_runtime_math;
+#[cfg(feature = "stdlib_serial")]
+pub use molt_runtime_serial;
 #[cfg(feature = "stdlib_tk")]
 mod gui;
 #[cfg(feature = "stdlib_tk")]
