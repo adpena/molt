@@ -41,6 +41,17 @@ pub struct LuauBackend {
     /// `const` / `const_int` ops with `value >= 0`.  Used to skip the negative
     /// index ternary in get_item / set_item / del_item / string index paths.
     nonneg_consts: BTreeSet<String>,
+    /// Counter of local declarations at function scope level 1 (inside the
+    /// function body but not inside nested blocks).  Used to insert `do...end`
+    /// scope blocks when nearing Luau's 200 local register limit.
+    scope_local_count: u32,
+    /// The indent level at which the function body sits (normally 1).
+    /// Used to determine when we're at the top scope for local counting.
+    func_body_indent: u32,
+    /// True when we've opened a `do` block for local spilling.
+    in_spill_do_block: bool,
+    /// True when the current function needs local spilling (>190 ops with output).
+    needs_local_spill: bool,
 }
 
 impl LuauBackend {
@@ -56,6 +67,10 @@ impl LuauBackend {
             pcall_counter: 0,
             inside_pcall_body: false,
             nonneg_consts: BTreeSet::new(),
+            scope_local_count: 0,
+            func_body_indent: 1,
+            in_spill_do_block: false,
+            needs_local_spill: false,
         }
     }
 
@@ -108,16 +123,26 @@ impl LuauBackend {
                         extra_forward_decls.push(ident);
                     }
                 };
+                // call_internal: s_value is the callee name
                 if op.kind == "call_internal" {
                     if let Some(ref s_val) = op.s_value {
                         check_ident(s_val);
                     }
                 }
+                // func_new / func_new_closure / code_new: s_value is the
+                // function name emitted as a bare identifier reference.
+                if matches!(op.kind.as_str(), "func_new" | "func_new_closure" | "code_new") {
+                    if let Some(ref s_val) = op.s_value {
+                        check_ident(s_val);
+                    }
+                }
+                // load_local: var field may hold a function reference
                 if op.kind == "load_local" {
                     if let Some(ref var) = op.var {
                         check_ident(var);
                     }
                 }
+                // call_func: args[0] is the callee
                 if op.kind == "call_func" {
                     if let Some(ref args) = op.args {
                         if let Some(callee) = args.first() {
@@ -637,6 +662,15 @@ impl LuauBackend {
         self.pcall_counter = 0;
         self.inside_pcall_body = false;
         self.nonneg_consts.clear();
+        self.scope_local_count = 0;
+        self.func_body_indent = self.indent as u32;
+        self.in_spill_do_block = false;
+        // Pre-count ops that will produce `local` declarations.
+        // If > 190, enable local-spilling `do...end` blocks.
+        let local_producing_ops = ops.iter().filter(|op| {
+            op.out.is_some() && op.out.as_deref() != Some("none")
+        }).count();
+        self.needs_local_spill = local_producing_ops > 190;
 
         // Seed var_type_hints from param_types so that parameters annotated
         // as list/dict/str carry their type hints into codegen.  Without this,
@@ -931,6 +965,30 @@ impl LuauBackend {
                 }
             }
 
+            // Local spilling: when at the function's top scope and approaching
+            // Luau's 200 local register limit, close the current `do` scope and
+            // open a new one.  Only split between top-level ops (not inside
+            // if/for/while/pcall blocks).
+            if self.needs_local_spill && self.indent as u32 == self.func_body_indent {
+                let op_has_out = ops[i].out.is_some() && ops[i].out.as_deref() != Some("none");
+                if op_has_out {
+                    self.scope_local_count += 1;
+                }
+                if self.scope_local_count == 1 && !self.in_spill_do_block {
+                    // Open the first `do` block.
+                    self.emit_line("do");
+                    self.push_indent();
+                    self.in_spill_do_block = true;
+                } else if self.scope_local_count >= 170 && self.in_spill_do_block {
+                    // Close and reopen scope.
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.emit_line("do");
+                    self.push_indent();
+                    self.scope_local_count = 0;
+                }
+            }
+
             if ops[i].kind == "loop_start"
                 && i + 1 < ops.len()
                 && ops[i + 1].kind == "loop_index_start"
@@ -952,6 +1010,13 @@ impl LuauBackend {
                 self.emit_op(&ops[i]);
                 i += 1;
             }
+        }
+
+        // Close the spill `do` block if open.
+        if self.in_spill_do_block {
+            self.pop_indent();
+            self.emit_line("end");
+            self.in_spill_do_block = false;
         }
 
         self.pop_indent();
@@ -7793,6 +7858,151 @@ fn strip_dead_code_after_terminators(source: &mut String) {
     }
     *source = result;
     eprintln!("[molt-luau] Stripped {} dead-code-after-terminator lines", remove.len());
+}
+
+/// Spill excess locals to avoid Luau's 200 local register limit.
+///
+/// For functions with more than 190 local declarations at the top scope,
+/// inserts `do...end` blocks every ~180 locals.  Locals inside `do...end`
+/// release their registers when the block closes, avoiding the 200 limit.
+///
+/// The approach: scan each function body, count top-level `local` declarations,
+/// and wrap consecutive non-structural lines in `do...end` blocks.
+fn spill_excess_locals(source: &mut String) {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut result = String::with_capacity(source.len() + source.len() / 20);
+    let mut i = 0;
+    let mut total_spilled = 0u32;
+
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+
+        // Detect function start: `NAME = function(...)` at column 0
+        let is_func_start = !trimmed.starts_with("--")
+            && trimmed.contains("= function(")
+            && !trimmed.starts_with("local ")
+            && (lines[i].starts_with(char::is_alphabetic) || lines[i].starts_with('_'));
+
+        if !is_func_start {
+            result.push_str(lines[i]);
+            result.push('\n');
+            i += 1;
+            continue;
+        }
+
+        // Found a function.  Scan its body to count locals.
+        let func_start = i;
+        result.push_str(lines[i]);
+        result.push('\n');
+        i += 1;
+
+        // Determine the function indent (first non-blank body line).
+        let body_indent = if i < lines.len() {
+            let body_line = lines[i];
+            body_line.len() - body_line.trim_start().len()
+        } else {
+            1
+        };
+
+        // Count locals at body_indent level (top of function scope).
+        let mut local_count = 0u32;
+        let mut j = i;
+        let mut func_depth = 1i32;
+        while j < lines.len() && func_depth > 0 {
+            let t = lines[j].trim();
+            let indent = lines[j].len() - lines[j].trim_start().len();
+            // Track function depth to find closing `end`.
+            if indent == body_indent && t == "end" && func_depth == 1 {
+                break;
+            }
+            if t.starts_with("local ") && indent == body_indent {
+                local_count += 1;
+            }
+            j += 1;
+        }
+
+        if local_count <= 190 {
+            // No spilling needed; emit body as-is.
+            continue;
+        }
+
+        // Need to spill.  Re-scan the body, inserting `do` at the start
+        // and `end` every ~170 locals, then `do` again.
+        let indent_str = &lines[i][..body_indent.min(lines[i].len())];
+        let mut scope_locals = 0u32;
+        let mut in_do_block = false;
+        let mut nested_depth = 0i32; // track nested blocks to avoid splitting mid-block
+
+        while i < lines.len() {
+            let t = lines[i].trim();
+            let indent = lines[i].len() - lines[i].trim_start().len();
+
+            // End of function?
+            if indent <= body_indent && t == "end" && nested_depth == 0 {
+                if in_do_block {
+                    result.push_str(indent_str);
+                    result.push_str("end\n");
+                    in_do_block = false;
+                    total_spilled += 1;
+                }
+                result.push_str(lines[i]);
+                result.push('\n');
+                i += 1;
+                break;
+            }
+
+            // Track nested structured blocks.
+            if indent == body_indent {
+                if t.starts_with("if ") && t.contains(" then") && !t.ends_with("end") {
+                    nested_depth += 1;
+                } else if t.starts_with("for ") && t.contains(" do") {
+                    nested_depth += 1;
+                } else if t.starts_with("while ") && t.contains(" do") {
+                    nested_depth += 1;
+                } else if t == "end" || t == "end)" {
+                    if nested_depth > 0 {
+                        nested_depth -= 1;
+                    }
+                }
+            }
+
+            // Count locals at body_indent.
+            if t.starts_with("local ") && indent == body_indent {
+                scope_locals += 1;
+            }
+
+            // If we've reached the limit and we're not inside a nested block,
+            // close the current `do` and open a new one.
+            if scope_locals >= 170 && nested_depth == 0 && in_do_block
+                && indent == body_indent && !t.starts_with("if ") && !t.starts_with("for ")
+                && !t.starts_with("while ") && t != "else" && t != "end" && t != "end)"
+            {
+                result.push_str(indent_str);
+                result.push_str("end\n");
+                result.push_str(indent_str);
+                result.push_str("do\n");
+                scope_locals = 0;
+                total_spilled += 1;
+            }
+
+            // Open initial `do` block if needed.
+            if !in_do_block && scope_locals > 0 {
+                // Insert `do` before the current line.
+                result.push_str(indent_str);
+                result.push_str("do\n");
+                in_do_block = true;
+            }
+
+            result.push_str(lines[i]);
+            result.push('\n');
+            i += 1;
+        }
+    }
+
+    if total_spilled > 0 {
+        eprintln!("[molt-luau] Spilled locals in {} function scope blocks", total_spilled);
+        *source = result;
+    }
 }
 
 fn freeze_constant_tables(source: &mut String) {
