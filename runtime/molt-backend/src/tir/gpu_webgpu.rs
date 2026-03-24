@@ -270,39 +270,36 @@ pub struct WebGpuDevice {
 }
 
 #[cfg(not(feature = "gpu-webgpu"))]
+const WEBGPU_STUB_MSG: &str = "WebGPU support requires the `gpu-webgpu` feature";
+
+#[cfg(not(feature = "gpu-webgpu"))]
 impl WebGpuDevice {
     pub fn new() -> Result<Self, GpuError> {
-        Ok(Self {
-            _phantom: std::marker::PhantomData,
-        })
+        Err(GpuError::DeviceNotAvailable(WEBGPU_STUB_MSG.into()))
     }
 
-    pub fn compile_wgsl(&self, name: &str, wgsl_source: &str) -> Result<CompiledKernel, GpuError> {
-        Ok(CompiledKernel::new(
-            name.to_string(),
-            GpuPlatform::WebGpu,
-            wgsl_source.as_bytes().to_vec(),
-        ))
+    pub fn compile_wgsl(&self, _name: &str, _wgsl_source: &str) -> Result<CompiledKernel, GpuError> {
+        Err(GpuError::DeviceNotAvailable(WEBGPU_STUB_MSG.into()))
     }
 }
 
 #[cfg(not(feature = "gpu-webgpu"))]
 impl GpuDevice for WebGpuDevice {
-    fn compile_kernel(&self, name: &str, source: &str) -> Result<CompiledKernel, GpuError> {
-        self.compile_wgsl(name, source)
+    fn compile_kernel(&self, _name: &str, _source: &str) -> Result<CompiledKernel, GpuError> {
+        Err(GpuError::DeviceNotAvailable(WEBGPU_STUB_MSG.into()))
     }
-    fn alloc_buffer(&self, size_bytes: usize) -> Result<GpuBufferHandle, GpuError> {
-        Ok(GpuBufferHandle::new(size_bytes, GpuPlatform::WebGpu, vec![0; 8]))
+    fn alloc_buffer(&self, _size_bytes: usize) -> Result<GpuBufferHandle, GpuError> {
+        Err(GpuError::DeviceNotAvailable(WEBGPU_STUB_MSG.into()))
     }
     fn copy_to_device(&self, _buffer: &GpuBufferHandle, _data: &[u8]) -> Result<(), GpuError> {
-        Ok(())
+        Err(GpuError::DeviceNotAvailable(WEBGPU_STUB_MSG.into()))
     }
     fn copy_from_device(
         &self,
         _buffer: &GpuBufferHandle,
         _data: &mut [u8],
     ) -> Result<(), GpuError> {
-        Ok(())
+        Err(GpuError::DeviceNotAvailable(WEBGPU_STUB_MSG.into()))
     }
     fn launch_kernel(
         &self,
@@ -311,13 +308,13 @@ impl GpuDevice for WebGpuDevice {
         _block: [u32; 3],
         _buffers: &[&GpuBufferHandle],
     ) -> Result<(), GpuError> {
-        Ok(())
+        Err(GpuError::DeviceNotAvailable(WEBGPU_STUB_MSG.into()))
     }
     fn synchronize(&self) -> Result<(), GpuError> {
-        Ok(())
+        Err(GpuError::DeviceNotAvailable(WEBGPU_STUB_MSG.into()))
     }
     fn free_buffer(&self, _buffer: GpuBufferHandle) -> Result<(), GpuError> {
-        Ok(())
+        Err(GpuError::DeviceNotAvailable(WEBGPU_STUB_MSG.into()))
     }
 }
 
@@ -328,9 +325,11 @@ impl GpuDevice for WebGpuDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "gpu-webgpu")]
     use crate::tir::gpu_runtime::GpuDevice;
 
     #[test]
+    #[cfg(feature = "gpu-webgpu")]
     fn webgpu_device_implements_gpu_device_trait() {
         let device = WebGpuDevice::new().expect("WebGpuDevice::new should succeed");
         let buf = device.alloc_buffer(512).expect("alloc_buffer should succeed");
@@ -339,6 +338,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "gpu-webgpu"))]
+    fn webgpu_device_stub_returns_error() {
+        let result = WebGpuDevice::new();
+        assert!(result.is_err(), "Stub WebGpuDevice::new should fail");
+    }
+
+    #[test]
+    #[cfg(feature = "gpu-webgpu")]
     fn webgpu_device_compile_and_launch() {
         let device = WebGpuDevice::new().expect("WebGpuDevice::new should succeed");
         let wgsl = "@compute @workgroup_size(64) fn main() {}";
