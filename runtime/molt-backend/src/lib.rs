@@ -1612,7 +1612,9 @@ impl SimpleBackend {
             escape_analysis(func_ir);
         }
         for func_ir in &mut ir.functions {
-            rc_coalescing(func_ir);
+            if std::env::var("MOLT_DISABLE_RC_COALESCING").as_deref() != Ok("1") {
+                rc_coalescing(func_ir);
+            }
         }
         for func_ir in &mut ir.functions {
             fold_constants(&mut func_ir.ops);
