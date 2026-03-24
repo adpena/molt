@@ -3,10 +3,13 @@
 
 pub mod bce;
 pub mod cha;
+pub mod closure_spec;
+pub mod fast_math;
 pub mod vectorize;
 pub mod dce;
 pub mod interprocedural;
 pub mod escape_analysis;
+pub mod monomorphize;
 pub mod refcount_elim;
 pub mod sccp;
 pub mod strength_reduction;

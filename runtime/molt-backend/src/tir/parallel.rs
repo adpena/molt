@@ -77,6 +77,7 @@ mod tests {
             entry_block: entry_id,
             next_value: 1,
             next_block: 1,
+            attrs: AttrDict::new(),
         }
     }
 
@@ -112,6 +113,7 @@ mod tests {
             entry_block: entry_id,
             next_value: 3,
             next_block: 1,
+            attrs: AttrDict::new(),
         }
     }
 

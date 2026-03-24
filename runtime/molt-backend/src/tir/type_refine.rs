@@ -346,6 +346,7 @@ mod tests {
             entry_block: entry_id,
             next_value,
             next_block: 1,
+            attrs: AttrDict::new(),
         }
     }
 
@@ -547,6 +548,7 @@ mod tests {
             entry_block: entry_id,
             next_value: 4,
             next_block: 4,
+            attrs: AttrDict::new(),
         };
 
         let refined = refine_types(&mut func);
@@ -645,6 +647,7 @@ mod tests {
             entry_block: entry_id,
             next_value: 4,
             next_block: 4,
+            attrs: AttrDict::new(),
         };
 
         let refined = refine_types(&mut func);
@@ -722,6 +725,7 @@ mod tests {
             entry_block: entry_id,
             next_value: 3,
             next_block: 1,
+            attrs: AttrDict::new(),
         };
         let refined = refine_types(&mut func);
         assert_eq!(refined, 0);
