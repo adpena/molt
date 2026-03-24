@@ -743,6 +743,7 @@ mod tests {
             next_block: 3,
             attrs: crate::tir::ops::AttrDict::new(),
         has_exception_handling: false,
+            label_id_map: std::collections::HashMap::new(),
         };
 
         let stats = run(&mut func);
@@ -841,6 +842,7 @@ mod tests {
             next_block: 3,
             attrs: crate::tir::ops::AttrDict::new(),
         has_exception_handling: false,
+            label_id_map: std::collections::HashMap::new(),
         };
 
         run(&mut func);
@@ -939,6 +941,7 @@ mod tests {
             next_block: 3,
             attrs: crate::tir::ops::AttrDict::new(),
         has_exception_handling: false,
+            label_id_map: std::collections::HashMap::new(),
         };
 
         run(&mut func);
