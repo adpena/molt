@@ -111,9 +111,19 @@ impl CompilationCache {
     /// (idempotent for identical hashes).
     pub fn put(&mut self, content_hash: &str, artifact: &[u8], deps: Vec<String>) {
         let funcs_dir = self.cache_dir.join("functions");
-        let _ = std::fs::create_dir_all(&funcs_dir);
+        if std::fs::create_dir_all(&funcs_dir).is_err() {
+            return; // can't create cache dir — skip caching silently
+        }
         let artifact_path = funcs_dir.join(format!("{}.bin", content_hash));
-        let _ = std::fs::write(&artifact_path, artifact);
+        // Atomic write: write to temp file then rename to prevent partial writes
+        let tmp_path = funcs_dir.join(format!("{}.bin.tmp", content_hash));
+        if std::fs::write(&tmp_path, artifact).is_err() {
+            return; // disk full or permission error — skip
+        }
+        if std::fs::rename(&tmp_path, &artifact_path).is_err() {
+            let _ = std::fs::remove_file(&tmp_path); // cleanup temp
+            return;
+        }
 
         let entry = CacheEntry {
             content_hash: content_hash.to_owned(),
