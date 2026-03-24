@@ -155,15 +155,28 @@ fn build_use_counts(func: &TirFunction) -> HashMap<ValueId, usize> {
 // ---------------------------------------------------------------------------
 
 /// Collect the set of reachable BlockIds via DFS from the entry block.
+///
+/// Also includes exception handler blocks that are reachable via implicit
+/// `check_exception` edges (their target label ID maps back to a BlockId
+/// through the function's `label_id_map`).
 fn reachable_blocks(func: &TirFunction) -> HashSet<BlockId> {
     let mut visited: HashSet<BlockId> = HashSet::new();
     let mut stack: Vec<BlockId> = vec![func.entry_block];
+
+    // Build reverse label map: original_label_id → BlockId
+    // so we can follow check_exception target references.
+    let reverse_label: HashMap<i64, BlockId> = func
+        .label_id_map
+        .iter()
+        .map(|(&bid, &label_id)| (label_id, BlockId(bid)))
+        .collect();
 
     while let Some(id) = stack.pop() {
         if !visited.insert(id) {
             continue;
         }
         if let Some(block) = func.blocks.get(&id) {
+            // Follow normal terminator edges.
             match &block.terminator {
                 Terminator::Branch { target, .. } => {
                     stack.push(*target);
@@ -185,6 +198,19 @@ fn reachable_blocks(func: &TirFunction) -> HashSet<BlockId> {
                     }
                 }
                 Terminator::Return { .. } | Terminator::Unreachable => {}
+            }
+
+            // Follow implicit exception edges from CheckException ops.
+            for op in &block.ops {
+                if op.opcode == super::super::ops::OpCode::CheckException {
+                    if let Some(super::super::ops::AttrValue::Int(target_label)) =
+                        op.attrs.get("value")
+                    {
+                        if let Some(&target_bid) = reverse_label.get(target_label) {
+                            stack.push(target_bid);
+                        }
+                    }
+                }
             }
         }
     }
