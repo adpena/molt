@@ -1740,11 +1740,14 @@ impl SimpleBackend {
                 })
                 .collect();
         for (fid, name, sig) in declared {
-            // In batched compilation, skip ALL trap stubs — cross-batch
-            // references (including internally-generated names like
-            // sys____molt_globals_builtin__) are left undefined for
-            // ld -r to resolve at merge time.
-            if !self.external_function_names.is_empty() {
+            // In batched compilation, skip trap stubs for functions that
+            // exist in other batches — ld -r will resolve them at merge
+            // time.  But functions that don't exist in ANY batch (like
+            // __ov variants or internally-generated names) still need
+            // stubs to avoid Cranelift "Export must be defined" panics.
+            if !self.external_function_names.is_empty()
+                && self.external_function_names.contains(&name)
+            {
                 continue;
             }
             if let Err(e) = Self::emit_trap_stub(&mut self.module, fid, &sig, &name) {

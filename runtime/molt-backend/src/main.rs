@@ -1050,14 +1050,23 @@ fn main() -> io::Result<()> {
         }
     };
 
-    // Replace __annotate__ typing stubs with trivial ret_void bodies.
+    // Replace __annotate__ typing stubs with trivial return-None bodies.
     // The symbols must exist (trampolines and module chunks reference them)
     // but the bodies are typing metadata not needed at runtime.
     for func in ir.functions.iter_mut() {
         if func.name.contains("__annotate__") {
             func.ops.clear();
+            func.params.clear();
+            // Return None bits (0x7FF8_0000_0000_0000) — matches MoltObject::none().
             func.ops.push(OpIR {
-                kind: "ret_void".to_string(),
+                kind: "const_int".to_string(),
+                out: Some("__ret".to_string()),
+                value: Some(0x7FF8_0000_0000_0000_u64 as i64),
+                ..OpIR::default()
+            });
+            func.ops.push(OpIR {
+                kind: "ret".to_string(),
+                var: Some("__ret".to_string()),
                 ..OpIR::default()
             });
         }
