@@ -2455,7 +2455,6 @@ dependencies = [
 name = "molt-runtime-asyncio"
 version = "0.1.0"
 dependencies = [
- "crossbeam-channel",
  "molt-lang-obj-model",
  "molt-runtime-core",
 ]
@@ -2540,6 +2539,7 @@ dependencies = [
 name = "molt-runtime-tk"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "libloading",
  "molt-lang-obj-model",
  "molt-runtime-core",
