@@ -2218,6 +2218,7 @@ pub unsafe extern "C" fn molt_ws_connect(
     })
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ws_connect_obj(url_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -2719,6 +2720,8 @@ fn db_query_impl(
         let hook: DbHostHook = unsafe { std::mem::transmute(hook_ptr) };
         hook(req_ptr, len, out, token_id)
     }
+    #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
+    { 7 }
 }
 
 fn db_exec_impl(
@@ -2757,6 +2760,8 @@ fn db_exec_impl(
         let hook: DbHostHook = unsafe { std::mem::transmute(hook_ptr) };
         hook(req_ptr, len, out, token_id)
     }
+    #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
+    { 7 }
 }
 
 fn db_error(_py: &PyToken<'_>, op: &str, code: i32, cap: &str) -> u64 {
