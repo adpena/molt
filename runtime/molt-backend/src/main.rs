@@ -1050,6 +1050,11 @@ fn main() -> io::Result<()> {
         }
     };
 
+    // Strip __annotate__ typing stubs — they're metadata, not executable code.
+    // Done once here so all compilation paths (Luau, WASM, native, batched,
+    // incremental) see a clean IR without scattered per-path filters.
+    ir.functions.retain(|f| !f.name.contains("__annotate__"));
+
     // Tree-shake for Luau: remove unreachable stdlib functions.
     if is_luau {
         ir.tree_shake_luau();
@@ -1141,9 +1146,10 @@ fn main() -> io::Result<()> {
                     name.starts_with(&format!("{entry_module}__"))
                         || name == "molt_main"
                         || name.starts_with(&format!("molt_init_{entry_module}"))
+                        || name == "molt_init___main__"
                         || name == "molt_isolate_import"
                         || name == "molt_isolate_bootstrap"
-                        || name == "molt_init___main__"
+                        || name.starts_with("molt_init_")
                 };
                 if stdlib_path.exists() {
                     // Cached stdlib exists — compile only user functions
@@ -1253,9 +1259,8 @@ fn main() -> io::Result<()> {
                     // Now compile user functions only
                     ir.functions = user_remaining;
                     eprintln!(
-                        "MOLT_BACKEND: compiling {} user functions: {:?}",
-                        ir.functions.len(),
-                        ir.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+                        "MOLT_BACKEND: compiling {} user functions",
+                        ir.functions.len()
                     );
                 }
             }
@@ -1278,11 +1283,8 @@ fn main() -> io::Result<()> {
                 // Large IR: split into batches, compile each independently,
                 // then merge with ld -r (partial link).  This prevents OOM
                 // when compiling 1000+ stdlib functions into one ObjectModule.
-                // Filter out __annotate__ stubs before batching — they're typing
-                // metadata that causes Cranelift linkage panics in batched compilation.
                 let mut all_functions: Vec<_> = ir.functions
                     .into_iter()
-                    .filter(|f| !f.name.contains("__annotate__"))
                     .collect();
                 let profile = ir.profile;
                 let total_batches = (all_functions.len() + batch_size - 1) / batch_size;
