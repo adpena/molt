@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "molt-obj-model",
+    "molt-runtime-core",
     "molt-runtime",
     "molt-backend",
     "molt-wasm-host",
