@@ -72,11 +72,70 @@ impl LuauBackend {
         let mut func_output = String::with_capacity(8192);
         std::mem::swap(&mut self.output, &mut func_output);
 
-        if emit_funcs.len() > 1 {
+        // Collect the set of function names that will be defined in this
+        // compilation unit.  Any identifier referenced but NOT in this set
+        // needs a forward declaration (or it will be an undeclared global in
+        // Luau, causing a parse error).
+        let defined_names: std::collections::HashSet<String> = emit_funcs
+            .iter()
+            .map(|f| sanitize_ident(&f.name))
+            .collect();
+
+        // Scan all ops for identifiers that reference module-chunk
+        // initializer functions not present in the function list.
+        // These come from:
+        //   - call_internal: s_value is the callee name
+        //   - load_local: var field may hold a function reference
+        //     (e.g. `builtins.__require_importlib_util_module`)
+        //   - call_func: args[0] is the callee
+        let mut extra_decls_set = std::collections::HashSet::new();
+        let mut extra_forward_decls: Vec<String> = Vec::new();
+        for func in &emit_funcs {
+            for op in &func.ops {
+                let mut check_ident = |raw: &str| {
+                    let ident = sanitize_ident(raw);
+                    // Skip temp vars (v0, v123, etc.), internal names, and
+                    // runtime helpers — they are already declared elsewhere.
+                    let is_temp_var = ident.starts_with('v')
+                        && ident[1..].chars().all(|c| c.is_ascii_digit());
+                    if !is_temp_var
+                        && !defined_names.contains(&ident)
+                        && !extra_decls_set.contains(&ident)
+                        && !ident.starts_with("__")
+                        && !ident.starts_with("molt_")
+                    {
+                        extra_decls_set.insert(ident.clone());
+                        extra_forward_decls.push(ident);
+                    }
+                };
+                if op.kind == "call_internal" {
+                    if let Some(ref s_val) = op.s_value {
+                        check_ident(s_val);
+                    }
+                }
+                if op.kind == "load_local" {
+                    if let Some(ref var) = op.var {
+                        check_ident(var);
+                    }
+                }
+                if op.kind == "call_func" {
+                    if let Some(ref args) = op.args {
+                        if let Some(callee) = args.first() {
+                            check_ident(callee);
+                        }
+                    }
+                }
+            }
+        }
+
+        if emit_funcs.len() > 1 || !extra_forward_decls.is_empty() {
             self.uses_forward_decls = true;
             self.emit_line("-- Forward declarations");
             for func in &emit_funcs {
                 let name = sanitize_ident(&func.name);
+                self.emit_line(&format!("local {name}"));
+            }
+            for name in &extra_forward_decls {
                 self.emit_line(&format!("local {name}"));
             }
             self.output.push('\n');
