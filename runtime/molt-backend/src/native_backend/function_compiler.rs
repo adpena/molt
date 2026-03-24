@@ -12861,12 +12861,12 @@ impl SimpleBackend {
                             }
                         }
                         for name in &tracked_vars {
-                            if let Some(val) = entry_vars.get(name) {
+                            if let Some(val) = var_get(&mut builder, &vars, name) {
                                 builder.ins().call(local_dec_ref, &[*val]);
                             }
                         }
                         for name in &tracked_obj_vars {
-                            if let Some(val) = entry_vars.get(name) {
+                            if let Some(val) = var_get(&mut builder, &vars, name) {
                                 builder.ins().call(local_dec_ref_obj, &[*val]);
                             }
                         }
@@ -12918,12 +12918,12 @@ impl SimpleBackend {
                     tracked_vars.retain(|v| v != var_name);
                     tracked_obj_vars.retain(|v| v != var_name);
                     for name in &tracked_vars {
-                        if let Some(val) = entry_vars.get(name) {
+                        if let Some(val) = var_get(&mut builder, &vars, name) {
                             builder.ins().call(local_dec_ref, &[*val]);
                         }
                     }
                     for name in &tracked_obj_vars {
-                        if let Some(val) = entry_vars.get(name) {
+                        if let Some(val) = var_get(&mut builder, &vars, name) {
                             builder.ins().call(local_dec_ref_obj, &[*val]);
                         }
                     }
