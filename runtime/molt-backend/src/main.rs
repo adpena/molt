@@ -1137,14 +1137,18 @@ fn main() -> io::Result<()> {
 
             if let Some(ref stdlib_path) = stdlib_obj_path {
                 let stdlib_path = std::path::Path::new(stdlib_path);
+                let is_user_func = |name: &str| -> bool {
+                    name.starts_with(&format!("{entry_module}__"))
+                        || name == "molt_main"
+                        || name.starts_with(&format!("molt_init_{entry_module}"))
+                        || name == "molt_isolate_import"
+                        || name == "molt_isolate_bootstrap"
+                        || name == "molt_init___main__"
+                };
                 if stdlib_path.exists() {
                     // Cached stdlib exists — compile only user functions
                     let total = ir.functions.len();
-                    ir.functions.retain(|f| {
-                        f.name.starts_with(&format!("{entry_module}__"))
-                            || f.name == "molt_main"
-                            || f.name.starts_with(&format!("molt_init_{entry_module}"))
-                    });
+                    ir.functions.retain(|f| is_user_func(&f.name));
                     let kept = ir.functions.len();
                     eprintln!(
                         "MOLT_BACKEND: incremental — compiling {kept} user functions (cached {} stdlib in {})",
@@ -1155,38 +1159,103 @@ fn main() -> io::Result<()> {
                     // First build — compile stdlib separately, cache it
                     let total = ir.functions.len();
                     let user_funcs: Vec<_> = ir.functions.iter()
-                        .filter(|f| {
-                            f.name.starts_with(&format!("{entry_module}__"))
-                                || f.name == "molt_main"
-                                || f.name.starts_with(&format!("molt_init_{entry_module}"))
-                        })
+                        .filter(|f| is_user_func(&f.name))
                         .map(|f| f.name.clone())
                         .collect();
-                    let stdlib_funcs: Vec<_> = ir.functions
-                        .drain(..)
-                        .filter(|f| !user_funcs.contains(&f.name))
-                        .collect();
-                    let user_remaining: Vec<_> = ir.functions.drain(..).collect();
+                    let user_func_set: std::collections::BTreeSet<_> = user_funcs.iter().cloned().collect();
+                    let all_funcs: Vec<_> = ir.functions.drain(..).collect();
+                    let (user_remaining, stdlib_funcs): (Vec<_>, Vec<_>) = all_funcs
+                        .into_iter()
+                        .partition(|f| user_func_set.contains(&f.name));
                     // Compile stdlib
                     eprintln!(
                         "MOLT_BACKEND: first build — caching {} stdlib functions to {}",
                         stdlib_funcs.len(),
                         stdlib_path.display()
                     );
-                    let stdlib_ir = SimpleIR {
-                        functions: stdlib_funcs,
-                        profile: ir.profile.clone(),
-                    };
-                    let mut stdlib_backend = SimpleBackend::new_with_target(target_triple);
-                    stdlib_backend.skip_ir_passes = true;
-                    let stdlib_bytes = stdlib_backend.compile(stdlib_ir);
-                    std::fs::write(stdlib_path, &stdlib_bytes)
-                        .expect("failed to write cached stdlib .o");
+                    // Use batched compilation for stdlib to avoid OOM
+                    // (1079 functions in one ObjectModule uses 30+GB).
+                    let stdlib_batch_size: usize = std::env::var("MOLT_BACKEND_BATCH_SIZE")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(64);
+                    let stdlib_count = stdlib_funcs.len();
+
+                    if stdlib_count <= stdlib_batch_size {
+                        let stdlib_ir = SimpleIR {
+                            functions: stdlib_funcs,
+                            profile: ir.profile.clone(),
+                        };
+                        let mut stdlib_backend = SimpleBackend::new_with_target(target_triple);
+                        stdlib_backend.skip_ir_passes = true;
+                        let stdlib_bytes = stdlib_backend.compile(stdlib_ir);
+                        std::fs::write(stdlib_path, &stdlib_bytes)
+                            .expect("failed to write cached stdlib .o");
+                    } else {
+                        // Batched stdlib compilation
+                        let all_stdlib_names: std::collections::BTreeSet<String> =
+                            stdlib_funcs.iter().map(|f| f.name.clone()).collect();
+                        let mut stdlib_remaining = stdlib_funcs;
+                        let stdlib_total_batches = (stdlib_remaining.len() + stdlib_batch_size - 1) / stdlib_batch_size;
+                        let mut stdlib_batch_paths: Vec<std::path::PathBuf> = Vec::new();
+                        let stdlib_tmp_dir = std::env::temp_dir()
+                            .join(format!("molt_stdlib_batch_{}", std::process::id()));
+                        let _ = std::fs::create_dir_all(&stdlib_tmp_dir);
+                        let mut stdlib_batch_idx = 0usize;
+
+                        while !stdlib_remaining.is_empty() {
+                            let take = stdlib_remaining.len().min(stdlib_batch_size);
+                            let batch_funcs: Vec<_> = stdlib_remaining.drain(..take).collect();
+                            eprintln!(
+                                "MOLT_BACKEND: stdlib batch {}/{} ({} functions)",
+                                stdlib_batch_idx + 1, stdlib_total_batches, batch_funcs.len()
+                            );
+                            let batch_ir = SimpleIR {
+                                functions: batch_funcs,
+                                profile: ir.profile.clone(),
+                            };
+                            let mut batch_backend = SimpleBackend::new_with_target(target_triple);
+                            batch_backend.skip_ir_passes = true;
+                            batch_backend.external_function_names = all_stdlib_names.clone();
+                            let batch_bytes = batch_backend.compile(batch_ir);
+                            let batch_path = stdlib_tmp_dir.join(format!("batch_{stdlib_batch_idx}.o"));
+                            std::fs::write(&batch_path, &batch_bytes)
+                                .expect("write stdlib batch .o");
+                            stdlib_batch_paths.push(batch_path);
+                            stdlib_batch_idx += 1;
+                        }
+
+                        // Merge stdlib batches with ld -r
+                        if stdlib_batch_paths.len() == 1 {
+                            std::fs::copy(&stdlib_batch_paths[0], stdlib_path)
+                                .expect("copy single stdlib batch");
+                        } else {
+                            let linker = std::env::var("MOLT_LINKER")
+                                .unwrap_or_else(|_| "ld".to_string());
+                            let status = std::process::Command::new(&linker)
+                                .arg("-r")
+                                .args(stdlib_batch_paths.iter().map(|p| p.as_os_str()))
+                                .arg("-o")
+                                .arg(stdlib_path.as_os_str())
+                                .status()
+                                .unwrap_or_else(|e| panic!("ld -r failed: {e}"));
+                            if !status.success() {
+                                panic!("stdlib partial link failed: exit {status}");
+                            }
+                            eprintln!(
+                                "MOLT_BACKEND: merged {} stdlib batches → {}",
+                                stdlib_batch_paths.len(),
+                                stdlib_path.display()
+                            );
+                        }
+                        let _ = std::fs::remove_dir_all(&stdlib_tmp_dir);
+                    }
                     // Now compile user functions only
                     ir.functions = user_remaining;
                     eprintln!(
-                        "MOLT_BACKEND: compiling {} user functions",
-                        ir.functions.len()
+                        "MOLT_BACKEND: compiling {} user functions: {:?}",
+                        ir.functions.len(),
+                        ir.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
                     );
                 }
             }
