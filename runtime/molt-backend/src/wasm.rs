@@ -1992,7 +1992,6 @@ impl WasmBackend {
             buf
         };
         let manifest_segment = self.add_data_segment(reloc_enabled, &manifest_bytes);
-        let manifest_offset = manifest_segment.offset;
         let manifest_len = manifest_bytes.len();
 
         // Allocate a scratch buffer in linear memory for spilling call_func args.
@@ -3435,7 +3434,7 @@ impl WasmBackend {
                 reloc_enabled,
                 main_index,
                 table_init_index,
-                manifest_offset as u32,
+                manifest_segment,
                 manifest_len as u32,
             );
             self.exports
@@ -3958,7 +3957,7 @@ impl WasmBackend {
         reloc_enabled: bool,
         main_index: u32,
         table_init_index: u32,
-        manifest_offset: u32,
+        manifest_segment: DataSegmentRef,
         manifest_len: u32,
     ) -> u32 {
         let func_index = self.func_count;
@@ -3967,8 +3966,10 @@ impl WasmBackend {
         let mut func = Function::new_with_locals_types(Vec::new());
         // Set the intrinsic manifest BEFORE table init and module init.
         // This tells the runtime which intrinsics this app actually uses.
+        // Use emit_data_ptr to register a relocation so wasm-ld adjusts the
+        // pointer after linking (raw I64Const would become stale).
         if manifest_len > 0 {
-            func.instruction(&Instruction::I64Const(i64::from(manifest_offset)));
+            self.emit_data_ptr(reloc_enabled, func_index, &mut func, manifest_segment);
             func.instruction(&Instruction::I64Const(i64::from(manifest_len)));
             emit_call(&mut func, reloc_enabled, self.import_ids["set_intrinsic_manifest"]);
             func.instruction(&Instruction::Drop);
