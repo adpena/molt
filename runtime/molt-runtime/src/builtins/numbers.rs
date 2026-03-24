@@ -65,6 +65,18 @@ pub(crate) fn to_i64(obj: MoltObject) -> Option<i64> {
     if obj.is_bool() {
         return Some(if (obj.bits() & 0x1) == 1 { 1 } else { 0 });
     }
+    // Codegen may produce raw 0x0 bits for integer 0 (uninitialized
+    // Cranelift variables default to zero). In NaN-boxing, 0x0 is
+    // float +0.0, but semantically it represents int 0 in this context.
+    if obj.bits() == 0 {
+        return Some(0);
+    }
+    // Float that represents an exact integer (e.g., 1.0 from codegen)
+    if let Some(f) = obj.as_float() {
+        if f.fract() == 0.0 && f.abs() < (1i64 << 53) as f64 {
+            return Some(f as i64);
+        }
+    }
     if let Some(bits) = int_subclass_value_bits_raw(obj.bits()) {
         let val_obj = obj_from_bits(bits);
         if let Some(i) = val_obj.as_int() {
