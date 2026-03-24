@@ -14,6 +14,9 @@ pub mod lower_to_wasm;
 pub mod type_refine;
 pub mod passes;
 pub mod parallel;
+pub mod gpu;
+pub mod gpu_msl;
+pub mod gpu_wgsl;
 
 /// Returns true for SimpleIR ops that are purely structural control-flow
 /// markers (if/else/end_if/loop_start/loop_end/label/state_label) and should
