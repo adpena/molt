@@ -337,16 +337,13 @@ impl SimpleBackend {
         );
         // Inline exception flag optimization: fetch the flag pointer once
         // per block and inline a byte load at each check_exception site.
-        // For non-stateful functions we fetch the pointer once in the entry
-        // block via a Cranelift Variable (SSA propagates it automatically).
-        // For stateful (generator/async poll) functions we cannot use a
-        // Variable because Cranelift's SSA resolution through Switch-
-        // generated intermediate blocks can produce invalid alias chains
-        // (Value::reserved_value / u32::MAX), causing an index-out-of-
-        // bounds panic in dfg.rs:286.  Instead we fetch the pointer lazily
-        // once per basic block and cache the raw Value in a BTreeMap.
+        // Fetch the exception flag pointer once in the entry block via a
+        // Cranelift Variable (SSA propagates it automatically across all
+        // blocks, including stateful/poll functions).  The Variable-based
+        // approach uses declare_var/def_var/use_var which handles dominator
+        // propagation through Switch-generated intermediate blocks correctly.
         let has_exc_handling = function_exception_label_id.is_some();
-        let exc_flag_ptr_var: Option<Variable> = if has_exc_handling && !stateful {
+        let exc_flag_ptr_var: Option<Variable> = if has_exc_handling {
             let var = builder.declare_var(types::I64);
             Some(var)
         } else {
@@ -460,11 +457,9 @@ impl SimpleBackend {
             builder.inst_results(call)[0]
         });
 
-        // For non-stateful functions: fetch the exception flag pointer in
-        // the entry block and store it in a Cranelift Variable.  The SSA
-        // system propagates the definition across blocks automatically.
-        // Stateful functions use per-block caching instead (see
-        // exc_flag_ptr_block_cache) to avoid SSA alias-chain panics.
+        // Fetch the exception flag pointer in the entry block and store it
+        // in a Cranelift Variable.  The SSA system propagates the definition
+        // across all blocks automatically (including stateful/poll functions).
         if let (Some(var), Some(fn_ref)) = (exc_flag_ptr_var, exc_flag_ptr_fn) {
             let call = builder.ins().call(fn_ref, &[]);
             let ptr_val = builder.inst_results(call)[0];
@@ -10809,12 +10804,10 @@ impl SimpleBackend {
                     // block and the byte load is ~1 cycle vs ~15-40 cycles for the
                     // function call.
                     //
-                    // For non-stateful functions the pointer lives in a Cranelift
-                    // Variable (SSA propagates it across blocks automatically).
-                    // For stateful (poll/generator) functions we fetch the pointer
-                    // lazily once per basic block (cached in exc_flag_ptr_block_cache)
-                    // to avoid Cranelift SSA alias-chain panics through Switch-
-                    // generated intermediate blocks.
+                    // The flag pointer lives in a Cranelift Variable (SSA
+                    // propagates it across all blocks automatically, including
+                    // stateful/poll functions).  The per-block cache is a
+                    // fallback for any edge case where the Variable is unavailable.
                     let fallthrough = builder.create_block();
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough);
