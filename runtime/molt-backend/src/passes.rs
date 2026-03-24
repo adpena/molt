@@ -1681,6 +1681,54 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
         return;
     }
 
+    // ── Stub molt_isolate_import / molt_isolate_bootstrap ──
+    //
+    // These functions must exist as linker symbols (the runtime references
+    // them via extern "C"), but their bodies dispatch to every module init
+    // function, preventing dead-function elimination from stripping unused
+    // stdlib modules.  Replace their bodies with trivial stubs:
+    //   molt_isolate_import  → const_none + ret  (return None)
+    //   molt_isolate_bootstrap → ret_void
+    //
+    // For programs that actually use isolates, the full bodies are
+    // preserved by reachability from molt_main (which calls them).
+    // When they are NOT reachable from molt_main (the common case for
+    // simple programs), their bodies are inert stubs.
+    {
+        // Check if molt_main actually calls either isolate function.
+        let main_calls_isolate = ir.functions.iter()
+            .find(|f| f.name == "molt_main")
+            .map_or(false, |main_fn| {
+                main_fn.ops.iter().any(|op| {
+                    op.s_value.as_deref()
+                        .map_or(false, |s| s.starts_with("molt_isolate_"))
+                })
+            });
+        if !main_calls_isolate {
+            for func in &mut ir.functions {
+                if func.name == "molt_isolate_import" {
+                    func.ops.clear();
+                    func.ops.push(OpIR {
+                        kind: "const_none".to_string(),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    });
+                    func.ops.push(OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["v0".to_string()]),
+                        ..OpIR::default()
+                    });
+                } else if func.name == "molt_isolate_bootstrap" {
+                    func.ops.clear();
+                    func.ops.push(OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    });
+                }
+            }
+        }
+    }
+
     // Build the call graph: function name -> set of referenced function names.
     // Use owned Strings so that `ir.functions` is not borrowed when we call retain().
     let defined: BTreeSet<String> = ir.functions.iter().map(|f| f.name.clone()).collect();
@@ -1736,18 +1784,22 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
     seed(ir.functions[0].name.clone(), &mut reachable, &mut queue);
 
     // (2) + (3) Scan all functions for keep-patterns.
+    //
+    // molt_init_* functions are NOT blanket-kept.  They are referenced by
+    // static CALL ops in the IR (emitted by the frontend's _emit_module_load)
+    // so the BFS discovers them naturally.
+    //
+    // molt_isolate_* functions MUST be kept because the runtime library
+    // references them as extern "C" symbols.  However, to enable effective
+    // tree shaking, we stub out molt_isolate_import's body to just return
+    // None — the actual module dispatch is handled by the frontend's lazy
+    // init pattern, not by this runtime hook for simple programs.
     for func in &ir.functions {
         let name = &func.name;
         let keep = name == "molt_main"
             || name == "_start"
-            // Module init functions are called by the runtime importer, not IR.
-            || name.starts_with("molt_init_")
-            // Isolate import hooks are referenced at link time.
-            || name.starts_with("molt_isolate_")
-            // Poll functions for async generators / coroutines.
-            || name.ends_with("_poll")
-            // __annotate__ functions for typing support.
-            || name.contains("__annotate__");
+            // Must exist for the runtime linker; body is stubbed below.
+            || name.starts_with("molt_isolate_");
         if keep {
             seed(name.clone(), &mut reachable, &mut queue);
         }

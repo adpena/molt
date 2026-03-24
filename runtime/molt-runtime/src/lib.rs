@@ -283,6 +283,7 @@ pub use crate::builtins::select::*;
 pub use crate::builtins::shutil::*;
 pub use crate::builtins::signal_ext::*;
 pub use crate::builtins::sitebuiltins::*;
+#[cfg(feature = "stdlib_net")]
 pub use crate::builtins::ssl::*;
 pub use crate::builtins::string_ext::*;
 pub use crate::builtins::stringprep::*;
