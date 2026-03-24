@@ -25,6 +25,7 @@ pub mod gpu_runtime;
 pub mod gpu_metal;
 pub mod gpu_webgpu;
 pub mod gpu_dispatch;
+pub mod gpu_pipeline;
 pub mod gpu_cuda_runtime;
 pub mod serialize;
 pub mod wasm_component;
