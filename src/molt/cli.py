@@ -12270,9 +12270,13 @@ def _build_native_link_command(
         deployment_target = _detect_macos_deployment_target()
         if deployment_target:
             link_cmd.append(f"-mmacosx-version-min={deployment_target}")
-    link_cmd.extend(
-        [str(stub_path), str(output_obj), str(runtime_lib), "-o", str(output_binary)]
-    )
+    # Include cached stdlib .o if it exists (incremental compilation)
+    _stdlib_obj_path = os.environ.get("MOLT_STDLIB_OBJ")
+    _link_inputs = [str(stub_path), str(output_obj)]
+    if _stdlib_obj_path and Path(_stdlib_obj_path).exists():
+        _link_inputs.append(_stdlib_obj_path)
+    _link_inputs.extend([str(runtime_lib), "-o", str(output_binary)])
+    link_cmd.extend(_link_inputs)
     if target_triple:
         if "apple" in target_triple or "darwin" in target_triple:
             link_cmd.append("-Wl,-dead_strip")
@@ -14178,6 +14182,23 @@ def _execute_backend_compile(
         if not backend_compiled:
             if diagnostics_enabled and "backend_subprocess_compile" not in phase_starts:
                 phase_starts["backend_subprocess_compile"] = time.perf_counter()
+            # ── Incremental compilation: cache stdlib .o ──
+            # For native builds, set MOLT_STDLIB_OBJ so the backend caches
+            # stdlib compilation separately.  Second builds skip stdlib entirely.
+            if not is_wasm and not is_transpile and backend_env is None:
+                backend_env = os.environ.copy()
+            if not is_wasm and not is_transpile and backend_env is not None:
+                _stdlib_cache_dir = Path(
+                    os.environ.get("MOLT_HOME", str(Path.home() / ".molt"))
+                ) / "cache" / "stdlib"
+                _stdlib_cache_dir.mkdir(parents=True, exist_ok=True)
+                _stdlib_fingerprint = _cache_fingerprint()[:16]
+                _stdlib_obj = _stdlib_cache_dir / f"stdlib_{_stdlib_fingerprint}.o"
+                backend_env["MOLT_STDLIB_OBJ"] = str(_stdlib_obj)
+                # Determine entry module name from the source file
+                _entry_base = Path(output_artifact).stem if output_artifact else "__main__"
+                _entry_module = _entry_base.replace("-", "_").replace(".", "_")
+                backend_env["MOLT_ENTRY_MODULE"] = _entry_module
             cmd = [str(backend_bin)]
             if is_luau_transpile:
                 cmd.extend(["--target", "luau"])
