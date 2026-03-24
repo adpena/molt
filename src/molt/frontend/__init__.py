@@ -33855,21 +33855,33 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         out: list[MoltOp] = []
         for block in cfg.blocks:
             block_preds = cfg.predecessors.get(block.id, [])
+            # Look through single-predecessor post-merge blocks: if this
+            # block has exactly one predecessor that is itself a merge point
+            # (multiple predecessors), the PHI args correspond to the merge
+            # block's predecessors, not the direct predecessor.
+            effective_preds = block_preds
+            edge_target = block.id
+            if (
+                len(block_preds) == 1
+                and len(cfg.predecessors.get(block_preds[0], [])) > 1
+            ):
+                effective_preds = cfg.predecessors.get(block_preds[0], [])
+                edge_target = block_preds[0]
             for op_idx in range(block.start, block.end):
                 op = ops[op_idx]
                 if (
                     op.kind == "PHI"
                     and op.args
-                    and len(op.args) == len(block_preds)
-                    and len(block_preds) > 1
+                    and len(op.args) == len(effective_preds)
+                    and len(effective_preds) > 1
                 ):
                     kept_args = [
                         arg
-                        for arg, pred in zip(op.args, block_preds)
-                        if (pred, block.id) in executable_edges
+                        for arg, pred in zip(op.args, effective_preds)
+                        if (pred, edge_target) in executable_edges
                     ]
                     normalized_args = kept_args
-                    if all(
+                    if kept_args and all(
                         isinstance(arg, MoltValue)
                         and isinstance(kept_args[0], MoltValue)
                         and arg.name == kept_args[0].name
@@ -33900,7 +33912,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         out: list[MoltOp] = []
         for block in cfg.blocks:
             block_preds = cfg.predecessors.get(block.id, [])
-            expected = len(block_preds)
+            # Look through single-predecessor post-merge blocks to find
+            # the effective predecessor count that PHI args should match.
+            effective_preds = block_preds
+            if (
+                len(block_preds) == 1
+                and len(cfg.predecessors.get(block_preds[0], [])) > 1
+            ):
+                effective_preds = cfg.predecessors.get(block_preds[0], [])
+            expected = len(effective_preds)
             for op_idx in range(block.start, block.end):
                 op = ops[op_idx]
                 if op.kind != "PHI" or not op.args:
@@ -33925,7 +33945,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     out.append(op)
                     continue
                 if expected > 0:
-                    normalized = [first for _ in range(expected)]
+                    # Expand to match effective predecessor count, then
+                    # collapse identical args back down.
+                    expanded = [first for _ in range(expected)]
+                    if all(
+                        isinstance(a, MoltValue) and a.name == first.name
+                        for a in expanded
+                    ):
+                        normalized = [first]
+                    else:
+                        normalized = expanded
                     out.append(
                         MoltOp(
                             kind=op.kind,
