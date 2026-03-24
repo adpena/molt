@@ -19,7 +19,7 @@ stdlib_full = [
     "stdlib_crypto", "stdlib_compression", "stdlib_serialization",
     "stdlib_archive", "stdlib_ast", "stdlib_fs_extra", "stdlib_unicode_names",
     "stdlib_tk", "stdlib_net", "stdlib_asyncio", "stdlib_email",
-    "stdlib_math", "stdlib_decimal", "stdlib_logging", "stdlib_concurrent",
+    "stdlib_math", "stdlib_decimal", "stdlib_serial", "stdlib_logging", "stdlib_concurrent",
     "stdlib_dbm", "stdlib_importlib_extra", "stdlib_csv",
     "stdlib_signal", "stdlib_select",
     "builtin_set", "builtin_complex", "builtin_memoryview",
@@ -56,7 +56,8 @@ stdlib_logging = []
 stdlib_concurrent = []
 stdlib_dbm = []
 stdlib_importlib_extra = []
-stdlib_csv = ["dep:molt-runtime-serial"]
+stdlib_serial = ["dep:molt-runtime-serial"]
+stdlib_csv = ["stdlib_serial"]
 stdlib_signal = []
 stdlib_select = []
 
