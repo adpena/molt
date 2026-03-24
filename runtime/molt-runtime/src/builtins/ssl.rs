@@ -12,11 +12,11 @@
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
 use std::collections::HashMap;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use std::io::{BufReader, Read, Write};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use std::net::TcpStream;
-#[cfg(all(not(target_arch = "wasm32"), unix))]
+#[cfg(all(molt_has_net_io, unix))]
 use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{LazyLock, Mutex};
@@ -92,20 +92,20 @@ impl SslContextState {
 
 // ── SSLSocket state ──────────────────────────────────────────────────────
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use rustls::pki_types::ServerName;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use rustls::{
     ClientConfig, ClientConnection, RootCertStore, ServerConfig, ServerConnection, StreamOwned,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 enum SslSocketInner {
     Client(StreamOwned<ClientConnection, TcpStream>),
     Server(StreamOwned<ServerConnection, TcpStream>),
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 struct SslSocketState {
     inner: SslSocketInner,
     peer_cert_der: Option<Vec<u8>>,
@@ -118,7 +118,7 @@ struct SslSocketState {
 
 static CTX_REGISTRY: LazyLock<Mutex<HashMap<i64, SslContextState>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 static SOCK_REGISTRY: LazyLock<Mutex<HashMap<i64, SslSocketState>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -443,7 +443,7 @@ pub extern "C" fn molt_ssl_context_drop(handle_bits: u64) -> u64 {
 // ── SSLSocket wrapping ─────────────────────────────────────────────────────
 
 #[unsafe(no_mangle)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub extern "C" fn molt_ssl_wrap_socket(
     sock_handle_bits: u64,
     ctx_handle_bits: u64,
@@ -750,7 +750,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
 }
 
 #[unsafe(no_mangle)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub extern "C" fn molt_ssl_socket_do_handshake(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
@@ -824,7 +824,7 @@ pub extern "C" fn molt_ssl_socket_do_handshake(_handle_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub extern "C" fn molt_ssl_socket_read(handle_bits: u64, len_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
@@ -867,7 +867,7 @@ pub extern "C" fn molt_ssl_socket_read(_handle_bits: u64, _len_bits: u64) -> u64
 }
 
 #[unsafe(no_mangle)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub extern "C" fn molt_ssl_socket_write(handle_bits: u64, data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
@@ -927,7 +927,7 @@ pub extern "C" fn molt_ssl_socket_write(_handle_bits: u64, _data_bits: u64) -> u
 }
 
 #[unsafe(no_mangle)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub extern "C" fn molt_ssl_socket_getpeercert(handle_bits: u64, binary_form_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
@@ -977,7 +977,7 @@ pub extern "C" fn molt_ssl_socket_getpeercert(_handle_bits: u64, _binary_form_bi
 }
 
 #[unsafe(no_mangle)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub extern "C" fn molt_ssl_socket_cipher(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
@@ -1028,7 +1028,7 @@ pub extern "C" fn molt_ssl_socket_cipher(_handle_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub extern "C" fn molt_ssl_socket_version(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
@@ -1067,7 +1067,7 @@ pub extern "C" fn molt_ssl_socket_unwrap(handle_bits: u64) -> u64 {
                 return raise_exception::<u64>(_py, "TypeError", "ssl socket handle must be int");
             }
         };
-        #[cfg(all(not(target_arch = "wasm32"), unix))]
+        #[cfg(all(molt_has_net_io, unix))]
         {
             let state = SOCK_REGISTRY.lock().unwrap().remove(&id);
             match state {
@@ -1081,7 +1081,7 @@ pub extern "C" fn molt_ssl_socket_unwrap(handle_bits: u64) -> u64 {
                 }
             }
         }
-        #[cfg(all(not(target_arch = "wasm32"), not(unix)))]
+        #[cfg(all(molt_has_net_io, not(unix)))]
         {
             let _ = id;
             raise_exception::<u64>(_py, "OSError", "ssl.unwrap not supported on this platform")
@@ -1098,7 +1098,7 @@ pub extern "C" fn molt_ssl_socket_unwrap(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ssl_socket_close(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(molt_has_net_io)]
             SOCK_REGISTRY.lock().unwrap().remove(&id);
             #[cfg(target_arch = "wasm32")]
             let _ = id;
