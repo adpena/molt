@@ -136,9 +136,17 @@ def test_allowlist_file_exists():
     # Must contain indirect call trampolines
     assert "molt_call_indirect0" in symbols
     assert "molt_call_indirect13" in symbols
-    # Must NOT contain molt_runtime namespace symbols (those are resolved by linking)
+    # Must NOT contain molt_runtime namespace symbols (those are resolved by linking),
+    # except for serialization/compression builtins that are direct WASM imports.
+    _ALLOWED_MOLT_PREFIXES = (
+        "molt_call_indirect",
+        "molt_cbor_",
+        "molt_msgpack_",
+        "molt_deflate_",
+        "molt_inflate_",
+    )
     runtime_syms = {
         s for s in symbols
-        if s.startswith("molt_") and not s.startswith("molt_call_indirect")
+        if s.startswith("molt_") and not any(s.startswith(p) for p in _ALLOWED_MOLT_PREFIXES)
     }
     assert runtime_syms == set(), f"Unexpected molt_runtime symbols in allowlist: {runtime_syms}"
