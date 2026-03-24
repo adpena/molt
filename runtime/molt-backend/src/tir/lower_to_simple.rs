@@ -325,6 +325,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             kind: "check_exception".to_string(),
             args: Some(operand_args(op)),
             out: out_var,
+            value: attr_int(&op.attrs, "value"),
             ..OpIR::default()
         }),
 
@@ -343,10 +344,37 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             ..OpIR::default()
         }),
 
-        // Refcount — no-ops at SimpleIR level.
-        OpCode::IncRef | OpCode::DecRef | OpCode::Alloc | OpCode::StackAlloc | OpCode::Free => {
-            None
-        }
+        // Refcount and allocation — preserve for native backend.
+        OpCode::IncRef => Some(OpIR {
+            kind: "inc_ref".to_string(),
+            args: Some(operand_args(op)),
+            ..OpIR::default()
+        }),
+        OpCode::DecRef => Some(OpIR {
+            kind: "dec_ref".to_string(),
+            args: Some(operand_args(op)),
+            ..OpIR::default()
+        }),
+        OpCode::Alloc => Some(OpIR {
+            kind: "alloc".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            value: attr_int(&op.attrs, "value"),
+            s_value: attr_str(&op.attrs, "s_value"),
+            ..OpIR::default()
+        }),
+        OpCode::StackAlloc => Some(OpIR {
+            kind: "stack_alloc".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            value: attr_int(&op.attrs, "value"),
+            ..OpIR::default()
+        }),
+        OpCode::Free => Some(OpIR {
+            kind: "free".to_string(),
+            args: Some(operand_args(op)),
+            ..OpIR::default()
+        }),
 
         // SCF ops — handled separately via terminators in Phase 2.
         OpCode::ScfIf | OpCode::ScfFor | OpCode::ScfWhile | OpCode::ScfYield => None,
