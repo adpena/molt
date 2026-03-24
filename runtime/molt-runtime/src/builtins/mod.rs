@@ -35,6 +35,7 @@ pub(crate) mod context;
 pub(crate) mod contextlib;
 pub(crate) mod contextvars;
 pub(crate) mod copy_mod;
+#[cfg(not(feature = "stdlib_csv"))]
 pub(crate) mod csv;
 pub(crate) mod datetime;
 pub(crate) mod dbm_dumb;
