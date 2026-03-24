@@ -2509,6 +2509,7 @@ dependencies = [
  "molt-lang-obj-model",
  "molt-runtime-core",
  "num-bigint",
+ "num-integer",
  "num-traits",
 ]
 
