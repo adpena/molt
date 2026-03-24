@@ -1653,7 +1653,20 @@ def _collect_code_referenced_funcs(sections: list[tuple[int, bytes]]) -> set[int
     ``call_indirect`` (through the element/table) are NOT included, which is
     exactly what we want: element entries whose targets never appear in a
     direct ``call`` are candidates for neutralisation.
+
+    Indices outside the valid function range are discarded to avoid false
+    positives from the naive byte scan (0x10 can appear as part of other
+    instruction immediates).
     """
+    # Compute total function count (imports + defined) for validation.
+    total_funcs = _count_func_imports(sections)
+    for sid, payload in sections:
+        if sid == 10:
+            off = 0
+            n, off = _read_varuint(payload, off)
+            total_funcs += n
+            break
+
     called: set[int] = set()
     for sid, payload in sections:
         if sid != 10:
@@ -1680,7 +1693,9 @@ def _collect_code_referenced_funcs(sections: list[tuple[int, bytes]]) -> set[int
                     pos += 1
                     try:
                         idx, pos = _read_varuint(payload, pos)
-                        called.add(idx)
+                        if idx < total_funcs:
+                            called.add(idx)
+                        # else: false positive from byte scan -- ignore
                     except (IndexError, ValueError):
                         break
                 else:
@@ -2646,18 +2661,20 @@ def _post_link_optimize(
     if updated is not None:
         data = updated
 
-    # Neutralize element-table entries for functions that are never directly
-    # called from code.  This makes them eligible for removal by wasm-opt's
-    # --remove-unused-module-elements pass, which otherwise treats every
-    # element entry as a root.  Must run BEFORE _stub_dead_functions so the
-    # call-graph analysis sees the neutralized entries.
-    updated = _neutralize_dead_element_entries(data)
-    if updated is not None:
-        data = updated
+    # Iteratively neutralize dead element-table entries and stub dead functions.
+    # Each round of neutralization may expose new dead functions (whose only
+    # callers were themselves dead), which in turn frees more element entries.
+    # Typically converges in 2-3 rounds.
+    for _dce_round in range(5):
+        updated = _neutralize_dead_element_entries(data)
+        if updated is not None:
+            data = updated
 
-    updated = _stub_dead_functions(data)
-    if updated is not None:
-        data = updated
+        updated = _stub_dead_functions(data)
+        if updated is not None:
+            data = updated
+        else:
+            break  # No new dead functions found -- converged
 
     updated = _dedup_data_segments(data)
     if updated is not None:
