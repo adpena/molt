@@ -39,6 +39,7 @@ mod c_api;
 mod call;
 mod concurrency;
 mod constants;
+#[cfg(feature = "stdlib_tk")]
 mod gui;
 mod intrinsics;
 #[cfg(target_arch = "wasm32")]
@@ -281,6 +282,7 @@ pub use crate::builtins::sys_ext::*;
 pub use crate::builtins::tarfile::*;
 #[cfg(feature = "stdlib_fs_extra")]
 pub use crate::builtins::tempfile_mod::*;
+#[cfg(feature = "stdlib_tk")]
 pub use crate::builtins::tkinter_core::*;
 pub(crate) use crate::builtins::type_ops::{
     class_bases_vec, class_mro_ref, class_mro_vec, isinstance_bits, isinstance_runtime,
@@ -311,6 +313,7 @@ pub(crate) use crate::call::function::{
 };
 pub(crate) use crate::call::lookup_call_attr;
 pub(crate) use crate::constants::*;
+#[cfg(feature = "stdlib_tk")]
 pub use crate::gui::tk::*;
 pub use crate::intrinsics::capabilities::*;
 pub(crate) use crate::object::accessors::{
