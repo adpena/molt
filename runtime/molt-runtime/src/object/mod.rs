@@ -26,6 +26,7 @@ pub fn bump_type_version() -> u64 {
     GLOBAL_TYPE_VERSION.fetch_add(1, AtomicOrdering::Relaxed) + 1
 }
 
+pub mod deopt;
 pub mod dict_compact;
 pub mod inline_cache;
 pub mod nursery;
