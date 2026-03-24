@@ -1811,13 +1811,64 @@ pub fn split_large_function(func: FunctionIR, max_ops: usize) -> Result<(Functio
     // 1. Find safe split points (indices where depth == 0).
     //    A split point is the index of the *first* op of a new chunk,
     //    i.e. the boundary falls just before that index.
+    //
+    //    Additionally, we must not split between a `check_exception`
+    //    and its target `label`/`state_label`, since the function
+    //    compiler expects both to be in the same chunk.
     // ---------------------------------------------------------------
+
+    // Build forbidden ranges: for each label_id referenced by
+    // check_exception, find the span [earliest_ref, label_def] (or
+    // [label_def, latest_ref] if the label comes first) and forbid
+    // splitting within that range.
+    let mut label_positions: std::collections::BTreeMap<i64, usize> = std::collections::BTreeMap::new();
+    let mut check_exc_refs: std::collections::BTreeMap<i64, (usize, usize)> = std::collections::BTreeMap::new();
+    for (idx, op) in func.ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "label" | "state_label" => {
+                if let Some(id) = op.value {
+                    label_positions.insert(id, idx);
+                }
+            }
+            "check_exception" => {
+                if let Some(id) = op.value {
+                    let entry = check_exc_refs.entry(id).or_insert((idx, idx));
+                    entry.0 = entry.0.min(idx);
+                    entry.1 = entry.1.max(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+    // Compute forbidden ranges: a split point at index `sp` is forbidden
+    // if it falls strictly between a check_exception and its target label.
+    let mut forbidden_ranges: Vec<(usize, usize)> = Vec::new();
+    for (label_id, (earliest_check, latest_check)) in &check_exc_refs {
+        if let Some(&label_idx) = label_positions.get(label_id) {
+            let range_start = (*earliest_check).min(label_idx);
+            let range_end = (*latest_check).max(label_idx);
+            forbidden_ranges.push((range_start, range_end));
+        }
+    }
+
+    let is_forbidden = |sp: usize| -> bool {
+        for &(start, end) in &forbidden_ranges {
+            // sp is the first index of the new chunk; splitting here means
+            // indices [0..sp) go to one chunk and [sp..) go to the next.
+            // Forbidden if the range straddles the split point.
+            if start < sp && sp <= end {
+                return true;
+            }
+        }
+        false
+    };
+
     let mut split_candidates: Vec<usize> = Vec::new();
     let mut depth: i32 = 0;
 
     for (idx, op) in func.ops.iter().enumerate() {
         // At depth 0 before processing this op, this is a valid split point.
-        if depth == 0 && idx > 0 {
+        if depth == 0 && idx > 0 && !is_forbidden(idx) {
             split_candidates.push(idx);
         }
 

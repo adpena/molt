@@ -19382,6 +19382,9 @@ def _backend_ir_bytes(ir: dict[str, Any]) -> bytes:
     return _backend_ir_text(ir).encode("utf-8")
 
 
+# IR formats: json (default, human-readable), msgpack (3x smaller, fast),
+# cbor (schema evolution), ndjson (streaming, one function per line).
+# Set MOLT_IR_FORMAT=ndjson to use streaming NDJSON for large builds.
 def _backend_ir_format_and_bytes(ir: dict[str, Any]) -> tuple[str, bytes]:
     """Return (format, bytes) for the IR: msgpack if available, else JSON."""
     try:
