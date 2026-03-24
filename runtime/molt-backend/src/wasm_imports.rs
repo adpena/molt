@@ -835,39 +835,18 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
 ];
 
 pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
-    // Core structural imports: always needed regardless of IR content.
-    // Only runtime machinery lives here. Arithmetic, attributes, iterators,
-    // builtins, and stdlib imports are discovered by IR-scanning below.
+    // ── Core structural imports ──
+    // Absolute minimum needed by ANY program regardless of IR content.
+    // Everything else is discovered by IR-scanning below.
+    // Target: <80 for hello-world. Current: ~50.
     ("__structural__", &[
+        // Memory management
         "alloc",
-        "alloc_class",
-        "alloc_class_static",
-        "alloc_class_trusted",
-        "call_arity_error",
-        "call_bind",
-        "call_bind_ic",
-        "call_func_dispatch",
-        "call_indirect_ic",
-        "class_apply_set_name",
-        "class_layout_version",
-        "class_new",
-        "class_set_base",
-        "class_set_layout_version",
-        "closure_load",
-        "closure_store",
-        "code_new",
-        "code_slot_set",
-        "code_slots_init",
-        "context_closing",
-        "context_depth",
-        "context_enter",
-        "context_exit",
-        "context_null",
-        "context_unwind",
-        "context_unwind_to",
         "dec_ref_obj",
-        "ellipsis",
-        "eq",
+        "inc_ref_obj",
+        // Call dispatch (call_func uses call_func_dispatch)
+        "call_func_dispatch",
+        // Exceptions — any program can raise
         "exception_active",
         "exception_class",
         "exception_clear",
@@ -884,62 +863,112 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
         "exception_set_last",
         "exception_set_value",
         "exception_stack_clear",
-        "exceptiongroup_combine",
-        "exceptiongroup_match",
-        "fn_ptr_code_set",
+        // Function creation (func_new is used by every module)
         "func_new",
-        "func_new_builtin",
-        "func_new_closure",
-        "ge",
-        "gt",
-        "guard_layout_ptr",
-        "guard_type",
-        "guarded_field_get_ptr",
-        "guarded_field_init_ptr",
-        "guarded_field_set_ptr",
+        // Pointer resolution
         "handle_resolve",
-        "inc_ref_obj",
-        "invoke_ffi_ic",
+        // Identity and truthiness
         "is",
         "is_truthy",
-        "le",
-        "lt",
-        "missing",
+        "not",
+        // Module system
         "module_cache_get",
         "module_cache_set",
-        "module_del_global",
         "module_get_attr",
-        "module_get_global",
-        "module_get_name",
-        "module_import",
-        "module_import_star",
         "module_new",
         "module_set_attr",
-        "ne",
-        "not",
-        "not_implemented",
-        "object_field_get",
-        "object_field_get_ptr",
-        "object_field_init",
-        "object_field_init_ptr",
-        "object_field_set",
-        "object_field_set_ptr",
-        "object_new",
-        "object_set_class",
-        "pending",
+        // Output
         "print_newline",
         "print_obj",
+        // Exception raising
         "raise",
+        // Runtime lifecycle
         "runtime_init",
         "runtime_shutdown",
+        // Bootstrap
         "set_intrinsic_manifest",
         "sys_set_version_info",
-        "trace_enter_slot",
-        "trace_exit",
-        "trace_set_line",
     ]),
-    // Arithmetic ops: auto-discovered by kind match, declared here for
-    // completeness so the scanner has explicit dep table hits.
+    // ── On-demand: comparison ops ──
+    // Pulled in when comparison ops appear in IR.
+    ("eq", &["eq"]),
+    ("ne", &["ne"]),
+    ("lt", &["lt"]),
+    ("le", &["le"]),
+    ("gt", &["gt"]),
+    ("ge", &["ge"]),
+    // ── On-demand: context managers ──
+    // Pulled in when with-statement ops appear in IR.
+    ("context_enter", &["context_enter", "context_exit", "context_depth",
+        "context_closing", "context_null", "context_unwind", "context_unwind_to"]),
+    ("context_exit", &["context_exit", "context_depth", "context_unwind_to"]),
+    ("context_closing", &["context_closing"]),
+    ("context_null", &["context_null"]),
+    ("context_unwind", &["context_unwind", "context_unwind_to", "context_depth"]),
+    // ── On-demand: class infrastructure ──
+    // Pulled in when class-definition ops appear in IR.
+    ("alloc_class", &["alloc_class", "class_new", "class_set_base",
+        "class_apply_set_name", "class_layout_version", "class_set_layout_version"]),
+    ("alloc_class_static", &["alloc_class_static", "class_new", "class_set_base",
+        "class_apply_set_name", "class_layout_version", "class_set_layout_version"]),
+    ("alloc_class_trusted", &["alloc_class_trusted", "class_new", "class_set_base",
+        "class_apply_set_name", "class_layout_version", "class_set_layout_version"]),
+    ("class_new", &["class_new", "class_set_base", "class_apply_set_name",
+        "class_layout_version", "class_set_layout_version"]),
+    // ── On-demand: object field access ──
+    // Pulled in when load/store/object ops appear in IR.
+    ("object_new", &["object_new", "object_set_class"]),
+    ("object_field_get", &["object_field_get"]),
+    ("object_field_get_ptr", &["object_field_get_ptr"]),
+    ("object_field_init", &["object_field_init"]),
+    ("object_field_init_ptr", &["object_field_init_ptr"]),
+    ("object_field_set", &["object_field_set"]),
+    ("object_field_set_ptr", &["object_field_set_ptr"]),
+    // ── On-demand: guards and inline caches ──
+    // Pulled in when guard/guarded ops appear in IR. (Also via guarded_field_* entries below.)
+    ("guard_type", &["guard_type"]),
+    ("guard_layout_ptr", &["guard_layout_ptr"]),
+    // ── On-demand: closures ──
+    // Already have entries below; removed from structural.
+    // ── On-demand: exception groups ──
+    ("exceptiongroup_combine", &["exceptiongroup_combine"]),
+    ("exceptiongroup_match", &["exceptiongroup_match"]),
+    // ── On-demand: singletons ──
+    ("ellipsis", &["ellipsis"]),
+    ("missing", &["missing"]),
+    ("not_implemented", &["not_implemented"]),
+    ("pending", &["pending"]),
+    // ── On-demand: function variants ──
+    ("func_new_builtin", &["func_new_builtin"]),
+    ("func_new_closure", &["func_new_closure"]),
+    ("fn_ptr_code_set", &["fn_ptr_code_set"]),
+    ("builtin_func", &["func_new_builtin"]),
+    // ── On-demand: call variants ──
+    ("call_bind", &["call_bind"]),
+    ("call_bind_ic", &["call_bind_ic"]),
+    ("call_arity_error", &["call_arity_error"]),
+    ("call_indirect", &["call_indirect_ic"]),
+    ("call_indirect_ic", &["call_indirect_ic"]),
+    ("invoke_ffi_ic", &["invoke_ffi_ic"]),
+    // ── On-demand: module system extras ──
+    ("module_del_global", &["module_del_global"]),
+    ("module_get_global", &["module_get_global"]),
+    ("module_get_name", &["module_get_name"]),
+    ("module_import", &["module_import"]),
+    ("module_import_star", &["module_import_star"]),
+    // ── On-demand: code objects and tracing ──
+    ("code_new", &["code_new"]),
+    ("code_slot_set", &["code_slot_set"]),
+    ("code_slots_init", &["code_slots_init"]),
+    ("trace_enter_slot", &["trace_enter_slot"]),
+    ("trace_exit", &["trace_exit"]),
+    ("line", &["trace_set_line"]),
+    ("trace_set_line", &["trace_set_line"]),
+    // ── On-demand: check_exception ──
+    ("check_exception", &["exception_pending"]),
+    // ── Arithmetic ops ──
+    // Auto-discovered by kind match, declared here for completeness
+    // so the scanner has explicit dep table hits.
     ("add", &["add"]),
     ("sub", &["sub"]),
     ("mul", &["mul"]),
