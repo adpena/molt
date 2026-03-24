@@ -10740,7 +10740,9 @@ impl SimpleBackend {
                 }
                 "check_exception" => {
                     let target_id = op.value.unwrap();
-                    let target_block = state_blocks[&target_id];
+                    let target_block = *state_blocks.get(&target_id).unwrap_or_else(|| {
+                        panic!("check_exception: no state_block for target_id={target_id} in function '{}'. state_blocks keys: {:?}", func_ir.name, state_blocks.keys().collect::<Vec<_>>());
+                    });
                     let mut carry_obj: Vec<String> = Vec::new();
                     let mut carry_ptr: Vec<String> = Vec::new();
                     // `check_exception` terminates the current block (brif) to either jump to the
