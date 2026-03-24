@@ -343,13 +343,17 @@ impl SimpleBackend {
         // approach uses declare_var/def_var/use_var which handles dominator
         // propagation through Switch-generated intermediate blocks correctly.
         let has_exc_handling = function_exception_label_id.is_some();
-        let exc_flag_ptr_var: Option<Variable> = if has_exc_handling {
+        let inline_exc_disabled = env_setting("MOLT_BACKEND_INLINE_EXC_DISABLED")
+            .as_deref()
+            .map(parse_truthy_env)
+            .unwrap_or(false);
+        let exc_flag_ptr_var: Option<Variable> = if has_exc_handling && !inline_exc_disabled {
             let var = builder.declare_var(types::I64);
             Some(var)
         } else {
             None
         };
-        let exc_flag_ptr_fn = if has_exc_handling {
+        let exc_flag_ptr_fn = if has_exc_handling && !inline_exc_disabled {
             Some(import_func_ref(
                 &mut self.module,
                 &mut self.import_ids,
