@@ -1,0 +1,40 @@
+[package]
+name = "molt-runtime-crypto"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Crypto module group for the Molt runtime (hashlib, hmac, secrets)"
+
+[dependencies]
+# Core runtime types used by the crypto implementations
+molt-runtime-core = { path = "../molt-runtime-core" }
+molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
+
+# Always-on crypto deps (small, used by hashlib core)
+digest = "0.10"
+md-5 = "0.10"
+sha1 = "0.10"
+sha2 = "0.10"
+num-bigint = "0.4"
+num-traits = "0.2"
+
+# Optional crypto deps (gated by default feature)
+blake2 = { version = "0.10", optional = true }
+blake2b_simd = { version = "1.0", optional = true }
+blake2s_simd = { version = "1.0", optional = true }
+hmac = { version = "0.12", optional = true }
+md4 = { version = "0.10", optional = true }
+pbkdf2 = { version = "0.12", optional = true }
+ripemd = { version = "0.1", optional = true }
+scrypt = { version = "0.11", optional = true }
+sha3 = { version = "0.10", optional = true }
+subtle = { version = "2.6", optional = true }
+
+[features]
+default = ["full"]
+full = [
+    "dep:sha3",
+    "dep:blake2", "dep:blake2b_simd", "dep:blake2s_simd",
+    "dep:md4", "dep:ripemd",
+    "dep:hmac", "dep:pbkdf2", "dep:scrypt", "dep:subtle",
+]

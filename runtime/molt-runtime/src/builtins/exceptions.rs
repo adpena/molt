@@ -714,30 +714,38 @@ pub(crate) fn exception_is_rooted(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
     {
         return true;
     }
-    if ACTIVE_EXCEPTION_STACK.with(|stack| {
-        let Ok(stack) = stack.try_borrow() else {
-            // If the stack is mutably borrowed, we are in exception-stack mutation and must
-            // conservatively keep exception objects alive.
-            return true;
-        };
-        stack
-            .iter()
-            .copied()
-            .filter_map(|bits| obj_from_bits(bits).as_ptr())
-            .any(|p| p == ptr)
-    }) {
+    // Use try_with to avoid panicking when TLS is being destroyed
+    // (e.g., during ThreadLocalGuard::drop after an exception).
+    // If TLS is destroyed, conservatively treat the exception as rooted.
+    if ACTIVE_EXCEPTION_STACK
+        .try_with(|stack| {
+            let Ok(stack) = stack.try_borrow() else {
+                // If the stack is mutably borrowed, we are in exception-stack mutation and must
+                // conservatively keep exception objects alive.
+                return true;
+            };
+            stack
+                .iter()
+                .copied()
+                .filter_map(|bits| obj_from_bits(bits).as_ptr())
+                .any(|p| p == ptr)
+        })
+        .unwrap_or(true)
+    {
         return true;
     }
-    ACTIVE_EXCEPTION_FALLBACK.with(|stack| {
-        let Ok(stack) = stack.try_borrow() else {
-            return true;
-        };
-        stack
-            .iter()
-            .copied()
-            .filter_map(|bits| obj_from_bits(bits).as_ptr())
-            .any(|p| p == ptr)
-    })
+    ACTIVE_EXCEPTION_FALLBACK
+        .try_with(|stack| {
+            let Ok(stack) = stack.try_borrow() else {
+                return true;
+            };
+            stack
+                .iter()
+                .copied()
+                .filter_map(|bits| obj_from_bits(bits).as_ptr())
+                .any(|p| p == ptr)
+        })
+        .unwrap_or(true)
 }
 
 pub(crate) fn exception_last_bits_noinc(_py: &PyToken<'_>) -> Option<u64> {
@@ -785,11 +793,14 @@ pub(crate) fn clear_exception_type_cache(_py: &PyToken<'_>, state: &RuntimeState
 }
 
 pub(crate) fn exception_handler_active() -> bool {
-    EXCEPTION_STACK.with(|stack| !stack.borrow().is_empty())
+    // Use try_with to avoid panicking during TLS destruction.
+    EXCEPTION_STACK
+        .try_with(|stack| !stack.borrow().is_empty())
+        .unwrap_or(false)
 }
 
 pub(crate) fn exception_stack_baseline_get() -> usize {
-    EXCEPTION_STACK_BASELINE.with(|cell| cell.get())
+    EXCEPTION_STACK_BASELINE.try_with(|cell| cell.get()).unwrap_or(0)
 }
 
 pub(crate) fn exception_stack_baseline_set(baseline: usize) {
@@ -5270,6 +5281,34 @@ pub extern "C" fn molt_exception_pending_fast() -> u64 {
     } else {
         0
     }
+}
+
+
+/// Returns a pointer to the `last_exception_pending` AtomicBool byte.
+/// The native Cranelift backend uses this to inline the exception check
+/// as a single byte load + branch, avoiding the full function call
+/// overhead of `molt_exception_pending_fast` on the happy path.
+///
+/// Returns null if the runtime is not initialized.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_exception_pending_flag_ptr() -> u64 {
+    let Some(state) = crate::state::runtime_state::runtime_state_for_gil() else {
+        return 0;
+    };
+    state.last_exception_pending.as_ptr() as u64
+}
+
+/// Returns a pointer to the `task_last_exception_pending` AtomicBool byte,
+/// or null (0) if no async task is active.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_task_exception_pending_flag_ptr() -> u64 {
+    let Some(state) = crate::state::runtime_state::runtime_state_for_gil() else {
+        return 0;
+    };
+    if current_task_key().is_none() {
+        return 0;
+    }
+    state.task_last_exception_pending.as_ptr() as u64
 }
 
 #[unsafe(no_mangle)]

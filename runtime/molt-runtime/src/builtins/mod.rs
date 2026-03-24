@@ -5,6 +5,7 @@ pub(crate) mod array_mod;
 #[cfg(feature = "stdlib_ast")]
 pub(crate) mod ast;
 pub(crate) mod asyncio_core;
+pub(crate) mod asyncio_helpers;
 pub(crate) mod asyncio_queue;
 pub(crate) mod atexit;
 pub(crate) mod attr;
@@ -14,6 +15,8 @@ pub(crate) mod binascii;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod bz2;
 pub(crate) mod callable;
+#[cfg(feature = "stdlib_compression")]
+pub(crate) mod compression_bridge;
 pub(crate) mod classes;
 pub(crate) mod cmath_mod;
 pub(crate) mod codecs;
@@ -96,11 +99,14 @@ pub(crate) mod tarfile;
 #[cfg(feature = "stdlib_fs_extra")]
 pub(crate) mod tempfile_mod;
 pub(crate) mod threading_helpers;
+#[cfg(feature = "stdlib_tk")]
 pub(crate) mod tkinter_core;
 pub(crate) mod type_ops;
 pub(crate) mod types;
 pub(crate) mod unicodedata_mod;
 pub(crate) mod warnings_ext;
+pub(crate) mod xml_etree;
+pub(crate) mod xml_sax;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod zlib;
 pub(crate) mod zoneinfo;

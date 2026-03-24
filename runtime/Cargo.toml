@@ -2,6 +2,14 @@
 resolver = "2"
 members = [
     "molt-obj-model",
+    "molt-runtime-core",
+    "molt-runtime-tk",
+    "molt-runtime-compression",
+    "molt-runtime-crypto",
+    "molt-runtime-net",
+    "molt-runtime-asyncio",
+    "molt-runtime-math",
+    "molt-runtime-serial",
     "molt-runtime",
     "molt-backend",
     "molt-wasm-host",
