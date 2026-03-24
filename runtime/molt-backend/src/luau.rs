@@ -4153,13 +4153,6 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
         return (ops.to_vec(), BTreeSet::new());
     }
 
-    // Debug: count try_start vs try_end
-    let ts_count = ops.iter().filter(|o| o.kind == "try_start").count();
-    let te_count = ops.iter().filter(|o| o.kind == "try_end").count();
-    if ts_count * 2 != te_count {
-        eprintln!("[lower_try_to_pcall] MISMATCH: try_start={ts_count}, try_end={te_count} (expected 2:1 ratio)");
-    }
-
     // Pre-scan: identify try/finally-only blocks.  For each try_start,
     // count how many try_end ops belong to it.  The first try_end at
     // matching depth closes the body; any subsequent try_end at that
@@ -4301,15 +4294,6 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
             _ => {
                 result.push(op.clone());
             }
-        }
-    }
-    // Debug: check for unclosed pcall ranges
-    if !try_stack.is_empty() {
-        eprintln!("[lower_try_to_pcall] UNCLOSED try_stack: {:?} (depth={})", try_stack, depth);
-    }
-    for &(start, end, n) in &pcall_ranges {
-        if end == 0 {
-            eprintln!("[lower_try_to_pcall] UNCLOSED pcall range: n={n}, start_idx={start}");
         }
     }
     // Find variables that escape pcall scope.
@@ -4985,6 +4969,13 @@ fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
             if dead_at_depth.is_none() {
                 result.push(op.clone());
             }
+            continue;
+        }
+
+        // try_start/try_end are structural markers that must always be
+        // preserved for pcall lowering, even in dead-code regions.
+        if matches!(kind, "try_start" | "try_end") {
+            result.push(op.clone());
             continue;
         }
 
