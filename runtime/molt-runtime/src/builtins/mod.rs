@@ -15,6 +15,8 @@ pub(crate) mod binascii;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod bz2;
 pub(crate) mod callable;
+#[cfg(feature = "stdlib_compression")]
+pub(crate) mod compression_bridge;
 pub(crate) mod classes;
 pub(crate) mod cmath_mod;
 pub(crate) mod codecs;

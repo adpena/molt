@@ -119,7 +119,8 @@ impl PyToken {
 #[macro_export]
 macro_rules! with_gil_entry {
     ($py:ident, $body:expr) => {{
-        let $py = $crate::PyToken::new();
+        let __py_token = $crate::PyToken::new();
+        let $py = &__py_token;
         $body
     }};
 }
