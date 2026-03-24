@@ -5,6 +5,7 @@ pub(crate) mod array_mod;
 #[cfg(feature = "stdlib_ast")]
 pub(crate) mod ast;
 pub(crate) mod asyncio_core;
+pub(crate) mod asyncio_helpers;
 pub(crate) mod asyncio_queue;
 pub(crate) mod atexit;
 pub(crate) mod attr;
@@ -102,6 +103,8 @@ pub(crate) mod type_ops;
 pub(crate) mod types;
 pub(crate) mod unicodedata_mod;
 pub(crate) mod warnings_ext;
+pub(crate) mod xml_etree;
+pub(crate) mod xml_sax;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod zlib;
 pub(crate) mod zoneinfo;
