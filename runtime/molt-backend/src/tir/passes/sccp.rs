@@ -6,7 +6,7 @@
 //! This is a simplified single-pass forward scan that folds obvious constants.
 //! An iterative fixpoint version can replace it later.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::PassStats;
 use crate::tir::blocks::{BlockId, Terminator};
@@ -42,12 +42,65 @@ enum ConstVal {
     None,
 }
 
+/// Returns `true` if the op may throw and thus should not be folded inside
+/// a try region (its execution may transfer to an exception handler).
+#[inline]
+fn may_throw(opcode: OpCode) -> bool {
+    matches!(
+        opcode,
+        OpCode::Call
+        | OpCode::CallMethod
+        | OpCode::CallBuiltin
+        | OpCode::Raise
+        | OpCode::Index
+        | OpCode::StoreIndex
+        | OpCode::LoadAttr
+        | OpCode::StoreAttr
+        | OpCode::DelAttr
+        | OpCode::DelIndex
+        | OpCode::Import
+        | OpCode::ImportFrom
+        | OpCode::Div
+        | OpCode::FloorDiv
+        | OpCode::Mod
+        | OpCode::GetIter
+        | OpCode::IterNext
+        | OpCode::ForIter
+    )
+}
+
+/// Build a set of ValueIds that are results of ops inside try regions.
+/// When `has_exception_handling` is true, we must not rewrite these ops
+/// to constants because the op's execution may transfer control to a
+/// handler, and removing the op would change observable behavior.
+fn build_try_region_results(func: &TirFunction) -> HashSet<ValueId> {
+    let mut result_set = HashSet::new();
+    for block in func.blocks.values() {
+        let mut try_depth: u32 = 0;
+        for op in &block.ops {
+            match op.opcode {
+                OpCode::TryStart => try_depth += 1,
+                OpCode::TryEnd => try_depth = try_depth.saturating_sub(1),
+                _ => {}
+            }
+            if try_depth > 0 && may_throw(op.opcode) {
+                for &r in &op.results {
+                    result_set.insert(r);
+                }
+            }
+        }
+    }
+    result_set
+}
+
 /// Run the SCCP pass on `func`, returning statistics.
 pub fn run(func: &mut TirFunction) -> PassStats {
     let mut stats = PassStats {
         name: "sccp",
         ..Default::default()
     };
+
+    let has_eh = func.has_exception_handling;
 
     // Phase 1: Build the lattice from all existing ops.
     let mut lattice: HashMap<ValueId, LatticeValue> = HashMap::new();
@@ -59,16 +112,30 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         }
     }
 
+    // When exception handling is present, mark results of potentially-throwing
+    // ops inside try regions as Bottom (unfoldable) so SCCP never rewrites them.
+    let try_region_results = if has_eh {
+        build_try_region_results(func)
+    } else {
+        HashSet::new()
+    };
+
     // Collect block ids for deterministic iteration (sorted).
     let mut block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
     block_ids.sort_by_key(|b| b.0);
 
     // First pass: seed constants from ConstInt/ConstFloat/ConstBool/ConstNone ops,
     // mark everything else as Top initially.
+    // Results of potentially-throwing ops inside try regions are forced to Bottom.
     for &bid in &block_ids {
         let block = &func.blocks[&bid];
         for op in &block.ops {
             for &res in &op.results {
+                // If this result is inside a try region and may throw, force Bottom.
+                if try_region_results.contains(&res) {
+                    lattice.insert(res, LatticeValue::Bottom);
+                    continue;
+                }
                 let val = match op.opcode {
                     OpCode::ConstInt => {
                         if let Some(AttrValue::Int(v)) = op.attrs.get("value") {

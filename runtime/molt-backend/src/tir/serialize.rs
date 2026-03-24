@@ -39,6 +39,7 @@ pub fn content_hash(func: &TirFunction) -> u64 {
     let mut hasher = DefaultHasher::new();
     func.name.hash(&mut hasher);
     func.param_types.len().hash(&mut hasher);
+    func.has_exception_handling.hash(&mut hasher);
     // Sort block IDs for determinism regardless of HashMap iteration order.
     let mut block_ids: Vec<u32> = func.blocks.keys().map(|b| b.0).collect();
     block_ids.sort_unstable();

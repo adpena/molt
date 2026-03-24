@@ -43,6 +43,11 @@ pub struct CFG {
     pub dominators: Vec<Option<usize>>,
     /// Loop nesting depth per block (0 = not inside a loop).
     pub loop_depth: Vec<u32>,
+    /// Exception edges: implicit control-flow from blocks inside a try region
+    /// to the corresponding handler block.  Each entry is `(from_block, handler_block)`.
+    /// A `try_start` creates an implicit edge from every block in the try region
+    /// to the handler (the block containing `check_exception` / `state_block_start`).
+    pub exception_edges: Vec<(usize, usize)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -569,6 +574,62 @@ fn natural_loop_body(header: usize, tail: usize, predecessors: &[Vec<usize>]) ->
 }
 
 // ---------------------------------------------------------------------------
+// Phase 5: exception edge computation
+// ---------------------------------------------------------------------------
+
+/// Compute implicit exception edges from try regions.
+///
+/// A `try_start` op with a label value identifies a handler label. Every
+/// block between `try_start` and the matching `try_end` has an implicit
+/// edge to the handler block (the block containing that label or the
+/// `check_exception`/`state_block_start` that follows it).
+fn compute_exception_edges(
+    ops: &[OpIR],
+    blocks: &[BasicBlock],
+    label_map: &HashMap<i64, usize>,
+) -> Vec<(usize, usize)> {
+    let mut edges: Vec<(usize, usize)> = Vec::new();
+
+    // Walk blocks and track try_start/try_end nesting to determine which
+    // blocks are inside try regions and where their handlers are.
+    let mut active_handlers: Vec<Option<usize>> = Vec::new();
+
+    for (bid, block) in blocks.iter().enumerate() {
+        // Scan ops in this block for try_start/try_end to maintain nesting.
+        for op_idx in block.start_op..block.end_op {
+            let kind = ops[op_idx].kind.as_str();
+            match kind {
+                "try_start" => {
+                    let handler_bid = ops[op_idx]
+                        .value
+                        .and_then(|label_id| label_map.get(&label_id))
+                        .and_then(|&target_op| block_containing(blocks, target_op));
+                    active_handlers.push(handler_bid);
+                }
+                "try_end" => {
+                    active_handlers.pop();
+                }
+                _ => {}
+            }
+        }
+
+        // Add exception edges from this block to all active handlers.
+        for handler in &active_handlers {
+            if let Some(handler_bid) = handler {
+                if *handler_bid != bid {
+                    edges.push((bid, *handler_bid));
+                }
+            }
+        }
+    }
+
+    // De-duplicate.
+    edges.sort_unstable();
+    edges.dedup();
+    edges
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -583,6 +644,7 @@ impl CFG {
                 successors: vec![],
                 dominators: vec![],
                 loop_depth: vec![],
+                exception_edges: vec![],
             };
         }
 
@@ -598,6 +660,9 @@ impl CFG {
         // detector, but we also use the structural back-edges.
         let loop_depth = compute_loop_depth(&blocks, &successors, &predecessors, &dominators, entry);
 
+        // Compute implicit exception edges from try regions.
+        let exception_edges = compute_exception_edges(ops, &blocks, &label_map);
+
         Self {
             blocks,
             entry,
@@ -605,6 +670,7 @@ impl CFG {
             successors,
             dominators,
             loop_depth,
+            exception_edges,
         }
     }
 }
