@@ -916,7 +916,10 @@ fn drain_cleanup_tracked(
         if skip == Some(name.as_str()) {
             return true;
         }
-        let last = last_use.get(name).copied().unwrap_or(op_idx);
+        // If not in last_use, default to MAX (keep alive) — NOT op_idx.
+        // Using op_idx as default causes premature cleanup of variables
+        // that are used later but not yet tracked in last_use.
+        let last = last_use.get(name).copied().unwrap_or(usize::MAX);
         if last <= op_idx {
             cleanup.push(name.clone());
             return false;
@@ -997,7 +1000,10 @@ fn drain_cleanup_entry_tracked(
     let mut cleanup = Vec::new();
     let mut to_remove = Vec::new();
     names.retain(|name| {
-        let last = last_use.get(name).copied().unwrap_or(op_idx);
+        // If not in last_use, default to MAX (keep alive) — NOT op_idx.
+        // Using op_idx as default causes premature cleanup of variables
+        // that are used later but not yet tracked in last_use.
+        let last = last_use.get(name).copied().unwrap_or(usize::MAX);
         if last <= op_idx {
             if let Some(val) = entry_vars.get(name) {
                 cleanup.push(*val);
