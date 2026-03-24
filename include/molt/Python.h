@@ -7833,21 +7833,49 @@ static inline PyObject *PyContextVar_Set(PyObject *var, PyObject *value) {
 }
 
 /* ========================================================================
- * Marshal C API (minimal stubs)
+ * Marshal C API — delegates to pickle for serialization
  * ======================================================================== */
 
 static inline PyObject *PyMarshal_WriteObjectToString(PyObject *value, int version) {
+    PyObject *mod, *fn, *args, *result;
     (void)version;
-    (void)value;
-    PyErr_SetString(PyExc_RuntimeError, "PyMarshal is not supported in molt");
-    return NULL;
+    if (value == NULL) {
+        PyErr_SetString(PyExc_TypeError, "cannot marshal NULL object");
+        return NULL;
+    }
+    mod = PyImport_ImportModule("pickle");
+    if (mod == NULL) return NULL;
+    fn = PyObject_GetAttrString(mod, "dumps");
+    Py_DECREF(mod);
+    if (fn == NULL) return NULL;
+    args = PyTuple_Pack(1, value);
+    if (args == NULL) { Py_DECREF(fn); return NULL; }
+    result = PyObject_CallObject(fn, args);
+    Py_DECREF(args);
+    Py_DECREF(fn);
+    return result;
 }
 
 static inline PyObject *PyMarshal_ReadObjectFromString(const char *data, Py_ssize_t len) {
-    (void)data;
-    (void)len;
-    PyErr_SetString(PyExc_RuntimeError, "PyMarshal is not supported in molt");
-    return NULL;
+    PyObject *mod, *fn, *bytes_obj, *args, *result;
+    if (data == NULL || len <= 0) {
+        PyErr_SetString(PyExc_ValueError, "cannot unmarshal empty data");
+        return NULL;
+    }
+    mod = PyImport_ImportModule("pickle");
+    if (mod == NULL) return NULL;
+    fn = PyObject_GetAttrString(mod, "loads");
+    Py_DECREF(mod);
+    if (fn == NULL) return NULL;
+    bytes_obj = PyBytes_FromStringAndSize(data, len);
+    if (bytes_obj == NULL) { Py_DECREF(fn); return NULL; }
+    args = PyTuple_Pack(1, bytes_obj);
+    Py_DECREF(bytes_obj);
+    if (args == NULL) { Py_DECREF(fn); return NULL; }
+    result = PyObject_CallObject(fn, args);
+    Py_DECREF(args);
+    Py_DECREF(fn);
+    return result;
 }
 
 /* ========================================================================
@@ -9287,45 +9315,158 @@ static inline void *PyObject_Realloc(void *ptr, size_t new_size) {
 }
 
 /* ========================================================================
- * Frame Object API (stubs — molt is AOT compiled, no real frames)
+ * Frame Object API — lightweight AOT frame for C extension compatibility
  * ======================================================================== */
-
-typedef struct _molt_pyframeobject {
-    PyObject ob_base;
-    int f_lineno;
-} PyFrameObject;
 
 typedef struct _molt_pycodeobject {
     PyObject ob_base;
-    PyObject *co_filename;
+    PyObject *co_filename;    /* str: source filename */
+    PyObject *co_name;        /* str: function/module name */
+    PyObject *co_varnames;    /* tuple of local variable names */
     int co_nlocals;
     int co_nfreevars;
+    int co_firstlineno;
 } PyCodeObject;
+
+typedef struct _molt_pyframeobject {
+    PyObject ob_base;
+    struct _molt_pyframeobject *f_back;   /* previous frame (caller) */
+    PyCodeObject *f_code;                  /* code object for this frame */
+    PyObject *f_builtins;                  /* builtins dict */
+    PyObject *f_globals;                   /* module globals dict */
+    PyObject *f_locals;                    /* locals dict */
+    int f_lineno;                          /* current line number */
+    int f_lasti;                           /* last bytecode index (always -1 for AOT) */
+} PyFrameObject;
 
 typedef struct _molt_pytracebackobject {
     PyObject ob_base;
+    struct _molt_pytracebackobject *tb_next;
+    PyFrameObject *tb_frame;
+    int tb_lineno;
+    int tb_lasti;
 } PyTracebackObject;
 
 typedef int (*Py_tracefunc)(PyObject *, PyFrameObject *, int, PyObject *);
 
+/* ---------- frame stack (thread-local, single-threaded in molt) ---------- */
+
+#define _MOLT_FRAME_STACK_MAX 256
+
+static inline PyFrameObject **_molt_frame_stack(void) {
+    static PyFrameObject *stack[_MOLT_FRAME_STACK_MAX];
+    return stack;
+}
+
+static inline int *_molt_frame_stack_top(void) {
+    static int top = 0;
+    return &top;
+}
+
+static inline PyFrameObject *_molt_get_current_frame(void) {
+    int top = *_molt_frame_stack_top();
+    if (top <= 0) return NULL;
+    return _molt_frame_stack()[top - 1];
+}
+
+static inline void _molt_push_frame(PyFrameObject *frame) {
+    int *top = _molt_frame_stack_top();
+    if (*top < _MOLT_FRAME_STACK_MAX) {
+        _molt_frame_stack()[*top] = frame;
+        (*top)++;
+    }
+}
+
+static inline void _molt_pop_frame(void) {
+    int *top = _molt_frame_stack_top();
+    if (*top > 0) {
+        (*top)--;
+    }
+}
+
+/* ---------- code object constructor ---------- */
+
+static inline PyCodeObject *_molt_code_new(const char *filename,
+                                            const char *funcname,
+                                            int firstlineno) {
+    PyCodeObject *co = (PyCodeObject *)PyObject_Malloc(sizeof(PyCodeObject));
+    if (co == NULL) return NULL;
+    memset(co, 0, sizeof(*co));
+    /* ob_base: set refcount to 1 via a raw handle, or just memset is fine
+       since C extensions check the fields, not the type pointer */
+    co->co_filename = PyUnicode_FromString(filename ? filename : "<molt-compiled>");
+    co->co_name = PyUnicode_FromString(funcname ? funcname : "<module>");
+    co->co_varnames = PyTuple_New(0);
+    co->co_nlocals = 0;
+    co->co_nfreevars = 0;
+    co->co_firstlineno = firstlineno;
+    return co;
+}
+
+/* ---------- frame object constructor ---------- */
+
+static inline PyFrameObject *_molt_frame_new(PyCodeObject *code,
+                                              PyObject *globals,
+                                              PyObject *locals,
+                                              int lineno) {
+    PyFrameObject *f = (PyFrameObject *)PyObject_Malloc(sizeof(PyFrameObject));
+    if (f == NULL) return NULL;
+    memset(f, 0, sizeof(*f));
+    f->f_back = _molt_get_current_frame();
+    f->f_code = code;
+    f->f_builtins = PyEval_GetBuiltins();
+    f->f_globals = globals ? globals : PyEval_GetBuiltins();
+    f->f_locals = locals ? locals : PyDict_New();
+    f->f_lineno = lineno;
+    f->f_lasti = -1;
+    Py_XINCREF(f->f_builtins);
+    Py_XINCREF(f->f_globals);
+    Py_XINCREF(f->f_locals);
+    _molt_push_frame(f);
+    return f;
+}
+
+static inline void _molt_frame_destroy(PyFrameObject *f) {
+    if (f == NULL) return;
+    _molt_pop_frame();
+    Py_XDECREF(f->f_builtins);
+    Py_XDECREF(f->f_globals);
+    Py_XDECREF(f->f_locals);
+    /* code objects are owned separately — don't free here */
+    PyObject_Free(f);
+}
+
+/* ---------- PyFrame_* accessors ---------- */
+
 static inline PyObject *PyFrame_GetBack(PyFrameObject *frame) {
-    (void)frame;
-    Py_RETURN_NONE;
+    if (frame == NULL || frame->f_back == NULL) {
+        Py_RETURN_NONE;
+    }
+    return (PyObject *)frame->f_back;
 }
 
 static inline PyObject *PyFrame_GetBuiltins(PyFrameObject *frame) {
-    (void)frame;
-    Py_RETURN_NONE;
+    if (frame == NULL || frame->f_builtins == NULL) {
+        Py_RETURN_NONE;
+    }
+    Py_INCREF(frame->f_builtins);
+    return frame->f_builtins;
 }
 
 static inline PyObject *PyFrame_GetGlobals(PyFrameObject *frame) {
-    (void)frame;
-    Py_RETURN_NONE;
+    if (frame == NULL || frame->f_globals == NULL) {
+        Py_RETURN_NONE;
+    }
+    Py_INCREF(frame->f_globals);
+    return frame->f_globals;
 }
 
 static inline PyObject *PyFrame_GetLocals(PyFrameObject *frame) {
-    (void)frame;
-    Py_RETURN_NONE;
+    if (frame == NULL || frame->f_locals == NULL) {
+        Py_RETURN_NONE;
+    }
+    Py_INCREF(frame->f_locals);
+    return frame->f_locals;
 }
 
 static inline int PyFrame_GetLineNumber(PyFrameObject *frame) {
@@ -9334,44 +9475,75 @@ static inline int PyFrame_GetLineNumber(PyFrameObject *frame) {
 }
 
 static inline PyCodeObject *PyFrame_GetCode(PyFrameObject *frame) {
-    (void)frame;
-    return NULL;
+    if (frame == NULL || frame->f_code == NULL) {
+        /* Return a default code object so callers never get NULL */
+        return _molt_code_new("<molt-compiled>", "<module>", 0);
+    }
+    /* Return borrowed-ish: caller typically doesn't decref code objects */
+    return frame->f_code;
 }
 
 static inline PyObject *PyFrame_GetGenerator(PyFrameObject *frame) {
     (void)frame;
+    /* Molt AOT does not expose generator objects from frames */
     Py_RETURN_NONE;
 }
 
 static inline int PyFrame_GetLasti(PyFrameObject *frame) {
-    (void)frame;
-    return -1;
+    if (frame == NULL) return -1;
+    return frame->f_lasti;
 }
 
 static inline PyObject *PyFrame_GetVar(PyFrameObject *frame, PyObject *name) {
-    (void)frame; (void)name;
-    PyErr_SetString(PyExc_RuntimeError, "PyFrame_GetVar: molt has no frame introspection");
-    return NULL;
+    PyObject *val;
+    if (frame == NULL || frame->f_locals == NULL || name == NULL) {
+        PyErr_SetString(PyExc_NameError, "frame variable not found");
+        return NULL;
+    }
+    val = PyDict_GetItem(frame->f_locals, name);
+    if (val == NULL) {
+        PyErr_Format(PyExc_NameError, "name not found in frame locals");
+        return NULL;
+    }
+    Py_INCREF(val);
+    return val;
 }
 
 static inline PyObject *PyFrame_GetVarString(PyFrameObject *frame, const char *name) {
-    (void)frame; (void)name;
-    PyErr_SetString(PyExc_RuntimeError, "PyFrame_GetVarString: molt has no frame introspection");
-    return NULL;
+    PyObject *key = PyUnicode_FromString(name);
+    PyObject *val;
+    if (key == NULL) return NULL;
+    val = PyFrame_GetVar(frame, key);
+    Py_DECREF(key);
+    return val;
 }
 
 /* ========================================================================
- * Code Object API (stubs)
+ * Code Object API
  * ======================================================================== */
 
+/* _molt_code_type_tag: a unique address used to identify code objects */
+static inline void *_molt_code_type_tag(void) {
+    static int tag = 0;
+    return &tag;
+}
+
 static inline int PyCode_Check(PyObject *co) {
-    (void)co;
-    return 0;
+    /* Heuristic: check if the object looks like our MoltCodeObject.
+       Since we allocate code objects ourselves, check co_filename is set. */
+    PyCodeObject *c;
+    if (co == NULL) return 0;
+    c = (PyCodeObject *)co;
+    /* If co_filename is a valid string, this is likely a code object */
+    return (c->co_filename != NULL && PyUnicode_Check(c->co_filename)) ? 1 : 0;
 }
 
 static inline PyObject *PyCode_GetFileName(PyCodeObject *co) {
-    (void)co;
-    return PyUnicode_FromString("<molt-compiled>");
+    if (co == NULL || co->co_filename == NULL) {
+        return PyUnicode_FromString("<molt-compiled>");
+    }
+    Py_INCREF(co->co_filename);
+    return co->co_filename;
 }
 
 static inline int PyCode_GetNumFree(PyCodeObject *co) {
@@ -9380,17 +9552,21 @@ static inline int PyCode_GetNumFree(PyCodeObject *co) {
 }
 
 static inline int PyCode_GetFirstFreeVar(PyCodeObject *co) {
-    (void)co;
-    return 0;
+    if (co == NULL) return 0;
+    return co->co_nlocals;
 }
 
 static inline PyObject *PyCode_GetCode(PyCodeObject *co) {
     (void)co;
+    /* AOT compiled — no bytecode to return */
     return PyBytes_FromStringAndSize("", 0);
 }
 
 static inline PyObject *PyCode_GetVarnames(PyCodeObject *co) {
-    (void)co;
+    if (co != NULL && co->co_varnames != NULL) {
+        Py_INCREF(co->co_varnames);
+        return co->co_varnames;
+    }
     return PyTuple_New(0);
 }
 
@@ -9405,27 +9581,71 @@ static inline PyObject *PyCode_GetCellvars(PyCodeObject *co) {
 }
 
 /* ========================================================================
- * Traceback API (stubs)
+ * Traceback API — lightweight linked list for exception chains
  * ======================================================================== */
 
+/* Traceback head for the current exception chain */
+static inline PyTracebackObject **_molt_traceback_head(void) {
+    static PyTracebackObject *head = NULL;
+    return &head;
+}
+
 static inline int PyTraceBack_Here(PyFrameObject *frame) {
-    (void)frame;
+    PyTracebackObject *tb;
+    if (frame == NULL) return 0;
+    tb = (PyTracebackObject *)PyObject_Malloc(sizeof(PyTracebackObject));
+    if (tb == NULL) return -1;
+    memset(tb, 0, sizeof(*tb));
+    tb->tb_next = *_molt_traceback_head();
+    tb->tb_frame = frame;
+    tb->tb_lineno = frame->f_lineno;
+    tb->tb_lasti = frame->f_lasti;
+    *_molt_traceback_head() = tb;
     return 0;
 }
 
 static inline int PyTraceBack_Print(PyObject *tb, PyObject *f) {
-    (void)tb; (void)f;
+    PyTracebackObject *cur = (PyTracebackObject *)tb;
+    const char *header = "Traceback (most recent call last):\n";
+    (void)f; /* TODO: write to f if it's a real file object */
+    if (cur == NULL) return 0;
+    fprintf(stderr, "%s", header);
+    while (cur != NULL) {
+        const char *filename = "<unknown>";
+        const char *funcname = "<unknown>";
+        if (cur->tb_frame != NULL && cur->tb_frame->f_code != NULL) {
+            PyObject *fn = cur->tb_frame->f_code->co_filename;
+            PyObject *nm = cur->tb_frame->f_code->co_name;
+            if (fn != NULL && PyUnicode_Check(fn)) {
+                filename = PyUnicode_AsUTF8(fn);
+                if (filename == NULL) filename = "<unknown>";
+            }
+            if (nm != NULL && PyUnicode_Check(nm)) {
+                funcname = PyUnicode_AsUTF8(nm);
+                if (funcname == NULL) funcname = "<unknown>";
+            }
+        }
+        fprintf(stderr, "  File \"%s\", line %d, in %s\n",
+                filename, cur->tb_lineno, funcname);
+        cur = cur->tb_next;
+    }
     return 0;
 }
 
 static inline int PyTraceBack_Check(PyObject *ob) {
-    (void)ob;
-    return 0;
+    /* Check if ob looks like a traceback: tb_frame should be set */
+    PyTracebackObject *tb;
+    if (ob == NULL) return 0;
+    tb = (PyTracebackObject *)ob;
+    return (tb->tb_frame != NULL) ? 1 : 0;
 }
 
 static inline PyObject *PyTraceBack_GetObject(PyObject *tb) {
-    (void)tb;
-    Py_RETURN_NONE;
+    if (tb == NULL) {
+        Py_RETURN_NONE;
+    }
+    Py_INCREF(tb);
+    return tb;
 }
 
 /* ========================================================================
@@ -9880,7 +10100,7 @@ static inline void Py_InitializeEx(int initsigs) {
 }
 
 /* ========================================================================
- * PyRun stubs (no eval in molt)
+ * PyRun API — molt does not support runtime eval/exec
  * ======================================================================== */
 
 typedef struct {
@@ -9888,12 +10108,14 @@ typedef struct {
     int cf_feature_version;
 } PyCompilerFlags;
 
+#define _MOLT_NO_EVAL_MSG \
+    "molt does not support runtime eval/exec — use compile-time imports"
+
 static inline PyObject *PyRun_StringFlags(const char *str, int start,
                                            PyObject *globals, PyObject *locals,
                                            PyCompilerFlags *flags) {
     (void)str; (void)start; (void)globals; (void)locals; (void)flags;
-    PyErr_SetString(PyExc_NotImplementedError,
-        "PyRun_StringFlags: dynamic eval not supported in molt");
+    PyErr_SetString(PyExc_RuntimeError, _MOLT_NO_EVAL_MSG);
     return NULL;
 }
 
@@ -9904,8 +10126,7 @@ static inline PyObject *PyRun_String(const char *str, int start,
 
 static inline int PyRun_SimpleStringFlags(const char *command, PyCompilerFlags *flags) {
     (void)command; (void)flags;
-    PyErr_SetString(PyExc_NotImplementedError,
-        "PyRun_SimpleStringFlags: dynamic eval not supported in molt");
+    PyErr_SetString(PyExc_RuntimeError, _MOLT_NO_EVAL_MSG);
     return -1;
 }
 
@@ -9915,6 +10136,7 @@ static inline int PyRun_SimpleString(const char *command) {
 
 static inline int PyRun_AnyFileFlags(FILE *fp, const char *filename, PyCompilerFlags *flags) {
     (void)fp; (void)filename; (void)flags;
+    PyErr_SetString(PyExc_RuntimeError, _MOLT_NO_EVAL_MSG);
     return -1;
 }
 
@@ -9925,6 +10147,7 @@ static inline int PyRun_AnyFile(FILE *fp, const char *filename) {
 static inline int PyRun_AnyFileExFlags(FILE *fp, const char *filename, int closeit,
                                         PyCompilerFlags *flags) {
     (void)fp; (void)filename; (void)closeit; (void)flags;
+    PyErr_SetString(PyExc_RuntimeError, _MOLT_NO_EVAL_MSG);
     return -1;
 }
 
@@ -9932,8 +10155,7 @@ static inline PyObject *PyRun_FileFlags(FILE *fp, const char *filename, int star
                                          PyObject *globals, PyObject *locals,
                                          PyCompilerFlags *flags) {
     (void)fp; (void)filename; (void)start; (void)globals; (void)locals; (void)flags;
-    PyErr_SetString(PyExc_NotImplementedError,
-        "PyRun_FileFlags: dynamic eval not supported in molt");
+    PyErr_SetString(PyExc_RuntimeError, _MOLT_NO_EVAL_MSG);
     return NULL;
 }
 
@@ -9944,8 +10166,7 @@ static inline PyObject *PyRun_File(FILE *fp, const char *filename, int start,
 
 static inline PyObject *Py_CompileString(const char *str, const char *filename, int start) {
     (void)str; (void)filename; (void)start;
-    PyErr_SetString(PyExc_NotImplementedError,
-        "Py_CompileString: dynamic compilation not supported in molt");
+    PyErr_SetString(PyExc_RuntimeError, _MOLT_NO_EVAL_MSG);
     return NULL;
 }
 
@@ -9963,46 +10184,53 @@ static inline PyObject *Py_CompileStringExFlags(const char *str, const char *fil
 }
 
 /* ========================================================================
- * PyEval stubs
+ * PyEval API — GIL delegates to molt runtime, eval raises RuntimeError
  * ======================================================================== */
 
 static inline void PyEval_AcquireLock(void) {
-    /* no-op */
+    (void)molt_gil_acquire();
 }
 
 static inline void PyEval_ReleaseLock(void) {
-    /* no-op */
+    (void)molt_gil_release();
 }
 
 static inline void PyEval_AcquireThread(PyThreadState *tstate) {
     (void)tstate;
+    (void)molt_gil_acquire();
 }
 
 static inline void PyEval_ReleaseThread(PyThreadState *tstate) {
     (void)tstate;
+    (void)molt_gil_release();
 }
 
 static inline PyThreadState *PyEval_SaveThread(void) {
-    return NULL;
+    PyThreadState *ts = PyThreadState_Get();
+    (void)molt_gil_release();
+    return ts;
 }
 
 static inline void PyEval_RestoreThread(PyThreadState *tstate) {
     (void)tstate;
+    (void)molt_gil_acquire();
 }
 
 static inline PyFrameObject *PyEval_GetFrame(void) {
-    return NULL;
+    return _molt_get_current_frame();
 }
 
 static inline int PyEval_MergeCompilerFlags(PyCompilerFlags *cf) {
-    (void)cf;
+    if (cf != NULL) {
+        cf->cf_flags = 0;
+        cf->cf_feature_version = 12; /* Python 3.12 compat */
+    }
     return 0;
 }
 
 static inline PyObject *PyEval_EvalCode(PyObject *co, PyObject *globals, PyObject *locals) {
     (void)co; (void)globals; (void)locals;
-    PyErr_SetString(PyExc_NotImplementedError,
-        "PyEval_EvalCode: dynamic eval not supported in molt");
+    PyErr_SetString(PyExc_RuntimeError, _MOLT_NO_EVAL_MSG);
     return NULL;
 }
 
@@ -10014,8 +10242,7 @@ static inline PyObject *PyEval_EvalCodeEx(PyObject *co, PyObject *globals, PyObj
     (void)co; (void)globals; (void)locals;
     (void)args; (void)argcount; (void)kws; (void)kwcount;
     (void)defs; (void)defcount; (void)kwdefs; (void)closure;
-    PyErr_SetString(PyExc_NotImplementedError,
-        "PyEval_EvalCodeEx: dynamic eval not supported in molt");
+    PyErr_SetString(PyExc_RuntimeError, _MOLT_NO_EVAL_MSG);
     return NULL;
 }
 
@@ -10024,7 +10251,7 @@ static inline PyObject *PyEval_EvalCodeEx(PyObject *co, PyObject *globals, PyObj
  * ======================================================================== */
 
 static inline PyThreadState *PyGILState_GetThisThreadState(void) {
-    return NULL;
+    return PyThreadState_Get();
 }
 
 /* ========================================================================
@@ -10046,9 +10273,11 @@ static inline PyInterpreterState *PyThreadState_GetInterpreter(PyThreadState *ts
     return &_molt_main_interp;
 }
 
+/* Forward declaration — implemented after MoltFrameObject is defined */
+static inline PyFrameObject *_molt_get_current_frame(void);
 static inline PyFrameObject *PyThreadState_GetFrame(PyThreadState *tstate) {
     (void)tstate;
-    return NULL;
+    return _molt_get_current_frame();
 }
 
 static inline uint64_t PyThreadState_GetID(PyThreadState *tstate) {
@@ -10062,8 +10291,13 @@ static inline int64_t PyInterpreterState_GetID(PyInterpreterState *interp) {
 }
 
 static inline PyObject *PyInterpreterState_GetDict(PyInterpreterState *interp) {
+    static PyObject *cached_dict = NULL;
     (void)interp;
-    return PyDict_New();
+    if (cached_dict == NULL) {
+        cached_dict = PyDict_New();
+    }
+    Py_XINCREF(cached_dict);
+    return cached_dict;
 }
 
 /* ========================================================================
