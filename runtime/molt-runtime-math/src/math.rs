@@ -81,7 +81,7 @@ fn compat_bigint_bits(_py: &PyToken, value: BigInt) -> u64 {
 /// Wraps bridge::string_bytes — bridge returns &[u8], but we just need the raw data
 /// in the same way the monolith's unsafe fn works.
 #[inline]
-fn compat_string_bytes(ptr: *mut u8) -> &'static [u8] {
+pub(crate) fn compat_string_bytes(ptr: *mut u8) -> &'static [u8] {
     unsafe { string_bytes(ptr) }
 }
 
@@ -668,14 +668,14 @@ fn isqrt_biguint(value: &BigUint) -> BigUint {
 }
 
 fn collect_real_vec(_py: &PyToken, iter_bits: u64) -> Option<Vec<f64>> {
-    let iter_obj = molt_iter(iter_bits);
+    let iter_obj = compat_molt_iter(_py, iter_bits);
     if obj_from_bits(iter_obj).is_none() {
         compat_raise_not_iterable::<Option<Vec<f64>>>(_py, iter_bits);
         return None;
     }
     let mut out = Vec::new();
     loop {
-        let pair_bits = molt_iter_next(iter_obj);
+        let pair_bits = compat_molt_iter_next(_py, iter_obj);
         if exception_pending(_py) {
             return None;
         }
@@ -1725,11 +1725,7 @@ pub extern "C" fn molt_math_floor(val_bits: u64) -> u64 {
                 let floor_name_bits =
                     intern_static_name(_py, b"__floor__");
                 if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, floor_name_bits) {
-                    let callable_bits = molt_is_callable(call_bits);
-                    let callable_ok = is_truthy(_py, obj_from_bits(callable_bits));
-                    if obj_from_bits(callable_bits).as_ptr().is_some() {
-                        dec_ref_bits(_py, callable_bits);
-                    }
+                    let callable_ok = compat_molt_is_callable(_py, call_bits);
                     if callable_ok {
                         let res_bits = call_callable0(_py, call_bits);
                         dec_ref_bits(_py, call_bits);
@@ -1776,11 +1772,7 @@ pub extern "C" fn molt_math_ceil(val_bits: u64) -> u64 {
                 let ceil_name_bits =
                     intern_static_name(_py, b"__ceil__");
                 if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, ceil_name_bits) {
-                    let callable_bits = molt_is_callable(call_bits);
-                    let callable_ok = is_truthy(_py, obj_from_bits(callable_bits));
-                    if obj_from_bits(callable_bits).as_ptr().is_some() {
-                        dec_ref_bits(_py, callable_bits);
-                    }
+                    let callable_ok = compat_molt_is_callable(_py, call_bits);
                     if callable_ok {
                         let res_bits = call_callable0(_py, call_bits);
                         dec_ref_bits(_py, call_bits);
@@ -1827,11 +1819,7 @@ pub extern "C" fn molt_math_trunc(val_bits: u64) -> u64 {
                 let trunc_name_bits =
                     intern_static_name(_py, b"__trunc__");
                 if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, trunc_name_bits) {
-                    let callable_bits = molt_is_callable(call_bits);
-                    let callable_ok = is_truthy(_py, obj_from_bits(callable_bits));
-                    if obj_from_bits(callable_bits).as_ptr().is_some() {
-                        dec_ref_bits(_py, callable_bits);
-                    }
+                    let callable_ok = compat_molt_is_callable(_py, call_bits);
                     if callable_ok {
                         let res_bits = call_callable0(_py, call_bits);
                         dec_ref_bits(_py, call_bits);
@@ -2020,14 +2008,14 @@ pub extern "C" fn molt_math_isclose(a_bits: u64, b_bits: u64, rel_bits: u64, abs
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_prod(iter_bits: u64, start_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let iter_obj = molt_iter(iter_bits);
+        let iter_obj = compat_molt_iter(_py, iter_bits);
         if obj_from_bits(iter_obj).is_none() {
             return compat_raise_not_iterable::<u64>(_py, iter_bits);
         }
         let mut total_bits = start_bits;
         let mut total_owned = false;
         loop {
-            let pair_bits = molt_iter_next(iter_obj);
+            let pair_bits = compat_molt_iter_next(_py, iter_obj);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -2051,7 +2039,7 @@ pub extern "C" fn molt_math_prod(iter_bits: u64, start_bits: u64) -> u64 {
                     }
                     return total_bits;
                 }
-                let next_bits = molt_mul(total_bits, val_bits);
+                let next_bits = compat_molt_mul(_py, total_bits, val_bits);
                 if obj_from_bits(next_bits).is_none() {
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
@@ -2068,13 +2056,13 @@ pub extern "C" fn molt_math_prod(iter_bits: u64, start_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_fsum(iter_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let iter_obj = molt_iter(iter_bits);
+        let iter_obj = compat_molt_iter(_py, iter_bits);
         if obj_from_bits(iter_obj).is_none() {
             return compat_raise_not_iterable::<u64>(_py, iter_bits);
         }
         let mut partials: Vec<f64> = Vec::new();
         loop {
-            let pair_bits = molt_iter_next(iter_obj);
+            let pair_bits = compat_molt_iter_next(_py, iter_obj);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -2743,14 +2731,14 @@ fn statistics_variance_value(
 }
 
 fn collect_values_vec(_py: &PyToken, iter_bits: u64) -> Option<Vec<u64>> {
-    let iter_obj = molt_iter(iter_bits);
+    let iter_obj = compat_molt_iter(_py, iter_bits);
     if obj_from_bits(iter_obj).is_none() {
         compat_raise_not_iterable::<Option<Vec<u64>>>(_py, iter_bits);
         return None;
     }
     let mut out = Vec::new();
     loop {
-        let pair_bits = molt_iter_next(iter_obj);
+        let pair_bits = compat_molt_iter_next(_py, iter_obj);
         if exception_pending(_py) {
             return None;
         }
@@ -2792,7 +2780,7 @@ fn collect_values_vec(_py: &PyToken, iter_bits: u64) -> Option<Vec<u64>> {
 fn statistics_sorted_values(_py: &PyToken, data_bits: u64) -> Option<u64> {
     let none_bits = MoltObject::none().bits();
     let false_bits = MoltObject::from_bool(false).bits();
-    let sorted_bits = molt_sorted_builtin(data_bits, none_bits, false_bits);
+    let sorted_bits = compat_molt_sorted_builtin(_py, data_bits, none_bits, false_bits);
     if exception_pending(_py) || obj_from_bits(sorted_bits).is_none() {
         return None;
     }

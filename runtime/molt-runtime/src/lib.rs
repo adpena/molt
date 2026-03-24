@@ -124,6 +124,15 @@ pub(crate) use crate::async_rt::sockets::io_wait_release_socket;
 pub(crate) use crate::async_rt::net_stubs::io_wait_release_socket;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub use crate::async_rt::sockets::*;
+// Non-networking socket utilities (cmsg_len/cmsg_space) are always available.
+#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
+pub use crate::async_rt::sockets::{
+    molt_socket_cmsg_len, molt_socket_cmsg_space,
+    molt_socket_getfqdn, molt_socket_gethostbyaddr,
+    molt_socket_gethostbyname, molt_socket_gethostbyname_ex,
+    molt_socket_htonl, molt_socket_htons, molt_socket_ntohl, molt_socket_ntohs,
+    molt_socket_sendfile,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use crate::async_rt::sockets::{
     argv_from_bits, env_from_bits, require_net_capability, require_process_capability,
@@ -280,7 +289,10 @@ pub use crate::builtins::json::*;
 pub use crate::builtins::logging_ext::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::lzma::*;
+#[cfg(not(feature = "stdlib_math"))]
 pub use crate::builtins::math::*;
+#[cfg(feature = "stdlib_math")]
+pub use molt_runtime_math::math::*;
 pub(crate) use crate::builtins::methods::*;
 pub use crate::builtins::modules::*;
 pub(crate) use crate::builtins::numbers::{
@@ -298,7 +310,10 @@ pub use crate::builtins::platform::*;
 pub use crate::builtins::platform_mod::*;
 pub use crate::builtins::pprint_ext::*;
 pub use crate::builtins::punycode::*;
+#[cfg(not(feature = "stdlib_math"))]
 pub use crate::builtins::random_mod::*;
+#[cfg(feature = "stdlib_math")]
+pub use molt_runtime_math::random_mod::*;
 pub use crate::builtins::regex::*;
 #[cfg(feature = "stdlib_crypto")]
 pub use crate::builtins::secrets::*;

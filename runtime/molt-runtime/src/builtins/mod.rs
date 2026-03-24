@@ -82,6 +82,7 @@ pub(crate) mod platform;
 pub(crate) mod platform_mod;
 pub(crate) mod pprint_ext;
 pub(crate) mod punycode;
+#[cfg(not(feature = "stdlib_math"))]
 pub(crate) mod random_mod;
 pub(crate) mod regex;
 #[cfg(feature = "stdlib_crypto")]
