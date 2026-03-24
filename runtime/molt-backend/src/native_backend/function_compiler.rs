@@ -28,10 +28,13 @@ fn import_func_ref(
     params: &[types::Type],
     returns: &[types::Type],
 ) -> FuncRef {
-    let import_cache_disabled = env_setting("MOLT_BACKEND_DISABLE_IMPORT_CACHE")
-        .as_deref()
-        .map(parse_truthy_env)
-        .unwrap_or(false);
+    static IMPORT_CACHE_DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let import_cache_disabled = *IMPORT_CACHE_DISABLED.get_or_init(|| {
+        env_setting("MOLT_BACKEND_DISABLE_IMPORT_CACHE")
+            .as_deref()
+            .map(parse_truthy_env)
+            .unwrap_or(false)
+    });
     if let Some(func_ref) = local_refs.get(name) {
         return *func_ref;
     }
@@ -267,6 +270,8 @@ impl SimpleBackend {
         let mut trace_data: Option<(cranelift_module::DataId, i64)> = None;
         let mut tracked_vars = Vec::new();
         let mut tracked_obj_vars = Vec::new();
+        let mut tracked_vars_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut tracked_obj_vars_set: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut entry_vars: BTreeMap<String, Value> = BTreeMap::new();
         let mut state_blocks = BTreeMap::new();
         let mut import_refs: BTreeMap<&'static str, FuncRef> = BTreeMap::new();
@@ -343,10 +348,13 @@ impl SimpleBackend {
         // approach uses declare_var/def_var/use_var which handles dominator
         // propagation through Switch-generated intermediate blocks correctly.
         let has_exc_handling = function_exception_label_id.is_some();
-        let inline_exc_disabled = env_setting("MOLT_BACKEND_INLINE_EXC_DISABLED")
-            .as_deref()
-            .map(parse_truthy_env)
-            .unwrap_or(false);
+        static INLINE_EXC_DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let inline_exc_disabled = *INLINE_EXC_DISABLED.get_or_init(|| {
+            env_setting("MOLT_BACKEND_INLINE_EXC_DISABLED")
+                .as_deref()
+                .map(parse_truthy_env)
+                .unwrap_or(false)
+        });
         let exc_flag_ptr_var: Option<Variable> = if has_exc_handling && !inline_exc_disabled {
             let var = builder.declare_var(types::I64);
             Some(var)
@@ -8722,14 +8730,13 @@ impl SimpleBackend {
                         if let Some(names) = block_tracked_obj.get_mut(&block) {
                             let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
                             for name in cleanup {
-                                let val =
-                                    var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                        panic!(
-                                            "Tracked obj var not found in {} op {}: {}",
-                                            func_ir.name, op_idx, name
-                                        )
-                                    });
-                                builder.ins().call(local_dec_ref_obj, &[*val]);
+                                // Use entry_vars (definition-time Value) for dec_ref,
+                                // not var_get (current SSA Value). If the variable was
+                                // redefined, var_get returns the WRONG object.
+                                let val = entry_vars.get(&name).copied()
+                                    .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                                let Some(val) = val else { continue; };
+                                builder.ins().call(local_dec_ref_obj, &[val]);
                                 // Remove from entry_vars so exception-handler
                                 // and function-return cleanup paths do not
                                 // dec-ref this already-freed variable again.
@@ -8739,14 +8746,10 @@ impl SimpleBackend {
                         if let Some(names) = block_tracked_ptr.get_mut(&block) {
                             let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
                             for name in cleanup {
-                                let val =
-                                    var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                        panic!(
-                                            "Tracked ptr var not found in {} op {}: {}",
-                                            func_ir.name, op_idx, name
-                                        )
-                                    });
-                                builder.ins().call(local_dec_ref, &[*val]);
+                                let val = entry_vars.get(&name).copied()
+                                    .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                                let Some(val) = val else { continue; };
+                                builder.ins().call(local_dec_ref, &[val]);
                                 entry_vars.remove(&name);
                             }
                         }
@@ -9002,22 +9005,19 @@ impl SimpleBackend {
                         if arg_cleanup_names.contains(name) {
                             continue;
                         }
-                        let val = var_get(&mut builder, &vars, name).unwrap_or_else(|| {
-                            panic!(
-                                "Tracked obj var not found in {} op {}: {}",
-                                func_ir.name, op_idx, name
-                            )
-                        });
-                        builder.ins().call(local_dec_ref_obj, &[*val]);
+                        // Use entry_vars (definition-time Value) for dec_ref,
+                        // not var_get (current SSA Value). If the variable was
+                        // redefined, var_get returns the WRONG object.
+                        let val = entry_vars.get(name).copied()
+                            .or_else(|| var_get(&mut builder, &vars, name).map(|v| *v));
+                        let Some(val) = val else { continue; };
+                        builder.ins().call(local_dec_ref_obj, &[val]);
                     }
                     for name in &origin_ptr_cleanup {
-                        let val = var_get(&mut builder, &vars, name).unwrap_or_else(|| {
-                            panic!(
-                                "Tracked ptr var not found in {} op {}: {}",
-                                func_ir.name, op_idx, name
-                            )
-                        });
-                        builder.ins().call(local_dec_ref, &[*val]);
+                        let val = entry_vars.get(name).copied()
+                            .or_else(|| var_get(&mut builder, &vars, name).map(|v| *v));
+                        let Some(val) = val else { continue; };
+                        builder.ins().call(local_dec_ref, &[val]);
                     }
                     for val in &arg_cleanup {
                         builder.ins().call(local_dec_ref_obj, &[*val]);
@@ -9030,17 +9030,21 @@ impl SimpleBackend {
                         tracked_obj_vars.retain(|n| !arg_cleanup_names.contains(n));
                         tracked_vars.retain(|n| !arg_cleanup_names.contains(n));
                         for name in &arg_cleanup_names {
+                            tracked_obj_vars_set.remove(name);
+                            tracked_vars_set.remove(name);
                             entry_vars.remove(name);
                         }
                     }
                     for name in &origin_obj_cleanup {
                         if !arg_cleanup_names.contains(name) {
                             tracked_obj_vars.retain(|n| n != name);
+                            tracked_obj_vars_set.remove(name);
                             entry_vars.remove(name);
                         }
                     }
                     for name in &origin_ptr_cleanup {
                         tracked_vars.retain(|n| n != name);
+                        tracked_vars_set.remove(name);
                         entry_vars.remove(name);
                     }
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
@@ -9656,6 +9660,8 @@ impl SimpleBackend {
                         if block == entry_block && loop_depth == 0 {
                             tracked_obj_vars.retain(|n| n != callargs_name);
                             tracked_vars.retain(|n| n != callargs_name);
+                            tracked_obj_vars_set.remove(callargs_name);
+                            tracked_vars_set.remove(callargs_name);
                             entry_vars.remove(callargs_name);
                         } else {
                             if let Some(names) = block_tracked_obj.get_mut(&block) {
@@ -10786,6 +10792,8 @@ impl SimpleBackend {
                         if block == entry_block && loop_depth == 0 {
                             carry_obj.append(&mut tracked_obj_vars);
                             carry_ptr.append(&mut tracked_vars);
+                            tracked_obj_vars_set.clear();
+                            tracked_vars_set.clear();
                         }
                         if std::env::var("MOLT_DEBUG_CHECK_EXCEPTION").as_deref() == Ok("1")
                             && std::env::var("MOLT_DEBUG_FUNC_FILTER")
@@ -10795,6 +10803,9 @@ impl SimpleBackend {
                             eprintln!("check_exception {} op={}", func_ir.name, op_idx,);
                         }
                     }
+                    // Collect all names scrubbed from both obj and ptr so we can
+                    // do a single pass over block_tracked maps instead of O(n*m).
+                    let mut scrubbed_names: std::collections::HashSet<String> = std::collections::HashSet::new();
                     if !carry_obj.is_empty() {
                         let cleanup =
                             drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
@@ -10806,13 +10817,8 @@ impl SimpleBackend {
                                 .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
                             let Some(val) = val else { continue; };
                             builder.ins().call(local_dec_ref_obj, &[val]);
-                            // Remove from entry_vars AND from exception handler
-                            // block_tracked_obj so neither path double-frees.
                             entry_vars.remove(&name);
-                            // Also scrub from ALL exception handler blocks
-                            for tracked_list in block_tracked_obj.values_mut() {
-                                tracked_list.retain(|n| n != &name);
-                            }
+                            scrubbed_names.insert(name);
                         }
                     }
                     if !carry_ptr.is_empty() {
@@ -10823,13 +10829,18 @@ impl SimpleBackend {
                                 .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
                             let Some(val) = val else { continue; };
                             builder.ins().call(local_dec_ref, &[val]);
-                            // Remove from entry_vars AND from exception handler
-                            // block_tracked_obj so neither path double-frees.
                             entry_vars.remove(&name);
-                            // Also scrub from ALL exception handler blocks
-                            for tracked_list in block_tracked_obj.values_mut() {
-                                tracked_list.retain(|n| n != &name);
-                            }
+                            scrubbed_names.insert(name);
+                        }
+                    }
+                    // Single pass over all exception handler blocks to remove
+                    // scrubbed names, instead of one retain per name per block.
+                    if !scrubbed_names.is_empty() {
+                        for tracked_list in block_tracked_obj.values_mut() {
+                            tracked_list.retain(|n| !scrubbed_names.contains(n));
+                        }
+                        for tracked_list in block_tracked_ptr.values_mut() {
+                            tracked_list.retain(|n| !scrubbed_names.contains(n));
                         }
                     }
                     // Inline exception check: load the pending flag byte directly
@@ -12880,14 +12891,10 @@ impl SimpleBackend {
                                 if name == *var_name {
                                     continue;
                                 }
-                                let val =
-                                    var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                        panic!(
-                                            "Tracked obj var not found in {} op {}: {}",
-                                            func_ir.name, op_idx, name
-                                        )
-                                    });
-                                builder.ins().call(local_dec_ref_obj, &[*val]);
+                                let val = entry_vars.get(&name).copied()
+                                    .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                                let Some(val) = val else { continue; };
+                                builder.ins().call(local_dec_ref_obj, &[val]);
                             }
                         }
                         if let Some(names) = block_tracked_ptr.remove(&block) {
@@ -12895,27 +12902,29 @@ impl SimpleBackend {
                                 if name == *var_name {
                                     continue;
                                 }
-                                let val =
-                                    var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                        panic!(
-                                            "Tracked ptr var not found in {} op {}: {}",
-                                            func_ir.name, op_idx, name
-                                        )
-                                    });
-                                builder.ins().call(local_dec_ref, &[*val]);
+                                let val = entry_vars.get(&name).copied()
+                                    .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                                let Some(val) = val else { continue; };
+                                builder.ins().call(local_dec_ref, &[val]);
                             }
                         }
                     }
                     tracked_vars.retain(|v| v != var_name);
                     tracked_obj_vars.retain(|v| v != var_name);
+                    tracked_vars_set.remove(var_name);
+                    tracked_obj_vars_set.remove(var_name);
                     for name in &tracked_vars {
-                        if let Some(val) = var_get(&mut builder, &vars, name) {
-                            builder.ins().call(local_dec_ref, &[*val]);
+                        let val = entry_vars.get(name).copied()
+                            .or_else(|| var_get(&mut builder, &vars, name).map(|v| *v));
+                        if let Some(val) = val {
+                            builder.ins().call(local_dec_ref, &[val]);
                         }
                     }
                     for name in &tracked_obj_vars {
-                        if let Some(val) = var_get(&mut builder, &vars, name) {
-                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                        let val = entry_vars.get(name).copied()
+                            .or_else(|| var_get(&mut builder, &vars, name).map(|v| *v));
+                        if let Some(val) = val {
+                            builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                     }
                     reachable_blocks.insert(master_return_block);
@@ -13162,11 +13171,11 @@ impl SimpleBackend {
             {
                 if block == entry_block && loop_depth == 0 {
                     if output_is_ptr {
-                        if !tracked_vars.contains(&name.to_string()) {
+                        if tracked_vars_set.insert(name.to_string()) {
                             tracked_vars.push(name.clone());
                         }
                     } else {
-                        if !tracked_obj_vars.contains(&name.to_string()) {
+                        if tracked_obj_vars_set.insert(name.to_string()) {
                             tracked_obj_vars.push(name.clone());
                         }
                     }
@@ -13301,8 +13310,11 @@ impl SimpleBackend {
         // panic, so we skip the expensive clone + catch_unwind path.  This
         // saves a full IR deep-copy per function (~10-20% of dev compile time
         // for large modules).
-        let skip_resilience = crate::env_setting("MOLT_BACKEND_OPT_LEVEL")
-            .as_deref() == Some("none");
+        static OPT_LEVEL_NONE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let skip_resilience = *OPT_LEVEL_NONE.get_or_init(|| {
+            crate::env_setting("MOLT_BACKEND_OPT_LEVEL")
+                .as_deref() == Some("none")
+        });
         let func_snapshot = if skip_resilience {
             None
         } else {
