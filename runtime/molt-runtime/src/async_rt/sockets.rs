@@ -6,42 +6,42 @@ use crate::*;
 use crate::libc_compat as libc;
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use socket2::{Domain, Protocol, SockAddr, SockAddrStorage, SockRef, Socket, Type};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use std::collections::HashMap;
 #[cfg(target_arch = "wasm32")]
 use std::collections::HashMap;
-#[cfg(all(not(target_arch = "wasm32"), not(unix)))]
+#[cfg(all(molt_has_net_io, not(unix)))]
 use std::collections::VecDeque;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use std::ffi::{CStr, CString, OsString};
 use std::io::ErrorKind;
 #[cfg(target_arch = "wasm32")]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 #[cfg(unix)]
 use std::os::fd::BorrowedFd;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use std::os::raw::{c_int, c_void};
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, BorrowedSocket, FromRawSocket, IntoRawSocket, RawSocket};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use std::sync::{Mutex, OnceLock};
 #[cfg(target_arch = "wasm32")]
 use std::sync::{Mutex, OnceLock};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use std::time::Duration;
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
 
 // --- Sockets ---
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 enum MoltSocketKind {
     Closed,
     Pending(Socket),
@@ -56,7 +56,7 @@ enum MoltSocketKind {
     UnixDatagram(mio::net::UnixDatagram),
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub(crate) struct MoltSocketInner {
     kind: MoltSocketKind,
     family: i32,
@@ -67,7 +67,7 @@ pub(crate) struct MoltSocketInner {
     connect_pending: bool,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 struct MoltSocket {
     inner: Mutex<MoltSocketInner>,
     timeout: Mutex<Option<Duration>>,
@@ -83,32 +83,32 @@ struct MoltSocketReader {
     eof: bool,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 #[cfg(unix)]
 type SocketFd = RawFd;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 #[cfg(windows)]
 type SocketFd = RawSocket;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn socket_fd_map() -> &'static Mutex<HashMap<SocketFd, PtrSlot>> {
     static SOCKET_FD_MAP: OnceLock<Mutex<HashMap<SocketFd, PtrSlot>>> = OnceLock::new();
     SOCKET_FD_MAP.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn trace_socket_recv() -> bool {
     static TRACE: OnceLock<bool> = OnceLock::new();
     *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_SOCKET_RECV").as_deref() == Ok("1"))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn trace_socket_send() -> bool {
     static TRACE: OnceLock<bool> = OnceLock::new();
     *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_SOCKET_SEND").as_deref() == Ok("1"))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn socket_debug_fd(socket_ptr: *mut u8) -> Option<i64> {
     with_socket_mut(socket_ptr, |inner| {
         #[cfg(unix)]
@@ -129,7 +129,7 @@ fn socket_debug_fd(socket_ptr: *mut u8) -> Option<i64> {
     .ok()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn socket_register_fd(socket_ptr: *mut u8) {
     if socket_ptr.is_null() {
         return;
@@ -149,7 +149,7 @@ fn socket_register_fd(socket_ptr: *mut u8) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn socket_unregister_fd(socket_ptr: *mut u8) {
     if socket_ptr.is_null() {
         return;
@@ -168,12 +168,12 @@ fn socket_unregister_fd(socket_ptr: *mut u8) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn socket_ptr_from_fd(fd: SocketFd) -> Option<*mut u8> {
     socket_fd_map().lock().unwrap().get(&fd).map(|slot| slot.0)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub(crate) fn socket_ptr_from_bits_or_fd(socket_bits: u64) -> *mut u8 {
     if let Some(fd) = to_i64(obj_from_bits(socket_bits)).or({
         if socket_bits <= i64::MAX as u64 {
@@ -201,7 +201,7 @@ pub(crate) fn socket_ptr_from_bits_or_fd(socket_bits: u64) -> *mut u8 {
     std::ptr::null_mut()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 impl MoltSocketInner {
     pub(crate) fn source_mut(&mut self) -> Option<&mut dyn mio::event::Source> {
         match &mut self.kind {
@@ -259,7 +259,7 @@ impl MoltSocketInner {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub(crate) fn with_socket_mut<R, F>(socket_ptr: *mut u8, f: F) -> Result<R, std::io::Error>
 where
     F: FnOnce(&mut MoltSocketInner) -> Result<R, std::io::Error>,
@@ -281,7 +281,7 @@ where
     f(&mut guard)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn socket_timeout(socket_ptr: *mut u8) -> Option<Duration> {
     if socket_ptr.is_null() {
         return None;
@@ -291,7 +291,7 @@ fn socket_timeout(socket_ptr: *mut u8) -> Option<Duration> {
     *guard
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn socket_set_timeout(socket_ptr: *mut u8, timeout: Option<Duration>) {
     if socket_ptr.is_null() {
         return;
@@ -377,7 +377,7 @@ fn socket_set_connect_pending(handle: i64, pending: bool) -> Result<(), String> 
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 #[allow(dead_code)]
 fn socket_mark_closed(socket_ptr: *mut u8) {
     if socket_ptr.is_null() {
@@ -387,7 +387,7 @@ fn socket_mark_closed(socket_ptr: *mut u8) {
     socket.closed.store(true, AtomicOrdering::Relaxed);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub(crate) fn socket_ref_inc(socket_ptr: *mut u8) {
     if socket_ptr.is_null() {
         return;
@@ -396,7 +396,7 @@ pub(crate) fn socket_ref_inc(socket_ptr: *mut u8) {
     socket.refs.fetch_add(1, AtomicOrdering::AcqRel);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub(crate) fn socket_ref_dec(_py: &PyToken<'_>, socket_ptr: *mut u8) {
     if socket_ptr.is_null() {
         return;
@@ -424,7 +424,7 @@ pub(crate) enum SendData {
     Owned(Vec<u8>),
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub(crate) fn io_wait_release_socket(_py: &PyToken<'_>, future_ptr: *mut u8) {
     if future_ptr.is_null() {
         return;
@@ -558,20 +558,20 @@ fn collect_sendmsg_payload(_py: &PyToken<'_>, buffers_bits: u64) -> Result<Vec<V
 
 type AncillaryItem = (i32, i32, Vec<u8>);
 
-#[cfg(all(not(target_arch = "wasm32"), not(unix)))]
+#[cfg(all(molt_has_net_io, not(unix)))]
 #[derive(Clone)]
 struct PendingAncillaryChunk {
     remaining: usize,
     items: Vec<AncillaryItem>,
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(unix)))]
+#[cfg(all(molt_has_net_io, not(unix)))]
 fn socket_peer_map() -> &'static Mutex<HashMap<SocketFd, SocketFd>> {
     static MAP: OnceLock<Mutex<HashMap<SocketFd, SocketFd>>> = OnceLock::new();
     MAP.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(unix)))]
+#[cfg(all(molt_has_net_io, not(unix)))]
 fn socket_ancillary_queue_map() -> &'static Mutex<HashMap<SocketFd, VecDeque<PendingAncillaryChunk>>>
 {
     static MAP: OnceLock<Mutex<HashMap<SocketFd, VecDeque<PendingAncillaryChunk>>>> =
@@ -579,14 +579,14 @@ fn socket_ancillary_queue_map() -> &'static Mutex<HashMap<SocketFd, VecDeque<Pen
     MAP.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(unix)))]
+#[cfg(all(molt_has_net_io, not(unix)))]
 fn socket_register_peer_pair(left: SocketFd, right: SocketFd) {
     let mut map = socket_peer_map().lock().unwrap();
     map.insert(left, right);
     map.insert(right, left);
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(unix)))]
+#[cfg(all(molt_has_net_io, not(unix)))]
 fn socket_unregister_peer_state(fd: SocketFd) {
     let peer = socket_peer_map().lock().unwrap().remove(&fd);
     if let Some(peer_fd) = peer {
@@ -595,12 +595,12 @@ fn socket_unregister_peer_state(fd: SocketFd) {
     socket_ancillary_queue_map().lock().unwrap().remove(&fd);
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(unix)))]
+#[cfg(all(molt_has_net_io, not(unix)))]
 fn socket_peer_available(fd: SocketFd) -> bool {
     socket_peer_map().lock().unwrap().contains_key(&fd)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(unix)))]
+#[cfg(all(molt_has_net_io, not(unix)))]
 fn socket_enqueue_stream_ancillary(
     fd: SocketFd,
     data_len: usize,
@@ -625,7 +625,7 @@ fn socket_enqueue_stream_ancillary(
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(unix)))]
+#[cfg(all(molt_has_net_io, not(unix)))]
 fn socket_take_stream_ancillary(fd: SocketFd, data_len: usize, peek: bool) -> Vec<AncillaryItem> {
     if data_len == 0 {
         return Vec::new();
@@ -671,7 +671,7 @@ fn socket_take_stream_ancillary(fd: SocketFd, data_len: usize, peek: bool) -> Ve
     out
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(unix)))]
+#[cfg(all(molt_has_net_io, not(unix)))]
 fn socket_clip_ancillary_for_bufsize(
     items: Vec<AncillaryItem>,
     ancbufsize: i64,
@@ -1543,7 +1543,7 @@ fn unix_path_from_bits(_py: &PyToken<'_>, addr_bits: u64) -> Result<std::path::P
     Err(format!("a bytes-like object is required, not '{obj_type}'"))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn sockaddr_from_bits(_py: &PyToken<'_>, addr_bits: u64, family: i32) -> Result<SockAddr, String> {
     if family == libc::AF_UNIX {
         #[cfg(unix)]
@@ -1622,7 +1622,7 @@ fn sockaddr_from_bits(_py: &PyToken<'_>, addr_bits: u64, family: i32) -> Result<
     Err("unsupported address family".to_string())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn sockaddr_to_bits(_py: &PyToken<'_>, addr: &SockAddr) -> u64 {
     if let Some(sockaddr) = addr.as_socket() {
         match sockaddr {
@@ -1794,7 +1794,7 @@ fn decode_sockaddr(_py: &PyToken<'_>, buf: &[u8]) -> Result<u64, String> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn socket_wait_ready(
     _py: &PyToken<'_>,
     socket_ptr: *mut u8,
@@ -1895,13 +1895,13 @@ fn socket_wait_ready(_py: &PyToken<'_>, handle: i64, events: u32) -> Result<(), 
     Err(std::io::Error::from_raw_os_error(-rc))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn os_string_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<OsString, String> {
     let path = path_from_bits(_py, bits)?;
     Ok(path.into_os_string())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub(crate) fn argv_from_bits(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<OsString>, String> {
     let obj = obj_from_bits(args_bits);
     if obj.is_none() {
@@ -1921,7 +1921,7 @@ pub(crate) fn argv_from_bits(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<Os
     Ok(vec![os_string_from_bits(_py, args_bits)?])
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub(crate) fn env_from_bits(
     _py: &PyToken<'_>,
     env_bits: u64,
@@ -1967,7 +1967,7 @@ fn libc_socket(fd: RawSocket) -> LibcSocket {
     fd as LibcSocket
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn connect_raw_socket(fd: SocketFd, sockaddr: &SockAddr) -> std::io::Result<()> {
     let ret = unsafe {
         libc::connect(
@@ -1983,7 +1983,7 @@ fn connect_raw_socket(fd: SocketFd, sockaddr: &SockAddr) -> std::io::Result<()> 
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn sock_addr_from_storage(storage: libc::sockaddr_storage, len: libc::socklen_t) -> SockAddr {
     let mut addr_storage = SockAddrStorage::zeroed();
     unsafe {
@@ -2074,7 +2074,7 @@ fn take_error_mio<T: AsRawSocket>(sock: &T) -> std::io::Result<Option<std::io::E
     take_error_raw(sock.as_raw_socket())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_new(
     family_bits: u64,
@@ -2279,7 +2279,7 @@ pub extern "C" fn molt_socket_new(
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -2308,7 +2308,7 @@ pub unsafe extern "C" fn molt_socket_close(sock_bits: u64) -> u64 {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -2328,7 +2328,7 @@ pub unsafe extern "C" fn molt_socket_drop(sock_bits: u64) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -2366,7 +2366,7 @@ pub extern "C" fn molt_socket_clone(_sock_bits: u64) -> u64 {
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -2409,7 +2409,7 @@ pub unsafe extern "C" fn molt_socket_fileno(sock_bits: u64) -> u64 {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -2427,7 +2427,7 @@ pub unsafe extern "C" fn molt_socket_gettimeout(sock_bits: u64) -> u64 {
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -2458,7 +2458,7 @@ pub unsafe extern "C" fn molt_socket_settimeout(sock_bits: u64, timeout_bits: u6
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -2478,7 +2478,7 @@ pub unsafe extern "C" fn molt_socket_setblocking(sock_bits: u64, flag_bits: u64)
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -2498,7 +2498,7 @@ pub unsafe extern "C" fn molt_socket_getblocking(sock_bits: u64) -> u64 {
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -2558,7 +2558,7 @@ pub unsafe extern "C" fn molt_socket_bind(sock_bits: u64, addr_bits: u64) -> u64
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -2643,7 +2643,7 @@ pub unsafe extern "C" fn molt_socket_listen(sock_bits: u64, backlog_bits: u64) -
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -2754,7 +2754,7 @@ pub unsafe extern "C" fn molt_socket_accept(sock_bits: u64) -> u64 {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -2962,7 +2962,7 @@ pub unsafe extern "C" fn molt_socket_connect(sock_bits: u64, addr_bits: u64) -> 
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -3173,7 +3173,7 @@ pub unsafe extern "C" fn molt_socket_connect_ex(sock_bits: u64, addr_bits: u64) 
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -3274,7 +3274,7 @@ pub unsafe extern "C" fn molt_socket_recv(sock_bits: u64, size_bits: u64, flags_
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -3418,7 +3418,7 @@ pub unsafe extern "C" fn molt_socket_recv_into(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -3505,7 +3505,7 @@ pub unsafe extern "C" fn molt_socket_send(sock_bits: u64, data_bits: u64, flags_
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -3591,7 +3591,7 @@ pub unsafe extern "C" fn molt_socket_sendall(
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -3684,7 +3684,7 @@ pub unsafe extern "C" fn molt_socket_sendto(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -3770,7 +3770,7 @@ pub unsafe extern "C" fn molt_socket_recvfrom(
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -3938,7 +3938,7 @@ pub unsafe extern "C" fn molt_socket_recvfrom_into(
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -4153,7 +4153,7 @@ pub unsafe extern "C" fn molt_socket_sendmsg(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -4331,7 +4331,7 @@ pub unsafe extern "C" fn molt_socket_recvmsg(
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -4518,7 +4518,7 @@ pub unsafe extern "C" fn molt_socket_recvmsg_into(
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -4552,7 +4552,7 @@ pub unsafe extern "C" fn molt_socket_shutdown(sock_bits: u64, how_bits: u64) -> 
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -4593,7 +4593,7 @@ pub unsafe extern "C" fn molt_socket_getsockname(sock_bits: u64) -> u64 {
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -4634,7 +4634,7 @@ pub unsafe extern "C" fn molt_socket_getpeername(sock_bits: u64) -> u64 {
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -4709,7 +4709,7 @@ pub unsafe extern "C" fn molt_socket_setsockopt(
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -4788,7 +4788,7 @@ pub unsafe extern "C" fn molt_socket_getsockopt(
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -6427,14 +6427,14 @@ pub extern "C" fn molt_socket_detach(_sock_bits: u64) -> u64 {
     })
 }
 
-#[cfg(all(not(target_arch = "wasm32"), windows))]
+#[cfg(all(molt_has_net_io, windows))]
 fn socket_close_raw_windows(raw: RawSocket) {
     unsafe {
         drop(Socket::from_raw_socket(raw));
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), windows))]
+#[cfg(all(molt_has_net_io, windows))]
 fn socketpair_windows_loopback_raw(family: i32) -> Result<(RawSocket, RawSocket), std::io::Error> {
     let loopback = if family == libc::AF_INET6 {
         "[::1]:0"
@@ -6448,7 +6448,7 @@ fn socketpair_windows_loopback_raw(family: i32) -> Result<(RawSocket, RawSocket)
     Ok((client.into_raw_socket(), server.into_raw_socket()))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -6674,7 +6674,7 @@ pub extern "C" fn molt_socketpair(_family_bits: u64, _type_bits: u64, _proto_bit
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -7065,7 +7065,7 @@ pub extern "C" fn molt_socket_getaddrinfo(
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -7180,7 +7180,7 @@ pub extern "C" fn molt_socket_getnameinfo(_addr_bits: u64, _flags_bits: u64) -> 
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -7245,7 +7245,7 @@ fn socket_af_unspec() -> i32 {
     {
         0
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(molt_has_net_io)]
     {
         libc::AF_UNSPEC
     }
@@ -7271,7 +7271,7 @@ fn socket_getaddrinfo_call(
             flags_bits,
         )
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(molt_has_net_io)]
     {
         unsafe {
             molt_socket_getaddrinfo(
@@ -7292,7 +7292,7 @@ fn socket_gethostname_call() -> u64 {
     {
         molt_socket_gethostname()
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(molt_has_net_io)]
     {
         unsafe { molt_socket_gethostname() }
     }
@@ -7618,7 +7618,7 @@ pub extern "C" fn molt_socket_gethostbyaddr(host_bits: u64) -> u64 {
         let mut resolved = host.clone();
 
         if parsed_host_ip.is_some() {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(molt_has_net_io)]
             {
                 let host_ptr = alloc_string(_py, host.as_bytes());
                 if host_ptr.is_null() {
@@ -7849,7 +7849,7 @@ pub extern "C" fn molt_socket_getfqdn(name_bits: u64) -> u64 {
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -7931,7 +7931,7 @@ pub extern "C" fn molt_socket_getservbyname(_name_bits: u64, _proto_bits: u64) -
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -8024,7 +8024,7 @@ pub extern "C" fn molt_socket_getservbyport(_port_bits: u64, _proto_bits: u64) -
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -8096,7 +8096,7 @@ pub extern "C" fn molt_socket_getprotobyname(name_bits: u64) -> u64 {
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -8194,7 +8194,7 @@ pub extern "C" fn molt_socket_inet_pton(_family_bits: u64, _address_bits: u64) -
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -8403,7 +8403,7 @@ pub extern "C" fn molt_socket_ntohl(value_bits: u64) -> u64 {
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_has_ipv6() -> u64 {
     crate::with_gil_entry!(_py, {
@@ -8681,7 +8681,7 @@ pub extern "C" fn molt_socket_cmsg_space(datalen_bits: u64) -> u64 {
 
 // --- has_dualstack_ipv6 ---
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_has_dualstack_ipv6() -> u64 {
     crate::with_gil_entry!(_py, {

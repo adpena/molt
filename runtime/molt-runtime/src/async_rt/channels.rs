@@ -1,7 +1,7 @@
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded, unbounded};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use std::sync::{Arc, Mutex, OnceLock};
 
 use super::poll::ws_wait_poll_fn_addr;
@@ -19,31 +19,31 @@ use crate::{
 };
 #[cfg(target_arch = "wasm32")]
 use crate::{molt_db_exec_host, molt_db_query_host};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use mio::net::TcpStream as MioTcpStream;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use rustls::pki_types::{CertificateDer, ServerName};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use rustls::{
     ClientConfig, ClientConnection, RootCertStore, ServerConfig, ServerConnection, StreamOwned,
 };
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use std::fs::File;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use std::io::{BufReader, Read, Write};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use std::net::TcpStream;
-#[cfg(all(not(target_arch = "wasm32"), unix))]
+#[cfg(all(molt_has_net_io, unix))]
 use std::os::unix::io::{FromRawFd, RawFd};
-#[cfg(all(not(target_arch = "wasm32"), unix))]
+#[cfg(all(molt_has_net_io, unix))]
 use std::os::unix::net::UnixStream;
-#[cfg(all(not(target_arch = "wasm32"), windows))]
+#[cfg(all(molt_has_net_io, windows))]
 use std::os::windows::io::{FromRawSocket, RawSocket};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use tungstenite::stream::MaybeTlsStream;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use tungstenite::{Message, WebSocket, connect};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use webpki_roots::TLS_SERVER_ROOTS;
 
 // --- Channels ---
@@ -84,7 +84,7 @@ pub struct MoltWebSocket {
     pub hook_ctx: *mut u8,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 struct NativeWebSocket {
     socket: WebSocket<MaybeTlsStream<TcpStream>>,
     pending_pong: Option<Vec<u8>>,
@@ -92,7 +92,7 @@ struct NativeWebSocket {
     poll_stream_state: WsPollStreamState,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum WsPollStreamState {
     Unregistered,
@@ -100,13 +100,13 @@ enum WsPollStreamState {
     Registered,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 struct WsPollStream {
     stream: MioTcpStream,
     ctx: *const Mutex<NativeWebSocket>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 struct NativeTlsStream {
     stream: NativeTlsEndpoint,
     pending_write: Vec<u8>,
@@ -114,7 +114,7 @@ struct NativeTlsStream {
     closed: bool,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 enum NativeTlsEndpoint {
     ClientTcp(StreamOwned<ClientConnection, TcpStream>),
     #[cfg(unix)]
@@ -342,7 +342,7 @@ pub unsafe extern "C" fn molt_chan_recv_blocking(chan_handle: ChanHandle) -> i64
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
@@ -971,7 +971,7 @@ fn ws_ref_dec(_py: &PyToken<'_>, ws_ptr: *mut MoltWebSocket) {
         }
         ws.closed.store(true, AtomicOrdering::Relaxed);
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(molt_has_net_io)]
     {
         runtime_state(_py)
             .io_poller()
@@ -1067,7 +1067,7 @@ fn ws_host_handle(ws: &MoltWebSocket) -> Option<i64> {
     if handle <= 0 { None } else { Some(handle) }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn ws_set_nonblocking(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> std::io::Result<()> {
     match ws.get_mut() {
         MaybeTlsStream::Plain(stream) => {
@@ -1081,12 +1081,12 @@ fn ws_set_nonblocking(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> std::io:
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn ws_is_native(ws: &MoltWebSocket) -> bool {
     ws.is_native && !ws.hook_ctx.is_null()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn ws_prepare_poll_stream(ws: &MoltWebSocket) -> Option<WsPollStream> {
     if !ws_is_native(ws) {
         return None;
@@ -1125,7 +1125,7 @@ fn ws_prepare_poll_stream(ws: &MoltWebSocket) -> Option<WsPollStream> {
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn ws_commit_poll_stream(ctx: *const Mutex<NativeWebSocket>, registered: bool) {
     if ctx.is_null() {
         return;
@@ -1140,7 +1140,7 @@ fn ws_commit_poll_stream(ctx: *const Mutex<NativeWebSocket>, registered: bool) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn ws_is_would_block(err: &tungstenite::Error) -> bool {
     matches!(
         err,
@@ -1149,7 +1149,7 @@ fn ws_is_would_block(err: &tungstenite::Error) -> bool {
     )
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn ws_flush_pending_pong(ws: &mut NativeWebSocket) -> Result<(), Box<tungstenite::Error>> {
     if let Some(payload) = ws.pending_pong.take() {
         match ws.socket.send(Message::Pong(payload.clone().into())) {
@@ -1166,7 +1166,7 @@ fn ws_flush_pending_pong(ws: &mut NativeWebSocket) -> Result<(), Box<tungstenite
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 extern "C" fn ws_send_native_hook(ctx: *mut u8, data_ptr: *const u8, len: usize) -> i64 {
     if ctx.is_null() {
         return pending_bits_i64();
@@ -1197,7 +1197,7 @@ extern "C" fn ws_send_native_hook(ctx: *mut u8, data_ptr: *const u8, len: usize)
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 extern "C" fn ws_recv_native_hook(ctx: *mut u8) -> i64 {
     if ctx.is_null() {
         return MoltObject::none().bits() as i64;
@@ -1261,7 +1261,7 @@ extern "C" fn ws_recv_native_hook(ctx: *mut u8) -> i64 {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 extern "C" fn ws_close_native_hook(ctx: *mut u8) {
     if ctx.is_null() {
         return;
@@ -1274,12 +1274,12 @@ extern "C" fn ws_close_native_hook(ctx: *mut u8) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn tls_is_would_block(err: &std::io::Error) -> bool {
     err.kind() == std::io::ErrorKind::WouldBlock
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn tls_flush_pending_bytes(state: &mut NativeTlsStream) -> Result<bool, std::io::Error> {
     while state.pending_write_offset < state.pending_write.len() {
         let written = tls_endpoint_write(
@@ -1296,7 +1296,7 @@ fn tls_flush_pending_bytes(state: &mut NativeTlsStream) -> Result<bool, std::io:
     Ok(true)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn tls_endpoint_write(
     endpoint: &mut NativeTlsEndpoint,
     payload: &[u8],
@@ -1311,7 +1311,7 @@ fn tls_endpoint_write(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn tls_endpoint_read(
     endpoint: &mut NativeTlsEndpoint,
     payload: &mut [u8],
@@ -1326,7 +1326,7 @@ fn tls_endpoint_read(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn tls_endpoint_set_nonblocking(
     endpoint: &mut NativeTlsEndpoint,
     nonblocking: bool,
@@ -1341,7 +1341,7 @@ fn tls_endpoint_set_nonblocking(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn tls_endpoint_shutdown(endpoint: &mut NativeTlsEndpoint) -> Result<(), std::io::Error> {
     match endpoint {
         NativeTlsEndpoint::ClientTcp(stream) => stream.sock.shutdown(std::net::Shutdown::Both),
@@ -1353,7 +1353,7 @@ fn tls_endpoint_shutdown(endpoint: &mut NativeTlsEndpoint) -> Result<(), std::io
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn tls_wrap_endpoint_native(mut endpoint: NativeTlsEndpoint) -> *mut u8 {
     if tls_endpoint_set_nonblocking(&mut endpoint, true).is_err() {
         return std::ptr::null_mut();
@@ -1378,7 +1378,7 @@ fn tls_wrap_endpoint_native(mut endpoint: NativeTlsEndpoint) -> *mut u8 {
     stream_ptr
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 extern "C" fn tls_stream_send_native_hook(ctx: *mut u8, data_ptr: *const u8, len: usize) -> i64 {
     if ctx.is_null() {
         return pending_bits_i64();
@@ -1422,7 +1422,7 @@ extern "C" fn tls_stream_send_native_hook(ctx: *mut u8, data_ptr: *const u8, len
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 extern "C" fn tls_stream_recv_native_hook(ctx: *mut u8) -> i64 {
     if ctx.is_null() {
         return MoltObject::none().bits() as i64;
@@ -1454,7 +1454,7 @@ extern "C" fn tls_stream_recv_native_hook(ctx: *mut u8) -> i64 {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 extern "C" fn tls_stream_close_native_hook(ctx: *mut u8) {
     if ctx.is_null() {
         return;
@@ -1465,7 +1465,7 @@ extern "C" fn tls_stream_close_native_hook(ctx: *mut u8) {
     let _ = tls_endpoint_shutdown(&mut state.stream);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn tls_client_wrap_stream_native(tcp: TcpStream, server_name: &str) -> *mut u8 {
     let mut roots = RootCertStore::empty();
     roots.extend(TLS_SERVER_ROOTS.iter().cloned());
@@ -1497,7 +1497,7 @@ fn tls_client_wrap_stream_native(tcp: TcpStream, server_name: &str) -> *mut u8 {
     tls_wrap_endpoint_native(NativeTlsEndpoint::ClientTcp(stream))
 }
 
-#[cfg(all(not(target_arch = "wasm32"), unix))]
+#[cfg(all(molt_has_net_io, unix))]
 fn tls_client_wrap_unix_stream_native(unix: UnixStream, server_name: &str) -> *mut u8 {
     let mut roots = RootCertStore::empty();
     roots.extend(TLS_SERVER_ROOTS.iter().cloned());
@@ -1528,7 +1528,7 @@ fn tls_client_wrap_unix_stream_native(unix: UnixStream, server_name: &str) -> *m
     tls_wrap_endpoint_native(NativeTlsEndpoint::ClientUnix(stream))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn tls_client_connect_native(
     host: &str,
     port: u16,
@@ -1548,16 +1548,16 @@ fn tls_client_connect_native(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 type TlsServerConfigCache = Mutex<HashMap<(String, String), Arc<ServerConfig>>>;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn tls_server_config_cache() -> &'static Mutex<HashMap<(String, String), Arc<ServerConfig>>> {
     static CACHE: OnceLock<TlsServerConfigCache> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn tls_server_load_config(certfile: &str, keyfile: &str) -> Result<Arc<ServerConfig>, ()> {
     let cache_key = (certfile.to_string(), keyfile.to_string());
     {
@@ -1594,7 +1594,7 @@ fn tls_server_load_config(certfile: &str, keyfile: &str) -> Result<Arc<ServerCon
     Ok(config)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn tls_server_wrap_stream_native(tcp: TcpStream, config: Arc<ServerConfig>) -> *mut u8 {
     let stream = {
         let _release = GilReleaseGuard::new();
@@ -1615,7 +1615,7 @@ fn tls_server_wrap_stream_native(tcp: TcpStream, config: Arc<ServerConfig>) -> *
     tls_wrap_endpoint_native(NativeTlsEndpoint::ServerTcp(stream))
 }
 
-#[cfg(all(not(target_arch = "wasm32"), unix))]
+#[cfg(all(molt_has_net_io, unix))]
 fn tls_server_wrap_unix_stream_native(unix: UnixStream, config: Arc<ServerConfig>) -> *mut u8 {
     let stream = {
         let _release = GilReleaseGuard::new();
@@ -1635,7 +1635,7 @@ fn tls_server_wrap_unix_stream_native(unix: UnixStream, config: Arc<ServerConfig
     tls_wrap_endpoint_native(NativeTlsEndpoint::ServerUnix(stream))
 }
 
-#[cfg(all(not(target_arch = "wasm32"), unix))]
+#[cfg(all(molt_has_net_io, unix))]
 fn tls_fd_socket_domain(raw_fd: RawFd) -> Option<i32> {
     let mut addr: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
@@ -1653,7 +1653,7 @@ fn tls_fd_socket_domain(raw_fd: RawFd) -> Option<i32> {
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), unix))]
+#[cfg(all(molt_has_net_io, unix))]
 fn tls_server_from_fd_native(raw_fd: i64, certfile: &str, keyfile: &str) -> *mut u8 {
     if raw_fd < 0 || raw_fd > i64::from(i32::MAX) {
         return std::ptr::null_mut();
@@ -1675,7 +1675,7 @@ fn tls_server_from_fd_native(raw_fd: i64, certfile: &str, keyfile: &str) -> *mut
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), windows))]
+#[cfg(all(molt_has_net_io, windows))]
 fn tls_server_from_fd_native(raw_fd: i64, certfile: &str, keyfile: &str) -> *mut u8 {
     if raw_fd < 0 {
         return std::ptr::null_mut();
@@ -1687,7 +1687,7 @@ fn tls_server_from_fd_native(raw_fd: i64, certfile: &str, keyfile: &str) -> *mut
     tls_server_wrap_stream_native(tcp, config)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn tls_server_ssl_attr_string(
     _py: &PyToken<'_>,
     ssl_bits: u64,
@@ -1722,7 +1722,7 @@ fn tls_server_ssl_attr_string(
     Ok(Some(value))
 }
 
-#[cfg(all(not(target_arch = "wasm32"), unix))]
+#[cfg(all(molt_has_net_io, unix))]
 fn tls_client_from_fd_native(raw_fd: i64, server_name: &str) -> *mut u8 {
     if raw_fd < 0 || raw_fd > i64::from(i32::MAX) {
         return std::ptr::null_mut();
@@ -1741,7 +1741,7 @@ fn tls_client_from_fd_native(raw_fd: i64, server_name: &str) -> *mut u8 {
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), windows))]
+#[cfg(all(molt_has_net_io, windows))]
 fn tls_client_from_fd_native(raw_fd: i64, server_name: &str) -> *mut u8 {
     if raw_fd < 0 {
         return std::ptr::null_mut();
@@ -1750,7 +1750,7 @@ fn tls_client_from_fd_native(raw_fd: i64, server_name: &str) -> *mut u8 {
     tls_client_wrap_stream_native(tcp, server_name)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn ws_connect_native(url_ptr: *const u8, url_len: usize) -> *mut u8 {
     if url_ptr.is_null() && url_len != 0 {
         return std::ptr::null_mut();
@@ -1798,12 +1798,12 @@ fn ws_connect_native(url_ptr: *const u8, url_len: usize) -> *mut u8 {
     ws_ptr
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 fn ws_url_has_supported_scheme(url: &str) -> bool {
     url.starts_with("ws://") || url.starts_with("wss://")
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub(crate) fn ws_wait_release(_py: &PyToken<'_>, future_ptr: *mut u8) {
     if future_ptr.is_null() {
         return;
@@ -1920,7 +1920,7 @@ pub(crate) fn has_capability(_py: &PyToken<'_>, name: &str) -> bool {
     caps.contains(name)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass runtime-encoded values; returned handle is owned by the runtime.
 #[unsafe(no_mangle)]
@@ -1987,7 +1987,7 @@ pub extern "C" fn molt_asyncio_tls_client_connect_new(
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass a valid socket fd encoded as runtime int bits.
 #[unsafe(no_mangle)]
@@ -2047,7 +2047,7 @@ pub extern "C" fn molt_asyncio_tls_client_from_fd_new(
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_tls_server_payload(ssl_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -2125,7 +2125,7 @@ pub extern "C" fn molt_asyncio_tls_server_payload(_ssl_bits: u64) -> u64 {
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass a valid socket fd and certificate/key path string bits.
 #[unsafe(no_mangle)]
@@ -2180,7 +2180,7 @@ pub extern "C" fn molt_asyncio_tls_server_from_fd_new(
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `url_ptr` is valid for `url_len` bytes and `out` is writable.
@@ -2327,7 +2327,7 @@ pub unsafe extern "C" fn molt_ws_connect(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -2418,7 +2418,7 @@ pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits:
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid ws-wait awaitable object bits value.
@@ -2718,7 +2718,7 @@ fn db_query_impl(
     {
         unsafe { molt_db_query_host(req_ptr as u64, len_bits, out as u64, token_id) }
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(molt_has_net_io)]
     {
         let hook_ptr = DB_QUERY_HOOK.load(AtomicOrdering::Acquire);
         if hook_ptr == 0 {
@@ -2756,7 +2756,7 @@ fn db_exec_impl(
     {
         unsafe { molt_db_exec_host(req_ptr as u64, len_bits, out as u64, token_id) }
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(molt_has_net_io)]
     {
         let hook_ptr = DB_EXEC_HOOK.load(AtomicOrdering::Acquire);
         if hook_ptr == 0 {
@@ -2931,7 +2931,7 @@ pub unsafe extern "C" fn molt_ws_close(ws_bits: u64) {
         if let Some(hook) = ws.close_hook {
             hook(ws.hook_ctx);
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(molt_has_net_io)]
         {
             runtime_state(_py)
                 .io_poller()
