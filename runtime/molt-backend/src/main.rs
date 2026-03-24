@@ -1068,6 +1068,10 @@ fn main() -> io::Result<()> {
                 let _ = std::fs::create_dir_all(&tmp_dir);
 
                 let mut batch_idx = 0usize;
+                // Pre-collect all function names for cross-batch import resolution.
+                let all_func_names: std::collections::BTreeSet<String> =
+                    all_functions.iter().map(|f| f.name.clone()).collect();
+
                 while !all_functions.is_empty() {
                     let remaining = all_functions.len();
                     let take = remaining.min(batch_size);
@@ -1087,6 +1091,7 @@ fn main() -> io::Result<()> {
                     // for batched compilation — those were already run on the
                     // full IR above. Each batch only does Cranelift codegen.
                     backend.skip_ir_passes = true;
+                    backend.external_function_names = all_func_names.clone();
                     let obj_bytes = backend.compile(batch_ir);
 
                     let batch_path = tmp_dir.join(format!("batch_{batch_idx}.o"));
