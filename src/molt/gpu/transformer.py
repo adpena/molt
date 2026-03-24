@@ -74,14 +74,17 @@ class MultiHeadAttention:
 def apply_causal_mask(scores: Tensor, seq_len: int) -> Tensor:
     """Apply causal (lower-triangular) mask to attention scores."""
     data = scores.to_list()
-    if isinstance(data[0], list):
-        for i in range(seq_len):
-            for j in range(seq_len):
+    if isinstance(data, list) and data and isinstance(data[0], list):
+        for i in range(min(seq_len, len(data))):
+            for j in range(min(seq_len, len(data[i]))):
                 if j > i:
                     data[i][j] = -1e9
-        return Tensor(data, shape=scores.shape)
+        # Flatten nested list for Tensor constructor
+        flat = []
+        for row in data:
+            flat.extend(row)
+        return Tensor(flat, shape=scores.shape)
     else:
-        # 1D case
         return scores
 
 
