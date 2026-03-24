@@ -705,3 +705,35 @@ pub extern "C" fn __molt_math_fill_os_random(buf_ptr: *mut u8, buf_len: usize) -
         Err(_) => 0,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Container / object protocol helpers (used by math + statistics + random)
+// ---------------------------------------------------------------------------
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_dict_new(capacity_bits: u64) -> u64 {
+    crate::builtins::containers_alloc::molt_dict_new(capacity_bits)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_hash_builtin(val_bits: u64) -> u64 {
+    crate::object::ops::molt_hash_builtin(val_bits)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_slice_new(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
+    crate::object::ops::molt_slice_new(start_bits, stop_bits, step_bits)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_index(obj_bits: u64, key_bits: u64) -> u64 {
+    crate::object::ops::molt_index(obj_bits, key_bits)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8 {
+    crate::with_gil_entry!(_py, {
+        let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
+        crate::alloc_bytes(_py, data)
+    })
+}
