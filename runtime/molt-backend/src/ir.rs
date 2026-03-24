@@ -9,6 +9,7 @@ use serde_json::Value as JsonValue;
 use std::collections::{BTreeSet, VecDeque};
 
 #[derive(Debug, Default, Clone, Deserialize)]
+#[cfg_attr(feature = "cbor", derive(serde::Serialize))]
 #[serde(default)]
 pub struct PgoProfileIR {
     pub version: Option<String>,
@@ -17,12 +18,14 @@ pub struct PgoProfileIR {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "cbor", derive(serde::Serialize))]
 pub struct SimpleIR {
     pub functions: Vec<FunctionIR>,
     pub profile: Option<PgoProfileIR>,
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "cbor", derive(serde::Serialize))]
 pub struct FunctionIR {
     pub name: String,
     pub params: Vec<String>,
@@ -31,6 +34,7 @@ pub struct FunctionIR {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(feature = "cbor", derive(serde::Serialize))]
 #[serde(default)]
 pub struct OpIR {
     pub kind: String,
