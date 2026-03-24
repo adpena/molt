@@ -361,4 +361,108 @@ mod tests {
             .any(|o| matches!(o.kind.as_str(), "ret" | "ret_void" | "jump" | "br_if"));
         assert!(has_term, "output must contain a terminator op, got: {:?}", result);
     }
+
+    // ---------------------------------------------------------------------------
+    // Test 16: check_exception label ID preserved through round-trip
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_check_exception_label_id() {
+        // Simulate a try/except pattern:
+        //   call "foo" → result
+        //   check_exception(value=100)  ← handler label ID
+        //   ret_void
+        //   label(100)                  ← exception handler
+        //   ret_void
+        let ops = vec![
+            OpIR {
+                kind: "call".to_string(),
+                out: Some("result".into()),
+                s_value: Some("foo".into()),
+                value: Some(0),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "check_exception".to_string(),
+                out: Some("exc".into()),
+                value: Some(100),
+                ..OpIR::default()
+            },
+            op("ret_void"),
+            op_val("label", 100),
+            op("ret_void"),
+        ];
+        let result = roundtrip(ops);
+
+        // The check_exception op must have a value that matches a label in the output.
+        let check_exc = result.iter().find(|o| o.kind == "check_exception");
+        assert!(check_exc.is_some(), "check_exception must survive round-trip");
+        let exc_target = check_exc.unwrap().value.expect("check_exception must have a value");
+
+        let label_vals: Vec<i64> = result
+            .iter()
+            .filter(|o| o.kind == "label")
+            .filter_map(|o| o.value)
+            .collect();
+        assert!(
+            label_vals.contains(&exc_target),
+            "check_exception target {} must match a label value in output. Labels: {:?}",
+            exc_target,
+            label_vals
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test 17: passthrough ops preserve original kind through round-trip
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_passthrough_preserves_kind() {
+        // Use an op kind the native backend handles but TIR OpCode doesn't know.
+        // The output is used by `ret` so DCE doesn't remove it.
+        let ops = vec![
+            OpIR {
+                kind: "list_new".to_string(),
+                out: Some("lst".into()),
+                value: Some(0),
+                ..OpIR::default()
+            },
+            op_args("ret", &["lst"]),
+        ];
+        let result = roundtrip(ops);
+
+        let list_new = result.iter().find(|o| o.kind == "list_new");
+        assert!(
+            list_new.is_some(),
+            "passthrough op 'list_new' must survive round-trip. Got: {:?}",
+            result.iter().map(|o| &o.kind).collect::<Vec<_>>()
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test 18: passthrough ops preserve all fields
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_passthrough_preserves_fields() {
+        // The output is used by `ret` so DCE doesn't remove it.
+        let ops = vec![
+            OpIR {
+                kind: "dict_set".to_string(),
+                out: Some("res".into()),
+                args: Some(vec!["res".into()]),
+                s_value: Some("helper".into()),
+                value: Some(42),
+                ..OpIR::default()
+            },
+            op_args("ret", &["res"]),
+        ];
+        let result = roundtrip(ops);
+
+        let dict_set = result.iter().find(|o| o.kind == "dict_set");
+        assert!(dict_set.is_some(), "dict_set must survive round-trip");
+        let ds = dict_set.unwrap();
+        assert_eq!(ds.value, Some(42), "value field must be preserved");
+        assert_eq!(ds.s_value.as_deref(), Some("helper"), "s_value field must be preserved");
+    }
 }

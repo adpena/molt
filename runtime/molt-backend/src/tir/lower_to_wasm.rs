@@ -639,36 +639,34 @@ fn emit_op(ctx: &mut LowerCtx, op: &super::ops::TirOp) {
         }
 
         // --- Exception / Generator / SCF / Deopt — emit runtime calls ---
+        // NOTE: TIR lowering does not yet have access to the runtime import
+        // index map, so these ops emit `unreachable` as a placeholder.  The
+        // main WASM backend (wasm.rs) handles these ops via the full import
+        // table; TIR-lowered functions currently only cover type-specialized
+        // arithmetic paths.
         OpCode::Raise => {
-            // Call molt_raise runtime function
-            if let Some(&func_idx) = ctx.func_indices.get("molt_raise") {
-                for &operand in &op.operands {
-                    ctx.emit_local_get(operand);
-                }
-                ctx.instructions.push(Instruction::Call(func_idx));
+            for &operand in &op.operands {
+                ctx.emit_get(operand);
+                ctx.instructions.push(Instruction::Drop);
             }
             ctx.instructions.push(Instruction::Unreachable);
         }
         OpCode::CheckException => {
-            // Call molt_check_exception runtime function
-            if let Some(&func_idx) = ctx.func_indices.get("molt_check_exception") {
-                ctx.instructions.push(Instruction::Call(func_idx));
-            }
+            // Placeholder: push a zero (no exception) for the result.
             if let Some(&result) = op.results.first() {
-                ctx.emit_local_set(result);
+                ctx.instructions.push(Instruction::I64Const(0));
+                ctx.emit_set(result);
             }
         }
         OpCode::Yield | OpCode::YieldFrom => {
-            // Generator yield: emit runtime call to molt_yield
-            let fn_name = if op.opcode == OpCode::Yield { "molt_yield" } else { "molt_yield_from" };
-            if let Some(&func_idx) = ctx.func_indices.get(fn_name) {
-                for &operand in &op.operands {
-                    ctx.emit_local_get(operand);
-                }
-                ctx.instructions.push(Instruction::Call(func_idx));
+            for &operand in &op.operands {
+                ctx.emit_get(operand);
+                ctx.instructions.push(Instruction::Drop);
             }
+            // Placeholder: push a zero for the result.
             if let Some(&result) = op.results.first() {
-                ctx.emit_local_set(result);
+                ctx.instructions.push(Instruction::I64Const(0));
+                ctx.emit_set(result);
             }
         }
         OpCode::ScfIf | OpCode::ScfFor | OpCode::ScfWhile | OpCode::ScfYield => {
@@ -676,14 +674,18 @@ fn emit_op(ctx: &mut LowerCtx, op: &super::ops::TirOp) {
             // If they reach here, emit a nop (they were already handled by block structure).
         }
         OpCode::Deopt => {
-            // Deoptimization: call molt_deopt_transfer and unreachable
-            if let Some(&func_idx) = ctx.func_indices.get("molt_deopt_transfer") {
-                for &operand in &op.operands {
-                    ctx.emit_local_get(operand);
-                }
-                ctx.instructions.push(Instruction::Call(func_idx));
+            for &operand in &op.operands {
+                ctx.emit_get(operand);
+                ctx.instructions.push(Instruction::Drop);
             }
             ctx.instructions.push(Instruction::Unreachable);
+        }
+
+        // Exception handling / state machine ops — not yet lowered through TIR.
+        OpCode::TryStart | OpCode::TryEnd
+        | OpCode::StateBlockStart | OpCode::StateBlockEnd => {
+            // These are structural markers consumed by higher-level passes.
+            // Emit a nop when they leak through to WASM lowering.
         }
     }
 }

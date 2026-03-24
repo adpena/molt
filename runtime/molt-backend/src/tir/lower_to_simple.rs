@@ -624,6 +624,23 @@ fn reverse_postorder(func: &TirFunction) -> Vec<BlockId> {
     }
 
     postorder.reverse();
+
+    // Append any blocks not reachable via normal control flow (e.g. exception
+    // handler blocks only reachable via check_exception implicit edges).
+    // These must still appear in the output so the native backend can create
+    // state_blocks for their labels.
+    if visited.len() < func.blocks.len() {
+        let mut unreachable: Vec<BlockId> = func
+            .blocks
+            .keys()
+            .filter(|bid| !visited.contains(bid))
+            .copied()
+            .collect();
+        // Sort for deterministic output.
+        unreachable.sort_by_key(|bid| bid.0);
+        postorder.extend(unreachable);
+    }
+
     postorder
 }
 

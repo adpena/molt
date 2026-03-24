@@ -133,6 +133,7 @@ pub use crate::async_rt::sockets::{
     molt_socket_gethostbyname, molt_socket_gethostbyname_ex,
     molt_socket_htonl, molt_socket_htons, molt_socket_ntohl, molt_socket_ntohs,
     molt_socket_if_indextoname, molt_socket_if_nametoindex, molt_socket_if_nameindex,
+    molt_socket_send_fds, molt_socket_recv_fds,
     molt_socket_reader_at_eof, molt_socket_reader_drop, molt_socket_reader_new, molt_socket_reader_read, molt_socket_reader_readline, molt_socket_reader_readline_limit,
 };
 

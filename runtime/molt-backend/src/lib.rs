@@ -21,6 +21,7 @@ use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_native::builder_with_options as native_isa_builder_with_options;
 #[cfg(feature = "native-backend")]
 use cranelift_object::{ObjectBuilder, ObjectModule};
+#[cfg(feature = "native-backend")]
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "native-backend")]
 use std::collections::HashSet;
@@ -1186,7 +1187,6 @@ fn parse_truthy_env(raw: &str) -> bool {
     matches!(norm.as_str(), "1" | "true" | "yes" | "on")
 }
 
-#[cfg(feature = "native-backend")]
 pub(crate) fn env_setting(var: &str) -> Option<String> {
     std::env::var(var)
         .ok()

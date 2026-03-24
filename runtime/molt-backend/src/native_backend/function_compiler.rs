@@ -8972,6 +8972,18 @@ impl SimpleBackend {
                         && args.len() == sig_arity
                         && !emit_traces;
 
+                    if std::env::var("MOLT_DEBUG_DIRECT_CALL").is_ok() {
+                        eprintln!(
+                            "call {} -> direct={} (defined={} closure={} arity_match={} traces={})",
+                            target_name,
+                            use_direct_call,
+                            defined_functions.contains(target_name),
+                            closure_functions.contains(target_name.as_str()),
+                            args.len() == sig_arity,
+                            emit_traces,
+                        );
+                    }
+
                     let res = if use_direct_call {
                         // Lightweight recursion guard (no GIL, just TLS counter).
                         let enter_ref = import_func_ref(
