@@ -16,12 +16,7 @@ def greedy_decode(model, prompt_tokens, max_new_tokens=100, eos_token_id=None):
     for _ in range(max_new_tokens):
         logits = model(tokens)
         # Get logits for the last position
-        if logits.ndim == 2:
-            last_logits = [logits._get_row(logits.shape[0] - 1)]
-        else:
-            last_logits = logits.to_list()
-            if isinstance(last_logits[0], list):
-                last_logits = last_logits[-1]
+        last_logits = get_last_logits(logits)
 
         next_token = argmax(last_logits)
         if eos_token_id is not None and next_token == eos_token_id:
