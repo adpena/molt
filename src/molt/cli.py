@@ -12342,6 +12342,9 @@ def _build_native_link_command(
     if target_triple:
         if "apple" in target_triple or "darwin" in target_triple:
             link_cmd.append("-Wl,-dead_strip")
+            # Mark only _main as an exported symbol so the linker can
+            # dead-strip all unreferenced global (no_mangle) functions.
+            link_cmd.append("-Wl,-exported_symbol,_main")
             link_cmd.append("-lc++")
         elif "linux" in target_triple:
             link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
@@ -12355,6 +12358,7 @@ def _build_native_link_command(
     else:
         if sys.platform == "darwin":
             link_cmd.append("-Wl,-dead_strip")
+            link_cmd.append("-Wl,-exported_symbol,_main")
             link_cmd.append("-lc++")
         elif sys.platform.startswith("linux"):
             link_cmd.extend(["-fdata-sections", "-ffunction-sections"])

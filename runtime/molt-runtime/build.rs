@@ -18,6 +18,18 @@ fn main() {
     }
     println!("cargo:rustc-check-cfg=cfg(molt_has_mpdec)");
 
+    // Emit `molt_has_net_io` when both non-WASM *and* stdlib_net feature are
+    // active.  This replaces hundreds of bare `cfg(not(target_arch = "wasm32"))`
+    // guards in the async-rt networking code so that omitting stdlib_net on
+    // native targets lets the linker drop mio/rustls/tungstenite/socket2.
+    println!("cargo:rustc-check-cfg=cfg(molt_has_net_io)");
+    if target_arch != "wasm32" {
+        // CARGO_FEATURE_<NAME> is set for every enabled Cargo feature.
+        if env::var("CARGO_FEATURE_STDLIB_NET").is_ok() {
+            println!("cargo:rustc-cfg=molt_has_net_io");
+        }
+    }
+
     if build_libmpdec(
         &manifest_dir,
         &out_dir,
