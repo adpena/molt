@@ -5283,8 +5283,6 @@ pub extern "C" fn molt_exception_pending_fast() -> u64 {
     }
 }
 
-#[unsafe(no_mangle)]
-
 
 /// Returns a pointer to the `last_exception_pending` AtomicBool byte.
 /// The native Cranelift backend uses this to inline the exception check
@@ -5313,6 +5311,7 @@ pub extern "C" fn molt_task_exception_pending_flag_ptr() -> u64 {
     state.task_last_exception_pending.as_ptr() as u64
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_stack_enter() -> u64 {
     crate::with_gil_entry!(_py, {
         let prev = exception_stack_baseline_get();
