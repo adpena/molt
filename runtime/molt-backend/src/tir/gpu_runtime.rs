@@ -47,6 +47,17 @@ impl CompiledKernel {
             _handle: handle,
         }
     }
+
+    /// Access the raw opaque handle bytes (used by platform-specific backends).
+    pub fn _handle_bytes(&self) -> &[u8] {
+        &self._handle
+    }
+
+    /// Return the opaque handle bytes interpreted as a UTF-8 WGSL source string,
+    /// if the bytes are valid UTF-8. Used by the `gpu-webgpu` backend.
+    pub fn wgsl_source(&self) -> Option<&str> {
+        std::str::from_utf8(&self._handle).ok()
+    }
 }
 
 /// Opaque handle to a GPU buffer.
@@ -65,6 +76,22 @@ impl GpuBufferHandle {
             platform,
             _handle: handle,
         }
+    }
+
+    /// Access the raw opaque handle bytes (used by platform-specific backends).
+    pub fn _handle_bytes(&self) -> &[u8] {
+        &self._handle
+    }
+
+    /// Return the opaque handle bytes interpreted as a little-endian u64 buffer ID.
+    /// Returns `None` if the handle is fewer than 8 bytes.
+    /// Used by the `gpu-webgpu` backend to look up the live `wgpu::Buffer`.
+    pub fn buffer_id_u64(&self) -> Option<u64> {
+        if self._handle.len() < 8 {
+            return None;
+        }
+        let bytes: [u8; 8] = self._handle[..8].try_into().ok()?;
+        Some(u64::from_le_bytes(bytes))
     }
 }
 
