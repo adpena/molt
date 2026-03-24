@@ -1429,21 +1429,39 @@ impl WasmBackend {
             let tir_dump = crate::env_setting("TIR_DUMP").as_deref() == Some("1");
             let tir_stats = crate::env_setting("TIR_OPT_STATS").as_deref() == Some("1");
             for func_ir in &mut ir.functions {
-                let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
-                crate::tir::type_refine::refine_types(&mut tir_func);
-                let stats = crate::tir::passes::run_pipeline(&mut tir_func);
-                if tir_dump {
-                    eprintln!("{}", crate::tir::printer::print_function(&tir_func));
-                }
-                if tir_stats {
-                    for s in &stats {
+                let func_name = func_ir.name.clone();
+                let original_ops = func_ir.ops.clone();
+
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
+                    crate::tir::type_refine::refine_types(&mut tir_func);
+                    let stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                    if tir_dump {
+                        eprintln!("{}", crate::tir::printer::print_function(&tir_func));
+                    }
+                    if tir_stats {
+                        for s in &stats {
+                            eprintln!(
+                                "[TIR] {}: {} changed, {} removed, {} added",
+                                s.name, s.values_changed, s.ops_removed, s.ops_added
+                            );
+                        }
+                    }
+                    crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func)
+                }));
+
+                match result {
+                    Ok(optimized_ops) => {
+                        func_ir.ops = optimized_ops;
+                    }
+                    Err(_panic) => {
                         eprintln!(
-                            "[TIR] {}: {} changed, {} removed, {} added",
-                            s.name, s.values_changed, s.ops_removed, s.ops_added
+                            "[TIR] WARNING: optimization panicked on function '{}' (WASM) — falling back to unoptimized.",
+                            func_name
                         );
+                        func_ir.ops = original_ops;
                     }
                 }
-                func_ir.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
             }
         }
         crate::inline_functions(&mut ir);
