@@ -479,18 +479,32 @@ fn intersect_dom(
     mut b: BlockId,
 ) -> BlockId {
     let rpo_of = |x: BlockId| rpo.get(&x).copied().unwrap_or(usize::MAX);
+    // Safety bound: at most N iterations where N = number of blocks.
+    // Prevents infinite loop on malformed CFG where idom chain has a cycle.
+    let max_iters = rpo.len() * 2 + 1;
+    let mut iters = 0;
     while a != b {
+        iters += 1;
+        if iters > max_iters {
+            break; // Malformed CFG — stop rather than loop forever
+        }
         while rpo_of(a) > rpo_of(b) {
             match idom.get(&a).and_then(|x| *x) {
-                Some(p) => a = p,
-                None => break,
+                Some(p) if p != a => a = p,
+                _ => break,
             }
         }
         while rpo_of(b) > rpo_of(a) {
             match idom.get(&b).and_then(|x| *x) {
-                Some(p) => b = p,
-                None => break,
+                Some(p) if p != b => b = p,
+                _ => break,
             }
+        }
+        // If neither a nor b changed, we're stuck — break to prevent infinite loop
+        let a_rpo = rpo_of(a);
+        let b_rpo = rpo_of(b);
+        if a_rpo == b_rpo && a != b {
+            break;
         }
     }
     a
