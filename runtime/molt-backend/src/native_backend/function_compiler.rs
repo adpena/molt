@@ -13061,14 +13061,20 @@ impl SimpleBackend {
                         .expect("br_if requires an active block");
 
                     let fallthrough_block = builder.create_block();
-                    // Note: In Molt IR, cond is 0 for false, !=0 for true.
-                    // But brif takes a boolean condition (i32/i8 depending on type, Cranelift uses comparison result).
-                    // We assume cond is already a boolean-like from cmp or we compare it to 0.
-                    // Wait, `cond` from `vars` is I64 (NaN-boxed or raw int).
-                    // We should check if it's truthy.
-                    // But for now let's assume the frontend emits a boolean comparison result (0 or 1).
-                    // Actually, let's play safe and check != 0.
-                    let cond_bool = builder.ins().icmp_imm(IntCC::NotEqual, *cond, 0);
+                    // cond is NaN-boxed — must call molt_is_truthy to extract
+                    // the boolean. NaN-boxed False is 0x7ffa000000000000 (nonzero),
+                    // so a raw icmp_imm(!=0) always evaluates true.
+                    let mut truthy_sig = self.module.make_signature();
+                    truthy_sig.params.push(AbiParam::new(types::I64));
+                    truthy_sig.returns.push(AbiParam::new(types::I64));
+                    let truthy_fn = self
+                        .module
+                        .declare_function("molt_is_truthy", Linkage::Import, &truthy_sig)
+                        .unwrap();
+                    let truthy_ref = self.module.declare_func_in_func(truthy_fn, builder.func);
+                    let truthy_call = builder.ins().call(truthy_ref, &[*cond]);
+                    let truthy_val = builder.inst_results(truthy_call)[0];
+                    let cond_bool = builder.ins().icmp_imm(IntCC::NotEqual, truthy_val, 0);
 
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough_block);
@@ -13157,6 +13163,48 @@ impl SimpleBackend {
                     }
                 }
                 "phi" => {}
+                // TIR round-trip variable ops — wire SSA values between blocks
+                "store_var" => {
+                    // Store a value into a named variable (block arg passing)
+                    let args = op.args.as_ref().unwrap();
+                    let val = var_get(&mut builder, &vars, &args[0]).expect("store_var: src not found");
+                    if let Some(ref var_name) = op.var {
+                        def_var_named(&mut builder, &vars, var_name, *val);
+                    } else if let Some(ref out_name) = op.out {
+                        def_var_named(&mut builder, &vars, out_name, *val);
+                    }
+                }
+                "load_var" | "copy_var" => {
+                    // Load a named variable into an output (block arg receiving / copy)
+                    if let Some(ref var_name) = op.var {
+                        let val = var_get(&mut builder, &vars, var_name).expect("load_var: var not found");
+                        if let Some(ref out_name) = op.out {
+                            def_var_named(&mut builder, &vars, out_name, *val);
+                        }
+                    } else if let Some(ref args) = op.args {
+                        if !args.is_empty() {
+                            let val = var_get(&mut builder, &vars, &args[0]).expect("copy_var: src not found");
+                            if let Some(ref out_name) = op.out {
+                                def_var_named(&mut builder, &vars, out_name, *val);
+                            }
+                        }
+                    }
+                }
+                "load_param" => {
+                    // TIR emits load_param for function parameters — map param index
+                    // to the corresponding block param value
+                    let param_idx = op.value.unwrap_or(0) as usize;
+                    if let Some(ref out_name) = op.out {
+                        let entry_block = builder.func.layout.entry_block().unwrap();
+                        let param_val = {
+                            let params = builder.func.dfg.block_params(entry_block);
+                            if param_idx < params.len() { Some(params[param_idx]) } else { None }
+                        };
+                        if let Some(val) = param_val {
+                            def_var_named(&mut builder, &vars, out_name, val);
+                        }
+                    }
+                }
                 _ => {}
             }
 
