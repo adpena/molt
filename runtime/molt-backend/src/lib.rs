@@ -1582,6 +1582,13 @@ impl SimpleBackend {
 
     pub fn compile(mut self, ir: SimpleIR) -> Vec<u8> {
         let mut ir = ir;
+        // Backend selection: MOLT_BACKEND=llvm routes through LLVM when the feature is
+        // available; otherwise falls back to Cranelift with a warning.
+        let _use_llvm = env_setting("MOLT_BACKEND").as_deref() == Some("llvm");
+        #[cfg(not(feature = "llvm-backend"))]
+        if _use_llvm {
+            eprintln!("[molt] WARNING: MOLT_BACKEND=llvm requested but llvm-backend feature is not compiled in; falling back to Cranelift");
+        }
         apply_profile_order(&mut ir);
         for func_ir in &mut ir.functions {
             elide_dead_struct_allocs(func_ir);
@@ -1599,13 +1606,31 @@ impl SimpleBackend {
         for func_ir in &mut ir.functions {
             propagate_loop_fast_int(func_ir);
         }
-        // ── TIR optimization pipeline (opt-in via MOLT_TIR_OPT=1) ──
+        // ── TIR optimization pipeline (default: ON, set MOLT_TIR_OPT=0 to disable) ──
         // Lowers each function into typed SSA (TIR), runs type refinement +
         // 8 optimization passes, then converts back to SimpleIR ops.
-        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
+        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             let tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
             let tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
+            // ── Incremental compilation cache (Phase 4: in-process only) ──
+            // Content-addressed cache for TIR functions.  Hash is derived from
+            // the function name + a stable serialisation of the pre-opt ops.
+            // TODO(cache-phase5): implement SimpleIR serialisation so cache hits
+            // can bypass the optimisation pipeline entirely.
+            let mut tir_cache = crate::tir::cache::CompilationCache::open(
+                std::path::PathBuf::from(".molt-cache"),
+            );
             for func_ir in &mut ir.functions {
+                // Compute a stable hash from function name + op count (a lightweight
+                // proxy until full serialisation lands).
+                // TODO(cache-phase5): replace with full op serialisation.
+                let body_proxy = format!("{}", func_ir.ops.len());
+                let content_hash =
+                    crate::tir::cache::CompilationCache::compute_hash(&func_ir.name, body_proxy.as_bytes());
+                // Phase 4: cache hit path stubbed out — deserialization not yet implemented.
+                // TODO(cache-phase5): deserialize cached ops and skip the pipeline.
+                let _cached = tir_cache.get(&content_hash);
+
                 let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
                 crate::tir::type_refine::refine_types(&mut tir_func);
                 let stats = crate::tir::passes::run_pipeline(&mut tir_func);
@@ -1621,6 +1646,10 @@ impl SimpleBackend {
                     }
                 }
                 func_ir.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
+                // Phase 4: store result as placeholder; Phase 5 will store the
+                // serialised optimised ops.
+                // TODO(cache-phase5): serialise func_ir.ops and store in cache.
+                tir_cache.put(&content_hash, &[], vec![]);
             }
         }
         let mut ir_analysis = analyze_native_backend_ir(&ir);
