@@ -1,0 +1,18 @@
+[package]
+name = "molt-runtime-compression"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+molt-runtime-core = { path = "../molt-runtime-core" }
+
+# Compression backends (all optional)
+bzip2 = { version = "0.5", default-features = false, features = ["libbz2-rs-sys"], optional = true }
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"], optional = true }
+zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+xz2 = { version = "0.1", optional = true }
+
+[features]
+default = ["bzip2", "flate2", "xz2", "zip"]

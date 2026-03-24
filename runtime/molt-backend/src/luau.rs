@@ -37,6 +37,21 @@ pub struct LuauBackend {
     /// True when we are inside a pcall body (between pcall_wrap_begin and
     /// pcall_wrap_end). exception_last should return nil in this zone.
     inside_pcall_body: bool,
+    /// Variables known to hold non-negative integer constants.  Populated from
+    /// `const` / `const_int` ops with `value >= 0`.  Used to skip the negative
+    /// index ternary in get_item / set_item / del_item / string index paths.
+    nonneg_consts: BTreeSet<String>,
+    /// Counter of local declarations at function scope level 1 (inside the
+    /// function body but not inside nested blocks).  Used to insert `do...end`
+    /// scope blocks when nearing Luau's 200 local register limit.
+    scope_local_count: u32,
+    /// The indent level at which the function body sits (normally 1).
+    /// Used to determine when we're at the top scope for local counting.
+    func_body_indent: u32,
+    /// True when we've opened a `do` block for local spilling.
+    in_spill_do_block: bool,
+    /// True when the current function needs local spilling (>190 ops with output).
+    needs_local_spill: bool,
 }
 
 impl LuauBackend {
@@ -51,6 +66,11 @@ impl LuauBackend {
             try_depth_counter: Vec::new(),
             pcall_counter: 0,
             inside_pcall_body: false,
+            nonneg_consts: BTreeSet::new(),
+            scope_local_count: 0,
+            func_body_indent: 1,
+            in_spill_do_block: false,
+            needs_local_spill: false,
         }
     }
 
@@ -67,12 +87,90 @@ impl LuauBackend {
         let mut func_output = String::with_capacity(8192);
         std::mem::swap(&mut self.output, &mut func_output);
 
-        if emit_funcs.len() > 1 {
-            self.uses_forward_decls = true;
-            self.emit_line("-- Forward declarations");
-            for func in &emit_funcs {
-                let name = sanitize_ident(&func.name);
-                self.emit_line(&format!("local {name}"));
+        // Collect the set of function names that will be defined in this
+        // compilation unit.  Any identifier referenced but NOT in this set
+        // needs a forward declaration (or it will be an undeclared global in
+        // Luau, causing a parse error).
+        let defined_names: std::collections::HashSet<String> = emit_funcs
+            .iter()
+            .map(|f| sanitize_ident(&f.name))
+            .collect();
+
+        // Scan all ops for identifiers that reference module-chunk
+        // initializer functions not present in the function list.
+        // These come from:
+        //   - call_internal: s_value is the callee name
+        //   - load_local: var field may hold a function reference
+        //     (e.g. `builtins.__require_importlib_util_module`)
+        //   - call_func: args[0] is the callee
+        let mut extra_decls_set = std::collections::HashSet::new();
+        let mut extra_forward_decls: Vec<String> = Vec::new();
+        for func in &emit_funcs {
+            for op in &func.ops {
+                let mut check_ident = |raw: &str| {
+                    let ident = sanitize_ident(raw);
+                    // Skip temp vars (v0, v123, etc.), internal names, and
+                    // runtime helpers — they are already declared elsewhere.
+                    let is_temp_var = ident.starts_with('v')
+                        && ident[1..].chars().all(|c| c.is_ascii_digit());
+                    if !is_temp_var
+                        && !defined_names.contains(&ident)
+                        && !extra_decls_set.contains(&ident)
+                        && !ident.starts_with("__")
+                        && !ident.starts_with("molt_")
+                    {
+                        extra_decls_set.insert(ident.clone());
+                        extra_forward_decls.push(ident);
+                    }
+                };
+                // call_internal: s_value is the callee name
+                if op.kind == "call_internal" {
+                    if let Some(ref s_val) = op.s_value {
+                        check_ident(s_val);
+                    }
+                }
+                // func_new / func_new_closure / code_new: s_value is the
+                // function name emitted as a bare identifier reference.
+                if matches!(op.kind.as_str(), "func_new" | "func_new_closure" | "code_new") {
+                    if let Some(ref s_val) = op.s_value {
+                        check_ident(s_val);
+                    }
+                }
+                // load_local: var field may hold a function reference
+                if op.kind == "load_local" {
+                    if let Some(ref var) = op.var {
+                        check_ident(var);
+                    }
+                }
+                // call_func: args[0] is the callee
+                if op.kind == "call_func" {
+                    if let Some(ref args) = op.args {
+                        if let Some(callee) = args.first() {
+                            check_ident(callee);
+                        }
+                    }
+                }
+            }
+        }
+
+        if emit_funcs.len() > 1 || !extra_forward_decls.is_empty() {
+            let total_decls = emit_funcs.len() + extra_forward_decls.len();
+            if total_decls <= 180 {
+                // Small enough: use local forward declarations.
+                self.uses_forward_decls = true;
+                self.emit_line("-- Forward declarations");
+                for func in &emit_funcs {
+                    let name = sanitize_ident(&func.name);
+                    self.emit_line(&format!("local {name}"));
+                }
+                for name in &extra_forward_decls {
+                    self.emit_line(&format!("local {name}"));
+                }
+            } else {
+                // Too many functions for local declarations.  Skip forward
+                // declarations entirely — functions will be assigned as globals.
+                // This avoids the 200 local register limit.
+                self.uses_forward_decls = true;
             }
             self.output.push('\n');
         }
@@ -135,6 +233,18 @@ impl LuauBackend {
         propagate_single_use_copies(&mut func_body);
         sink_single_use_locals(&mut func_body);
         rehoist_escaped_locals(&mut func_body);
+
+        // Phase 2d: Convert goto/label pairs to structured control flow.
+        // Standard Luau does NOT support goto or ::label:: syntax.
+        // This must run last, after all other cleanup has removed dead gotos.
+        eliminate_goto_labels(&mut func_body);
+
+        // Phase 2e: Strip dead code after terminators (break, return, error).
+        // Luau rejects unreachable statements after control flow terminators.
+        strip_dead_code_after_terminators(&mut func_body);
+
+        // Phase 2f: Insert do/end blocks for functions exceeding the local limit.
+        spill_excess_locals(&mut func_body);
 
         // Phase 3: Emit prelude with only the helpers that survive optimization.
         self.emit_prelude_conditional(&func_body);
@@ -563,6 +673,16 @@ impl LuauBackend {
         self.try_depth_counter.clear();
         self.pcall_counter = 0;
         self.inside_pcall_body = false;
+        self.nonneg_consts.clear();
+        self.scope_local_count = 0;
+        self.func_body_indent = self.indent as u32;
+        self.in_spill_do_block = false;
+        // Pre-count ops that will produce `local` declarations.
+        // If > 190, enable local-spilling `do...end` blocks.
+        let local_producing_ops = ops.iter().filter(|op| {
+            op.out.is_some() && op.out.as_deref() != Some("none")
+        }).count();
+        self.needs_local_spill = local_producing_ops > 190;
 
         // Seed var_type_hints from param_types so that parameters annotated
         // as list/dict/str carry their type hints into codegen.  Without this,
@@ -615,6 +735,20 @@ impl LuauBackend {
             }
             for var in &closure_slots {
                 self.emit_line(&format!("local {var}"));
+            }
+        }
+
+        // Pre-scan: collect variables defined by const/const_int with non-negative values.
+        for op in &ops {
+            match op.kind.as_str() {
+                "const" | "const_int" => {
+                    if let (Some(out_name), Some(v)) = (&op.out, op.value) {
+                        if v >= 0 {
+                            self.nonneg_consts.insert(out_name.clone());
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -718,10 +852,20 @@ impl LuauBackend {
             self.hoisted_vars.insert(sanitize_ident(escaped_var));
         }
 
-        // Emit pre-declarations for all hoisted variables.
+        // Emit pre-declarations for hoisted variables.  Cap at 150 to stay
+        // within Luau's ~200 local register limit.  Variables beyond the cap
+        // are removed from hoisted_vars so they get `local` declarations
+        // inline (which Luau handles as new inner-scope bindings).
         if !self.hoisted_vars.is_empty() {
             let mut sorted: Vec<String> = self.hoisted_vars.iter().cloned().collect();
             sorted.sort();
+            let cap = 150;
+            if sorted.len() > cap {
+                let overflow: Vec<String> = sorted.drain(cap..).collect();
+                for var in &overflow {
+                    self.hoisted_vars.remove(var);
+                }
+            }
             for var in &sorted {
                 self.emit_line(&format!("local {var}"));
             }
@@ -865,6 +1009,8 @@ impl LuauBackend {
                 i += 1;
             }
         }
+
+
 
         self.pop_indent();
         self.emit_line("end");
@@ -2347,13 +2493,24 @@ impl LuauBackend {
                         || self.var_type_hints.get(&args[0])
                             .map_or(false, |h| h == "str" || h == "string");
 
+                    // Fast-path: when the key is a known non-negative constant,
+                    // skip the negative-index ternary entirely.
+                    let key_known_nonneg = self.nonneg_consts.contains(&args[1])
+                        || (op.fast_int == Some(true) && op.value.map_or(false, |v| v >= 0));
+
                     if container_is_str {
                         // Luau does not support string[index]; use string.sub.
                         // Python uses 0-based indexing, Luau uses 1-based.
-                        // Handle negative indexing for strings too.
-                        self.emit_line(&format!(
-                            "local {out} = if {key} >= 0 then string.sub({container}, {key} + 1, {key} + 1) else string.sub({container}, #{container} + {key} + 1, #{container} + {key} + 1)"
-                        ));
+                        if key_known_nonneg {
+                            self.emit_line(&format!(
+                                "local {out} = string.sub({container}, {key} + 1, {key} + 1)"
+                            ));
+                        } else {
+                            // Handle negative indexing for strings too.
+                            self.emit_line(&format!(
+                                "local {out} = if {key} >= 0 then string.sub({container}, {key} + 1, {key} + 1) else string.sub({container}, #{container} + {key} + 1, #{container} + {key} + 1)"
+                            ));
+                        }
                         // Propagate str type to output.
                         if let Some(ref out_name) = op.out {
                             self.var_type_hints.insert(out_name.clone(), "str".to_string());
@@ -2376,7 +2533,12 @@ impl LuauBackend {
                                 self.var_type_hints.insert(out_name.clone(), "list".to_string());
                             }
                         }
-                        if key_is_int {
+                        if key_known_nonneg {
+                            // Known non-negative: skip negative index ternary.
+                            self.emit_line(&format!(
+                                "local {out} = {container}[{key} + 1]"
+                            ));
+                        } else if key_is_int {
                             // Handle negative indexing: Python a[-1] = last element.
                             self.emit_line(&format!(
                                 "local {out} = {container}[if {key} >= 0 then {key} + 1 else #{container} + {key} + 1]"
@@ -2398,7 +2560,13 @@ impl LuauBackend {
                     let key_is_int = op.fast_int == Some(true)
                         || op.raw_int == Some(true)
                         || matches!(op.type_hint.as_deref(), Some("int"));
-                    if key_is_int {
+                    let key_known_nonneg = self.nonneg_consts.contains(&args[1])
+                        || (op.fast_int == Some(true) && op.value.map_or(false, |v| v >= 0));
+                    if key_known_nonneg {
+                        self.emit_line(&format!(
+                            "{container}[{key} + 1] = {value}"
+                        ));
+                    } else if key_is_int {
                         self.emit_line(&format!(
                             "{container}[if {key} >= 0 then {key} + 1 else #{container} + {key} + 1] = {value}"
                         ));
@@ -2421,7 +2589,13 @@ impl LuauBackend {
                     let key_is_int = op.fast_int == Some(true)
                         || op.raw_int == Some(true)
                         || matches!(op.type_hint.as_deref(), Some("int"));
-                    if key_is_int {
+                    let key_known_nonneg = self.nonneg_consts.contains(&args[1])
+                        || (op.fast_int == Some(true) && op.value.map_or(false, |v| v >= 0));
+                    if key_known_nonneg {
+                        self.emit_line(&format!(
+                            "table.remove({container}, {key} + 1)"
+                        ));
+                    } else if key_is_int {
                         self.emit_line(&format!(
                             "table.remove({container}, if {key} >= 0 then {key} + 1 else #{container} + {key} + 1)"
                         ));
@@ -4095,6 +4269,65 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
     if !ops.iter().any(|op| op.kind == "try_start") {
         return (ops.to_vec(), BTreeSet::new());
     }
+
+    // Pre-scan: identify try/finally-only blocks.  For each try_start,
+    // count how many try_end ops belong to it.  The first try_end at
+    // matching depth closes the body; any subsequent try_end at that
+    // same (restored) depth closes the handler.  If exactly one try_end
+    // matches a given try_start, it is a try/finally-only block that
+    // can skip pcall wrapping.
+    let finally_only: BTreeSet<u32> = {
+        let mut set = BTreeSet::new();
+        let mut pre_counter: u32 = 0;
+        let mut pre_stack: Vec<(u32, i32)> = Vec::new();
+        let mut pre_depth: i32 = 0;
+        // Map from try-id to number of try_end ops attributed to it.
+        let mut end_counts: BTreeMap<u32, u32> = BTreeMap::new();
+        // Track IDs that were recently popped (body-closed) so the
+        // handler-closing try_end can be attributed correctly.
+        let mut recently_popped: Vec<u32> = Vec::new();
+        for op in ops {
+            match op.kind.as_str() {
+                "try_start" => {
+                    let n = pre_counter;
+                    pre_counter += 1;
+                    end_counts.insert(n, 0);
+                    pre_stack.push((n, pre_depth));
+                    pre_depth += 1;
+                }
+                "try_end" => {
+                    if let Some(&(n, pd)) = pre_stack.last() {
+                        if pre_depth == pd + 1 {
+                            // Body-closing try_end.
+                            pre_depth -= 1;
+                            pre_stack.pop();
+                            *end_counts.entry(n).or_insert(0) += 1;
+                            recently_popped.push(n);
+                        } else {
+                            // Handler-closing try_end — attribute to the
+                            // most recently popped try_start at this level.
+                            if let Some(popped_n) = recently_popped.pop() {
+                                *end_counts.entry(popped_n).or_insert(0) += 1;
+                            }
+                        }
+                    } else {
+                        // No stack — attribute to most recently popped.
+                        if let Some(popped_n) = recently_popped.pop() {
+                            *end_counts.entry(popped_n).or_insert(0) += 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (id, count) in &end_counts {
+            if *count == 1 {
+                set.insert(*id);
+            }
+        }
+        set
+    };
+
     let mut result: Vec<OpIR> = Vec::with_capacity(ops.len());
     let mut counter: u32 = 0;
     let mut try_stack: Vec<(u32, i32)> = Vec::new();
@@ -4118,30 +4351,48 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
                 counter += 1;
                 try_stack.push((n, depth));
                 depth += 1;
-                let start_idx = result.len();
-                result.push(OpIR {
-                    kind: "pcall_wrap_begin".to_string(),
-                    value: Some(n as i64),
-                    ..OpIR::default()
-                });
-                pcall_ranges.push((start_idx, 0, n));
+                if finally_only.contains(&n) {
+                    // try/finally fast-path: no pcall closure needed.
+                    result.push(OpIR {
+                        kind: "nop".to_string(),
+                        s_value: Some(format!("try/finally fast-path begin (n={n})")),
+                        ..OpIR::default()
+                    });
+                } else {
+                    let start_idx = result.len();
+                    result.push(OpIR {
+                        kind: "pcall_wrap_begin".to_string(),
+                        value: Some(n as i64),
+                        ..OpIR::default()
+                    });
+                    pcall_ranges.push((start_idx, 0, n));
+                }
             }
             "try_end" => {
                 if let Some(&(n, pre_depth)) = try_stack.last() {
                     if depth == pre_depth + 1 {
                         depth -= 1;
                         try_stack.pop();
-                        let end_idx = result.len();
-                        result.push(OpIR {
-                            kind: "pcall_wrap_end".to_string(),
-                            value: Some(n as i64),
-                            ..OpIR::default()
-                        });
-                        suppress_jumps = true;
-                        if let Some(range) =
-                            pcall_ranges.iter_mut().rev().find(|r| r.2 == n)
-                        {
-                            range.1 = end_idx;
+                        if finally_only.contains(&n) {
+                            // try/finally fast-path: no pcall closure to close.
+                            result.push(OpIR {
+                                kind: "nop".to_string(),
+                                s_value: Some(format!("try/finally fast-path end (n={n})")),
+                                ..OpIR::default()
+                            });
+                        } else {
+                            let end_idx = result.len();
+                            result.push(OpIR {
+                                kind: "pcall_wrap_end".to_string(),
+                                value: Some(n as i64),
+                                ..OpIR::default()
+                            });
+                            suppress_jumps = true;
+                            if let Some(range) =
+                                pcall_ranges.iter_mut().rev().find(|r| r.2 == n)
+                            {
+                                range.1 = end_idx;
+                            }
                         }
                     } else {
                         result.push(OpIR {
@@ -4835,6 +5086,13 @@ fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
             if dead_at_depth.is_none() {
                 result.push(op.clone());
             }
+            continue;
+        }
+
+        // try_start/try_end are structural markers that must always be
+        // preserved for pcall lowering, even in dead-code regions.
+        if matches!(kind, "try_start" | "try_end") {
+            result.push(op.clone());
             continue;
         }
 
@@ -6361,6 +6619,7 @@ fn sink_single_use_locals_once(source: &mut String) -> usize {
                     let rhs = rest[eq_pos + 3..].trim().to_string();
                     if rhs.len() <= 120
                         && !rhs.contains('\n')
+                        && !rhs.contains("--")
                         && !is_simple_literal(&rhs)
                         && !is_simple_var_ref(&rhs)
                     {
@@ -7104,6 +7363,14 @@ fn rehoist_escaped_locals(source: &mut String) {
             "\t"
         };
 
+        // Count existing top-scope locals to avoid exceeding Luau's 200 limit.
+        let existing_locals: usize = (func_start + 1..func_end).filter(|&li| {
+            let lt = lines[li].trim();
+            lt.starts_with("local ") && lines[li].starts_with(body_indent) && !lines[li].starts_with(&format!("{body_indent}\t"))
+        }).count();
+        let hoist_budget = if existing_locals >= 180 { 0usize } else { 180 - existing_locals };
+        let mut hoisted_count = 0usize;
+
         for (var, (decl_depth, decl_block, decl_line)) in &var_decl_scope {
             if *decl_depth == 0 { continue; }
             if let Some(uses) = var_uses.get(var) {
@@ -7111,7 +7378,8 @@ fn rehoist_escaped_locals(source: &mut String) {
                     (*ud < *decl_depth || (*ud == *decl_depth && *ub != *decl_block))
                     && *ul != *decl_line
                 );
-                if needs_hoist {
+                if needs_hoist && hoisted_count < hoist_budget {
+                    hoisted_count += 1;
                     // Add a `local vN` at function scope
                     insertions.entry(func_start + 1).or_default()
                         .push(format!("{body_indent}local {var}"));
@@ -7275,6 +7543,460 @@ fn strip_dead_gotos_and_labels(source: &mut String) {
     }
     *source = result;
     eprintln!("[molt-luau] Stripped {} dead gotos/labels", remove.len());
+}
+
+/// Eliminate goto/label pairs from emitted Luau.
+///
+/// Standard Luau does NOT support `goto` or `::label::` syntax (unlike Lua 5.2+).
+/// This pass converts all goto/label patterns to structured control flow:
+///
+/// 1. **Dead gotos** (immediately after `error(...)`) are removed — `error()` throws
+///    so the goto is unreachable.
+/// 2. **Trivial forward gotos** where the target label is the next non-label,
+///    non-empty line are removed (jump to immediately next statement).
+/// 3. **Remaining forward gotos** are replaced with a skip-flag pattern:
+///    ```
+///    local _molt_skip_N = false
+///    ...
+///    _molt_skip_N = true  -- replaces: goto label_N
+///    if not _molt_skip_N then
+///      ... code between goto and label ...
+///    end
+///    -- (label removed)
+///    ```
+/// 4. All `::label_N::` lines are removed.
+fn eliminate_goto_labels(source: &mut String) {
+    let lines: Vec<String> = source.lines().map(|l| l.to_string()).collect();
+    if lines.is_empty() { return; }
+
+    // Phase 1: Collect label positions and goto positions.
+    let mut label_positions: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut goto_positions: Vec<(usize, String)> = Vec::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if t.starts_with("::") && t.ends_with("::") && t.len() > 4 {
+            let label = t[2..t.len()-2].to_string();
+            label_positions.entry(label).or_default().push(i);
+        }
+        // Standalone goto
+        if t.starts_with("goto ") && !t.contains("then goto") {
+            let target = t[5..].trim().to_string();
+            goto_positions.push((i, target));
+        }
+        // Inline goto in if block: `if ... then goto label_N end`
+        if let Some(pos) = t.find("then goto ") {
+            let after = &t[pos + 10..];
+            if let Some(end_pos) = after.find(' ') {
+                let target = after[..end_pos].to_string();
+                goto_positions.push((i, target));
+            }
+        }
+    }
+
+    if goto_positions.is_empty() && label_positions.is_empty() {
+        return;
+    }
+
+    // Phase 2: Classify gotos.
+    let mut remove: BTreeSet<usize> = BTreeSet::new();
+    let mut live_gotos: Vec<(usize, String, usize)> = Vec::new();
+
+    for (goto_line, label_name) in &goto_positions {
+        let goto_line = *goto_line;
+        let t = lines[goto_line].trim().to_string();
+
+        let is_inline = t.contains("then goto ") && t.ends_with(" end");
+
+        // Check if previous non-empty line is error() — dead code after throw.
+        let mut dead = false;
+        if !is_inline {
+            let mut prev = if goto_line > 0 { goto_line - 1 } else { 0 };
+            while prev > 0 && lines[prev].trim().is_empty() {
+                prev -= 1;
+            }
+            if lines[prev].trim().starts_with("error(") {
+                dead = true;
+            }
+        }
+
+        if dead {
+            remove.insert(goto_line);
+            continue;
+        }
+
+        // Find the nearest forward label with this name (same name can
+        // appear in multiple functions; pick the closest one after the goto).
+        let nearest_forward = label_positions.get(label_name)
+            .and_then(|positions| positions.iter().copied().filter(|&p| p > goto_line).min());
+        let any_backward = label_positions.get(label_name)
+            .map(|positions| positions.iter().any(|&p| p <= goto_line))
+            .unwrap_or(false);
+
+        if let Some(label_line) = nearest_forward {
+            // Check if goto jumps to immediately next non-label, non-empty line.
+            if !is_inline {
+                let mut next = goto_line + 1;
+                while next < lines.len() {
+                    let nt = lines[next].trim();
+                    if nt.is_empty() || (nt.starts_with("::") && nt.ends_with("::")) {
+                        next += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if next >= label_line {
+                    remove.insert(goto_line);
+                    continue;
+                }
+            }
+
+            live_gotos.push((goto_line, label_name.clone(), label_line));
+        } else if any_backward {
+            // Backward goto — remove as dead.
+            remove.insert(goto_line);
+        } else {
+            // No matching label at all — orphan goto, remove.
+            remove.insert(goto_line);
+        }
+    }
+
+    // Phase 3: Remove ALL label lines (all positions for all label names).
+    for (_, positions) in &label_positions {
+        for &line_idx in positions {
+            remove.insert(line_idx);
+        }
+    }
+
+    // Phase 4: For live gotos, generate flag-based structured control flow.
+    // Use composite key "label_name@target_line" to distinguish same-named
+    // labels in different functions.
+    let mut gotos_by_target: BTreeMap<(String, usize), Vec<usize>> = BTreeMap::new();
+    for (goto_line, label_name, label_line) in &live_gotos {
+        gotos_by_target.entry((label_name.clone(), *label_line)).or_default().push(*goto_line);
+    }
+
+    let mut insert_before: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    let mut replacements: BTreeMap<usize, String> = BTreeMap::new();
+    let mut insert_after: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+
+    for ((label_name, label_line), goto_lines) in &gotos_by_target {
+        let label_line = *label_line;
+        {
+            let flag_name = format!("_molt_skip_{}_{}", label_name.replace("label_", ""), label_line);
+
+            let first_goto = goto_lines[0];
+            let indent = lines[first_goto].len() - lines[first_goto].trim_start().len();
+            let indent_str: String = lines[first_goto][..indent].to_string();
+
+            insert_before.entry(first_goto).or_default().push(
+                format!("{indent_str}local {flag_name} = false")
+            );
+
+            for &goto_line in goto_lines {
+                let t = lines[goto_line].trim();
+                let goto_indent = lines[goto_line].len() - lines[goto_line].trim_start().len();
+                let goto_indent_str: String = lines[goto_line][..goto_indent].to_string();
+
+                if t.starts_with("goto ") {
+                    replacements.insert(goto_line, format!("{goto_indent_str}{flag_name} = true"));
+                    remove.remove(&goto_line);
+                } else if t.contains("then goto ") && t.ends_with(" end") {
+                    let replaced = t.replace(
+                        &format!("goto {label_name}"),
+                        &format!("{flag_name} = true"),
+                    );
+                    replacements.insert(goto_line, format!("{goto_indent_str}{replaced}"));
+                    remove.remove(&goto_line);
+                }
+            }
+
+            let last_goto = *goto_lines.iter().max().unwrap();
+            let wrap_start = last_goto + 1;
+            let wrap_end = label_line;
+
+            let has_code = (wrap_start..wrap_end).any(|i| {
+                let t = lines[i].trim();
+                !t.is_empty() && !(t.starts_with("::") && t.ends_with("::"))
+            });
+
+            if has_code {
+                insert_after.entry(last_goto).or_default().push(
+                    format!("{indent_str}if not {flag_name} then")
+                );
+                insert_before.entry(wrap_end).or_default().push(
+                    format!("{indent_str}end")
+                );
+            }
+        }
+    }
+
+    // Phase 5: Rebuild the source.
+    let mut result = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(inserts) = insert_before.get(&i) {
+            for ins in inserts {
+                result.push_str(ins);
+                result.push('\n');
+            }
+        }
+
+        if remove.contains(&i) {
+            // Skip removed line.
+        } else if let Some(replacement) = replacements.get(&i) {
+            result.push_str(replacement);
+            result.push('\n');
+        } else {
+            result.push_str(line);
+            result.push('\n');
+        }
+
+        if let Some(inserts) = insert_after.get(&i) {
+            for ins in inserts {
+                result.push_str(ins);
+                result.push('\n');
+            }
+        }
+    }
+
+    *source = result;
+    let total_gotos = goto_positions.len();
+    let live_count = live_gotos.len();
+    let dead_count = total_gotos - live_count;
+    eprintln!(
+        "[molt-luau] Eliminated goto/labels: {} dead, {} converted to structured flow, {} labels removed",
+        dead_count, live_count, label_positions.values().map(|v| v.len()).sum::<usize>()
+    );
+}
+
+
+
+/// Strip orphaned label definitions that have no corresponding goto.
+/// The `eliminate_goto_labels` pass removes gotos but may leave the
+/// `::label_N::` definitions behind, which Luau's parser rejects.
+fn strip_orphaned_labels(source: &mut String) {
+    let lines: Vec<&str> = source.lines().collect();
+    // Collect all goto targets
+    let mut goto_targets: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("goto ") {
+            let target = trimmed.strip_prefix("goto ").unwrap().trim().to_string();
+            goto_targets.insert(target);
+        }
+    }
+    // Remove label definitions that have no goto
+    let mut remove: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("::") && trimmed.ends_with("::") {
+            let label_name = &trimmed[2..trimmed.len()-2];
+            if !goto_targets.contains(label_name) {
+                remove.insert(i);
+            }
+        }
+    }
+    if !remove.is_empty() {
+        let count = remove.len();
+        let new_lines: Vec<&str> = lines.into_iter().enumerate()
+            .filter(|(i, _)| !remove.contains(i))
+            .map(|(_, l)| l)
+            .collect();
+        *source = new_lines.join("\n");
+        eprintln!("[molt-luau] Stripped {count} orphaned label definitions");
+    }
+}
+
+/// Strip dead code after terminators (`break`, `return`, `error(...)`, `continue`).
+///
+/// In Luau, statements after `break`/`return`/`error()` within the same block
+/// are unreachable and the parser rejects them.  This pass removes lines between
+/// a terminator and the next `end`/`else`/`elseif`/`until` at the same or lower
+/// indent level.
+fn strip_dead_code_after_terminators(source: &mut String) {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut remove: BTreeSet<usize> = BTreeSet::new();
+
+    for i in 0..lines.len() {
+        let t = lines[i].trim();
+        let is_terminator = t == "break"
+            || t == "continue"
+            || t.starts_with("return")
+            || (t.starts_with("error(") && t.ends_with(")"));
+
+        if !is_terminator { continue; }
+
+        let term_indent = lines[i].len() - lines[i].trim_start().len();
+
+        let mut j = i + 1;
+        while j < lines.len() {
+            let tj = lines[j].trim();
+            if tj.is_empty() {
+                j += 1;
+                continue;
+            }
+            let j_indent = lines[j].len() - lines[j].trim_start().len();
+            if j_indent <= term_indent
+                && (tj == "end" || tj == "else" || tj.starts_with("elseif ")
+                    || tj.starts_with("until "))
+            {
+                break;
+            }
+            if j_indent <= term_indent && !tj.starts_with("local ") && !tj.contains(" = ") {
+                break;
+            }
+            remove.insert(j);
+            j += 1;
+        }
+    }
+
+    if remove.is_empty() { return; }
+
+    let mut result = String::with_capacity(source.len());
+    for (i, line) in lines.iter().enumerate() {
+        if !remove.contains(&i) {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    *source = result;
+    eprintln!("[molt-luau] Stripped {} dead-code-after-terminator lines", remove.len());
+}
+
+/// Spill excess locals to avoid Luau's 200 local register limit.
+///
+/// For functions with more than 190 local declarations at the top scope,
+/// inserts `do...end` blocks every ~180 locals.  Locals inside `do...end`
+/// release their registers when the block closes, avoiding the 200 limit.
+///
+/// The approach: scan each function body, count top-level `local` declarations,
+/// and wrap consecutive non-structural lines in `do...end` blocks.
+fn spill_excess_locals(source: &mut String) {
+    // Insert `do...end` scope blocks inside functions with >180 top-level
+    // locals.  Uses a robust indent-based heuristic: top-level lines are
+    // those at exactly body_indent.  We count `local` declarations at that
+    // indent level and insert scope breaks every 170 locals.
+    let lines: Vec<&str> = source.lines().collect();
+    let mut result = String::with_capacity(source.len() + 4096);
+    let mut total_blocks = 0u32;
+    let mut i = 0;
+
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        let is_func_start = !trimmed.starts_with("--")
+            && trimmed.contains("= function(")
+            && !trimmed.starts_with("local ")
+            && (lines[i].starts_with(|c: char| c.is_alphabetic()) || lines[i].starts_with('_'));
+
+        if !is_func_start {
+            result.push_str(lines[i]);
+            result.push('\n');
+            i += 1;
+            continue;
+        }
+
+        // Emit function header.
+        result.push_str(lines[i]);
+        result.push('\n');
+        i += 1;
+
+        // Determine body indent.
+        let body_indent = if i < lines.len() {
+            lines[i].len() - lines[i].trim_start().len()
+        } else { 1 };
+
+        // Pre-scan: count locals at body_indent.
+        let mut total_locals = 0u32;
+        let mut j = i;
+        while j < lines.len() {
+            let t = lines[j].trim();
+            let ind = lines[j].len() - lines[j].trim_start().len();
+            if ind == body_indent && t.starts_with("local ") {
+                total_locals += 1;
+            }
+            // Simple end-of-function detection: `end` at indent 0.
+            if ind == 0 && t == "end" {
+                break;
+            }
+            j += 1;
+        }
+        let func_end = j;
+
+        if total_locals <= 180 {
+            continue; // No spilling needed; emit body as-is via the outer loop.
+        }
+
+        // Need to spill.  Track indent-based depth relative to body_indent.
+        // depth=0 means we're at the function's top scope.
+        let indent_str = &lines[i][..body_indent.min(lines[i].len())];
+        let mut scope_locals = 0u32;
+        let mut in_do = false;
+
+        while i < lines.len() {
+            let t = lines[i].trim();
+            let ind = lines[i].len() - lines[i].trim_start().len();
+
+            // End of function?
+            if i >= func_end {
+                if in_do {
+                    result.push_str(indent_str);
+                    result.push_str("end\n");
+                    in_do = false;
+                    total_blocks += 1;
+                }
+                result.push_str(lines[i]);
+                result.push('\n');
+                i += 1;
+                break;
+            }
+
+            let at_body_indent = ind == body_indent;
+
+            // Count locals at body_indent.
+            if at_body_indent && t.starts_with("local ") {
+                scope_locals += 1;
+            }
+
+            // Only split at body_indent on simple assignment/local lines
+            // (not structural openers like if/for/while).
+            let is_safe_split_point = at_body_indent
+                && !t.starts_with("if ")
+                && !t.starts_with("for ")
+                && !t.starts_with("while ")
+                && !t.starts_with("repeat")
+                && t != "else"
+                && t != "end"
+                && t != "end)"
+                && !t.starts_with("elseif ")
+                && !t.starts_with("--");
+
+            // Split when we've accumulated enough locals.
+            if scope_locals >= 50 && in_do && is_safe_split_point {
+                result.push_str(indent_str);
+                result.push_str("end\n");
+                result.push_str(indent_str);
+                result.push_str("do\n");
+                scope_locals = 0;
+                total_blocks += 1;
+            }
+
+            // Open first do block.
+            if !in_do && scope_locals > 0 && is_safe_split_point {
+                result.push_str(indent_str);
+                result.push_str("do\n");
+                in_do = true;
+            }
+
+            result.push_str(lines[i]);
+            result.push('\n');
+            i += 1;
+        }
+    }
+
+    if total_blocks > 0 {
+        eprintln!("[molt-luau] Inserted {} do/end spill blocks for local register limit", total_blocks);
+        *source = result;
+    }
 }
 
 fn freeze_constant_tables(source: &mut String) {

@@ -1,3 +1,5 @@
+use serde::Deserialize;
+
 use crate::ir_schema;
 use crate::json_boundary::{
     expect_object, optional_bool, optional_bytes, optional_f64, optional_i64, optional_string,
@@ -6,20 +8,24 @@ use crate::json_boundary::{
 use serde_json::Value as JsonValue;
 use std::collections::{BTreeSet, VecDeque};
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Deserialize)]
+#[cfg_attr(feature = "cbor", derive(serde::Serialize))]
+#[serde(default)]
 pub struct PgoProfileIR {
     pub version: Option<String>,
     pub hash: Option<String>,
     pub hot_functions: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "cbor", derive(serde::Serialize))]
 pub struct SimpleIR {
     pub functions: Vec<FunctionIR>,
     pub profile: Option<PgoProfileIR>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "cbor", derive(serde::Serialize))]
 pub struct FunctionIR {
     pub name: String,
     pub params: Vec<String>,
@@ -27,7 +33,9 @@ pub struct FunctionIR {
     pub param_types: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(feature = "cbor", derive(serde::Serialize))]
+#[serde(default)]
 pub struct OpIR {
     pub kind: String,
     pub value: Option<i64>,
@@ -86,6 +94,37 @@ impl SimpleIR {
                 Some(PgoProfileIR::from_json_value(profile_value, "ir.profile")?)
             }
         };
+        Ok(Self { functions, profile })
+    }
+
+    pub fn from_ndjson_reader<R: std::io::BufRead>(reader: R) -> Result<Self, String> {
+        let mut functions = Vec::new();
+        let mut profile = None;
+        for line in reader.lines() {
+            let line = line.map_err(|e| format!("NDJSON read error: {e}"))?;
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let value: JsonValue = serde_json::from_str(trimmed)
+                .map_err(|e| format!("NDJSON parse error: {e}"))?;
+            match value.get("kind").and_then(|v| v.as_str()) {
+                Some("ir_stream_start") => {
+                    if let Some(p) = value.get("profile") {
+                        if !p.is_null() {
+                            profile =
+                                Some(PgoProfileIR::from_json_value(p, "stream.profile")?);
+                        }
+                    }
+                }
+                Some("function") => {
+                    functions
+                        .push(FunctionIR::from_json_value(&value, "stream.function")?);
+                }
+                Some("ir_stream_end") => break,
+                _ => {} // skip unknown kinds for forward compat
+            }
+        }
         Ok(Self { functions, profile })
     }
 
@@ -317,4 +356,58 @@ mod json_parse_tests {
         assert_eq!(profile.version.as_deref(), Some("v1"));
         assert!(profile.hot_functions.is_empty());
     }
+
+    #[test]
+    fn ndjson_reader_parses_stream() {
+        let input = r#"{"kind":"ir_stream_start","profile":null}
+{"kind":"function","name":"molt_main","params":[],"ops":[{"kind":"ret_void"}]}
+{"kind":"function","name":"helper","params":["a"],"ops":[{"kind":"return","args":["a"]}]}
+{"kind":"ir_stream_end"}
+"#;
+        let reader = std::io::BufReader::new(input.as_bytes());
+        let ir = SimpleIR::from_ndjson_reader(reader).expect("ndjson parse");
+        assert_eq!(ir.functions.len(), 2);
+        assert_eq!(ir.functions[0].name, "molt_main");
+        assert_eq!(ir.functions[1].name, "helper");
+        assert!(ir.profile.is_none());
+    }
+
+    #[test]
+    fn ndjson_reader_parses_profile() {
+        let input = r#"{"kind":"ir_stream_start","profile":{"version":"v1","hot_functions":["f"]}}
+{"kind":"function","name":"f","params":[],"ops":[{"kind":"ret_void"}]}
+{"kind":"ir_stream_end"}
+"#;
+        let reader = std::io::BufReader::new(input.as_bytes());
+        let ir = SimpleIR::from_ndjson_reader(reader).expect("ndjson parse");
+        assert_eq!(ir.functions.len(), 1);
+        let profile = ir.profile.expect("profile");
+        assert_eq!(profile.version.as_deref(), Some("v1"));
+        assert_eq!(profile.hot_functions, vec!["f"]);
+    }
+
+    #[test]
+    fn ndjson_reader_skips_blank_lines_and_unknown_kinds() {
+        let input = r#"{"kind":"ir_stream_start","profile":null}
+
+{"kind":"unknown_future_thing","data":123}
+{"kind":"function","name":"main","params":[],"ops":[{"kind":"ret_void"}]}
+{"kind":"ir_stream_end"}
+"#;
+        let reader = std::io::BufReader::new(input.as_bytes());
+        let ir = SimpleIR::from_ndjson_reader(reader).expect("ndjson parse");
+        assert_eq!(ir.functions.len(), 1);
+    }
+
+    #[test]
+    fn ndjson_reader_handles_empty_stream() {
+        let input = r#"{"kind":"ir_stream_start","profile":null}
+{"kind":"ir_stream_end"}
+"#;
+        let reader = std::io::BufReader::new(input.as_bytes());
+        let ir = SimpleIR::from_ndjson_reader(reader).expect("ndjson parse");
+        assert_eq!(ir.functions.len(), 0);
+        assert!(ir.profile.is_none());
+    }
+
 }

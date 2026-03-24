@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub(crate) fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
+pub fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_STRUCT_ELIDE").is_ok() {
         return;
     }
@@ -130,7 +130,7 @@ fn is_inlineable_with_limit(
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub(crate) fn inline_functions(ir: &mut SimpleIR) {
+pub fn inline_functions(ir: &mut SimpleIR) {
     if std::env::var("MOLT_DISABLE_INLINING").is_ok() {
         return;
     }
@@ -307,7 +307,7 @@ pub(crate) fn inline_functions(ir: &mut SimpleIR) {
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub(crate) fn apply_profile_order(ir: &mut SimpleIR) {
+pub fn apply_profile_order(ir: &mut SimpleIR) {
     let Some(profile) = ir.profile.as_ref() else {
         return;
     };
@@ -350,7 +350,7 @@ pub(crate) fn apply_profile_order(ir: &mut SimpleIR) {
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub(crate) fn fold_constants(ops: &mut Vec<OpIR>) {
+pub fn fold_constants(ops: &mut Vec<OpIR>) {
     // Map from variable name -> known constant integer value (raw, unboxed).
     let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();
     // Map from variable name -> known constant boolean value.
@@ -503,7 +503,7 @@ struct BranchSnapshot {
 }
 
 #[allow(dead_code)]
-pub(crate) fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
+pub fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
     let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();
     let mut const_bools: BTreeMap<String, bool> = BTreeMap::new();
 
@@ -734,7 +734,7 @@ pub(crate) fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub(crate) fn escape_analysis(func_ir: &mut FunctionIR) {
+pub fn escape_analysis(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_ESCAPE_ANALYSIS").is_ok() {
         return;
     }
@@ -953,7 +953,7 @@ const INT_PRODUCING_OPS: &[&str] = &[
     allow(dead_code)
 )]
 #[allow(dead_code)]
-pub(crate) fn propagate_loop_fast_int(func_ir: &mut FunctionIR) {
+pub fn propagate_loop_fast_int(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_LOOP_FAST_INT").is_ok() {
         return;
     }
@@ -1076,7 +1076,7 @@ pub(crate) fn propagate_loop_fast_int(func_ir: &mut FunctionIR) {
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub(crate) fn build_const_int_map(ops: &[OpIR]) -> BTreeMap<String, i64> {
+pub fn build_const_int_map(ops: &[OpIR]) -> BTreeMap<String, i64> {
     let mut map = BTreeMap::new();
     for op in ops {
         if op.kind == "const" {
@@ -1407,7 +1407,7 @@ mod tests {
 
 /// Identify pairs of `inc_ref`/`dec_ref` ops that cancel within a basic block.
 /// Returns: (set of op indices to skip, set of variable names whose dec_ref to skip).
-pub(crate) fn compute_rc_coalesce_skips(
+pub fn compute_rc_coalesce_skips(
     ops: &[OpIR],
     last_use: &BTreeMap<String, usize>,
 ) -> (HashSet<usize>, HashSet<String>) {
@@ -1417,6 +1417,8 @@ pub(crate) fn compute_rc_coalesce_skips(
         "state_yield", "state_switch", "state_label", "exception_push",
         "exception_pop", "chan_send_yield", "chan_recv_yield",
         "ret", "ret_void",
+        "loop_start", "loop_index_start", "loop_end",
+        "loop_break_if_true", "loop_break_if_false", "loop_continue",
     ];
     let cf_set: HashSet<&str> = CONTROL_FLOW.iter().copied().collect();
     let mut skip_ops: HashSet<usize> = HashSet::new();
@@ -1515,7 +1517,7 @@ fn build_last_use_map(ops: &[OpIR]) -> BTreeMap<String, usize> {
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub(crate) fn rc_coalescing(func_ir: &mut FunctionIR) {
+pub fn rc_coalescing(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_RC_COALESCE").is_ok() {
         return;
     }
@@ -1547,3 +1549,485 @@ pub(crate) fn rc_coalescing(func_ir: &mut FunctionIR) {
     }
     func_ir.ops = new_ops;
 }
+
+// ---------------------------------------------------------------------------
+// Loop-Invariant Code Motion (LICM)
+// ---------------------------------------------------------------------------
+
+const HOISTABLE_OPS: &[&str] = &[
+    "const", "const_int", "const_float", "const_str",
+    "const_bool", "const_none", "const_bytes", "list_new", "tuple_new",
+];
+
+fn is_hoistable(op: &OpIR) -> bool {
+    let kind = op.kind.as_str();
+    if matches!(kind, "list_new" | "tuple_new") {
+        return op.args.as_ref().map_or(true, |a| a.is_empty());
+    }
+    HOISTABLE_OPS.contains(&kind)
+}
+
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
+pub fn hoist_loop_invariants(func_ir: &mut FunctionIR) {
+    if std::env::var("MOLT_DISABLE_LICM").is_ok() {
+        return;
+    }
+    let ops = &func_ir.ops;
+    let len = ops.len();
+    if len == 0 {
+        return;
+    }
+    let mut loop_regions: Vec<(usize, usize)> = Vec::new();
+    let mut loop_start_stack: Vec<usize> = Vec::new();
+    for (idx, op) in ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "loop_start" => {
+                let next_is_index = ops
+                    .get(idx + 1)
+                    .is_some_and(|next| next.kind == "loop_index_start");
+                if !next_is_index {
+                    loop_start_stack.push(idx);
+                }
+            }
+            "loop_index_start" => {
+                loop_start_stack.push(idx);
+            }
+            "loop_end" => {
+                if let Some(start) = loop_start_stack.pop() {
+                    loop_regions.push((start, idx));
+                }
+            }
+            _ => {}
+        }
+    }
+    if loop_regions.is_empty() {
+        return;
+    }
+    let mut hoist_before: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let mut hoisted_set: BTreeSet<usize> = BTreeSet::new();
+    for &(start, end) in &loop_regions {
+        let mut defined_in_loop: HashSet<String> = HashSet::new();
+        for idx in (start + 1)..end {
+            if let Some(out) = ops[idx].out.as_deref() {
+                defined_in_loop.insert(out.to_string());
+            }
+        }
+        let mut to_hoist: Vec<usize> = Vec::new();
+        for idx in (start + 1)..end {
+            let op = &ops[idx];
+            if !is_hoistable(op) {
+                continue;
+            }
+            let inputs_outside = op.args.as_ref().map_or(true, |args| {
+                args.iter().all(|arg| !defined_in_loop.contains(arg))
+            });
+            if !inputs_outside {
+                continue;
+            }
+            if let Some(out) = op.out.as_deref() {
+                let mut write_count = 0;
+                for j in (start + 1)..end {
+                    if ops[j].out.as_deref() == Some(out) {
+                        write_count += 1;
+                    }
+                }
+                if write_count > 1 {
+                    continue;
+                }
+            }
+            to_hoist.push(idx);
+        }
+        if !to_hoist.is_empty() {
+            for &idx in &to_hoist {
+                hoisted_set.insert(idx);
+            }
+            hoist_before.entry(start).or_default().extend(to_hoist);
+        }
+    }
+    if hoisted_set.is_empty() {
+        return;
+    }
+    let mut new_ops: Vec<OpIR> = Vec::with_capacity(len);
+    for (idx, op) in ops.iter().enumerate() {
+        if let Some(hoisted_indices) = hoist_before.get(&idx) {
+            for &hi in hoisted_indices {
+                new_ops.push(ops[hi].clone());
+            }
+        }
+        if hoisted_set.contains(&idx) {
+            continue;
+        }
+        new_ops.push(op.clone());
+    }
+    func_ir.ops = new_ops;
+}
+
+/// Dead-function elimination: remove functions that are never referenced from
+/// any reachable function.  The entry function (first in the list, typically
+/// `<module>`) is always retained; any function reachable from it through
+/// `call_internal`, `func_new`, `func_new_closure`, `func_new_builtin`,
+/// or `code_new` references is kept.
+///
+/// This pass runs after inlining — if a callee was fully inlined into all
+/// call sites, it becomes unreachable and will be eliminated here.
+/// Applies to both native and WASM backends.
+pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
+    if std::env::var("MOLT_DISABLE_DEAD_FUNC_ELIM").is_ok() {
+        return;
+    }
+    if ir.functions.is_empty() {
+        return;
+    }
+
+    // Build the call graph: function name -> set of referenced function names.
+    // Use owned Strings so that `ir.functions` is not borrowed when we call retain().
+    let defined: BTreeSet<String> = ir.functions.iter().map(|f| f.name.clone()).collect();
+    let mut references: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    for func in &ir.functions {
+        let mut refs: BTreeSet<String> = BTreeSet::new();
+        for op in &func.ops {
+            match op.kind.as_str() {
+                "call_internal" | "func_new" | "func_new_closure"
+                | "func_new_builtin" | "code_new" | "call_guarded" => {
+                    if let Some(name) = op.s_value.as_ref() {
+                        if defined.contains(name.as_str()) {
+                            refs.insert(name.clone());
+                        }
+                    }
+                }
+                "call_indirect" => {
+                    if let Some(name) = op.s_value.as_ref() {
+                        if defined.contains(name.as_str()) {
+                            refs.insert(name.clone());
+                        }
+                    }
+                }
+                _ => {
+                    // Some ops embed function names in s_value for
+                    // generator/coroutine wiring (e.g. task_new, generator_send).
+                    // Conservatively retain anything that names a defined function.
+                    if let Some(name) = op.s_value.as_ref() {
+                        if defined.contains(name.as_str()) {
+                            refs.insert(name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        references.insert(func.name.clone(), refs);
+    }
+
+    // BFS from entry roots to find all reachable functions.
+    // Roots: (1) the first function (entry), (2) well-known linker/runtime
+    // entry points, (3) any function whose name matches a keep-pattern.
+    let mut reachable: BTreeSet<String> = BTreeSet::new();
+    let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+
+    let seed = |name: String, r: &mut BTreeSet<String>, q: &mut std::collections::VecDeque<String>| {
+        if r.insert(name.clone()) {
+            q.push_back(name);
+        }
+    };
+
+    // (1) First function is always the module entry.
+    seed(ir.functions[0].name.clone(), &mut reachable, &mut queue);
+
+    // (2) + (3) Scan all functions for keep-patterns.
+    for func in &ir.functions {
+        let name = &func.name;
+        let keep = name == "molt_main"
+            || name == "_start"
+            // Module init functions are called by the runtime importer, not IR.
+            || name.starts_with("molt_init_")
+            // Isolate import hooks are referenced at link time.
+            || name.starts_with("molt_isolate_")
+            // Poll functions for async generators / coroutines.
+            || name.ends_with("_poll")
+            // __annotate__ functions for typing support.
+            || name.contains("__annotate__");
+        if keep {
+            seed(name.clone(), &mut reachable, &mut queue);
+        }
+    }
+
+    while let Some(current) = queue.pop_front() {
+        if let Some(refs) = references.get(&current) {
+            for target in refs {
+                if reachable.insert(target.clone()) {
+                    queue.push_back(target.clone());
+                }
+            }
+        }
+    }
+
+    let original_count = ir.functions.len();
+    ir.functions.retain(|f| reachable.contains(&f.name));
+    let eliminated = original_count - ir.functions.len();
+
+    if eliminated > 0 {
+        if std::env::var("MOLT_DEBUG_DEAD_FUNC_ELIM").is_ok() {
+            eprintln!(
+                "dead-func-elim: removed {eliminated} of {original_count} functions ({} retained)",
+                ir.functions.len()
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Megafunction splitting pass
+//
+// Cranelift's register allocator has O(n^2) behavior on very large functions.
+// When a function exceeds max_ops (default 4000, env: MOLT_MAX_FUNCTION_OPS),
+// this pass splits it at top-level statement boundaries (loop_depth=0,
+// if_depth=0) into private __molt_chunk_{name}_{n} functions.  The original
+// function is replaced with sequential call_internal ops to each chunk.
+//
+// Safety: never splits inside loops, if-blocks, or try-blocks.
+// ---------------------------------------------------------------------------
+
+/// Default maximum number of ops before a function is split into chunks.
+const DEFAULT_MAX_FUNCTION_OPS: usize = 4000;
+
+/// Split a single large function into multiple chunk functions.
+///
+/// Returns `Err(func)` (giving back the original) if the function is small
+/// enough or no safe split points exist; otherwise returns `Ok((stub, chunks))`
+/// where `stub` is the replacement parent function and `chunks` are the
+/// extracted pieces.
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
+pub fn split_large_function(func: FunctionIR, max_ops: usize) -> Result<(FunctionIR, Vec<FunctionIR>), FunctionIR> {
+    if func.ops.len() <= max_ops {
+        return Err(func);
+    }
+
+    // Functions with exception handling cannot be safely split — check_exception
+    // ops act as conditional branches to labels that must stay in scope.
+    // Splitting them creates invalid control flow (orphan if/end_if, dangling labels).
+    // The incremental compilation cache handles large stdlib functions instead.
+    let has_exceptions = func.ops.iter().any(|op| op.kind == "check_exception");
+    if has_exceptions {
+        return Err(func);
+    }
+
+    // ---------------------------------------------------------------
+    // 1. Find safe split points (indices where depth == 0).
+    //    A split point is the index of the *first* op of a new chunk,
+    //    i.e. the boundary falls just before that index.
+    //
+    //    Additionally, we must not split between a `check_exception`
+    //    and its target `label`/`state_label`, since the function
+    //    compiler expects both to be in the same chunk.
+    // ---------------------------------------------------------------
+
+    // Build forbidden ranges: for each label_id referenced by
+    // check_exception, find the span [earliest_ref, label_def] (or
+    // [label_def, latest_ref] if the label comes first) and forbid
+    // splitting within that range.
+    let mut label_positions: std::collections::BTreeMap<i64, usize> = std::collections::BTreeMap::new();
+    let mut check_exc_refs: std::collections::BTreeMap<i64, (usize, usize)> = std::collections::BTreeMap::new();
+    for (idx, op) in func.ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "label" | "state_label" => {
+                if let Some(id) = op.value {
+                    label_positions.insert(id, idx);
+                }
+            }
+            "check_exception" => {
+                if let Some(id) = op.value {
+                    let entry = check_exc_refs.entry(id).or_insert((idx, idx));
+                    entry.0 = entry.0.min(idx);
+                    entry.1 = entry.1.max(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+    // Compute forbidden ranges: a split point at index `sp` is forbidden
+    // if it falls strictly between a check_exception and its target label.
+    let mut forbidden_ranges: Vec<(usize, usize)> = Vec::new();
+    for (label_id, (earliest_check, latest_check)) in &check_exc_refs {
+        if let Some(&label_idx) = label_positions.get(label_id) {
+            let range_start = (*earliest_check).min(label_idx);
+            let range_end = (*latest_check).max(label_idx);
+            forbidden_ranges.push((range_start, range_end));
+        }
+    }
+
+    let is_forbidden = |sp: usize| -> bool {
+        for &(start, end) in &forbidden_ranges {
+            // sp is the first index of the new chunk; splitting here means
+            // indices [0..sp) go to one chunk and [sp..) go to the next.
+            // Forbidden if the range straddles the split point.
+            if start < sp && sp <= end {
+                return true;
+            }
+        }
+        false
+    };
+
+
+    let mut split_candidates: Vec<usize> = Vec::new();
+    let mut depth: i32 = 0;
+
+    for (idx, op) in func.ops.iter().enumerate() {
+        // At depth 0 before processing this op, this is a valid split point.
+        if depth == 0 && idx > 0 && !is_forbidden(idx) {
+            split_candidates.push(idx);
+        }
+
+        match op.kind.as_str() {
+            // Openers -- increase nesting depth
+            "if" | "loop_start" | "loop_index_start" | "for_iter_start"
+            | "while_start" | "try_start" | "async_for_start" => {
+                depth += 1;
+            }
+            // Closers -- decrease nesting depth
+            "end_if" | "loop_end" | "loop_index_end" | "for_iter_end"
+            | "while_end" | "try_end" | "async_for_end" => {
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+
+    if split_candidates.is_empty() {
+        return Err(func);
+    }
+
+    // ---------------------------------------------------------------
+    // 2. Select split points to keep chunks roughly <= max_ops.
+    // ---------------------------------------------------------------
+    let mut selected: Vec<usize> = Vec::new();
+    let mut last_split = 0usize;
+    for &sp in &split_candidates {
+        let chunk_len = sp - last_split;
+        if chunk_len >= max_ops {
+            selected.push(sp);
+            last_split = sp;
+        }
+    }
+
+    // If no selected splits, the function is too deeply nested to split.
+    if selected.is_empty() {
+        return Err(func);
+    }
+
+    // ---------------------------------------------------------------
+    // 3. Partition ops into chunks at the selected split points.
+    // ---------------------------------------------------------------
+    let mut boundaries: Vec<usize> = Vec::new();
+    boundaries.push(0);
+    boundaries.extend_from_slice(&selected);
+    boundaries.push(func.ops.len());
+
+    let sanitized_name = func
+        .name
+        .replace(|c: char| !c.is_alphanumeric() && c != '_', "_");
+
+    let mut chunks: Vec<FunctionIR> = Vec::new();
+    let all_ops = func.ops;
+
+    for i in 0..boundaries.len() - 1 {
+        let start = boundaries[i];
+        let end = boundaries[i + 1];
+        let mut chunk_ops: Vec<OpIR> = all_ops[start..end].to_vec();
+
+        // Collect label IDs defined in THIS chunk.
+        let chunk_labels: std::collections::BTreeSet<i64> = chunk_ops
+            .iter()
+            .filter(|op| matches!(op.kind.as_str(), "label" | "state_label"))
+            .filter_map(|op| op.value)
+            .collect();
+
+        // Strip check_exception ops that reference labels NOT in this chunk.
+        // These are dead code — the target label is in another chunk.
+        chunk_ops.retain(|op| {
+            if op.kind == "check_exception" {
+                if let Some(target_id) = op.value {
+                    return chunk_labels.contains(&target_id);
+                }
+            }
+            true
+        });
+
+        let chunk_name = format!("__molt_chunk_{sanitized_name}_{i}");
+        chunks.push(FunctionIR {
+            name: chunk_name,
+            params: Vec::new(),
+            ops: chunk_ops,
+            param_types: None,
+        });
+    }
+
+    // ---------------------------------------------------------------
+    // 4. Build the stub parent function that calls each chunk.
+    // ---------------------------------------------------------------
+    let mut stub_ops: Vec<OpIR> = Vec::with_capacity(chunks.len());
+    for chunk in &chunks {
+        stub_ops.push(OpIR {
+            kind: "call_internal".to_string(),
+            s_value: Some(chunk.name.clone()),
+            args: Some(Vec::new()),
+            out: Some("none".to_string()),
+            ..OpIR::default()
+        });
+    }
+
+    let stub = FunctionIR {
+        name: func.name,
+        params: func.params,
+        ops: stub_ops,
+        param_types: func.param_types,
+    };
+
+    Ok((stub, chunks))
+}
+
+/// Apply megafunction splitting to all oversized functions in the IR.
+///
+/// Call this before the main compilation loop so that the chunk functions
+/// are present in `ir.functions` and will be compiled normally.
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
+pub fn split_megafunctions(ir: &mut SimpleIR) {
+    let max_ops: usize = std::env::var("MOLT_MAX_FUNCTION_OPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAX_FUNCTION_OPS);
+
+    let mut new_functions: Vec<FunctionIR> = Vec::new();
+    let old_functions = std::mem::take(&mut ir.functions);
+
+    for func in old_functions {
+        let op_count = func.ops.len();
+        match split_large_function(func, max_ops) {
+            Ok((stub, chunks)) => {
+                eprintln!(
+                    "MOLT_BACKEND: split `{}` ({} ops) into {} chunks",
+                    stub.name,
+                    op_count,
+                    chunks.len()
+                );
+                // Insert chunks first so they are defined before the stub calls them.
+                new_functions.extend(chunks);
+                new_functions.push(stub);
+            }
+            Err(original) => {
+                new_functions.push(original);
+            }
+        }
+    }
+
+    ir.functions = new_functions;
+}
+

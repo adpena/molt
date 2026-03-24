@@ -1912,6 +1912,20 @@ impl ConstStrCache {
             dec_ref_bits(_py, prev.bits);
         }
         inc_ref_bits(_py, bits);
+        // Mark the cached string as immortal so dec_ref from generated code
+        // is a no-op. This prevents the refcount from dropping to 0 while
+        // the intern cache still holds a reference — the root cause of the
+        // SIGTRAP heap corruption (dec_ref on stale cache entries).
+        {
+            let obj = obj_from_bits(bits);
+            if let Some(ptr) = obj.as_ptr() {
+                unsafe {
+                    let header_ptr = ptr.sub(std::mem::size_of::<crate::object::MoltHeader>())
+                        as *mut crate::object::MoltHeader;
+                    (*header_ptr).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+                }
+            }
+        }
         self.slots[idx] = Some(ConstStrCacheEntry {
             data_ptr,
             len,

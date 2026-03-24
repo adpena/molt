@@ -101,13 +101,8 @@ export class EdgeBox implements DurableObject {
       `EDGEBOX_PATH=${path}`,
       `EDGEBOX_HEADERS=${JSON.stringify(headers)}`,
       ...(queryString ? [`QUERY_STRING=${queryString}`, `EDGEBOX_QUERY=${queryString}`] : []),
+      ...(body ? [`EDGEBOX_BODY=${body}`] : []),
     ];
-
-    // If there is a body, pass it as argv[3] (BoxRequest reads body from argv[1],
-    // but our argv is ["molt", path, queryString, body])
-    if (body) {
-      wasiArgs.push(body);
-    }
 
     const wasi = buildWasiShim(
       () => bridge.memory,

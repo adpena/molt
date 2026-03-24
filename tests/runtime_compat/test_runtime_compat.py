@@ -14,6 +14,7 @@ Usage:
 import argparse
 import difflib
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -72,9 +73,18 @@ def run_cpython(script: Path, timeout: float = CPYTHON_TIMEOUT) -> tuple[str, in
         return f"<ERROR: {e}>\n", -1
 
 
+def _find_luau_binary() -> str | None:
+    """Return the name of the Luau runner on PATH, or None."""
+    for name in ("luau", "lune"):
+        if shutil.which(name):
+            return name
+    return None
+
+
 def run_molt(
     script: Path,
     lib_path: str,
+    target: str = "native",
     build_timeout: float = MOLT_BUILD_TIMEOUT,
     run_timeout: float = MOLT_RUN_TIMEOUT,
     verbose: bool = False,
@@ -91,6 +101,8 @@ def run_molt(
         ]
         if lib_path:
             build_cmd.extend(["--lib-path", lib_path])
+        if target != "native":
+            build_cmd.extend(["--target", target])
 
         try:
             build_result = subprocess.run(
@@ -110,20 +122,33 @@ def run_molt(
         if build_result.returncode != 0:
             return f"<BUILD FAILED (exit {build_result.returncode})>\n", -1, build_log
 
-        # Find the binary — molt may add an extension or place it differently
-        binary = Path(binary_path)
-        if not binary.exists():
+        # Find the output artifact — molt may add an extension or place it differently
+        output_path = Path(binary_path)
+        if not output_path.exists():
             # Check for common patterns
             candidates = list(Path(tmpdir).glob(f"{script.stem}*"))
             if candidates:
-                binary = candidates[0]
+                output_path = candidates[0]
             else:
                 return "<BINARY NOT FOUND>\n", -1, build_log
+
+        # WASM target: skip execution (needs a host runtime)
+        if target == "wasm":
+            return "<WASM BUILD OK — execution skipped (needs host runtime)>\n", 0, build_log
+
+        # Luau target: run via luau/lune binary
+        if target == "luau":
+            luau_bin = _find_luau_binary()
+            if luau_bin is None:
+                return "<SKIP: neither 'luau' nor 'lune' found on PATH>\n", -1, build_log
+            run_cmd = [luau_bin, str(output_path)]
+        else:
+            run_cmd = [str(output_path)]
 
         # Run
         try:
             run_result = subprocess.run(
-                [str(binary)],
+                run_cmd,
                 capture_output=True,
                 text=True,
                 timeout=run_timeout,
@@ -135,10 +160,10 @@ def run_molt(
             return "<RUN TIMEOUT>\n", -1, build_log
         except PermissionError:
             # Try making it executable
-            os.chmod(str(binary), 0o755)
+            os.chmod(str(output_path), 0o755)
             try:
                 run_result = subprocess.run(
-                    [str(binary)],
+                    run_cmd,
                     capture_output=True,
                     text=True,
                     timeout=run_timeout,
@@ -163,6 +188,7 @@ def diff_output(cpython_out: str, molt_out: str) -> str:
 def test_library(
     lib: str,
     lib_path: str,
+    target: str = "native",
     verbose: bool = False,
 ) -> dict:
     """Test a single library. Returns a result dict."""
@@ -192,7 +218,7 @@ def test_library(
 
     # Molt
     t0 = time.monotonic()
-    mo_out, mo_code, build_log = run_molt(script, lib_path, verbose=verbose)
+    mo_out, mo_code, build_log = run_molt(script, lib_path, target=target, verbose=verbose)
     result["molt_time"] = time.monotonic() - t0
     result["molt_exit"] = mo_code
     result["molt_output"] = mo_out
@@ -295,6 +321,12 @@ def main():
     parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed output")
     parser.add_argument("--summary", "-s", action="store_true", help="Show only the summary")
     parser.add_argument("--lib-path", default=None, help="Override site-packages path")
+    parser.add_argument(
+        "--target",
+        default="native",
+        choices=["native", "luau", "wasm"],
+        help="Compilation target backend (default: native)",
+    )
     args = parser.parse_args()
 
     if not args.libraries and not args.all:
@@ -314,13 +346,21 @@ def main():
     if not lib_path:
         print("WARNING: Could not find site-packages. Builds may fail.", file=sys.stderr)
 
+    target = args.target
+
+    # Pre-flight check for luau target
+    if target == "luau" and _find_luau_binary() is None:
+        print("ERROR: --target luau requires 'luau' or 'lune' on PATH", file=sys.stderr)
+        sys.exit(1)
+
     print(f"Testing {len(libs)} libraries against CPython {sys.version.split()[0]}")
+    print(f"  target:   {target}")
     print(f"  lib-path: {lib_path}")
     print()
 
     results = []
     for lib in libs:
-        r = test_library(lib, lib_path, verbose=args.verbose)
+        r = test_library(lib, lib_path, target=target, verbose=args.verbose)
         results.append(r)
         if not args.summary:
             print_result(r, verbose=args.verbose)

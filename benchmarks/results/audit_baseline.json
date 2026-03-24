@@ -1,0 +1,9 @@
+[
+  {
+    "name": "bench_fib",
+    "molt_s": null,
+    "cpython_s": 0.048073,
+    "speedup": null,
+    "class": "Skipped"
+  }
+]
