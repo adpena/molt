@@ -13174,9 +13174,13 @@ impl SimpleBackend {
             {
                 if block == entry_block && loop_depth == 0 {
                     if output_is_ptr {
-                        tracked_vars.push(name.clone());
+                        if !tracked_vars.contains(&name.to_string()) {
+                            tracked_vars.push(name.clone());
+                        }
                     } else {
-                        tracked_obj_vars.push(name.clone());
+                        if !tracked_obj_vars.contains(&name.to_string()) {
+                            tracked_obj_vars.push(name.clone());
+                        }
                     }
                     if let Some(val) = var_get(&mut builder, &vars, name) {
                         entry_vars.insert(name.clone(), *val);
