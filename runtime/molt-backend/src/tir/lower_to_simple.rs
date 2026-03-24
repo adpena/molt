@@ -19,6 +19,7 @@ use crate::ir::OpIR;
 use super::blocks::{BlockId, Terminator, TirBlock};
 use super::function::TirFunction;
 use super::ops::{AttrValue, OpCode, TirOp};
+use super::types::TirType;
 use super::values::ValueId;
 
 // ---------------------------------------------------------------------------
@@ -34,7 +35,12 @@ use super::values::ValueId;
 /// - `store_var` ops for block arguments at join points.
 /// - One [`OpIR`] per [`TirOp`] in the block.
 /// - Control-flow [`OpIR`] ops derived from the block's [`Terminator`].
-pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
+///
+/// When a `types` map is provided, the back-conversion propagates TIR type
+/// refinement results into SimpleIR fast-path flags (`fast_int`, `fast_float`,
+/// `type_hint`, `stack_eligible`), closing the optimisation gap where type
+/// information was previously lost.
+pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>) -> Vec<OpIR> {
     let mut out = Vec::new();
 
     // Compute block visit order (reverse-postorder from entry).
@@ -105,7 +111,9 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
 
         // Emit ops.
         for op in &block.ops {
-            if let Some(opir) = lower_op(op) {
+            if let Some(mut opir) = lower_op(op) {
+                // Propagate TIR type refinement results to SimpleIR fast-path flags.
+                annotate_type_flags(&mut opir, op, types);
                 out.push(opir);
             }
         }
@@ -598,6 +606,67 @@ fn successors_of(block: &TirBlock) -> Vec<BlockId> {
 }
 
 // ---------------------------------------------------------------------------
+// Type annotation propagation
+// ---------------------------------------------------------------------------
+
+/// Annotate a SimpleIR [`OpIR`] with fast-path flags derived from TIR type
+/// refinement results.  This is the critical bridge that makes TIR type
+/// analysis visible to downstream backends (Cranelift, WASM, Luau).
+fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId, TirType>) {
+    // Look up the type of the first result value (most ops have 0 or 1 result).
+    if let Some(&result_id) = tir_op.results.first() {
+        match types.get(&result_id) {
+            Some(TirType::I64) => {
+                opir.fast_int = Some(true);
+            }
+            Some(TirType::F64) => {
+                opir.fast_float = Some(true);
+            }
+            Some(ty @ TirType::Bool) | Some(ty @ TirType::Str) | Some(ty @ TirType::Bytes)
+            | Some(ty @ TirType::List(_)) | Some(ty @ TirType::Dict(_, _))
+            | Some(ty @ TirType::Set(_)) | Some(ty @ TirType::Tuple(_))
+            | Some(ty @ TirType::BigInt) => {
+                opir.type_hint = Some(type_to_hint_string(ty));
+            }
+            // DynBox, Never, Union, Box, Func, Ptr — no hint to propagate.
+            _ => {}
+        }
+    }
+
+    // Propagate StackAlloc: if the TIR op is StackAlloc, mark the SimpleIR op
+    // so the native backend can emit stack allocation instead of heap allocation.
+    if tir_op.opcode == OpCode::StackAlloc {
+        opir.stack_eligible = Some(true);
+    }
+}
+
+/// Convert a TIR type to a human-readable hint string for the backend.
+fn type_to_hint_string(ty: &TirType) -> String {
+    match ty {
+        TirType::I64 => "int".to_string(),
+        TirType::F64 => "float".to_string(),
+        TirType::Bool => "bool".to_string(),
+        TirType::Str => "str".to_string(),
+        TirType::Bytes => "bytes".to_string(),
+        TirType::None => "none".to_string(),
+        TirType::List(_) => "list".to_string(),
+        TirType::Dict(_, _) => "dict".to_string(),
+        TirType::Set(_) => "set".to_string(),
+        TirType::Tuple(_) => "tuple".to_string(),
+        TirType::BigInt => "bigint".to_string(),
+        TirType::Func(_) => "func".to_string(),
+        TirType::Ptr(_) => "ptr".to_string(),
+        TirType::Box(inner) => format!("box<{}>", type_to_hint_string(inner)),
+        TirType::Union(members) => {
+            let parts: Vec<String> = members.iter().map(type_to_hint_string).collect();
+            format!("union<{}>", parts.join(","))
+        }
+        TirType::DynBox => "any".to_string(),
+        TirType::Never => "never".to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helper utilities
 // ---------------------------------------------------------------------------
 
@@ -705,7 +774,7 @@ mod tests {
     #[test]
     fn linearize_simple_function_compiles() {
         let func = add_function();
-        let ops = lower_to_simple_ir(&func);
+        let ops = lower_to_simple_ir(&func, &HashMap::new());
         // Must produce at least one op.
         assert!(!ops.is_empty(), "expected non-empty ops for add function");
     }
@@ -713,7 +782,7 @@ mod tests {
     #[test]
     fn linearize_emits_return() {
         let func = add_function();
-        let ops = lower_to_simple_ir(&func);
+        let ops = lower_to_simple_ir(&func, &HashMap::new());
         let has_ret = ops.iter().any(|o| o.kind == "ret" || o.kind == "ret_void");
         assert!(has_ret, "expected a return op, got: {:?}", ops);
     }
@@ -721,7 +790,7 @@ mod tests {
     #[test]
     fn linearize_emits_add_op() {
         let func = add_function();
-        let ops = lower_to_simple_ir(&func);
+        let ops = lower_to_simple_ir(&func, &HashMap::new());
         let has_add = ops.iter().any(|o| o.kind == "add");
         assert!(has_add, "expected an 'add' op, got: {:?}", ops);
     }
@@ -783,7 +852,7 @@ mod tests {
             },
         );
 
-        let ops = lower_to_simple_ir(&func);
+        let ops = lower_to_simple_ir(&func, &HashMap::new());
         let label_count = ops.iter().filter(|o| o.kind == "label").count();
         // Should have labels for bb1 and bb2.
         assert!(
@@ -798,5 +867,237 @@ mod tests {
     fn value_var_naming() {
         assert_eq!(value_var(ValueId(0)), "_v0");
         assert_eq!(value_var(ValueId(42)), "_v42");
+    }
+
+    /// Verify that TIR type refinement results are propagated back to SimpleIR
+    /// fast-path flags.  This is the critical test for the type-propagation fix:
+    /// ops that TIR proves are I64 must have `fast_int = Some(true)` in the
+    /// output SimpleIR.
+    #[test]
+    fn type_propagation_sets_fast_int_on_arithmetic() {
+        use crate::tir::type_refine::{extract_type_map, refine_types};
+
+        // Build: func @add_ints() -> I64
+        //   %0 = const_int 10
+        //   %1 = const_int 20
+        //   %2 = add %0, %1
+        //   return %2
+        let mut func = TirFunction::new("add_ints".into(), vec![], TirType::I64);
+
+        let v0 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v1 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v2 = ValueId(func.next_value);
+        func.next_value += 1;
+
+        let mut attrs0 = AttrDict::new();
+        attrs0.insert("value".into(), AttrValue::Int(10));
+        let mut attrs1 = AttrDict::new();
+        attrs1.insert("value".into(), AttrValue::Int(20));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![v0],
+            attrs: attrs0,
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![v1],
+            attrs: attrs1,
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Add,
+            operands: vec![v0, v1],
+            results: vec![v2],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![v2] };
+
+        // Run type refinement.
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        // Verify the type map has I64 for all three values.
+        assert_eq!(type_map.get(&v0), Some(&TirType::I64), "v0 should be I64");
+        assert_eq!(type_map.get(&v1), Some(&TirType::I64), "v1 should be I64");
+        assert_eq!(type_map.get(&v2), Some(&TirType::I64), "v2 should be I64 (add of two I64s)");
+
+        // Lower to SimpleIR with the type map.
+        let ops = lower_to_simple_ir(&func, &type_map);
+
+        // The 'add' op in the output must have fast_int = Some(true).
+        let add_ops: Vec<&OpIR> = ops.iter().filter(|o| o.kind == "add").collect();
+        assert!(!add_ops.is_empty(), "expected an 'add' op in output");
+        for add_op in &add_ops {
+            assert_eq!(
+                add_op.fast_int,
+                Some(true),
+                "add op should have fast_int=true after type propagation, got: {:?}",
+                add_op
+            );
+        }
+
+        // The const ops must also have fast_int = Some(true).
+        let const_ops: Vec<&OpIR> = ops.iter().filter(|o| o.kind == "const").collect();
+        assert!(const_ops.len() >= 2, "expected at least 2 const ops");
+        for const_op in &const_ops {
+            assert_eq!(
+                const_op.fast_int,
+                Some(true),
+                "const int op should have fast_int=true, got: {:?}",
+                const_op
+            );
+        }
+    }
+
+    /// Verify that F64 types produce fast_float flags.
+    #[test]
+    fn type_propagation_sets_fast_float_on_float_arithmetic() {
+        use crate::tir::type_refine::{extract_type_map, refine_types};
+
+        let mut func = TirFunction::new("add_floats".into(), vec![], TirType::F64);
+
+        let v0 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v1 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v2 = ValueId(func.next_value);
+        func.next_value += 1;
+
+        let mut attrs0 = AttrDict::new();
+        attrs0.insert("f_value".into(), AttrValue::Float(1.5));
+        let mut attrs1 = AttrDict::new();
+        attrs1.insert("f_value".into(), AttrValue::Float(2.5));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstFloat,
+            operands: vec![],
+            results: vec![v0],
+            attrs: attrs0,
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstFloat,
+            operands: vec![],
+            results: vec![v1],
+            attrs: attrs1,
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Add,
+            operands: vec![v0, v1],
+            results: vec![v2],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![v2] };
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+        let ops = lower_to_simple_ir(&func, &type_map);
+
+        let add_ops: Vec<&OpIR> = ops.iter().filter(|o| o.kind == "add").collect();
+        assert!(!add_ops.is_empty());
+        for add_op in &add_ops {
+            assert_eq!(
+                add_op.fast_float,
+                Some(true),
+                "float add should have fast_float=true, got: {:?}",
+                add_op
+            );
+        }
+    }
+
+    /// Verify that comparison ops get type_hint="bool" (not fast_int/fast_float).
+    #[test]
+    fn type_propagation_sets_type_hint_for_bool() {
+        use crate::tir::type_refine::{extract_type_map, refine_types};
+
+        let mut func = TirFunction::new("cmp".into(), vec![], TirType::Bool);
+
+        let v0 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v1 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v2 = ValueId(func.next_value);
+        func.next_value += 1;
+
+        let mut attrs0 = AttrDict::new();
+        attrs0.insert("value".into(), AttrValue::Int(1));
+        let mut attrs1 = AttrDict::new();
+        attrs1.insert("value".into(), AttrValue::Int(2));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![v0],
+            attrs: attrs0,
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![v1],
+            attrs: attrs1,
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Eq,
+            operands: vec![v0, v1],
+            results: vec![v2],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![v2] };
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+        let ops = lower_to_simple_ir(&func, &type_map);
+
+        let eq_ops: Vec<&OpIR> = ops.iter().filter(|o| o.kind == "eq").collect();
+        assert!(!eq_ops.is_empty());
+        for eq_op in &eq_ops {
+            assert_eq!(
+                eq_op.type_hint.as_deref(),
+                Some("bool"),
+                "eq op should have type_hint='bool', got: {:?}",
+                eq_op
+            );
+            // Bool should NOT set fast_int or fast_float.
+            assert!(eq_op.fast_int.is_none(), "bool op should not have fast_int");
+            assert!(eq_op.fast_float.is_none(), "bool op should not have fast_float");
+        }
+    }
+
+    /// Verify that no type map (empty) means no flags are set.
+    #[test]
+    fn empty_type_map_sets_no_flags() {
+        let func = add_function();
+        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let add_ops: Vec<&OpIR> = ops.iter().filter(|o| o.kind == "add").collect();
+        assert!(!add_ops.is_empty());
+        for add_op in &add_ops {
+            assert!(add_op.fast_int.is_none(), "empty type map should not set fast_int");
+            assert!(add_op.fast_float.is_none(), "empty type map should not set fast_float");
+            assert!(add_op.type_hint.is_none(), "empty type map should not set type_hint");
+        }
     }
 }

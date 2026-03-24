@@ -7,7 +7,7 @@ mod tests {
     use crate::tir::lower_from_simple::lower_to_tir;
     use crate::tir::lower_to_simple::lower_to_simple_ir;
     use crate::tir::passes::run_pipeline;
-    use crate::tir::type_refine::refine_types;
+    use crate::tir::type_refine::{extract_type_map, refine_types};
     use crate::tir::verify::verify_function;
 
     // ---------------------------------------------------------------------------
@@ -27,12 +27,13 @@ mod tests {
         let ir = make_function(ops);
         let mut tir = lower_to_tir(&ir);
         refine_types(&mut tir);
+        let type_map = extract_type_map(&tir);
         let _stats = run_pipeline(&mut tir);
         assert!(
             verify_function(&tir).is_ok(),
             "TIR verification failed after optimization"
         );
-        lower_to_simple_ir(&tir)
+        lower_to_simple_ir(&tir, &type_map)
     }
 
     fn op(kind: &str) -> OpIR {
@@ -258,9 +259,10 @@ mod tests {
         };
         let mut tir = lower_to_tir(&ir);
         refine_types(&mut tir);
+        let type_map = extract_type_map(&tir);
         let _stats = run_pipeline(&mut tir);
         assert!(verify_function(&tir).is_ok());
-        let result = lower_to_simple_ir(&tir);
+        let result = lower_to_simple_ir(&tir, &type_map);
         assert!(!result.is_empty());
     }
 
@@ -282,9 +284,10 @@ mod tests {
         };
         let mut tir = lower_to_tir(&ir);
         refine_types(&mut tir);
+        let type_map = extract_type_map(&tir);
         let _stats = run_pipeline(&mut tir);
         assert!(verify_function(&tir).is_ok());
-        let result = lower_to_simple_ir(&tir);
+        let result = lower_to_simple_ir(&tir, &type_map);
         assert!(!result.is_empty());
     }
 
