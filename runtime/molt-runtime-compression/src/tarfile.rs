@@ -343,8 +343,6 @@ fn return_none() -> u64 {
 }
 
 // ── Public intrinsics ─────────────────────────────────────────────────────
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tarfile_open(name_bits: u64, mode_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let name = path_from_bits_local(_py, name_bits).unwrap_or_default();
@@ -427,8 +425,6 @@ pub extern "C" fn molt_tarfile_open(name_bits: u64, mode_bits: u64) -> u64 {
         int_bits_from_i64(_py, id)
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tarfile_getnames(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
@@ -508,8 +504,6 @@ fn tarinfo_to_tuple(_py: &PyToken, info: &TarInfo) -> u64 {
     }
     MoltObject::from_ptr(tuple_ptr).bits()
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tarfile_getmembers(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
@@ -538,8 +532,6 @@ pub extern "C" fn molt_tarfile_getmembers(handle_bits: u64) -> u64 {
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tarfile_extractall(handle_bits: u64, path_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
@@ -598,8 +590,6 @@ pub extern "C" fn molt_tarfile_extractall(handle_bits: u64, path_bits: u64) -> u
         return_none()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tarfile_extract(handle_bits: u64, member_bits: u64, path_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
@@ -673,8 +663,6 @@ pub extern "C" fn molt_tarfile_extract(handle_bits: u64, member_bits: u64, path_
         return_none()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tarfile_extractfile(handle_bits: u64, member_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
@@ -718,8 +706,6 @@ pub extern "C" fn molt_tarfile_extractfile(handle_bits: u64, member_bits: u64) -
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tarfile_add(handle_bits: u64, name_bits: u64, arcname_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
@@ -793,8 +779,6 @@ pub extern "C" fn molt_tarfile_add(handle_bits: u64, name_bits: u64, arcname_bit
         return_none()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tarfile_close(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
@@ -846,13 +830,9 @@ pub extern "C" fn molt_tarfile_close(handle_bits: u64) -> u64 {
         return_none()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tarfile_drop(handle_bits: u64) -> u64 {
     molt_tarfile_close(handle_bits)
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tarfile_is_tarfile(name_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let path = match string_obj_to_owned(obj_from_bits(name_bits)) {

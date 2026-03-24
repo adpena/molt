@@ -73,8 +73,6 @@ fn resolve_nbytes(_py: &PyToken, nbytes_bits: u64, default: usize) -> Result<usi
 // ---------------------------------------------------------------------------
 // Public intrinsics
 // ---------------------------------------------------------------------------
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_secrets_token_bytes(nbytes_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let n = match resolve_nbytes(_py, nbytes_bits, 32) {
@@ -92,8 +90,6 @@ pub extern "C" fn molt_secrets_token_bytes(nbytes_bits: u64) -> u64 {
         MoltObject::from_ptr(ptr).bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_secrets_token_hex(nbytes_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let n = match resolve_nbytes(_py, nbytes_bits, 32) {
@@ -112,8 +108,6 @@ pub extern "C" fn molt_secrets_token_hex(nbytes_bits: u64) -> u64 {
         MoltObject::from_ptr(ptr).bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_secrets_token_urlsafe(nbytes_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let n = match resolve_nbytes(_py, nbytes_bits, 32) {
@@ -132,8 +126,6 @@ pub extern "C" fn molt_secrets_token_urlsafe(nbytes_bits: u64) -> u64 {
         MoltObject::from_ptr(ptr).bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_secrets_randbits(k_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(k) = to_i64(obj_from_bits(k_bits)) else {
@@ -163,8 +155,6 @@ pub extern "C" fn molt_secrets_randbits(k_bits: u64) -> u64 {
         int_bits_from_bigint(_py, big)
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_secrets_compare_digest(a_bits: u64, b_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         // Accept str or bytes-like for both arguments.
@@ -228,8 +218,6 @@ pub extern "C" fn molt_secrets_compare_digest(a_bits: u64, b_bits: u64) -> u64 {
         }
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_secrets_choice(seq_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let seq_obj = obj_from_bits(seq_bits);
@@ -289,8 +277,6 @@ fn random_index_below(_py: &PyToken, upper: usize) -> Result<usize, u64> {
         }
     }
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_secrets_below(upper_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(upper_i64) = to_i64(obj_from_bits(upper_bits)) else {

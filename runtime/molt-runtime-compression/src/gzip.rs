@@ -57,7 +57,6 @@ fn return_bytes(_py: &PyToken, data: &[u8]) -> u64 {
 // ── One-shot compress / decompress ───────────────────────────────────────────
 
 /// `gzip.compress(data, compresslevel=9, *, mtime=None) -> bytes`
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_gzip_compress(
     data_bits: u64,
     compresslevel_bits: u64,
@@ -102,7 +101,6 @@ pub extern "C" fn molt_gzip_compress(
 }
 
 /// `gzip.decompress(data) -> bytes`
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_gzip_decompress(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let data = match require_bytes_slice(_py, data_bits) {
@@ -141,7 +139,6 @@ fn gzip_handle_from_bits(bits: u64) -> Option<&'static mut GzipFileHandle> {
 /// `gzip.open(filename, mode, compresslevel) -> handle`
 ///
 /// Supported modes: "rb" / "r" (read), "wb" / "w" (write), "ab" / "a" (append-write).
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_gzip_open(
     filename_bits: u64,
     mode_bits: u64,
@@ -209,7 +206,6 @@ pub extern "C" fn molt_gzip_open(
 }
 
 /// `handle.read(size=-1) -> bytes`
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_gzip_read(handle_bits: u64, size_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = gzip_handle_from_bits(handle_bits) else {
@@ -251,7 +247,6 @@ pub extern "C" fn molt_gzip_read(handle_bits: u64, size_bits: u64) -> u64 {
 }
 
 /// `handle.write(data) -> int`
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_gzip_write(handle_bits: u64, data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = gzip_handle_from_bits(handle_bits) else {
@@ -275,7 +270,6 @@ pub extern "C" fn molt_gzip_write(handle_bits: u64, data_bits: u64) -> u64 {
 }
 
 /// `handle.flush() -> None`
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_gzip_flush(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = gzip_handle_from_bits(handle_bits) else {
@@ -294,7 +288,6 @@ pub extern "C" fn molt_gzip_flush(handle_bits: u64) -> u64 {
 }
 
 /// `handle.close() -> None`  (finishes the gzip stream)
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_gzip_close(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = gzip_handle_from_bits(handle_bits) else {
@@ -314,7 +307,6 @@ pub extern "C" fn molt_gzip_close(handle_bits: u64) -> u64 {
 }
 
 /// Free the handle (without finishing the stream if not already closed).
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_gzip_drop(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);

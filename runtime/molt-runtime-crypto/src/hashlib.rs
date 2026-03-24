@@ -605,8 +605,6 @@ pub fn build_hash_handle(
         )),
     }
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_hash_new(name_bits: u64, data_bits: u64, options_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let name_obj = obj_from_bits(name_bits);
@@ -628,8 +626,6 @@ pub extern "C" fn molt_hash_new(name_bits: u64, data_bits: u64, options_bits: u6
         bits_from_ptr(ptr)
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_hash_update(handle_bits: u64, data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = hash_handle_from_bits(handle_bits) else {
@@ -645,8 +641,6 @@ pub extern "C" fn molt_hash_update(handle_bits: u64, data_bits: u64) -> u64 {
         MoltObject::none().bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_hash_copy(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = hash_handle_from_bits(handle_bits) else {
@@ -657,8 +651,6 @@ pub extern "C" fn molt_hash_copy(handle_bits: u64) -> u64 {
         bits_from_ptr(ptr)
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_hash_digest(handle_bits: u64, length_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = hash_handle_from_bits(handle_bits) else {
@@ -719,8 +711,6 @@ pub extern "C" fn molt_hash_digest(handle_bits: u64, length_bits: u64) -> u64 {
         MoltObject::from_ptr(ptr).bits()
     })
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_hash_drop(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);
@@ -800,8 +790,6 @@ fn pbkdf2_dklen(_py: &PyToken, bits: u64) -> Result<usize, u64> {
     }
     Ok(value as usize)
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_pbkdf2_hmac(
     name_bits: u64,
     password_bits: u64,
@@ -891,8 +879,6 @@ fn scrypt_int_required(_py: &PyToken, bits: u64, name: &str) -> Result<u64, u64>
     }
     Ok(value as u64)
 }
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_scrypt(
     password_bits: u64,
     salt_bits: u64,
