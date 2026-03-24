@@ -938,6 +938,38 @@ fn main() -> io::Result<()> {
                     }
                 }
             }
+        } else if ir_format == "cbor" {
+            // CBOR binary format — deserialize via ciborium
+            #[cfg(not(feature = "cbor"))]
+            {
+                eprintln!("CBOR support requires the 'cbor' feature");
+                std::process::exit(1);
+            }
+            #[cfg(feature = "cbor")]
+            {
+                if let Some(ir_path) = ir_file_path {
+                    let file = std::fs::File::open(ir_path)
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?;
+                    let reader = io::BufReader::new(file);
+                    match ciborium::de::from_reader(reader) {
+                        Ok(ir) => ir,
+                        Err(err) => {
+                            eprintln!("invalid CBOR IR: {err}");
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    let mut buf = Vec::new();
+                    io::stdin().read_to_end(&mut buf)?;
+                    match ciborium::de::from_reader::<SimpleIR, _>(&buf[..]) {
+                        Ok(ir) => { drop(buf); ir },
+                        Err(err) => {
+                            eprintln!("invalid CBOR IR: {err}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
         } else if let Some(ir_path) = ir_file_path {
             // Stream JSON directly from file — never holds raw JSON string in memory.
             let file = std::fs::File::open(ir_path)
