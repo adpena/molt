@@ -4745,7 +4745,7 @@ _CORE_STDLIB_MODULES_MICRO = (
 def _ensure_core_stdlib_modules(
     module_graph: dict[str, Path], stdlib_root: Path
 ) -> None:
-    stdlib_profile = os.environ.get("MOLT_STDLIB_PROFILE")
+    stdlib_profile = os.environ.get("MOLT_STDLIB_PROFILE", "micro")
     if stdlib_profile == "micro":
         core_modules = _CORE_STDLIB_MODULES_MICRO
     else:
@@ -11813,7 +11813,7 @@ def _prepare_backend_ir(
         # module is actually imported (lazy=True).  The standard profile keeps
         # the eager init for backwards compatibility with code that expects
         # sys to be available before the first explicit import.
-        lazy_sys = stdlib_profile == "micro"
+        lazy_sys = stdlib_profile != "full"  # lazy by default, eager only with full profile
         next_var = _append_entry_sys_init_op(
             entry_ops,
             entry_init=entry_init,
@@ -13005,7 +13005,7 @@ def _augment_module_graph_for_entry_and_runtime(
     explicit_imports = set(entry_imports)
     stub_skip_modules = STUB_MODULES - entry_imports
     stub_parents = STUB_PARENT_MODULES - entry_imports
-    stdlib_profile = os.environ.get("MOLT_STDLIB_PROFILE")
+    stdlib_profile = os.environ.get("MOLT_STDLIB_PROFILE", "micro")
     if stdlib_profile == "micro":
         core_module_names = _CORE_STDLIB_MODULES_MICRO
     else:
