@@ -1672,10 +1672,8 @@ impl SimpleBackend {
         }
 
         // ── TIR optimization pipeline (set MOLT_TIR_OPT=1 to enable) ──
-        // Default OFF: the TIR round-trip drops state_block_start ops from
-        // functions with exception handling, causing check_exception panics.
-        // Safe to enable for functions without try/except (hello.py, fib).
-        // Wrapped in catch_unwind for safety.
+        // Label IDs and exception handler blocks are now preserved through
+        // SSA round-trip. Still opt-in until full regression suite validates.
         if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
             let tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
             let tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
