@@ -2278,9 +2278,9 @@ checksum = "6373607a59f0be73a39b6fe456b8192fcc3585f602af20751600e974dd455e77"
 
 [[package]]
 name = "llvm-sys"
-version = "181.3.0"
+version = "191.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e24aad69cbdb0c6ebe777262e9e6314dceba0d6e6a2a63e47563ccd293a2eda8"
+checksum = "d0ad1fffbdac72a40b55aa58b31aa0efe925e277941b6705f128692b27f1d506"
 dependencies = [
  "anyhow",
  "cc",
@@ -2413,6 +2413,7 @@ dependencies = [
  "cranelift-object",
  "egg",
  "inkwell",
+ "rayon",
  "serde_json",
  "wasm-encoder 0.245.1",
  "wasmparser 0.245.1",
