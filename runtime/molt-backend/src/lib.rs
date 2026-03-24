@@ -48,6 +48,7 @@ pub use crate::passes::{
     eliminate_dead_functions, escape_analysis,
     fold_constants, fold_constants_cross_block, hoist_loop_invariants,
     inline_functions, propagate_loop_fast_int, rc_coalescing,
+    split_megafunctions,
 };
 
 #[cfg(feature = "luau-backend")]
@@ -1633,12 +1634,17 @@ impl SimpleBackend {
         // the entry point after inlining.  This reduces code size for both the
         // native object and the downstream linker's work.
         if !self.skip_ir_passes { eliminate_dead_functions(&mut ir); }
+        // Megafunction splitting: break up functions with >4000 ops (or
+        // MOLT_MAX_FUNCTION_OPS) into private chunk functions to avoid
+        // Cranelift's O(n²) register allocator blowup.
+        split_megafunctions(&mut ir);
         if timing {
             let passes_elapsed = compile_start.elapsed();
             eprintln!("MOLT_BACKEND_TIMING: IR passes took {passes_elapsed:.2?}");
         }
-        // Re-analyze after dead function elimination so defined_functions/
-        // closure_functions reflect only the surviving functions.
+        // Re-analyze after dead function elimination and megafunction
+        // splitting so defined_functions/closure_functions reflect only the
+        // surviving (and newly created chunk) functions.
         let ir_analysis = analyze_native_backend_ir(&ir);
         // Conditional trace elimination: skip emitting trace_enter/trace_exit calls
         // when tracing is disabled. Each guarded call site emits 2 trace function calls

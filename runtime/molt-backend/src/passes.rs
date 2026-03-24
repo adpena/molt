@@ -1776,3 +1776,177 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Megafunction splitting pass
+//
+// Cranelift's register allocator has O(n^2) behavior on very large functions.
+// When a function exceeds max_ops (default 4000, env: MOLT_MAX_FUNCTION_OPS),
+// this pass splits it at top-level statement boundaries (loop_depth=0,
+// if_depth=0) into private __molt_chunk_{name}_{n} functions.  The original
+// function is replaced with sequential call_internal ops to each chunk.
+//
+// Safety: never splits inside loops, if-blocks, or try-blocks.
+// ---------------------------------------------------------------------------
+
+/// Default maximum number of ops before a function is split into chunks.
+const DEFAULT_MAX_FUNCTION_OPS: usize = 4000;
+
+/// Split a single large function into multiple chunk functions.
+///
+/// Returns `Err(func)` (giving back the original) if the function is small
+/// enough or no safe split points exist; otherwise returns `Ok((stub, chunks))`
+/// where `stub` is the replacement parent function and `chunks` are the
+/// extracted pieces.
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
+pub fn split_large_function(func: FunctionIR, max_ops: usize) -> Result<(FunctionIR, Vec<FunctionIR>), FunctionIR> {
+    if func.ops.len() <= max_ops {
+        return Err(func);
+    }
+
+    // ---------------------------------------------------------------
+    // 1. Find safe split points (indices where depth == 0).
+    //    A split point is the index of the *first* op of a new chunk,
+    //    i.e. the boundary falls just before that index.
+    // ---------------------------------------------------------------
+    let mut split_candidates: Vec<usize> = Vec::new();
+    let mut depth: i32 = 0;
+
+    for (idx, op) in func.ops.iter().enumerate() {
+        // At depth 0 before processing this op, this is a valid split point.
+        if depth == 0 && idx > 0 {
+            split_candidates.push(idx);
+        }
+
+        match op.kind.as_str() {
+            // Openers -- increase nesting depth
+            "if" | "loop_start" | "loop_index_start" | "for_iter_start"
+            | "while_start" | "try_start" | "async_for_start" => {
+                depth += 1;
+            }
+            // Closers -- decrease nesting depth
+            "end_if" | "loop_end" | "loop_index_end" | "for_iter_end"
+            | "while_end" | "try_end" | "async_for_end" => {
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+
+    if split_candidates.is_empty() {
+        return Err(func);
+    }
+
+    // ---------------------------------------------------------------
+    // 2. Select split points to keep chunks roughly <= max_ops.
+    // ---------------------------------------------------------------
+    let mut selected: Vec<usize> = Vec::new();
+    let mut last_split = 0usize;
+    for &sp in &split_candidates {
+        let chunk_len = sp - last_split;
+        if chunk_len >= max_ops {
+            selected.push(sp);
+            last_split = sp;
+        }
+    }
+
+    // If no selected splits, the function is too deeply nested to split.
+    if selected.is_empty() {
+        return Err(func);
+    }
+
+    // ---------------------------------------------------------------
+    // 3. Partition ops into chunks at the selected split points.
+    // ---------------------------------------------------------------
+    let mut boundaries: Vec<usize> = Vec::new();
+    boundaries.push(0);
+    boundaries.extend_from_slice(&selected);
+    boundaries.push(func.ops.len());
+
+    let sanitized_name = func
+        .name
+        .replace(|c: char| !c.is_alphanumeric() && c != '_', "_");
+
+    let mut chunks: Vec<FunctionIR> = Vec::new();
+    let all_ops = func.ops;
+
+    for i in 0..boundaries.len() - 1 {
+        let start = boundaries[i];
+        let end = boundaries[i + 1];
+        let chunk_ops: Vec<OpIR> = all_ops[start..end].to_vec();
+        let chunk_name = format!("__molt_chunk_{sanitized_name}_{i}");
+        chunks.push(FunctionIR {
+            name: chunk_name,
+            params: Vec::new(),
+            ops: chunk_ops,
+            param_types: None,
+        });
+    }
+
+    // ---------------------------------------------------------------
+    // 4. Build the stub parent function that calls each chunk.
+    // ---------------------------------------------------------------
+    let mut stub_ops: Vec<OpIR> = Vec::with_capacity(chunks.len());
+    for chunk in &chunks {
+        stub_ops.push(OpIR {
+            kind: "call_internal".to_string(),
+            s_value: Some(chunk.name.clone()),
+            args: Some(Vec::new()),
+            out: Some("none".to_string()),
+            ..OpIR::default()
+        });
+    }
+
+    let stub = FunctionIR {
+        name: func.name,
+        params: func.params,
+        ops: stub_ops,
+        param_types: func.param_types,
+    };
+
+    Ok((stub, chunks))
+}
+
+/// Apply megafunction splitting to all oversized functions in the IR.
+///
+/// Call this before the main compilation loop so that the chunk functions
+/// are present in `ir.functions` and will be compiled normally.
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
+pub fn split_megafunctions(ir: &mut SimpleIR) {
+    let max_ops: usize = std::env::var("MOLT_MAX_FUNCTION_OPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAX_FUNCTION_OPS);
+
+    let mut new_functions: Vec<FunctionIR> = Vec::new();
+    let old_functions = std::mem::take(&mut ir.functions);
+
+    for func in old_functions {
+        let op_count = func.ops.len();
+        match split_large_function(func, max_ops) {
+            Ok((stub, chunks)) => {
+                eprintln!(
+                    "MOLT_BACKEND: split `{}` ({} ops) into {} chunks",
+                    stub.name,
+                    op_count,
+                    chunks.len()
+                );
+                // Insert chunks first so they are defined before the stub calls them.
+                new_functions.extend(chunks);
+                new_functions.push(stub);
+            }
+            Err(original) => {
+                new_functions.push(original);
+            }
+        }
+    }
+
+    ir.functions = new_functions;
+}
+
