@@ -890,7 +890,13 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         return MoltObject::none().bits();
                     }
                     dec_ref_bits(_py, item_bits);
-                    let next_bits = molt_add(idx_bits, MoltObject::from_int(1).bits());
+                    // Integer increment — enumerate counter is always int.
+                    // molt_add is polymorphic and promotes to float if idx is float.
+                    let next_bits = if let Some(i) = to_i64(obj_from_bits(idx_bits)) {
+                        int_bits_from_i64(_py, i + 1)
+                    } else {
+                        molt_add(idx_bits, MoltObject::from_int(1).bits())
+                    };
                     if obj_from_bits(next_bits).is_none() {
                         return MoltObject::none().bits();
                     }
