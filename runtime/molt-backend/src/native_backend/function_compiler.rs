@@ -10806,10 +10806,13 @@ impl SimpleBackend {
                                 )
                             });
                             builder.ins().call(local_dec_ref_obj, &[*val]);
-                            // Remove from entry_vars so the exception handler's
-                            // cleanup path does not dec-ref this variable again
-                            // (it was already freed here).
+                            // Remove from entry_vars AND from exception handler
+                            // block_tracked_obj so neither path double-frees.
                             entry_vars.remove(&name);
+                            // Also scrub from ALL exception handler blocks
+                            for tracked_list in block_tracked_obj.values_mut() {
+                                tracked_list.retain(|n| n != &name);
+                            }
                         }
                     }
                     if !carry_ptr.is_empty() {
@@ -10823,10 +10826,13 @@ impl SimpleBackend {
                                 )
                             });
                             builder.ins().call(local_dec_ref, &[*val]);
-                            // Remove from entry_vars so the exception handler's
-                            // cleanup path does not dec-ref this variable again
-                            // (it was already freed here).
+                            // Remove from entry_vars AND from exception handler
+                            // block_tracked_obj so neither path double-frees.
                             entry_vars.remove(&name);
+                            // Also scrub from ALL exception handler blocks
+                            for tracked_list in block_tracked_obj.values_mut() {
+                                tracked_list.retain(|n| n != &name);
+                            }
                         }
                     }
                     // Inline exception check: load the pending flag byte directly
