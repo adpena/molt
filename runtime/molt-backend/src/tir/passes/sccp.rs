@@ -261,9 +261,11 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 fn evaluate_op(opcode: OpCode, operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
     match opcode {
         // Binary arithmetic
-        OpCode::Add => eval_binary(operands, |a, b| a + b, |a, b| a + b),
-        OpCode::Sub => eval_binary(operands, |a, b| a - b, |a, b| a - b),
-        OpCode::Mul => eval_binary(operands, |a, b| a * b, |a, b| a * b),
+        // Use checked arithmetic to avoid panic on overflow in debug / silent wrap in release.
+        // On overflow, return None → value stays as Bottom (unfoldable), matching Python's BigInt.
+        OpCode::Add => eval_binary(operands, |a, b| a.checked_add(b), |a, b| Some(a + b)),
+        OpCode::Sub => eval_binary(operands, |a, b| a.checked_sub(b), |a, b| Some(a - b)),
+        OpCode::Mul => eval_binary(operands, |a, b| a.checked_mul(b), |a, b| Some(a * b)),
         OpCode::Div => eval_binary_div(operands),
         OpCode::FloorDiv => eval_binary_floordiv(operands),
         OpCode::Mod => eval_binary_mod(operands),
@@ -299,16 +301,18 @@ fn evaluate_op(opcode: OpCode, operands: &[Option<&ConstVal>]) -> Option<ConstVa
 }
 
 /// Evaluate a binary arithmetic op on int or float operands.
+/// Int operations use checked arithmetic — returns None on overflow
+/// (matching Python's BigInt promotion behavior: we can't fold it, so leave it unfoldable).
 fn eval_binary(
     operands: &[Option<&ConstVal>],
-    int_op: impl Fn(i64, i64) -> i64,
-    float_op: impl Fn(f64, f64) -> f64,
+    int_op: impl Fn(i64, i64) -> Option<i64>,
+    float_op: impl Fn(f64, f64) -> Option<f64>,
 ) -> Option<ConstVal> {
     let a = operands.first().copied().flatten()?;
     let b = operands.get(1).copied().flatten()?;
     match (a, b) {
-        (ConstVal::Int(x), ConstVal::Int(y)) => Some(ConstVal::Int(int_op(*x, *y))),
-        (ConstVal::Float(x), ConstVal::Float(y)) => Some(ConstVal::Float(float_op(*x, *y))),
+        (ConstVal::Int(x), ConstVal::Int(y)) => int_op(*x, *y).map(ConstVal::Int),
+        (ConstVal::Float(x), ConstVal::Float(y)) => float_op(*x, *y).map(ConstVal::Float),
         _ => None,
     }
 }
@@ -333,8 +337,13 @@ fn eval_binary_floordiv(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
     let b = operands.get(1).copied().flatten()?;
     match (a, b) {
         (ConstVal::Int(x), ConstVal::Int(y)) if *y != 0 => {
-            // Python floor division: rounds towards negative infinity
-            Some(ConstVal::Int(x.div_euclid(*y)))
+            // Python floor division: rounds towards negative infinity.
+            // Rust's div_euclid rounds towards zero for negative divisors — WRONG.
+            // Use explicit floor division: q = x/y, adjust if signs differ and not exact.
+            let q = x / y;
+            let r = x % y;
+            let result = if r != 0 && ((*x ^ *y) < 0) { q - 1 } else { q };
+            Some(ConstVal::Int(result))
         }
         (ConstVal::Float(x), ConstVal::Float(y)) if *y != 0.0 => {
             Some(ConstVal::Float((*x / *y).floor()))
@@ -348,7 +357,11 @@ fn eval_binary_mod(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
     let b = operands.get(1).copied().flatten()?;
     match (a, b) {
         (ConstVal::Int(x), ConstVal::Int(y)) if *y != 0 => {
-            Some(ConstVal::Int(x.rem_euclid(*y)))
+            // Python modulo: result has the sign of the divisor.
+            // C/Rust rem_euclid always returns non-negative — WRONG for negative divisors.
+            let r = *x % *y;
+            let result = if r != 0 && ((r ^ *y) < 0) { r + *y } else { r };
+            Some(ConstVal::Int(result))
         }
         (ConstVal::Float(x), ConstVal::Float(y)) if *y != 0.0 => {
             // Python modulo semantics
