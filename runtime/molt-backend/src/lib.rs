@@ -1643,6 +1643,9 @@ impl SimpleBackend {
             propagate_loop_fast_int(func_ir);
         }
         // ── TIR optimization pipeline (default: ON, set MOLT_TIR_OPT=0 to disable) ──
+        // Wrapped in catch_unwind: if TIR panics on a function, that function
+        // falls back to unoptimized SimpleIR. Compilation continues — no silent
+        // failures, no crashes. The panic is logged to stderr.
         if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             let tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
             let tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
@@ -1650,27 +1653,49 @@ impl SimpleBackend {
                 std::path::PathBuf::from(".molt-cache"),
             );
             for func_ir in &mut ir.functions {
-                let body_proxy = format!("{}", func_ir.ops.len());
-                let content_hash =
-                    crate::tir::cache::CompilationCache::compute_hash(&func_ir.name, body_proxy.as_bytes());
-                let _cached = tir_cache.get(&content_hash);
+                let func_name = func_ir.name.clone();
+                let original_ops = func_ir.ops.clone(); // backup for fallback
 
-                let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
-                crate::tir::type_refine::refine_types(&mut tir_func);
-                let stats = crate::tir::passes::run_pipeline(&mut tir_func);
-                if tir_dump {
-                    eprintln!("{}", crate::tir::printer::print_function(&tir_func));
-                }
-                if tir_stats {
-                    for s in &stats {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let body_proxy = format!("{}", func_ir.ops.len());
+                    let content_hash =
+                        crate::tir::cache::CompilationCache::compute_hash(&func_ir.name, body_proxy.as_bytes());
+                    let _cached = tir_cache.get(&content_hash);
+
+                    let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
+                    crate::tir::type_refine::refine_types(&mut tir_func);
+                    let stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                    if tir_dump {
+                        eprintln!("{}", crate::tir::printer::print_function(&tir_func));
+                    }
+                    if tir_stats {
+                        for s in &stats {
+                            eprintln!(
+                                "[TIR] {}: {} changed, {} removed, {} added",
+                                s.name, s.values_changed, s.ops_removed, s.ops_added
+                            );
+                        }
+                    }
+                    let optimized_ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
+                    tir_cache.put(&content_hash, &[], vec![]);
+                    optimized_ops
+                }));
+
+                match result {
+                    Ok(optimized_ops) => {
+                        func_ir.ops = optimized_ops;
+                    }
+                    Err(_panic) => {
+                        // TIR failed on this function — fall back to unoptimized ops.
+                        // Log the failure so it's visible, not silent.
                         eprintln!(
-                            "[TIR] {}: {} changed, {} removed, {} added",
-                            s.name, s.values_changed, s.ops_removed, s.ops_added
+                            "[TIR] WARNING: optimization panicked on function '{}' — falling back to unoptimized. \
+                             Set MOLT_TIR_OPT=0 to disable TIR, or report this bug.",
+                            func_name
                         );
+                        func_ir.ops = original_ops;
                     }
                 }
-                func_ir.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
-                tir_cache.put(&content_hash, &[], vec![]);
             }
         }
         // Post-TIR: analysis + inlining (from main)
