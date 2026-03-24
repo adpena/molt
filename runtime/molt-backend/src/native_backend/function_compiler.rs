@@ -3469,6 +3469,10 @@ impl SimpleBackend {
                         let val = var_get(&mut builder, &vars, name).unwrap_or_else(|| {
                             panic!("List elem not found in {} op {}", func_ir.name, op_idx)
                         });
+                        // Inc-ref each element so the builder owns its own
+                        // reference.  The tracking system will dec-ref the
+                        // caller's variable independently at its last use.
+                        emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj);
                         builder.ins().call(append_local, &[builder_ptr, *val]);
                     }
 
@@ -3729,6 +3733,10 @@ impl SimpleBackend {
                             .declare_func_in_func(append_callee, builder.func);
                         for name in args {
                             let val = var_get(&mut builder, &vars, name).expect("Tuple elem not found");
+                            // Inc-ref each element so the builder owns its own
+                            // reference.  The tracking system will dec-ref the
+                            // caller's variable independently at its last use.
+                            emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj);
                             builder.ins().call(append_local, &[builder_ptr, *val]);
                         }
 
