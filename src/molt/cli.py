@@ -14185,9 +14185,10 @@ def _execute_backend_compile(
             # ── Incremental compilation: cache stdlib .o ──
             # For native builds, set MOLT_STDLIB_OBJ so the backend caches
             # stdlib compilation separately.  Second builds skip stdlib entirely.
-            if not is_wasm and not is_transpile and backend_env is None:
+            _is_transpile = is_rust_transpile or is_luau_transpile
+            if not is_wasm and not _is_transpile and backend_env is None:
                 backend_env = os.environ.copy()
-            if not is_wasm and not is_transpile and backend_env is not None:
+            if not is_wasm and not _is_transpile and backend_env is not None:
                 _stdlib_cache_dir = Path(
                     os.environ.get("MOLT_HOME", str(Path.home() / ".molt"))
                 ) / "cache" / "stdlib"
