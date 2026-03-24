@@ -406,7 +406,7 @@ def _run_command(
 ) -> int:
     cmd = [str(part) for part in cmd]
     if verbose and not json_output:
-        print(f"Running: {shlex.join(cmd)}")
+        print(f"Running: {shlex.join(cmd)}", file=sys.stderr)
     capture = json_output
     result = subprocess.run(
         cmd,
@@ -1052,7 +1052,7 @@ def _run_command_timed(
 ) -> _TimedResult:
     cmd = [str(part) for part in cmd]
     if verbose:
-        print(f"Running: {shlex.join(cmd)}")
+        print(f"Running: {shlex.join(cmd)}", file=sys.stderr)
     start = time.perf_counter()
     result = subprocess.run(
         cmd,
@@ -11861,18 +11861,27 @@ def _prepare_backend_ir(
     )
     entry_call_idx = _entry_call_index(entry_ops, entry_init)
     next_var = _next_tir_var_index(entry_ops)
-    if "sys" in module_graph:
-        # When stdlib_profile is "micro", defer sys initialisation until the
-        # module is actually imported (lazy=True).  The standard profile keeps
-        # the eager init for backwards compatibility with code that expects
-        # sys to be available before the first explicit import.
-        lazy_sys = stdlib_profile != "full"  # lazy by default, eager only with full profile
+    # Determine whether to inject a sys init call into molt_main.
+    #
+    # With micro profile, sys initialisation is handled entirely by the
+    # frontend's _emit_module_load: the first module that does
+    # ``import sys`` will trigger molt_init_sys lazily.  Injecting it
+    # unconditionally in molt_main forces the dead-function-elimination
+    # pass to keep the entire sys + builtins + _intrinsics transitive
+    # closure (~260 functions), which inflates the binary by ~25 MB and
+    # adds ~300 ms of cold-cache startup on macOS.
+    #
+    # For the full profile, we keep the eager inject for backwards
+    # compatibility with code that expects sys to be available before
+    # the first explicit import.
+    _inject_sys_init = "sys" in module_graph and stdlib_profile == "full"
+    if _inject_sys_init:
         next_var = _append_entry_sys_init_op(
             entry_ops,
             entry_init=entry_init,
             register_global_code_id=register_global_code_id,
             next_var=next_var,
-            lazy=lazy_sys,
+            lazy=False,
         )
         entry_call_idx = _entry_call_index(entry_ops, entry_init)
     module_code_ops, next_var = _build_module_code_ops(
@@ -12581,7 +12590,7 @@ def _emit_native_link_result(
                 json_output=json_output,
             )
         else:
-            print(f"Successfully built {output_binary}")
+            print(f"Successfully built {output_binary}", file=sys.stderr)
     else:
         if json_output:
             cache_info = _build_cache_info(
@@ -17545,7 +17554,7 @@ def _ensure_backend_binary(
         ):
             return True
         if not json_output:
-            print("Backend sources changed; rebuilding backend...")
+            print("Backend sources changed; rebuilding backend...", file=sys.stderr)
         cmd = [
             "cargo",
             "build",
@@ -17736,7 +17745,7 @@ def _ensure_runtime_lib(
         ):
             return True
         if not json_output:
-            print("Runtime sources changed; rebuilding runtime...")
+            print("Runtime sources changed; rebuilding runtime...", file=sys.stderr)
         cmd = ["cargo", "build", "-p", "molt-runtime", "--profile", cargo_profile]
         if stdlib_profile == "micro":
             cmd.append("--no-default-features")
@@ -17965,7 +17974,7 @@ def _ensure_runtime_wasm(
                 file=sys.stderr,
             )
         if not json_output:
-            print("Runtime sources changed; rebuilding runtime...")
+            print("Runtime sources changed; rebuilding runtime...", file=sys.stderr)
         if rustflags:
             env["RUSTFLAGS"] = rustflags
         if os.environ.get("MOLT_WASM_FORCE_CC") == "1":
