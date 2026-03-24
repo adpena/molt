@@ -116,6 +116,29 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         })
         .collect();
 
+    // When exception handling is present, identify blocks that start with
+    // StateBlockStart (exception handler entry points). Block arguments of
+    // these blocks should stay DynBox — the exception may come from any
+    // type context, so propagating a refined type would be unsound.
+    let has_eh = func.has_exception_handling;
+    let mut eh_handler_args: std::collections::HashSet<ValueId> = std::collections::HashSet::new();
+    if has_eh {
+        for block in func.blocks.values() {
+            // A block whose first op is StateBlockStart or CheckException
+            // is an exception handler — its args must stay DynBox.
+            if let Some(first_op) = block.ops.first() {
+                if matches!(
+                    first_op.opcode,
+                    OpCode::StateBlockStart | OpCode::CheckException
+                ) {
+                    for arg in &block.args {
+                        eh_handler_args.insert(arg.id);
+                    }
+                }
+            }
+        }
+    }
+
     // Fixpoint iteration.
     for _round in 0..MAX_ROUNDS {
         let mut changed = false;
@@ -127,6 +150,19 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                 if results.is_empty() {
                     continue;
                 }
+
+                // Do not refine results of CheckException — the value
+                // coming out of an exception check is dynamically typed.
+                if has_eh && matches!(opcode, OpCode::CheckException) {
+                    for &result_id in results {
+                        if !matches!(env.get(&result_id), Some(TirType::DynBox)) {
+                            env.insert(result_id, TirType::DynBox);
+                            changed = true;
+                        }
+                    }
+                    continue;
+                }
+
                 let operand_types: Vec<TirType> = operands
                     .iter()
                     .map(|id| env.get(id).cloned().unwrap_or(TirType::DynBox))
@@ -153,6 +189,17 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                 let arg_count = func.blocks[&block_id].args.len();
                 for i in 0..arg_count {
                     let arg_id = func.blocks[&block_id].args[i].id;
+
+                    // Exception handler block args must stay DynBox —
+                    // the exception could come from any type context.
+                    if eh_handler_args.contains(&arg_id) {
+                        if !matches!(env.get(&arg_id), Some(TirType::DynBox)) {
+                            env.insert(arg_id, TirType::DynBox);
+                            changed = true;
+                        }
+                        continue;
+                    }
+
                     let mut accumulated = TirType::Never;
                     for edge_args in edge_list {
                         if i < edge_args.len() {
