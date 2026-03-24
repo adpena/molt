@@ -1663,6 +1663,9 @@ impl SimpleBackend {
         let mut failed = 0u32;
         let mut slowest_func: Option<(String, std::time::Duration)> = None;
         for func_ir in ir.functions {
+            if func_ir.name.contains("__annotate__") {
+                continue;
+            }
             let func_name = func_ir.name.clone();
             let func_start = std::time::Instant::now();
             self.compile_func(
