@@ -25,7 +25,11 @@ pub mod gpu_runtime;
 pub mod gpu_metal;
 pub mod gpu_webgpu;
 pub mod gpu_dispatch;
+pub mod gpu_cuda_runtime;
 pub mod serialize;
+pub mod wasm_component;
+pub mod wasm_split;
+pub mod wasm_streaming;
 
 /// Returns true for SimpleIR ops that are purely structural control-flow
 /// markers (if/else/end_if/loop_start/loop_end/label/state_label) and should

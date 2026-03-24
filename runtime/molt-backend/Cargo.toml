@@ -16,6 +16,13 @@ wasm-encoder = { version = "0.245.1", optional = true }
 wasmparser = { version = "0.245.1", optional = true }
 egg = { version = "0.9", optional = true }
 inkwell = { version = "0.8", features = ["llvm19-1"], optional = true }
+wgpu = { version = "29", optional = true }
+pollster = { version = "0.4", optional = true }
+cudarc = { version = "0.19", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = { version = "0.33", optional = true }
+objc = { version = "0.2", optional = true }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 cranelift-codegen = { version = "0.130", optional = true, default-features = false, features = ["x86"] }
@@ -36,6 +43,9 @@ native-backend = [
     "dep:cranelift-native",
 ]
 rust-backend = []
+gpu-metal = ["dep:metal", "dep:objc"]
+gpu-webgpu = ["dep:wgpu", "dep:pollster"]
+gpu-cuda = ["dep:cudarc"]
 wasm-backend = ["dep:wasm-encoder", "dep:wasmparser"]
 
 [[test]]
