@@ -20,15 +20,37 @@ use crate::llvm_backend::types::lower_type;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::LlvmBackend;
 #[cfg(feature = "llvm")]
+use inkwell::attributes::AttributeLoc;
+
+#[cfg(feature = "llvm")]
 use crate::tir::blocks::{BlockId, Terminator};
 #[cfg(feature = "llvm")]
 use crate::tir::function::TirFunction;
 #[cfg(feature = "llvm")]
-use crate::tir::ops::{AttrValue, OpCode};
+use crate::tir::ops::{AttrValue, OpCode, TirOp};
 #[cfg(feature = "llvm")]
 use crate::tir::types::TirType;
 #[cfg(feature = "llvm")]
 use crate::tir::values::ValueId;
+
+// ── LLVM fast-math flag constants (from llvm-sys LLVMFastMath* definitions) ──
+//
+// AllowReassoc | NoNaNs | NoInfs | NoSignedZeros | AllowReciprocal
+//             | AllowContract | ApproxFunc  (= "fast" in IR text)
+#[cfg(feature = "llvm")]
+const LLVM_FAST_MATH_ALL: u32 = (1 << 0)  // AllowReassoc
+    | (1 << 1)  // NoNaNs
+    | (1 << 2)  // NoInfs
+    | (1 << 3)  // NoSignedZeros
+    | (1 << 4)  // AllowReciprocal
+    | (1 << 5)  // AllowContract
+    | (1 << 6); // ApproxFunc
+
+/// Return `true` when `op.attrs[key]` is `AttrValue::Bool(true)`.
+#[cfg(feature = "llvm")]
+fn has_attr(op: &TirOp, key: &str) -> bool {
+    matches!(op.attrs.get(key), Some(AttrValue::Bool(true)))
+}
 
 /// NaN-boxing constants (mirrors molt-obj-model/src/lib.rs).
 #[cfg(feature = "llvm")]
@@ -106,6 +128,20 @@ pub fn lower_tir_to_llvm<'ctx>(
 
     // 5. Wire up phi incoming values.
     lowering.finalize_phis();
+
+    // 6. If any op in this function carries `fast_math = true`, annotate the
+    //    function with `"unsafe-fp-math"="true"`.  This is the function-level
+    //    fallback for LLVM passes that inspect function attributes rather than
+    //    per-instruction fast-math flags.
+    let has_any_fast_math = func.blocks.values().any(|blk| {
+        blk.ops.iter().any(|op| has_attr(op, "fast_math"))
+    });
+    if has_any_fast_math {
+        let attr = backend
+            .context
+            .create_string_attribute("unsafe-fp-math", "true");
+        llvm_fn.add_attribute(AttributeLoc::Function, attr);
+    }
 
     llvm_fn
 }
@@ -431,6 +467,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result_id = op.results[0];
                 let obj = self.resolve(op.operands[0]);
                 let key = self.resolve(op.operands[1]);
+                // BCE: when `bce_safe = true` is set on this op (by the BCE pass),
+                // the index is a non-negative compile-time constant, so a bounds check
+                // is provably unnecessary.  The current lowering delegates to
+                // `molt_getitem_method` which performs its own internal bounds check;
+                // a future phase can replace this call with a direct GEP+load once
+                // the runtime exposes an unchecked variant.
+                //
+                // TODO(titan-phase-2): when `bce_safe = true`, call
+                // `molt_getitem_unchecked` instead of `molt_getitem_method` to
+                // skip the runtime bounds check and the associated branch.
+                let _ = has_attr(op, "bce_safe"); // attr is read; lowering is a no-op for now
                 let val = self.call_runtime_2("molt_getitem_method", obj, key);
                 self.values.insert(result_id, val);
                 self.value_types.insert(result_id, TirType::DynBox);
@@ -586,6 +633,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 todo!("LLVM lowering: IterNext not yet implemented")
             }
             OpCode::ForIter => {
+                // Vectorization hint: when `vectorize = true` is set on this op (by the
+                // vectorize analysis pass), the enclosing loop body is safe to vectorize.
+                // See the ScfFor branch above for the full TODO description.
+                let _ = has_attr(op, "vectorize"); // attr is read; lowering is a no-op for now
                 todo!("LLVM lowering: ForIter not yet implemented")
             }
             OpCode::Yield => {
@@ -632,6 +683,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 todo!("LLVM lowering: ImportFrom not yet implemented")
             }
             OpCode::ScfIf | OpCode::ScfFor | OpCode::ScfWhile | OpCode::ScfYield => {
+                // Vectorization hint: when `vectorize = true` is set on a ScfFor/ForIter
+                // op (by the vectorize analysis pass), the loop body is safe to vectorize.
+                // inkwell 0.8 does not expose a direct API for attaching `!llvm.loop`
+                // metadata to basic blocks.  The recommended approach is to build an
+                // MDNode containing `{ "llvm.loop.vectorize.enable", i1 true }` and
+                // attach it to the loop's back-edge branch instruction.
+                //
+                // TODO(titan-phase-3): once SCF ops are fully lowered to LLVM basic
+                // blocks, attach loop vectorize metadata to the back-edge branch when
+                // `vectorize = true` is present on this op.  Until then, the
+                // function-level `unsafe-fp-math` attribute (set above when any fast-math
+                // op exists) is the primary hint reaching the LLVM vectorizer.
+                let _ = has_attr(op, "vectorize"); // attr is read; lowering is a no-op for now
                 todo!("LLVM lowering: SCF dialect ops not yet implemented")
             }
             OpCode::Deopt => {
@@ -650,6 +714,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let rhs = self.resolve(rhs_id);
         let lhs_ty = self.value_types.get(&lhs_id).cloned().unwrap_or(TirType::DynBox);
         let rhs_ty = self.value_types.get(&rhs_id).cloned().unwrap_or(TirType::DynBox);
+        let fast_math = has_attr(op, "fast_math");
 
         let (val, out_ty) = match (&lhs_ty, &rhs_ty, name) {
             // I64 + I64 -> I64 (direct machine instruction)
@@ -736,35 +801,63 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 (result, TirType::I64)
             }
 
-            // F64 + F64 -> F64 (direct machine instruction)
+            // F64 + F64 -> F64 (direct machine instruction).
+            // When `fast_math = true` is set on the TIR op (injected by the
+            // fast_math annotation pass), we apply LLVM's full fast-math flag
+            // set to the emitted instruction via `InstructionValue::set_fast_math_flags`.
             (TirType::F64, TirType::F64, "add") => {
                 let v = self.backend.builder.build_float_add(
                     lhs.into_float_value(), rhs.into_float_value(), "fadd",
                 ).unwrap();
+                if fast_math {
+                    if let Some(instr) = v.as_instruction() {
+                        instr.set_fast_math_flags(LLVM_FAST_MATH_ALL);
+                    }
+                }
                 (v.into(), TirType::F64)
             }
             (TirType::F64, TirType::F64, "sub") => {
                 let v = self.backend.builder.build_float_sub(
                     lhs.into_float_value(), rhs.into_float_value(), "fsub",
                 ).unwrap();
+                if fast_math {
+                    if let Some(instr) = v.as_instruction() {
+                        instr.set_fast_math_flags(LLVM_FAST_MATH_ALL);
+                    }
+                }
                 (v.into(), TirType::F64)
             }
             (TirType::F64, TirType::F64, "mul") => {
                 let v = self.backend.builder.build_float_mul(
                     lhs.into_float_value(), rhs.into_float_value(), "fmul",
                 ).unwrap();
+                if fast_math {
+                    if let Some(instr) = v.as_instruction() {
+                        instr.set_fast_math_flags(LLVM_FAST_MATH_ALL);
+                    }
+                }
                 (v.into(), TirType::F64)
             }
             (TirType::F64, TirType::F64, "div") => {
                 let v = self.backend.builder.build_float_div(
                     lhs.into_float_value(), rhs.into_float_value(), "fdiv",
                 ).unwrap();
+                if fast_math {
+                    if let Some(instr) = v.as_instruction() {
+                        instr.set_fast_math_flags(LLVM_FAST_MATH_ALL);
+                    }
+                }
                 (v.into(), TirType::F64)
             }
             (TirType::F64, TirType::F64, "mod") => {
                 let v = self.backend.builder.build_float_rem(
                     lhs.into_float_value(), rhs.into_float_value(), "fmod",
                 ).unwrap();
+                if fast_math {
+                    if let Some(instr) = v.as_instruction() {
+                        instr.set_fast_math_flags(LLVM_FAST_MATH_ALL);
+                    }
+                }
                 (v.into(), TirType::F64)
             }
 
