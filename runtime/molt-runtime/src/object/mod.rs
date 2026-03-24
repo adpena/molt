@@ -929,12 +929,12 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
             return;
         }
         let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-        // Validate type_id before accessing header fields.
-        // A freed object has garbage in its header — skip to prevent UB.
         let type_id = (*header_ptr).type_id;
-        if type_id == 0 || type_id > 255 {
-            return;
-        }
+        debug_assert!(
+            type_id > 0 && type_id <= 255,
+            "inc_ref_ptr: invalid type_id {} at ptr {:?} — likely use-after-free",
+            type_id, ptr
+        );
         if ((*header_ptr).flags & HEADER_FLAG_IMMORTAL) != 0 {
             return;
         }
