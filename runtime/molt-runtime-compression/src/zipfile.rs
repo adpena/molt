@@ -35,8 +35,6 @@ thread_local! {
 }
 
 // ── open(path, mode) -> handle ──────────────────────────────────────────
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_zipfile_open(path_bits: u64, mode_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(path) = string_obj_to_owned(obj_from_bits(path_bits)) else {
@@ -72,8 +70,6 @@ pub extern "C" fn molt_zipfile_open(path_bits: u64, mode_bits: u64) -> u64 {
 }
 
 // ── close(handle) -> None ───────────────────────────────────────────────
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_zipfile_close(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
@@ -114,8 +110,6 @@ pub extern "C" fn molt_zipfile_close(handle_bits: u64) -> u64 {
 }
 
 // ── writestr(handle, name, data, compress_type) -> None ─────────────────
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_zipfile_writestr(
     handle_bits: u64,
     name_bits: u64,
@@ -164,8 +158,6 @@ pub extern "C" fn molt_zipfile_writestr(
 }
 
 // ── namelist(handle) -> list[str] ───────────────────────────────────────
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_zipfile_namelist(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
@@ -210,8 +202,6 @@ pub extern "C" fn molt_zipfile_namelist(handle_bits: u64) -> u64 {
 }
 
 // ── read(handle, name) -> bytes ─────────────────────────────────────────
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_zipfile_read(handle_bits: u64, name_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
