@@ -8320,13 +8320,18 @@ impl SimpleBackend {
                     }
                     func_sig.returns.push(AbiParam::new(types::I64));
                     self.declared_func_arities.insert(func_name.clone(), func_sig.params.len());
-                    // If a prior declaration (e.g. a builtin_func import) already
-                    // registered this symbol with a different signature, disambiguate
-                    // by appending a suffix rather than panicking.
+                    // Use Import linkage if the function is defined in another batch
+                    // (i.e., listed in external_function_names). Otherwise use Export
+                    // so it's defined in this batch.
+                    let linkage = if self.external_function_names.contains(func_name) {
+                        Linkage::Import
+                    } else {
+                        Linkage::Export
+                    };
                     let mut actual_name = func_name.clone();
                     let func_id = match self
                         .module
-                        .declare_function(&actual_name, Linkage::Export, &func_sig)
+                        .declare_function(&actual_name, linkage, &func_sig)
                     {
                         Ok(id) => id,
                         Err(_) => {
@@ -8335,7 +8340,7 @@ impl SimpleBackend {
                                 actual_name = format!("{}__ov{}", func_name, suffix);
                                 match self.module.declare_function(
                                     &actual_name,
-                                    Linkage::Export,
+                                    linkage,
                                     &func_sig,
                                 ) {
                                     Ok(id) => break id,
