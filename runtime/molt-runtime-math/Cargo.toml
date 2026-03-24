@@ -1,11 +1,17 @@
 [package]
 name = "molt-runtime-math"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+license = "Apache-2.0"
+description = "Math/numeric module group for the Molt runtime (math, cmath, fractions, colorsys, random, decimal)"
 
 [dependencies]
+# Core runtime types used by the math implementations
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
+
+# Numeric deps
 num-bigint = "0.4"
 num-traits = "0.2"
+num-integer = "0.1"
 libm = "0.2"
