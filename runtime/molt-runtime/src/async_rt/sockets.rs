@@ -2038,7 +2038,7 @@ where
     f(sock_ref)
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, molt_has_net_io))]
 fn take_error_raw(fd: RawFd) -> std::io::Result<Option<std::io::Error>> {
     with_sockref(fd, |sock_ref| sock_ref.take_error())
 }
@@ -2048,7 +2048,7 @@ fn take_error_raw(socket: RawSocket) -> std::io::Result<Option<std::io::Error>> 
     with_sockref(socket, |sock_ref| sock_ref.take_error())
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, molt_has_net_io))]
 fn take_error_mio<T: AsRawFd>(sock: &T) -> std::io::Result<Option<std::io::Error>> {
     take_error_raw(sock.as_raw_fd())
 }
@@ -7226,13 +7226,11 @@ pub extern "C" fn molt_socket_gethostname() -> u64 {
 #[inline]
 fn socket_af_unspec() -> i32 {
     #[cfg(target_arch = "wasm32")]
-    {
-        0
-    }
+    { 0 }
     #[cfg(molt_has_net_io)]
-    {
-        libc::AF_UNSPEC
-    }
+    { libc::AF_UNSPEC }
+    #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
+    { 0 }
 }
 
 #[inline]
@@ -7268,18 +7266,20 @@ fn socket_getaddrinfo_call(
             )
         }
     }
+    #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
+    {
+        crate::molt_socket_getaddrinfo(host_bits, port_bits, family_bits, type_bits, proto_bits, flags_bits)
+    }
 }
 
 #[inline]
 fn socket_gethostname_call() -> u64 {
     #[cfg(target_arch = "wasm32")]
-    {
-        molt_socket_gethostname()
-    }
+    { molt_socket_gethostname() }
     #[cfg(molt_has_net_io)]
-    {
-        unsafe { molt_socket_gethostname() }
-    }
+    { unsafe { molt_socket_gethostname() } }
+    #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
+    { crate::molt_socket_gethostname() }
 }
 
 fn socket_addrinfo_first_host_bits(_py: &PyToken<'_>, info_bits: u64) -> Result<u64, u64> {
@@ -8902,7 +8902,7 @@ pub unsafe extern "C" fn molt_socket_recv_fds(
 // sendfile – efficient file-to-socket transmission
 // ---------------------------------------------------------------------------
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", molt_has_net_io))]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -8974,7 +8974,7 @@ pub unsafe extern "C" fn molt_socket_sendfile(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", molt_has_net_io))]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
@@ -9064,6 +9064,7 @@ pub unsafe extern "C" fn molt_socket_sendfile(
 
 #[cfg(all(
     unix,
+    molt_has_net_io,
     not(target_os = "linux"),
     not(target_os = "macos"),
     not(target_arch = "wasm32")
