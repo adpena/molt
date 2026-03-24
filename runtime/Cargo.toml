@@ -25,3 +25,20 @@ num-traits = "0.2"
 once_cell = "1.21"
 memchr = "2.8"
 serde_json = "1.0"
+
+# ---------------------------------------------------------------------------
+# Release profile: LTO + single codegen unit + strip for minimal binary size.
+# With full LTO the linker sees across the user-code / runtime boundary and
+# can dead-strip everything unreachable from main().
+# ---------------------------------------------------------------------------
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+opt-level = "z"        # optimise for size over speed
+panic = "abort"        # no unwind tables
+
+# Keep dev builds fast — no LTO, parallel codegen.
+[profile.dev]
+lto = false
+codegen-units = 16
