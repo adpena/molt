@@ -217,7 +217,11 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 | OpCode::IterNext
                 | OpCode::ForIter
                 | OpCode::CheckException
-                | OpCode::Deopt => {
+                | OpCode::Deopt
+                | OpCode::TryStart
+                | OpCode::TryEnd
+                | OpCode::StateBlockStart
+                | OpCode::StateBlockEnd => {
                     // No escape.
                 }
                 // Build containers: if alloc'd value is an element, it escapes

@@ -151,7 +151,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         }),
         OpCode::ConstStr => Some(OpIR {
             kind: "const_str".to_string(),
-            s_value: attr_str(&op.attrs, "value"),
+            s_value: attr_str(&op.attrs, "s_value").or_else(|| attr_str(&op.attrs, "value")),
             out: out_var,
             ..OpIR::default()
         }),
@@ -168,7 +168,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         }),
         OpCode::ConstBytes => Some(OpIR {
             kind: "const_bytes".to_string(),
-            bytes: attr_bytes(&op.attrs, "value"),
+            bytes: attr_bytes(&op.attrs, "bytes").or_else(|| attr_bytes(&op.attrs, "value")),
             out: out_var,
             ..OpIR::default()
         }),
@@ -336,6 +336,26 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             value: attr_int(&op.attrs, "value"),
             ..OpIR::default()
         }),
+        OpCode::TryStart => Some(OpIR {
+            kind: "try_start".to_string(),
+            value: attr_int(&op.attrs, "value"),
+            ..OpIR::default()
+        }),
+        OpCode::TryEnd => Some(OpIR {
+            kind: "try_end".to_string(),
+            value: attr_int(&op.attrs, "value"),
+            ..OpIR::default()
+        }),
+        OpCode::StateBlockStart => Some(OpIR {
+            kind: "state_block_start".to_string(),
+            value: attr_int(&op.attrs, "value"),
+            ..OpIR::default()
+        }),
+        OpCode::StateBlockEnd => Some(OpIR {
+            kind: "state_block_end".to_string(),
+            value: attr_int(&op.attrs, "value"),
+            ..OpIR::default()
+        }),
 
         // Import.
         OpCode::Import => Some(OpIR {
@@ -386,6 +406,12 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
 
         // SCF ops — handled separately via terminators in Phase 2.
         OpCode::ScfIf | OpCode::ScfFor | OpCode::ScfWhile | OpCode::ScfYield => None,
+
+        // Exception / state machine structural ops — pass through with value field.
+        OpCode::TryStart => Some(OpIR { kind: "try_start".to_string(), value: attr_int(&op.attrs, "value"), out: out_var, ..OpIR::default() }),
+        OpCode::TryEnd => Some(OpIR { kind: "try_end".to_string(), ..OpIR::default() }),
+        OpCode::StateBlockStart => Some(OpIR { kind: "state_block_start".to_string(), value: attr_int(&op.attrs, "value"), ..OpIR::default() }),
+        OpCode::StateBlockEnd => Some(OpIR { kind: "state_block_end".to_string(), ..OpIR::default() }),
 
         // Deopt — emit a hint but not critical.
         OpCode::Deopt => Some(OpIR {
