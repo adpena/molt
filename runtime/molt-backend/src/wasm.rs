@@ -1424,6 +1424,73 @@ impl WasmBackend {
             crate::fold_constants(&mut func_ir.ops);
             crate::passes::hoist_loop_invariants(func_ir);
         }
+        // ── TIR optimization pipeline (default: ON, set MOLT_TIR_OPT=0 to disable) ──
+        if crate::env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
+            let tir_dump = crate::env_setting("TIR_DUMP").as_deref() == Some("1");
+            let tir_stats = crate::env_setting("TIR_OPT_STATS").as_deref() == Some("1");
+            let mut tir_cache = crate::tir::cache::CompilationCache::open(
+                std::path::PathBuf::from(".molt-cache"),
+            );
+            for func_ir in &mut ir.functions {
+                let func_name = func_ir.name.clone();
+                let original_ops = func_ir.ops.clone();
+
+                // Compute a stable content hash from the function name + input ops.
+                let body_bytes = crate::tir::serialize::serialize_ops(&func_ir.ops);
+                let content_hash = crate::tir::cache::CompilationCache::compute_hash(
+                    &func_ir.name,
+                    &body_bytes,
+                );
+
+                // Cache hit: restore previously optimized ops and skip the pipeline.
+                if let Some(cached_bytes) = tir_cache.get(&content_hash) {
+                    if let Some(cached_ops) =
+                        crate::tir::serialize::deserialize_ops(&cached_bytes)
+                    {
+                        func_ir.ops = cached_ops;
+                        continue;
+                    }
+                }
+
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
+                    crate::tir::type_refine::refine_types(&mut tir_func);
+                    let type_map = crate::tir::type_refine::extract_type_map(&tir_func);
+                    let stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                    if tir_dump {
+                        eprintln!("{}", crate::tir::printer::print_function(&tir_func));
+                    }
+                    if tir_stats {
+                        for s in &stats {
+                            eprintln!(
+                                "[TIR] {}: {} changed, {} removed, {} added",
+                                s.name, s.values_changed, s.ops_removed, s.ops_added
+                            );
+                        }
+                    }
+                    crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func, &type_map)
+                }));
+
+                match result {
+                    Ok(optimized_ops) => {
+                        // Store the optimized ops in the cache for future runs.
+                        let serialized =
+                            crate::tir::serialize::serialize_ops(&optimized_ops);
+                        tir_cache.put(&content_hash, &serialized, vec![]);
+                        func_ir.ops = optimized_ops;
+                    }
+                    Err(_panic) => {
+                        eprintln!(
+                            "[TIR] WARNING: optimization panicked on function '{}' (WASM) — falling back to unoptimized.",
+                            func_name
+                        );
+                        func_ir.ops = original_ops;
+                    }
+                }
+            }
+            // Persist the updated cache index so future runs benefit.
+            tir_cache.save_index();
+        }
         crate::inline_functions(&mut ir);
 
         // Megafunction splitting: prevent O(n²) in wasm-encoder for huge functions.
