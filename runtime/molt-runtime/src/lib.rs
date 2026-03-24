@@ -15,6 +15,10 @@ macro_rules! fn_addr {
     };
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[cfg(test)]
 pub(crate) static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

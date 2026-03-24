@@ -32,8 +32,11 @@ use std::sync::OnceLock;
 mod ir;
 mod ir_schema;
 mod json_boundary;
+pub mod tir;
 pub mod luau_ir;
 pub mod luau_lower;
+#[cfg(feature = "llvm")]
+pub mod llvm_backend;
 #[cfg(feature = "native-backend")]
 mod native_backend;
 mod passes;
@@ -1184,7 +1187,7 @@ fn parse_truthy_env(raw: &str) -> bool {
 }
 
 #[cfg(feature = "native-backend")]
-fn env_setting(var: &str) -> Option<String> {
+pub(crate) fn env_setting(var: &str) -> Option<String> {
     std::env::var(var)
         .ok()
         .map(|raw| raw.trim().to_string())
@@ -1610,6 +1613,13 @@ impl SimpleBackend {
             .unwrap_or(false);
         let compile_start = std::time::Instant::now();
         let mut ir = ir;
+        // Backend selection: MOLT_BACKEND=llvm routes through LLVM when the feature is
+        // available; otherwise falls back to Cranelift with a warning.
+        let _use_llvm = env_setting("MOLT_BACKEND").as_deref() == Some("llvm");
+        #[cfg(not(feature = "llvm-backend"))]
+        if _use_llvm {
+            eprintln!("[molt] WARNING: MOLT_BACKEND=llvm requested but llvm-backend feature is not compiled in; falling back to Cranelift");
+        }
         apply_profile_order(&mut ir);
         for func_ir in &mut ir.functions {
             elide_dead_struct_allocs(func_ir);
@@ -1632,6 +1642,118 @@ impl SimpleBackend {
         for func_ir in &mut ir.functions {
             propagate_loop_fast_int(func_ir);
         }
+        // ── GPU kernel detection ──
+        // Functions containing GPU intrinsic ops (gpu_thread_id, gpu_block_id,
+        // etc.) are GPU kernels.  Flag them in metadata so the GPU pipeline can
+        // handle them separately.  For now we log detection and skip TIR
+        // optimization on these functions — the GPU pipeline handles lowering.
+        let mut gpu_kernel_names: Vec<String> = Vec::new();
+        for func_ir in &ir.functions {
+            let is_gpu = func_ir.ops.iter().any(|op| {
+                matches!(
+                    op.kind.as_str(),
+                    "gpu_thread_id"
+                        | "gpu_block_id"
+                        | "gpu_block_dim"
+                        | "gpu_grid_dim"
+                        | "gpu_barrier"
+                )
+            });
+            if is_gpu {
+                gpu_kernel_names.push(func_ir.name.clone());
+            }
+        }
+        if !gpu_kernel_names.is_empty() {
+            eprintln!(
+                "[molt-gpu] Detected {} GPU kernel function(s): {:?}",
+                gpu_kernel_names.len(),
+                gpu_kernel_names
+            );
+        }
+
+        // ── TIR optimization pipeline (default: ON, set MOLT_TIR_OPT=0 to disable) ──
+        // Wrapped in catch_unwind: if TIR panics on a function, that function
+        // falls back to unoptimized SimpleIR. Compilation continues — no silent
+        // failures, no crashes. The panic is logged to stderr.
+        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
+            let tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
+            let tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
+            let mut tir_cache = crate::tir::cache::CompilationCache::open(
+                std::path::PathBuf::from(".molt-cache"),
+            );
+            for func_ir in &mut ir.functions {
+                // GPU kernel functions are handled by the GPU pipeline — skip
+                // normal TIR optimization to avoid lowering GPU intrinsic ops
+                // that the standard passes do not understand.
+                if gpu_kernel_names.contains(&func_ir.name) {
+                    continue;
+                }
+                let func_name = func_ir.name.clone();
+                let original_ops = func_ir.ops.clone(); // backup for fallback
+
+                // Compute a stable content hash from the function name + a
+                // serialization of its input ops. This is the cache key.
+                let body_bytes = crate::tir::serialize::serialize_ops(&func_ir.ops);
+                let content_hash = crate::tir::cache::CompilationCache::compute_hash(
+                    &func_ir.name,
+                    &body_bytes,
+                );
+
+                // Cache hit: if we already have optimized ops for this function,
+                // restore them directly and skip the TIR pipeline entirely.
+                if let Some(cached_bytes) = tir_cache.get(&content_hash) {
+                    if let Some(cached_ops) =
+                        crate::tir::serialize::deserialize_ops(&cached_bytes)
+                    {
+                        func_ir.ops = cached_ops;
+                        continue;
+                    }
+                }
+
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
+                    crate::tir::type_refine::refine_types(&mut tir_func);
+                    let type_map = crate::tir::type_refine::extract_type_map(&tir_func);
+                    let stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                    if tir_dump {
+                        eprintln!("{}", crate::tir::printer::print_function(&tir_func));
+                    }
+                    if tir_stats {
+                        for s in &stats {
+                            eprintln!(
+                                "[TIR] {}: {} changed, {} removed, {} added",
+                                s.name, s.values_changed, s.ops_removed, s.ops_added
+                            );
+                        }
+                    }
+                    crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func, &type_map)
+                }));
+
+                match result {
+                    Ok(optimized_ops) => {
+                        // Store the optimized ops in the cache for future runs.
+                        let serialized =
+                            crate::tir::serialize::serialize_ops(&optimized_ops);
+                        tir_cache.put(&content_hash, &serialized, vec![]);
+                        func_ir.ops = optimized_ops;
+                    }
+                    Err(_panic) => {
+                        // TIR failed on this function — fall back to unoptimized ops.
+                        // Log the failure so it's visible, not silent.
+                        eprintln!(
+                            "[TIR] WARNING: optimization panicked on function '{}' — falling back to unoptimized. \
+                             Set MOLT_TIR_OPT=0 to disable TIR, or report this bug.",
+                            func_name
+                        );
+                        func_ir.ops = original_ops;
+                    }
+                }
+            }
+            // Persist the updated cache index so future runs benefit from
+            // the newly stored entries.
+            tir_cache.save_index();
+        }
+        // Post-TIR: analysis + inlining (from main)
         {
             let analysis = analyze_native_backend_ir(&ir);
             if analysis.needs_inlining && !self.skip_ir_passes {
