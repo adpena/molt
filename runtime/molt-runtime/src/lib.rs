@@ -232,7 +232,10 @@ pub(crate) use crate::builtins::exceptions::{
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
 pub use crate::builtins::fcntl::*;
 pub use crate::builtins::fnmatch::*;
+#[cfg(not(feature = "stdlib_math"))]
 pub use crate::builtins::fractions::*;
+#[cfg(feature = "stdlib_math")]
+pub use molt_runtime_math::fractions::*;
 pub use crate::builtins::functions::*;
 pub use crate::builtins::functools::*;
 #[cfg(feature = "stdlib_fs_extra")]
