@@ -1909,42 +1909,7 @@ impl ConstStrCache {
     fn insert(&mut self, _py: &crate::PyToken<'_>, data_ptr: usize, len: usize, bits: u64) {
         let idx = Self::slot_index(data_ptr, len);
         if let Some(prev) = self.slots[idx].take() {
-            // Validate the evicted entry before dec_ref to catch stale pointers.
-            if let Some(ptr) = crate::obj_from_bits(prev.bits).as_ptr() {
-                unsafe {
-                    let header_ptr = ptr.sub(std::mem::size_of::<crate::object::MoltHeader>())
-                        as *const crate::object::MoltHeader;
-                    let rc = (*header_ptr)
-                        .ref_count
-                        .load(std::sync::atomic::Ordering::Relaxed);
-                    if rc == 0 {
-                        let prev_str = if prev.data_ptr != 0 {
-                            std::str::from_utf8(std::slice::from_raw_parts(
-                                prev.data_ptr as *const u8,
-                                prev.len.min(64),
-                            ))
-                            .unwrap_or("<non-utf8>")
-                        } else {
-                            "<null>"
-                        };
-                        let new_str = std::str::from_utf8(std::slice::from_raw_parts(
-                            data_ptr as *const u8,
-                            len.min(64),
-                        ))
-                        .unwrap_or("<non-utf8>");
-                        eprintln!(
-                            "MOLT CACHE BUG: evicting stale entry slot={} prev_rc=0 prev_bits=0x{:x} \
-                             prev_str=\"{}\" new_bits=0x{:x} new_str=\"{}\"",
-                            idx, prev.bits, prev_str, bits, new_str,
-                        );
-                        // Skip dec_ref of stale entry, continue to store new one.
-                    } else {
-                        dec_ref_bits(_py, prev.bits);
-                    }
-                }
-            } else {
-                dec_ref_bits(_py, prev.bits);
-            }
+            dec_ref_bits(_py, prev.bits);
         }
         inc_ref_bits(_py, bits);
         // Mark the cached string as immortal so dec_ref from generated code
