@@ -16,6 +16,7 @@ pub mod sccp;
 pub mod strength_reduction;
 pub mod type_guard_hoist;
 pub mod unboxing;
+pub mod polyhedral;
 
 /// Statistics returned by each optimization pass.
 #[derive(Debug, Default, Clone)]
