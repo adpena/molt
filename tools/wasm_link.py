@@ -1771,8 +1771,10 @@ def _neutralize_dead_element_entries(data: bytes) -> bytes | None:
         return None
 
     # Rebuild the element section, replacing dead entries with sentinel (0)
+    # in active segments, and removing dead entries from declarative segments.
     new_sections: list[tuple[int, bytes]] = []
     replaced = 0
+    decl_removed = 0
     for sid, payload in sections:
         if sid != 9:
             new_sections.append((sid, payload))
@@ -1783,41 +1785,63 @@ def _neutralize_dead_element_entries(data: bytes) -> bytes | None:
         for seg_i in range(count):
             flags = payload[offset]
             offset += 1
-            if flags != 0:
-                # Passive/declarative segment -- copy remainder as-is
+            if flags == 0:
+                # Active segment for table 0: replace dead entries with 0
+                new_payload.append(flags)
+                # i32.const opcode
+                new_payload.append(payload[offset])
+                offset += 1
+                # LEB128 table offset
+                leb_start = offset
+                _, offset = _read_varuint(payload, offset)
+                new_payload.extend(payload[leb_start:offset])
+                # end opcode
+                new_payload.append(payload[offset])
+                offset += 1
+                # function count
+                leb_start = offset
+                n, offset = _read_varuint(payload, offset)
+                new_payload.extend(payload[leb_start:offset])
+                # rewrite function indices
+                for _ in range(n):
+                    idx, offset = _read_varuint(payload, offset)
+                    if idx in dead_indices:
+                        new_payload.extend(_write_varuint(0))
+                        replaced += 1
+                    else:
+                        new_payload.extend(_write_varuint(idx))
+            elif flags == 3:
+                # Declarative segment (flags=0x03): element kind + count + indices.
+                # Remove dead function declarations entirely so wasm-opt can
+                # eliminate the corresponding function bodies.
+                new_payload.append(flags)
+                elem_kind = payload[offset]
+                new_payload.append(elem_kind)
+                offset += 1
+                n, offset = _read_varuint(payload, offset)
+                live_indices: list[int] = []
+                for _ in range(n):
+                    idx, offset = _read_varuint(payload, offset)
+                    if idx in dead_indices:
+                        decl_removed += 1
+                    else:
+                        live_indices.append(idx)
+                new_payload.extend(_write_varuint(len(live_indices)))
+                for idx in live_indices:
+                    new_payload.extend(_write_varuint(idx))
+            else:
+                # Other segment types -- copy as-is
                 new_payload.append(flags)
                 new_payload.extend(payload[offset:])
                 break
-            new_payload.append(flags)
-            # i32.const opcode
-            new_payload.append(payload[offset])
-            offset += 1
-            # LEB128 table offset
-            leb_start = offset
-            _, offset = _read_varuint(payload, offset)
-            new_payload.extend(payload[leb_start:offset])
-            # end opcode
-            new_payload.append(payload[offset])
-            offset += 1
-            # function count
-            leb_start = offset
-            n, offset = _read_varuint(payload, offset)
-            new_payload.extend(payload[leb_start:offset])
-            # rewrite function indices
-            for _ in range(n):
-                idx, offset = _read_varuint(payload, offset)
-                if idx in dead_indices:
-                    new_payload.extend(_write_varuint(0))
-                    replaced += 1
-                else:
-                    new_payload.extend(_write_varuint(idx))
         new_sections.append((sid, bytes(new_payload)))
 
-    if replaced == 0:
+    if replaced == 0 and decl_removed == 0:
         return None
 
     print(
-        f"Neutralised {replaced:,} dead element entries "
+        f"Neutralised {replaced:,} dead element entries, "
+        f"removed {decl_removed:,} dead declarative refs "
         f"({len(dead_indices):,} unique functions eligible for DCE)",
         file=sys.stderr,
     )
@@ -2622,6 +2646,15 @@ def _post_link_optimize(
     if updated is not None:
         data = updated
 
+    # Neutralize element-table entries for functions that are never directly
+    # called from code.  This makes them eligible for removal by wasm-opt's
+    # --remove-unused-module-elements pass, which otherwise treats every
+    # element entry as a root.  Must run BEFORE _stub_dead_functions so the
+    # call-graph analysis sees the neutralized entries.
+    updated = _neutralize_dead_element_entries(data)
+    if updated is not None:
+        data = updated
+
     updated = _stub_dead_functions(data)
     if updated is not None:
         data = updated
@@ -2826,6 +2859,7 @@ def _validate_linked(linked: Path) -> bool:
 
 # Pass pipelines from docs/spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md Section 4.4.
 _OZ_PASSES: list[str] = [
+    "--closed-world",
     "--remove-unused-module-elements",
     "--remove-unused-names",
     "--strip-debug",
@@ -2838,6 +2872,7 @@ _OZ_PASSES: list[str] = [
 ]
 
 _O3_PASSES: list[str] = [
+    "--closed-world",
     "--remove-unused-module-elements",
     "--remove-unused-names",
     "--coalesce-locals",
