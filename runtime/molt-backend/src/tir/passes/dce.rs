@@ -36,6 +36,10 @@ fn is_side_effecting(opcode: OpCode) -> bool {
         // Control flow / exception handling.
         | OpCode::Raise
         | OpCode::CheckException
+        | OpCode::TryStart
+        | OpCode::TryEnd
+        | OpCode::StateBlockStart
+        | OpCode::StateBlockEnd
         // Generator protocol.
         | OpCode::Yield
         | OpCode::YieldFrom
@@ -50,6 +54,34 @@ fn is_side_effecting(opcode: OpCode) -> bool {
         | OpCode::ImportFrom
         // Deoptimisation must not be silently dropped.
         | OpCode::Deopt
+    )
+}
+
+/// Returns `true` if the op may throw an exception.  Used when
+/// `has_exception_handling` is set to conservatively keep all
+/// potentially-throwing ops alive inside try regions.
+#[inline]
+fn is_potentially_throwing(opcode: OpCode) -> bool {
+    matches!(
+        opcode,
+        OpCode::Call
+        | OpCode::CallMethod
+        | OpCode::CallBuiltin
+        | OpCode::Raise
+        | OpCode::Index
+        | OpCode::StoreIndex
+        | OpCode::LoadAttr
+        | OpCode::StoreAttr
+        | OpCode::DelAttr
+        | OpCode::DelIndex
+        | OpCode::Import
+        | OpCode::ImportFrom
+        | OpCode::Div
+        | OpCode::FloorDiv
+        | OpCode::Mod
+        | OpCode::GetIter
+        | OpCode::IterNext
+        | OpCode::ForIter
     )
 }
 
@@ -169,12 +201,18 @@ fn reachable_blocks(func: &TirFunction) -> HashSet<BlockId> {
 ///   - all of its result values have use-count 0, AND
 ///   - its opcode is not side-effecting.
 ///
+/// When `func.has_exception_handling` is set, ops inside try regions that
+/// may throw are conservatively kept alive (they could transfer control to
+/// an exception handler whose side effects must be preserved).
+///
 /// Returns statistics about the changes made.
 pub fn run(func: &mut TirFunction) -> PassStats {
     let mut stats = PassStats {
         name: "dce",
         ..Default::default()
     };
+
+    let has_eh = func.has_exception_handling;
 
     // --- Phase 1: remove unreachable blocks ---
     let reachable = reachable_blocks(func);
@@ -206,6 +244,26 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 None => continue,
             };
 
+            // Track try-region nesting depth within this block.
+            // Ops between TryStart..TryEnd are "inside a try region".
+            let mut try_depth = Vec::with_capacity(block.ops.len());
+            let mut depth: u32 = 0;
+            for op in &block.ops {
+                match op.opcode {
+                    OpCode::TryStart => {
+                        try_depth.push(depth);
+                        depth += 1;
+                    }
+                    OpCode::TryEnd => {
+                        depth = depth.saturating_sub(1);
+                        try_depth.push(depth);
+                    }
+                    _ => {
+                        try_depth.push(depth);
+                    }
+                }
+            }
+
             // Walk ops in reverse order so that cascading removals within
             // a single pass are applied greedily.
             let mut to_keep: Vec<bool> = vec![true; block.ops.len()];
@@ -215,6 +273,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 if is_side_effecting(op.opcode) {
                     continue;
                 }
+
+                // When inside a try region, conservatively keep ops that
+                // may throw — they represent implicit edges to the handler.
+                if has_eh && try_depth[i] > 0 && is_potentially_throwing(op.opcode) {
+                    continue;
+                }
+
                 // Check whether every result is dead.
                 let all_dead = op
                     .results
