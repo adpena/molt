@@ -1134,6 +1134,8 @@ pub struct SimpleBackend {
     trampoline_ids: BTreeMap<TrampolineKey, cranelift_module::FuncId>,
     import_ids: BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     pub skip_ir_passes: bool,
+    /// Function names that exist in other batches — use Linkage::Import, not trap stubs.
+    pub external_function_names: std::collections::BTreeSet<String>,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     data_pool: BTreeMap<Vec<u8>, cranelift_module::DataId>,
     next_data_id: u64,
@@ -1364,6 +1366,7 @@ impl SimpleBackend {
             trampoline_ids: BTreeMap::new(),
             import_ids: BTreeMap::new(),
             skip_ir_passes: false,
+            external_function_names: std::collections::BTreeSet::new(),
             data_pool: BTreeMap::new(),
             next_data_id: 0,
             declared_func_arities: BTreeMap::new(),
@@ -1535,7 +1538,7 @@ impl SimpleBackend {
         let name = format!("data_pool_{}", *next_data_id);
         *next_data_id += 1;
         let data_id = module
-            .declare_data(&name, Linkage::Export, false, false)
+            .declare_data(&name, Linkage::Local, false, false)
             .unwrap();
         let mut data_ctx = DataDescription::new();
         data_ctx.define(bytes.to_vec().into_boxed_slice());
@@ -1718,6 +1721,11 @@ impl SimpleBackend {
                 })
                 .collect();
         for (fid, name, sig) in declared {
+            // In batched compilation, don't emit trap stubs for functions
+            // that exist in other batches — ld -r will resolve them.
+            if self.external_function_names.contains(&name) {
+                continue;
+            }
             if let Err(e) = Self::emit_trap_stub(&mut self.module, fid, &sig, &name) {
                 eprintln!("WARNING: failed to emit trap stub for `{}`: {}", name, e);
             } else {
