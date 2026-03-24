@@ -1174,7 +1174,7 @@ fn parse_truthy_env(raw: &str) -> bool {
 }
 
 #[cfg(feature = "native-backend")]
-fn env_setting(var: &str) -> Option<String> {
+pub(crate) fn env_setting(var: &str) -> Option<String> {
     std::env::var(var)
         .ok()
         .map(|raw| raw.trim().to_string())
@@ -1598,6 +1598,30 @@ impl SimpleBackend {
         }
         for func_ir in &mut ir.functions {
             propagate_loop_fast_int(func_ir);
+        }
+        // ── TIR optimization pipeline (opt-in via MOLT_TIR_OPT=1) ──
+        // Lowers each function into typed SSA (TIR), runs type refinement +
+        // 8 optimization passes, then converts back to SimpleIR ops.
+        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
+            let tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
+            let tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
+            for func_ir in &mut ir.functions {
+                let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
+                crate::tir::type_refine::refine_types(&mut tir_func);
+                let stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                if tir_dump {
+                    eprintln!("{}", crate::tir::printer::print_function(&tir_func));
+                }
+                if tir_stats {
+                    for s in &stats {
+                        eprintln!(
+                            "[TIR] {}: {} changed, {} removed, {} added",
+                            s.name, s.values_changed, s.ops_removed, s.ops_added
+                        );
+                    }
+                }
+                func_ir.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
+            }
         }
         let mut ir_analysis = analyze_native_backend_ir(&ir);
         if ir_analysis.needs_inlining {
