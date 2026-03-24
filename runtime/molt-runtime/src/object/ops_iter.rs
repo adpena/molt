@@ -1326,6 +1326,12 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                 let target_bits = iter_target_bits(ptr);
                 let target_obj = obj_from_bits(target_bits);
                 let idx = iter_index(ptr);
+                // Validate the target pointer before reading.
+                // If the iterator or its target was freed, target_bits
+                // will be garbage — return done to prevent crash.
+                if !target_obj.is_ptr() {
+                    return generator_done_tuple(_py, MoltObject::none().bits());
+                }
                 if let Some(target_ptr) = target_obj.as_ptr() {
                     let target_type = object_type_id(target_ptr);
                     if target_type == TYPE_ID_SET || target_type == TYPE_ID_FROZENSET {
