@@ -1133,6 +1133,7 @@ pub struct SimpleBackend {
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     trampoline_ids: BTreeMap<TrampolineKey, cranelift_module::FuncId>,
     import_ids: BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    pub skip_ir_passes: bool,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     data_pool: BTreeMap<Vec<u8>, cranelift_module::DataId>,
     next_data_id: u64,
@@ -1362,6 +1363,7 @@ impl SimpleBackend {
             ctx,
             trampoline_ids: BTreeMap::new(),
             import_ids: BTreeMap::new(),
+            skip_ir_passes: false,
             data_pool: BTreeMap::new(),
             next_data_id: 0,
             declared_func_arities: BTreeMap::new(),
@@ -1620,14 +1622,14 @@ impl SimpleBackend {
         }
         {
             let analysis = analyze_native_backend_ir(&ir);
-            if analysis.needs_inlining {
+            if analysis.needs_inlining && !self.skip_ir_passes {
                 inline_functions(&mut ir);
             }
         }
         // Dead function elimination: remove functions that are unreachable from
         // the entry point after inlining.  This reduces code size for both the
         // native object and the downstream linker's work.
-        eliminate_dead_functions(&mut ir);
+        if !self.skip_ir_passes { eliminate_dead_functions(&mut ir); }
         if timing {
             let passes_elapsed = compile_start.elapsed();
             eprintln!("MOLT_BACKEND_TIMING: IR passes took {passes_elapsed:.2?}");
