@@ -2770,12 +2770,14 @@ dependencies = [
 name = "molt-runtime-math"
 version = "0.1.0"
 dependencies = [
+ "digest",
  "libm",
  "molt-lang-obj-model",
  "molt-runtime-core",
  "num-bigint",
  "num-integer",
  "num-traits",
+ "sha2",
 ]
 
 [[package]]

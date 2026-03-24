@@ -13,3 +13,5 @@ pub mod bridge;
 pub mod colorsys;
 pub mod cmath_mod;
 pub mod fractions;
+pub mod math;
+pub mod random_mod;

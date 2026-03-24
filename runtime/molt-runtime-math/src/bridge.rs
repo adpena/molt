@@ -545,3 +545,43 @@ pub fn fill_os_random(buf: &mut [u8]) -> Result<(), ()> {
     let ok = unsafe { __molt_math_fill_os_random(buf.as_mut_ptr(), buf.len()) };
     if ok != 0 { Ok(()) } else { Err(()) }
 }
+
+// ---------------------------------------------------------------------------
+// Mutable container access (for shuffle)
+// ---------------------------------------------------------------------------
+
+pub unsafe fn seq_vec(ptr: *mut u8) -> &'static mut Vec<u64> {
+    unsafe { &mut *__molt_math_seq_vec_ptr(ptr) }
+}
+
+// ---------------------------------------------------------------------------
+// Container / object protocol helpers (used by math + statistics + random)
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn __molt_math_dict_new(capacity_bits: u64) -> u64;
+    fn __molt_math_hash_builtin(val_bits: u64) -> u64;
+    fn __molt_math_slice_new(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64;
+    fn __molt_math_index(obj_bits: u64, key_bits: u64) -> u64;
+    fn __molt_math_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8;
+}
+
+pub fn molt_dict_new(capacity_bits: u64) -> u64 {
+    unsafe { __molt_math_dict_new(capacity_bits) }
+}
+
+pub fn molt_hash_builtin(val_bits: u64) -> u64 {
+    unsafe { __molt_math_hash_builtin(val_bits) }
+}
+
+pub fn molt_slice_new(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
+    unsafe { __molt_math_slice_new(start_bits, stop_bits, step_bits) }
+}
+
+pub fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
+    unsafe { __molt_math_index(obj_bits, key_bits) }
+}
+
+pub fn alloc_bytes(_py: &PyToken, data: &[u8]) -> *mut u8 {
+    unsafe { __molt_math_alloc_bytes(data.as_ptr(), data.len()) }
+}
