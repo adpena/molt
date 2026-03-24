@@ -33,6 +33,7 @@ stdlib_micro = []
 
 # Individual feature groups
 stdlib_crypto = [
+    "dep:molt-runtime-crypto",
     "dep:sha3",
     "dep:blake2", "dep:blake2b_simd", "dep:blake2s_simd",
     "dep:md4", "dep:ripemd",
@@ -45,7 +46,7 @@ stdlib_ast = ["dep:rustpython-parser"]
 stdlib_fs_extra = ["dep:glob", "dep:tempfile"]
 # Granular domain feature gates for resolve_symbol: when disabled, the
 # linker can strip the implementation code for unused domains.
-stdlib_tk = []
+stdlib_tk = ["dep:molt-runtime-tk"]
 stdlib_net = []
 stdlib_asyncio = []
 stdlib_email = []
@@ -78,6 +79,8 @@ wasi_host = ["stdlib_fs_extra"]
 # Core runtime (always required)
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 molt-runtime-core = { path = "../molt-runtime-core" }
+molt-runtime-crypto = { path = "../molt-runtime-crypto", optional = true }
+molt-runtime-tk = { path = "../molt-runtime-tk", optional = true }
 serde_json = "1.0"
 crossbeam-deque = "0.8"
 crossbeam-channel = "0.5"
