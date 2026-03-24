@@ -1733,7 +1733,7 @@ pub unsafe extern "C" fn molt_object_set_class(obj_ptr: *mut u8, class_bits: u64
                 return raise_exception::<_>(_py, "AttributeError", "object has no class");
             }
             let header = header_from_obj_ptr(obj_ptr);
-            if (*header).poll_fn != 0 {
+            if crate::object::object_poll_fn(obj_ptr) != 0 {
                 return raise_exception::<_>(_py, "TypeError", "cannot set class on async object");
             }
             if object_type_id(obj_ptr) == TYPE_ID_DATACLASS {

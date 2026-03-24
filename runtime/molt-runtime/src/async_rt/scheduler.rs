@@ -1853,7 +1853,7 @@ pub(crate) fn await_waiter_register(_py: &PyToken<'_>, waiter_ptr: *mut u8, awai
         std::env::var("MOLT_TRACE_PROMISE").ok().as_deref(),
         Some("1")
     ) {
-        let poll_fn = unsafe { (*header_from_obj_ptr(awaited_ptr)).poll_fn };
+        let poll_fn = unsafe { crate::object::object_poll_fn(awaited_ptr) };
         if poll_fn == promise_poll_fn_addr() {
             eprintln!(
                 "molt async trace: await_register_promise waiter=0x{:x} awaited=0x{:x}",
@@ -1929,7 +1929,7 @@ pub(crate) fn await_waiter_clear(_py: &PyToken<'_>, waiter_ptr: *mut u8) {
         std::env::var("MOLT_TRACE_PROMISE").ok().as_deref(),
         Some("1")
     ) {
-        let poll_fn = unsafe { (*header_from_obj_ptr(awaited_key.0)).poll_fn };
+        let poll_fn = crate::object::object_poll_fn(awaited_key.0);
         if poll_fn == promise_poll_fn_addr() {
             eprintln!(
                 "molt async trace: await_clear_promise waiter=0x{:x} awaited=0x{:x}",
@@ -2093,7 +2093,7 @@ pub(crate) fn task_waiting_on_event(_py: &PyToken<'_>, task_ptr: *mut u8) -> boo
     };
     unsafe {
         let header = header_from_obj_ptr(awaited);
-        let poll_fn = (*header).poll_fn;
+        let poll_fn = crate::object::object_poll_fn(awaited);
         if ((*header).flags & HEADER_FLAG_SPAWN_RETAIN) != 0 {
             return true;
         }
@@ -2203,11 +2203,9 @@ pub(crate) fn block_on_wait_spec(
         ) -> Option<BlockOnWaitSpec> {
             unsafe {
                 let header = header_from_obj_ptr(cursor);
-                let poll_fn = (*header).poll_fn;
+                let poll_fn = crate::object::object_poll_fn(cursor);
                 if poll_fn == io_wait_poll_fn_addr() {
-                    let payload_bytes = (*header)
-                        .size
-                        .saturating_sub(std::mem::size_of::<MoltHeader>());
+                    let payload_bytes = crate::object::object_payload_size(cursor);
                     if payload_bytes < 2 * std::mem::size_of::<u64>() {
                         return None;
                     }
@@ -2300,8 +2298,8 @@ pub(crate) fn record_async_poll(_py: &PyToken<'_>, task_ptr: *mut u8, pending: b
             count,
             task_ptr as usize,
             (*header).type_id,
-            (*header).state,
-            (*header).poll_fn
+            crate::object::object_state(task_ptr),
+            crate::object::object_poll_fn(task_ptr)
         );
     }
 }
@@ -2905,7 +2903,7 @@ impl MoltScheduler {
             unsafe {
                 let task_ptr = task.future_ptr;
                 let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-                let poll_fn_addr = (*header).poll_fn;
+                let poll_fn_addr = crate::object::object_poll_fn(task_ptr);
                 {
                     let _guard = task_queue_lock().lock().unwrap();
                     if ((*header).flags & HEADER_FLAG_TASK_DONE) != 0 {
@@ -3054,7 +3052,7 @@ impl MoltScheduler {
             unsafe {
                 let task_ptr = task.future_ptr;
                 let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-                let poll_fn_addr = (*header).poll_fn;
+                let poll_fn_addr = crate::object::object_poll_fn(task_ptr);
                 {
                     let _guard = task_queue_lock().lock().unwrap();
                     if ((*header).flags & HEADER_FLAG_TASK_DONE) != 0 {
@@ -3393,8 +3391,7 @@ pub unsafe extern "C" fn molt_spawn(task_bits: u64) {
                 return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
             };
             if async_trace_enabled() {
-                let poll_fn =
-                    (*(task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader)).poll_fn;
+                let poll_fn = crate::object::object_poll_fn(task_ptr);
                 eprintln!(
                     "molt async trace: spawn task=0x{:x} poll=0x{:x}",
                     task_ptr as usize, poll_fn
@@ -3441,7 +3438,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             }
             cancel_tokens(_py);
             let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-            let poll_fn_addr = (*header).poll_fn;
+            let poll_fn_addr = crate::object::object_poll_fn(task_ptr);
             if poll_fn_addr == 0 {
                 return 0;
             }
@@ -3538,7 +3535,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                         Some("1")
                     ) {
                         if let Some(ptr) = awaited_ptr {
-                            let poll_fn = (*header_from_obj_ptr(ptr)).poll_fn;
+                            let poll_fn = crate::object::object_poll_fn(ptr);
                             let poll_kind = |addr: u64| -> &'static str {
                                 if addr == async_sleep_poll_fn_addr() {
                                     "sleep"
@@ -3589,7 +3586,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                                 ) {
                                     let mut cursor = ptr;
                                     for depth in 0..8 {
-                                        let cursor_poll = (*header_from_obj_ptr(cursor)).poll_fn;
+                                        let cursor_poll = crate::object::object_poll_fn(cursor);
                                         let cursor_kind = poll_kind(cursor_poll);
                                         eprintln!(
                                             "molt async trace: block_on_chain depth={} ptr=0x{:x} poll=0x{:x} kind={}",

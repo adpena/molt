@@ -24919,6 +24919,12 @@ def main() -> int:
         help="Build profile for backend/runtime (default: release).",
     )
     build_parser.add_argument(
+        "--backend",
+        choices=["cranelift", "llvm", "auto"],
+        default="auto",
+        help="Compilation backend (auto=cranelift for dev, llvm for release).",
+    )
+    build_parser.add_argument(
         "--profile",
         "--platform",
         choices=["cloudflare", "browser", "wasi", "fastly"],
@@ -26053,6 +26059,7 @@ def main() -> int:
             or build_cfg.get("build_profile")
             or "release"
         )
+        backend_choice = getattr(args, "backend", "auto") or "auto"
         linked_output_path = (
             args.linked_output
             or build_cfg.get("linked_output")
@@ -26205,6 +26212,13 @@ def main() -> int:
                 wasm_profile = defaults["wasm_profile"]
             if stdlib_profile is None and "stdlib_profile" in defaults:
                 stdlib_profile = defaults["stdlib_profile"]
+
+        # --backend: resolve effective backend and propagate via MOLT_BACKEND.
+        # "auto" means cranelift for dev builds, llvm for release.
+        effective_backend = backend_choice
+        if effective_backend == "auto":
+            effective_backend = "llvm" if build_profile == "release" else "cranelift"
+        os.environ["MOLT_BACKEND"] = effective_backend
 
         return build(
             args.file,
