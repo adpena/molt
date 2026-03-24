@@ -1069,16 +1069,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             return;
         }
         let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-        // Validate the header is a real MoltHeader by checking type_id range.
-        // If the pointer is garbage (freed, corrupted, never allocated),
-        // the type_id will be random bits — catch it here instead of corrupting
-        // the heap further. This is the defensive guard that prevents ALL
-        // heap corruption from incorrect codegen dec_ref calls.
         let type_id = (*header_ptr).type_id;
-        if type_id > 255 {
-            // Bad pointer — type_id is out of range. Skip dec_ref.
-            return;
-        }
         let header = &mut *header_ptr;
         if type_id == TYPE_ID_NOT_IMPLEMENTED {
             return;
