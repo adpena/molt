@@ -2062,6 +2062,7 @@ dependencies = [
  "memchr",
  "mio",
  "molt-lang-obj-model",
+ "molt-runtime-core",
  "num-bigint",
  "num-integer",
  "num-traits",
@@ -2093,6 +2094,13 @@ dependencies = [
  "wtf8",
  "xz2",
  "zip",
+]
+
+[[package]]
+name = "molt-runtime-core"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-obj-model",
 ]
 
 [[package]]
