@@ -986,6 +986,21 @@ pub(crate) fn alloc_bytes_like_with_len(_py: &PyToken<'_>, len: usize, type_id: 
 /// Cached empty string singleton. Uses AtomicU64 to avoid recursive init panics on WASM.
 static EMPTY_STRING_PTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Molt-level string intern pool: maps identifier-like ASCII strings to their immortal
+/// Molt object pointer (stored as `usize` to be `Send`).
+///
+/// Only strings that pass `string_intern::is_identifier_like` are candidates.  The
+/// objects stored here are marked `HEADER_FLAG_IMMORTAL | HEADER_FLAG_INTERNED` so the
+/// GC never frees them, and repeated allocations of the same identifier return the same
+/// heap object (pointer equality).
+fn molt_string_intern_pool(
+) -> &'static std::sync::Mutex<std::collections::HashMap<Box<[u8]>, usize>> {
+    static POOL: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<Box<[u8]>, usize>>,
+    > = std::sync::OnceLock::new();
+    POOL.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
 pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
     if bytes.is_empty() {
         let cached = EMPTY_STRING_PTR.load(std::sync::atomic::Ordering::Relaxed);
@@ -1009,6 +1024,56 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
         };
         return bits as *mut u8;
     }
+
+    // Auto-intern ASCII identifier-like strings (e.g. attribute names, keyword
+    // identifiers).  These are the most frequently allocated strings in typical
+    // Python programs, and making them immortal singletons allows pointer-equality
+    // comparisons instead of byte-by-byte scans.
+    //
+    // Fast pre-check: all bytes must be ASCII and the string must look like an
+    // identifier.  We use `is_identifier_like` from string_intern which is a
+    // purely byte-level check with no allocation.
+    let is_ident =
+        bytes.is_ascii() && crate::object::string_intern::is_identifier_like(
+            // SAFETY: we just verified all bytes are ASCII which is a subset of UTF-8.
+            unsafe { std::str::from_utf8_unchecked(bytes) },
+        );
+    if is_ident {
+        // Check the Molt-level pool first (no allocation on hit).
+        if let Ok(pool) = molt_string_intern_pool().lock() {
+            if let Some(&raw) = pool.get(bytes) {
+                // Cache hit: return the existing immortal object directly.
+                return raw as *mut u8;
+            }
+        }
+        // Pool miss: allocate a new string object, mark it immortal+interned, and
+        // insert it into the pool so future allocations reuse this object.
+        let ptr = alloc_bytes_like_with_len(_py, bytes.len(), TYPE_ID_STRING);
+        if ptr.is_null() {
+            return ptr;
+        }
+        unsafe {
+            let data_ptr = ptr.add(std::mem::size_of::<usize>());
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
+            let header = header_from_obj_ptr(ptr);
+            (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL
+                | crate::object::HEADER_FLAG_INTERNED;
+            (*header).ref_count.store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+        }
+        // Insert into pool; on concurrent miss (two threads race) we accept the
+        // redundant allocation — the first writer wins and the second allocation
+        // leaks harmlessly (both are immortal, pool holds the canonical one).
+        if let Ok(mut pool) = molt_string_intern_pool().lock() {
+            pool.entry(bytes.to_vec().into_boxed_slice())
+                .or_insert(ptr as usize);
+            // Re-read: if another thread won the race, prefer their pointer.
+            if let Some(&canonical) = pool.get(bytes) {
+                return canonical as *mut u8;
+            }
+        }
+        return ptr;
+    }
+
     let ptr = alloc_bytes_like_with_len(_py, bytes.len(), TYPE_ID_STRING);
     if ptr.is_null() {
         return ptr;

@@ -1006,9 +1006,7 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             let payload_len = payload_bytes / std::mem::size_of::<u64>();
             if payload_len < 2 {
                 return raise_exception::<i64>(_py, "TypeError", "io wait payload too small");
@@ -1022,7 +1020,7 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
                     eprintln!(
                         "molt io_wait error: invalid socket bits=0x{:x} state={}",
                         socket_bits,
-                        (*header).state
+                        crate::object::object_state(obj_ptr)
                     );
                 }
                 return raise_exception::<i64>(_py, "TypeError", "invalid socket");
@@ -1031,7 +1029,7 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
             if events == 0 {
                 return raise_exception::<i64>(_py, "ValueError", "events must be non-zero");
             }
-            if (*header).state == 0 {
+            if crate::object::object_state(obj_ptr) == 0 {
                 let mut timeout: Option<f64> = None;
                 if payload_len >= 3 {
                     let timeout_bits = *payload_ptr.add(2);
@@ -1090,7 +1088,7 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
                     }
                     return raise_os_error::<i64>(_py, err, "io_wait");
                 }
-                (*header).state = 1;
+                crate::object::object_set_state(obj_ptr, 1);
                 return pending_bits_i64();
             }
             if let Some(mask) = runtime_state(_py).io_poller().take_ready(obj_ptr) {
@@ -1224,9 +1222,7 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             let header = header_from_obj_ptr(obj_ptr);
-            let payload_bytes = (*header)
-                .size
-                .saturating_sub(std::mem::size_of::<MoltHeader>());
+            let payload_bytes = crate::object::object_payload_size(obj_ptr);
             let payload_len = payload_bytes / std::mem::size_of::<u64>();
             if payload_len < 2 {
                 return raise_exception::<i64>(_py, "TypeError", "io wait payload too small");
@@ -1245,7 +1241,7 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
             if events == 0 {
                 return raise_exception::<i64>(_py, "ValueError", "events must be non-zero");
             }
-            if (*header).state == 0 {
+            if crate::object::object_state(obj_ptr) == 0 {
                 let mut timeout: Option<f64> = None;
                 if payload_len >= 3 {
                     let timeout_bits = *payload_ptr.add(2);
@@ -1287,7 +1283,7 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
                 {
                     return raise_exception::<i64>(_py, "RuntimeError", &err.to_string());
                 }
-                (*header).state = 1;
+                crate::object::object_set_state(obj_ptr, 1);
                 return pending_bits_i64();
             }
             if let Some(mask) = runtime_state(_py).io_poller().take_ready(obj_ptr) {
