@@ -179,7 +179,7 @@ pub fn release_ptr(ptr: *mut u8) {
 
 /// Allocate a string object.
 #[inline]
-pub fn alloc_string(_py: &PyToken, s: &str) -> *mut u8 {
+pub fn alloc_string(_py: &PyToken, s: &[u8]) -> *mut u8 {
     unsafe { molt_bridge_alloc_string(s.as_ptr(), s.len()) }
 }
 
