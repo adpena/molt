@@ -33,6 +33,7 @@ pub mod wasm_streaming;
 pub mod mlir_bridge;
 pub mod gpu_mlx;
 pub mod bolt;
+pub mod tests_roundtrip;
 
 /// Returns true for SimpleIR ops that are purely structural control-flow
 /// markers (if/else/end_if/loop_start/loop_end/label/state_label) and should
