@@ -72,6 +72,7 @@ pub(crate) mod lzma;
 #[cfg(all(feature = "stdlib_compression", target_arch = "wasm32"))]
 #[path = "lzma_wasm.rs"]
 pub(crate) mod lzma;
+#[cfg(not(feature = "stdlib_math"))]
 pub(crate) mod math;
 pub(crate) mod methods;
 pub(crate) mod modules;
