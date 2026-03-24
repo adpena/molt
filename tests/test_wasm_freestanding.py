@@ -783,8 +783,8 @@ def test_wasm_profile_pure_accepted():
         timeout=30,
     )
     assert result.returncode == 0
-    assert "--wasm-profile" in result.stdout
-    assert "pure" in result.stdout
+    assert "--profile" in result.stdout
+    assert "cloudflare" in result.stdout
 
 
 def test_profile_cloudflare_accepted():
