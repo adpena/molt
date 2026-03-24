@@ -228,7 +228,7 @@ impl<'a> HipGenContext<'a> {
                     return None;
                 }
                 let result = self.value_name(&op.results[0]);
-                let val = match op.attrs.get("value") {
+                let val = match op.attrs.get("f_value").or_else(|| op.attrs.get("value")) {
                     Some(AttrValue::Float(v)) => *v,
                     _ => 0.0,
                 };
