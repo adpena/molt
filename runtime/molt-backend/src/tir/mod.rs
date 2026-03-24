@@ -22,6 +22,7 @@ pub mod gpu_hip;
 pub mod mlir_compat;
 pub mod deopt;
 pub mod gpu_runtime;
+pub mod serialize;
 
 /// Returns true for SimpleIR ops that are purely structural control-flow
 /// markers (if/else/end_if/loop_start/loop_end/label/state_label) and should
