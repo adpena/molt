@@ -1863,6 +1863,8 @@ pub fn split_large_function(func: FunctionIR, max_ops: usize) -> Result<(Functio
         false
     };
 
+    eprintln!("SPLIT-DEBUG fn={}: forbidden_ranges={:?}", func.name, forbidden_ranges);
+
     let mut split_candidates: Vec<usize> = Vec::new();
     let mut depth: i32 = 0;
 

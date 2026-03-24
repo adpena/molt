@@ -8,6 +8,7 @@ pub mod compression_common;
 pub mod bz2;
 pub mod gzip;
 pub mod zlib;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod lzma;
 pub mod lzma_wasm;
 pub mod tarfile;
