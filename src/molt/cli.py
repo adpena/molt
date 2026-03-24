@@ -25073,7 +25073,21 @@ def main() -> int:
     )
 
     check_parser = subparsers.add_parser(
-        "check", help="Type-check without compiling"
+        "check",
+        help="Type-check without compiling",
+        description=(
+            "Analyze a Python file or package and emit type facts without compiling.\n"
+            "Type facts can be fed into `molt build --type-facts` for guided specialization."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt check src/app.py                  Type-check a file\n"
+            "  molt check src/                        Type-check a package directory\n"
+            "  molt check src/app.py --strict         Emit strict-tier type facts\n"
+            "  molt check src/app.py --output facts.json\n"
+            "                                         Write facts to a custom path\n"
+        ),
     )
     check_parser.add_argument("path", help="Python file or package directory")
     check_parser.add_argument(
@@ -25187,7 +25201,16 @@ def main() -> int:
     )
 
     compare_parser = subparsers.add_parser(
-        "compare", help="Compare CPython vs Molt output"
+        "compare",
+        help="Compare CPython vs Molt output",
+        description="Build and run a Python file with both CPython and Molt, then compare output.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt compare app.py                    Compare output side by side\n"
+            "  molt compare app.py --python 3.13      Compare against Python 3.13\n"
+            "  molt compare app.py -- --flag           Pass args to both interpreters\n"
+        ),
     )
     compare_parser.add_argument("file", nargs="?", help="Path to Python source")
     compare_parser.add_argument(
@@ -25275,7 +25298,24 @@ def main() -> int:
         help="Arguments passed to the script (use -- to separate).",
     )
 
-    test_parser = subparsers.add_parser("test", help="Discover and run tests")
+    test_parser = subparsers.add_parser(
+        "test",
+        help="Discover and run tests",
+        description=(
+            "Discover and run test suites.\n"
+            "Supports Molt's built-in dev suite, CPython differential tests, and pytest."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt test                             Run the default dev test suite\n"
+            "  molt test --suite diff                Run differential tests against CPython\n"
+            "  molt test --suite pytest              Run tests with pytest\n"
+            "  molt test tests/test_math.py          Run a specific test file\n"
+            "  molt test --suite diff --profile release\n"
+            "                                        Diff tests with release builds\n"
+        ),
+    )
     test_parser.add_argument(
         "--suite",
         choices=["dev", "diff", "pytest"],
@@ -25313,7 +25353,16 @@ def main() -> int:
     )
 
     diff_parser = subparsers.add_parser(
-        "diff", help="Run differential tests against CPython"
+        "diff",
+        help="Run differential tests against CPython",
+        description="Run differential tests that compare Molt output against CPython.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt diff                              Run all diff tests\n"
+            "  molt diff tests/parity/               Run diff tests in a directory\n"
+            "  molt diff --python-version 3.13        Test against Python 3.13\n"
+        ),
     )
     diff_parser.add_argument("path", nargs="?", help="File or directory to test.")
     diff_parser.add_argument(
@@ -25339,7 +25388,22 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
-    bench_parser = subparsers.add_parser("bench", help="Run benchmarks")
+    bench_parser = subparsers.add_parser(
+        "bench",
+        help="Run benchmarks",
+        description=(
+            "Run performance benchmarks.\n"
+            "Uses the native bench harness by default, or the WASM harness with --wasm."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt bench                             Run all benchmarks\n"
+            "  molt bench --wasm                      Run WASM benchmarks\n"
+            "  molt bench --script bench/fib.py       Benchmark a custom script\n"
+            "  molt bench -- --filter sort             Pass args to bench tool\n"
+        ),
+    )
     bench_parser.add_argument(
         "--wasm", action="store_true", help="Use the WASM bench harness."
     )
@@ -25362,7 +25426,11 @@ def main() -> int:
         help="Arguments passed to the bench tool (use -- to separate).",
     )
 
-    profile_parser = subparsers.add_parser("profile", help="Profile benchmarks")
+    profile_parser = subparsers.add_parser(
+        "profile",
+        help="Profile benchmarks",
+        description="Profile Molt benchmarks with detailed performance instrumentation.",
+    )
     profile_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
@@ -25375,7 +25443,11 @@ def main() -> int:
         help="Arguments passed to the profile tool (use -- to separate).",
     )
 
-    lint_parser = subparsers.add_parser("lint", help="Run linting checks")
+    lint_parser = subparsers.add_parser(
+        "lint",
+        help="Run linting checks",
+        description="Run Molt-specific linting checks on the project.",
+    )
     lint_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
@@ -25383,7 +25455,14 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
-    doctor_parser = subparsers.add_parser("doctor", help="Check toolchain setup")
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Check toolchain setup",
+        description=(
+            "Verify that the Molt toolchain is installed and configured correctly.\n"
+            "Checks for Rust/Cargo, wasm-opt, wasmtime, and other dependencies."
+        ),
+    )
     doctor_parser.add_argument(
         "--strict",
         action="store_true",
