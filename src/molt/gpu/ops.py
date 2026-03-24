@@ -56,7 +56,7 @@ def reduce(buf: Buffer, op: str = 'sum', initial=None):
     """
     n = buf.size
     if n == 0:
-        return initial or 0
+        return initial if initial is not None else 0
 
     fmt = 'd' if buf.element_type == float else 'q'
     values = [struct.unpack_from(fmt, buf._data, i * 8)[0] for i in range(n)]
@@ -117,7 +117,12 @@ def scan(buf: Buffer, op: str = 'sum', exclusive: bool = False) -> Buffer:
     fmt = 'd' if buf.element_type == float else 'q'
     values = [struct.unpack_from(fmt, buf._data, i * 8)[0] for i in range(n)]
 
-    identity = {'sum': 0, 'product': 1, 'min': float('inf'), 'max': float('-inf')}
+    # Use type-appropriate identity values so they can be packed into the buffer's format.
+    # For int buffers, float('inf') cannot be packed as 'q'; use 2**62 instead.
+    if buf.element_type == float:
+        identity = {'sum': 0.0, 'product': 1.0, 'min': float('inf'), 'max': float('-inf')}
+    else:
+        identity = {'sum': 0, 'product': 1, 'min': 2**62, 'max': -(2**62)}
     combine = {
         'sum': lambda a, b: a + b,
         'product': lambda a, b: a * b,
@@ -191,6 +196,9 @@ def scatter(buf: Buffer, indices: Buffer, values: Buffer) -> Buffer:
 
 def where(cond: Buffer, a: Buffer, b: Buffer) -> Buffer:
     """Element-wise conditional select: result[i] = a[i] if cond[i] else b[i].
+
+    Note: condition buffer must contain int values (0=false, nonzero=true).
+    Float conditions use the raw bit pattern.
 
     Example:
         result = gpu.ops.where(mask, data_a, data_b)

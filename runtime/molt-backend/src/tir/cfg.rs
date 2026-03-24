@@ -441,10 +441,22 @@ fn intersect_dom(
 ) -> usize {
     while a != b {
         while rpo_number[a] > rpo_number[b] {
-            a = idom[a].unwrap_or(a);
+            // Guard against self-loop: if idom[a] == a (entry node), stop.
+            match idom[a] {
+                Some(d) if d != a => a = d,
+                _ => break,
+            }
         }
         while rpo_number[b] > rpo_number[a] {
-            b = idom[b].unwrap_or(b);
+            // Guard against self-loop: if idom[b] == b (entry node), stop.
+            match idom[b] {
+                Some(d) if d != b => b = d,
+                _ => break,
+            }
+        }
+        // If neither side can advance further, break to prevent infinite loop.
+        if rpo_number[a] == rpo_number[b] && a != b {
+            break;
         }
     }
     a

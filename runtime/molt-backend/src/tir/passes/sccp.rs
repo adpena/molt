@@ -26,6 +26,14 @@ enum LatticeValue {
 }
 
 /// Concrete constant values carried through the lattice.
+///
+/// # NaN note
+/// The derived `PartialEq` for `Float(f64)` uses `f64::eq`, which returns
+/// `false` for NaN == NaN. In practice this only affects programs that fold
+/// a constant NaN value — an extremely rare case — and the worst outcome is
+/// a missed constant-fold (the lattice value stays Bottom rather than being
+/// collapsed to a constant NaN). A future improvement would be to implement
+/// `PartialEq` manually using `f64::to_bits()` for bit-exact NaN comparison.
 #[derive(Debug, Clone, PartialEq)]
 enum ConstVal {
     Int(i64),
