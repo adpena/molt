@@ -407,12 +407,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         // SCF ops — handled separately via terminators in Phase 2.
         OpCode::ScfIf | OpCode::ScfFor | OpCode::ScfWhile | OpCode::ScfYield => None,
 
-        // Exception / state machine structural ops — pass through with value field.
-        OpCode::TryStart => Some(OpIR { kind: "try_start".to_string(), value: attr_int(&op.attrs, "value"), out: out_var, ..OpIR::default() }),
-        OpCode::TryEnd => Some(OpIR { kind: "try_end".to_string(), ..OpIR::default() }),
-        OpCode::StateBlockStart => Some(OpIR { kind: "state_block_start".to_string(), value: attr_int(&op.attrs, "value"), ..OpIR::default() }),
-        OpCode::StateBlockEnd => Some(OpIR { kind: "state_block_end".to_string(), ..OpIR::default() }),
-
         // Deopt — emit a hint but not critical.
         OpCode::Deopt => Some(OpIR {
             kind: "deopt".to_string(),

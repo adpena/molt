@@ -489,10 +489,12 @@ thread_local! {
         RefCell::new(vec![Vec::new(); OBJECT_POOL_BUCKETS]);
 }
 
+#[inline(always)]
 pub(crate) fn obj_from_bits(bits: u64) -> MoltObject {
     MoltObject::from_bits(bits)
 }
 
+#[inline(always)]
 pub(crate) fn inc_ref_bits(_py: &PyToken<'_>, bits: u64) {
     let obj = obj_from_bits(bits);
     if let Some(ptr) = obj.as_ptr() {
@@ -500,6 +502,7 @@ pub(crate) fn inc_ref_bits(_py: &PyToken<'_>, bits: u64) {
     }
 }
 
+#[inline(always)]
 pub(crate) fn dec_ref_bits(_py: &PyToken<'_>, bits: u64) {
     let obj = obj_from_bits(bits);
     if let Some(ptr) = obj.as_ptr() {
@@ -754,6 +757,7 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
     }
 }
 
+#[inline(always)]
 pub(crate) unsafe fn header_from_obj_ptr(ptr: *mut u8) -> *mut MoltHeader {
     unsafe { ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader }
 }
@@ -785,6 +789,7 @@ fn profile_alloc_type_bytes(_py: &PyToken<'_>, type_id: u32, total_size: usize) 
     }
 }
 
+#[inline(always)]
 pub(crate) unsafe fn object_type_id(ptr: *mut u8) -> u32 {
     unsafe { (*header_from_obj_ptr(ptr)).type_id }
 }
@@ -865,14 +870,17 @@ pub(crate) unsafe fn object_mark_has_ptrs(_py: &PyToken<'_>, ptr: *mut u8) {
     }
 }
 
+#[inline(always)]
 pub(crate) unsafe fn string_len(ptr: *mut u8) -> usize {
     unsafe { *(ptr as *const usize) }
 }
 
+#[inline(always)]
 pub(crate) unsafe fn string_bytes(ptr: *mut u8) -> *const u8 {
     unsafe { ptr.add(std::mem::size_of::<usize>()) }
 }
 
+#[inline(always)]
 pub(crate) unsafe fn bytes_len(ptr: *mut u8) -> usize {
     unsafe {
         if object_type_id(ptr) == TYPE_ID_BYTEARRAY {
@@ -1014,7 +1022,7 @@ pub(crate) fn maybe_ptr_from_bits(bits: u64) -> Option<*mut u8> {
     obj.as_ptr()
 }
 
-#[inline]
+#[inline(always)]
 pub(crate) fn ptr_from_bits(bits: u64) -> *mut u8 {
     let obj = obj_from_bits(bits);
     if obj.is_ptr() {
@@ -1023,7 +1031,7 @@ pub(crate) fn ptr_from_bits(bits: u64) -> *mut u8 {
     resolve_ptr(bits).unwrap_or(std::ptr::null_mut())
 }
 
-#[inline]
+#[inline(always)]
 pub(crate) fn bits_from_ptr(ptr: *mut u8) -> u64 {
     register_ptr(ptr)
 }
@@ -1052,6 +1060,7 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
 
 /// # Safety
 /// Dereferences raw pointer to increment ref count.
+#[inline(always)]
 pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
         crate::gil_assert();
@@ -1192,6 +1201,7 @@ unsafe fn maybe_run_object_finalizer(
 
 /// # Safety
 /// Dereferences raw pointer to decrement ref count. Frees memory if count reaches 0.
+#[inline(always)]
 pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
         crate::gil_assert();
@@ -1249,12 +1259,12 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 );
             }
             if header.type_id == TYPE_ID_FUNCTION
-                && matches!(
-                    std::env::var("MOLT_TRACE_DECREF_ZERO_FUNCTION")
-                        .ok()
-                        .as_deref(),
-                    Some("1")
-                )
+                && {
+                    static TRACE: OnceLock<bool> = OnceLock::new();
+                    *TRACE.get_or_init(|| {
+                        std::env::var("MOLT_TRACE_DECREF_ZERO_FUNCTION").as_deref() == Ok("1")
+                    })
+                }
             {
                 // Debug-only: cached builtin function objects must not be freed while still cached.
                 // When they do hit zero, capture a backtrace to identify the incorrect owner.

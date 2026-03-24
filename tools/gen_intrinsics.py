@@ -190,10 +190,10 @@ def _validate_symbols(entries: list[tuple[str, str, int]]) -> None:
     src_root = ROOT / "runtime/molt-runtime/src"
     rs_files = list(src_root.rglob("*.rs"))
     corpus = "\n".join(path.read_text() for path in rs_files)
-    missing = []
-    for _name, symbol, _arity in entries:
-        if re.search(rf"\bfn\s+{re.escape(symbol)}\b", corpus) is None:
-            missing.append(symbol)
+    # Single-pass: extract all function names defined in the corpus — O(n+m)
+    # instead of O(n*m) regex searches per symbol
+    defined_fns = set(re.findall(r"\bfn\s+(\w+)", corpus))
+    missing = [sym for _name, sym, _arity in entries if sym not in defined_fns]
     if missing:
         missing_list = ", ".join(sorted(set(missing)))
         raise RuntimeError(f"missing intrinsic symbols in runtime: {missing_list}")
