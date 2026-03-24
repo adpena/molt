@@ -17,6 +17,7 @@ pub mod parallel;
 pub mod gpu;
 pub mod gpu_msl;
 pub mod gpu_wgsl;
+pub mod mlir_compat;
 
 /// Returns true for SimpleIR ops that are purely structural control-flow
 /// markers (if/else/end_if/loop_start/loop_end/label/state_label) and should
