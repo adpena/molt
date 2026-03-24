@@ -3,6 +3,7 @@
 
 pub mod bce;
 pub mod cha;
+pub mod vectorize;
 pub mod dce;
 pub mod interprocedural;
 pub mod escape_analysis;
