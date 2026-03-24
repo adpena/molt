@@ -242,65 +242,61 @@ pub struct MetalDevice {
 }
 
 #[cfg(all(target_os = "macos", not(feature = "gpu-metal")))]
+const METAL_STUB_MSG: &str = "Metal GPU support requires the `gpu-metal` feature";
+
+#[cfg(all(target_os = "macos", not(feature = "gpu-metal")))]
 impl MetalDevice {
     pub fn new() -> Result<Self, GpuError> {
-        Ok(Self {
-            _phantom: std::marker::PhantomData,
-        })
+        Err(GpuError::DeviceNotAvailable(METAL_STUB_MSG.into()))
     }
 
-    pub fn compile_msl(&self, name: &str, msl_source: &str) -> Result<CompiledKernel, GpuError> {
-        Ok(CompiledKernel::new(
-            name.to_string(),
-            GpuPlatform::Metal,
-            msl_source.as_bytes().to_vec(),
-        ))
+    pub fn compile_msl(&self, _name: &str, _msl_source: &str) -> Result<CompiledKernel, GpuError> {
+        Err(GpuError::DeviceNotAvailable(METAL_STUB_MSG.into()))
     }
 
     pub fn dispatch(
         &self,
         _kernel: &CompiledKernel,
-        grid: [u32; 3],
-        block: [u32; 3],
+        _grid: [u32; 3],
+        _block: [u32; 3],
         _buffers: &[&GpuBufferHandle],
     ) -> Result<(), GpuError> {
-        let _ = (grid, block);
-        Ok(())
+        Err(GpuError::DeviceNotAvailable(METAL_STUB_MSG.into()))
     }
 }
 
 #[cfg(all(target_os = "macos", not(feature = "gpu-metal")))]
 impl GpuDevice for MetalDevice {
-    fn compile_kernel(&self, name: &str, source: &str) -> Result<CompiledKernel, GpuError> {
-        self.compile_msl(name, source)
+    fn compile_kernel(&self, _name: &str, _source: &str) -> Result<CompiledKernel, GpuError> {
+        Err(GpuError::DeviceNotAvailable(METAL_STUB_MSG.into()))
     }
-    fn alloc_buffer(&self, size_bytes: usize) -> Result<GpuBufferHandle, GpuError> {
-        Ok(GpuBufferHandle::new(size_bytes, GpuPlatform::Metal, vec![0; 8]))
+    fn alloc_buffer(&self, _size_bytes: usize) -> Result<GpuBufferHandle, GpuError> {
+        Err(GpuError::DeviceNotAvailable(METAL_STUB_MSG.into()))
     }
     fn copy_to_device(&self, _buffer: &GpuBufferHandle, _data: &[u8]) -> Result<(), GpuError> {
-        Ok(())
+        Err(GpuError::DeviceNotAvailable(METAL_STUB_MSG.into()))
     }
     fn copy_from_device(
         &self,
         _buffer: &GpuBufferHandle,
         _data: &mut [u8],
     ) -> Result<(), GpuError> {
-        Ok(())
+        Err(GpuError::DeviceNotAvailable(METAL_STUB_MSG.into()))
     }
     fn launch_kernel(
         &self,
-        kernel: &CompiledKernel,
-        grid: [u32; 3],
-        block: [u32; 3],
-        buffers: &[&GpuBufferHandle],
+        _kernel: &CompiledKernel,
+        _grid: [u32; 3],
+        _block: [u32; 3],
+        _buffers: &[&GpuBufferHandle],
     ) -> Result<(), GpuError> {
-        self.dispatch(kernel, grid, block, buffers)
+        Err(GpuError::DeviceNotAvailable(METAL_STUB_MSG.into()))
     }
     fn synchronize(&self) -> Result<(), GpuError> {
-        Ok(())
+        Err(GpuError::DeviceNotAvailable(METAL_STUB_MSG.into()))
     }
     fn free_buffer(&self, _buffer: GpuBufferHandle) -> Result<(), GpuError> {
-        Ok(())
+        Err(GpuError::DeviceNotAvailable(METAL_STUB_MSG.into()))
     }
 }
 
@@ -310,20 +306,26 @@ impl GpuDevice for MetalDevice {
 #[cfg(target_os = "macos")]
 mod tests {
     use super::*;
+    #[cfg(feature = "gpu-metal")]
     use crate::tir::gpu_runtime::GpuDevice;
 
     #[test]
+    #[cfg(feature = "gpu-metal")]
     fn metal_device_creates_successfully() {
         let device = MetalDevice::new().expect("MetalDevice::new should succeed");
-        #[cfg(feature = "gpu-metal")]
-        {
-            let name = device.device_name();
-            assert!(!name.is_empty(), "Metal device should have a name");
-        }
-        let _ = device;
+        let name = device.device_name();
+        assert!(!name.is_empty(), "Metal device should have a name");
     }
 
     #[test]
+    #[cfg(not(feature = "gpu-metal"))]
+    fn metal_device_stub_returns_error() {
+        let result = MetalDevice::new();
+        assert!(result.is_err(), "Stub MetalDevice::new should fail");
+    }
+
+    #[test]
+    #[cfg(feature = "gpu-metal")]
     fn metal_device_compile_msl_vector_add() {
         let device = MetalDevice::new().expect("MetalDevice::new should succeed");
         let msl = r#"
@@ -347,17 +349,16 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "gpu-metal")]
     fn metal_device_compile_invalid_msl_fails() {
         let device = MetalDevice::new().expect("MetalDevice::new should succeed");
         let bad_msl = "this is not valid MSL code at all!!!";
         let result = device.compile_msl("bad_kernel", bad_msl);
-        #[cfg(feature = "gpu-metal")]
         assert!(result.is_err(), "Invalid MSL should fail compilation");
-        #[cfg(not(feature = "gpu-metal"))]
-        assert!(result.is_ok(), "Stub always succeeds");
     }
 
     #[test]
+    #[cfg(feature = "gpu-metal")]
     fn metal_device_compile_wrong_function_name_fails() {
         let device = MetalDevice::new().expect("MetalDevice::new should succeed");
         let msl = r#"
@@ -369,22 +370,20 @@ mod tests {
             }
         "#;
         let result = device.compile_msl("wrong_name", msl);
-        #[cfg(feature = "gpu-metal")]
         assert!(result.is_err(), "Wrong function name should fail");
-        #[cfg(not(feature = "gpu-metal"))]
-        assert!(result.is_ok(), "Stub always succeeds");
     }
 
     #[test]
+    #[cfg(feature = "gpu-metal")]
     fn metal_device_implements_gpu_device_trait() {
         let device = MetalDevice::new().expect("MetalDevice::new should succeed");
-        // Use the trait method to get a GpuBufferHandle.
         let buf = GpuDevice::alloc_buffer(&device, 1024).expect("alloc_buffer should succeed");
         assert_eq!(buf.size_bytes, 1024);
         assert_eq!(buf.platform, GpuPlatform::Metal);
     }
 
     #[test]
+    #[cfg(feature = "gpu-metal")]
     fn metal_device_compile_and_launch() {
         let device = MetalDevice::new().expect("MetalDevice::new should succeed");
         let msl = r#"
