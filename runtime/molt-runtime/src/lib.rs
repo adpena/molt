@@ -124,15 +124,16 @@ pub(crate) use crate::async_rt::sockets::io_wait_release_socket;
 pub(crate) use crate::async_rt::net_stubs::io_wait_release_socket;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub use crate::async_rt::sockets::*;
-// Non-networking socket utilities (cmsg_len/cmsg_space) are always available.
+// Re-export non-networking socket utilities that sockets.rs defines unconditionally.
+// When sockets::* glob is active (networking enabled), these are already included.
 #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
 pub use crate::async_rt::sockets::{
     molt_socket_cmsg_len, molt_socket_cmsg_space,
     molt_socket_getfqdn, molt_socket_gethostbyaddr,
     molt_socket_gethostbyname, molt_socket_gethostbyname_ex,
     molt_socket_htonl, molt_socket_htons, molt_socket_ntohl, molt_socket_ntohs,
-    molt_socket_sendfile,
 };
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use crate::async_rt::sockets::{
     argv_from_bits, env_from_bits, require_net_capability, require_process_capability,
@@ -224,7 +225,10 @@ pub(crate) use crate::builtins::contextlib::{
     contextlib_asyncgen_enter_task_drop, contextlib_asyncgen_exit_task_drop,
 };
 pub use crate::builtins::copy_mod::*;
+#[cfg(not(feature = "stdlib_csv"))]
 pub use crate::builtins::csv::*;
+#[cfg(feature = "stdlib_csv")]
+pub use molt_runtime_serial::csv::*;
 pub use crate::builtins::datetime::*;
 pub use crate::builtins::dbm_dumb::*;
 pub use crate::builtins::decimal::*;

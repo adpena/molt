@@ -3,8 +3,12 @@
 //! Extracted from molt-runtime to allow tree-shaking the serialization and
 //! datetime code when not needed.
 
+/// FFI bridge to molt-runtime internal functions (resolved at link time).
+pub mod bridge;
+
+pub mod csv;
+
 // TODO: migrate from molt-runtime/src/builtins/
-// pub mod csv;
 // pub mod json;
 // pub mod datetime;
 // pub mod configparser;
