@@ -2218,14 +2218,27 @@ impl SimpleBackend {
             let context = inkwell::context::Context::create();
             let llvm = LlvmBackend::new(&context, "molt_module");
 
+            // Declare all runtime functions that lowered code may call into.
+            crate::llvm_backend::runtime_imports::declare_runtime_functions(
+                llvm.context,
+                &llvm.module,
+            );
+
             let func_count = ir.functions.len();
             let total_ops: usize = ir.functions.iter().map(|f| f.ops.len()).sum();
             eprintln!("MOLT_BACKEND(llvm): compiling {func_count} functions ({total_ops} total ops)");
             let codegen_start = std::time::Instant::now();
 
-            for func_ir in &ir.functions {
+            for (fi, func_ir) in ir.functions.iter().enumerate() {
+                eprintln!("  LLVM lowering [{}/{}] {}", fi + 1, func_count, func_ir.name);
                 let tir_func = lower_to_tir(func_ir);
                 crate::llvm_backend::lowering::lower_tir_to_llvm(&tir_func, &llvm);
+                eprintln!("  LLVM lowering [{}/{}] {} OK", fi + 1, func_count, func_ir.name);
+            }
+
+            // Verify the module before optimization to catch lowering bugs.
+            if let Err(msg) = llvm.module.verify() {
+                eprintln!("LLVM module verification FAILED:\n{}", msg.to_string());
             }
 
             // Run LLVM O3 optimization on the whole module.
@@ -2286,7 +2299,6 @@ impl SimpleBackend {
         let mut last_progress = std::time::Instant::now();
         for func_ir in ir.functions {
             let func_name = func_ir.name.clone();
-            { let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/_molt_compile.log").map(|mut f| { use std::io::Write; let _ = writeln!(f, "compile_func: {}", func_name); }); }
             let func_start = std::time::Instant::now();
             self.compile_func(
                 func_ir,
