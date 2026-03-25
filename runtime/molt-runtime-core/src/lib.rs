@@ -522,3 +522,100 @@ pub mod prelude {
         rt_string_from, rt_string_from_bytes, rt_tuple,
     };
 }
+
+// ---------------------------------------------------------------------------
+// RuntimeVtable — single struct replacing 58 individual extern "C" FFI
+// bridge functions between molt-runtime and molt-runtime-serial.
+// ---------------------------------------------------------------------------
+
+/// Function-pointer table for the runtime → serial bridge.
+///
+/// Instead of 58 individual `extern "C"` imports, extracted crates receive a
+/// single `&'static RuntimeVtable` whose fields are filled in at init time by
+/// `molt-runtime`.  Every pointer uses an FFI-safe `extern "C"` signature so
+/// the struct can be shared across dynamic-library boundaries.
+#[repr(C)]
+pub struct RuntimeVtable {
+    // --- Exception handling ---
+    pub raise_exception: unsafe extern "C" fn(*const u8, usize, *const u8, usize) -> u64,
+    pub exception_pending: unsafe extern "C" fn() -> i32,
+
+    // --- Allocation ---
+    pub alloc_tuple: unsafe extern "C" fn(*const u64, usize) -> *mut u8,
+    pub alloc_list: unsafe extern "C" fn(*const u64, usize) -> *mut u8,
+    pub alloc_string: unsafe extern "C" fn(*const u8, usize) -> *mut u8,
+    pub alloc_bytes: unsafe extern "C" fn(*const u8, usize) -> *mut u8,
+    pub alloc_dict_with_pairs: unsafe extern "C" fn(*const u64, usize) -> *mut u8,
+
+    // --- Object inspection ---
+    pub object_type_id: unsafe extern "C" fn(*mut u8) -> u32,
+    pub string_obj_to_owned: unsafe extern "C" fn(u64, *mut *const u8, *mut usize) -> i32,
+    pub type_name: unsafe extern "C" fn(u64, *mut *const u8, *mut usize) -> i32,
+    pub is_truthy: unsafe extern "C" fn(u64) -> i32,
+    pub bytes_like_slice: unsafe extern "C" fn(*mut u8, *mut *const u8, *mut usize) -> i32,
+    pub string_bytes: unsafe extern "C" fn(*mut u8, *mut *const u8, *mut usize) -> i32,
+    pub string_len: unsafe extern "C" fn(*mut u8) -> usize,
+    pub bytes_like_slice_raw: unsafe extern "C" fn(*mut u8, *mut *const u8, *mut usize) -> i32,
+    pub format_obj: unsafe extern "C" fn(u64, *mut *const u8, *mut usize) -> i32,
+    pub format_obj_str: unsafe extern "C" fn(u64, *mut *const u8, *mut usize) -> i32,
+    pub class_name_for_error: unsafe extern "C" fn(u64, *mut *const u8, *mut usize) -> i32,
+    pub type_of_bits: unsafe extern "C" fn(u64) -> u64,
+    pub maybe_ptr_from_bits: unsafe extern "C" fn(u64) -> *mut u8,
+    pub molt_is_callable: unsafe extern "C" fn(u64) -> i32,
+
+    // --- Memoryview ---
+    pub memoryview_is_c_contiguous_view: unsafe extern "C" fn(*mut u8) -> i32,
+    pub memoryview_readonly: unsafe extern "C" fn(*mut u8) -> i32,
+    pub memoryview_nbytes: unsafe extern "C" fn(*mut u8) -> usize,
+    pub memoryview_offset: unsafe extern "C" fn(*mut u8) -> isize,
+    pub memoryview_owner_bits: unsafe extern "C" fn(*mut u8) -> u64,
+
+    // --- Reference counting ---
+    pub release_ptr: unsafe extern "C" fn(*mut u8),
+    pub dec_ref_bits: unsafe extern "C" fn(u64),
+    pub inc_ref_bits: unsafe extern "C" fn(u64),
+
+    // --- Numerics ---
+    pub to_i64: unsafe extern "C" fn(u64, *mut i64) -> i32,
+    pub to_f64: unsafe extern "C" fn(u64, *mut f64) -> i32,
+    pub to_bigint: unsafe extern "C" fn(u64, *mut i32, *mut *const u8, *mut usize) -> i32,
+    pub int_bits_from_i64: unsafe extern "C" fn(i64) -> u64,
+    pub int_bits_from_i128: unsafe extern "C" fn(u64, u64) -> u64,
+    pub int_bits_from_bigint: unsafe extern "C" fn(i32, *const u8, usize) -> u64,
+    pub bigint_ptr_from_bits: unsafe extern "C" fn(u64) -> *mut u8,
+    pub bigint_ref: unsafe extern "C" fn(*mut u8, *mut i32, *mut *const u8, *mut usize) -> i32,
+    pub bigint_from_f64_trunc: unsafe extern "C" fn(f64, *mut i32, *mut *const u8, *mut usize) -> i32,
+    pub bigint_bits: unsafe extern "C" fn(i32, *const u8, usize) -> u64,
+    pub bigint_to_inline: unsafe extern "C" fn(i32, *const u8, usize) -> u64,
+    pub index_i64_from_obj: unsafe extern "C" fn(u64, *const u8, usize) -> i64,
+    pub index_bigint_from_obj: unsafe extern "C" fn(u64, *const u8, usize, *mut i32, *mut *const u8, *mut usize) -> i32,
+
+    // --- Callable / protocol ---
+    pub call_callable0: unsafe extern "C" fn(u64) -> u64,
+    pub call_callable2: unsafe extern "C" fn(u64, u64, u64) -> u64,
+    pub attr_lookup_ptr_allow_missing: unsafe extern "C" fn(*mut u8, u64) -> u64,
+    pub intern_static_name: unsafe extern "C" fn(*const u8, usize) -> u64,
+
+    // --- Container helpers ---
+    pub bytearray_vec: unsafe extern "C" fn(*mut u8) -> *mut Vec<u8>,
+    pub dict_get_in_place: unsafe extern "C" fn(*mut u8, u64, *mut u64) -> i32,
+    pub dict_set_in_place: unsafe extern "C" fn(*mut u8, u64, u64) -> i32,
+    pub list_len: unsafe extern "C" fn(*mut u8) -> usize,
+    pub seq_vec_ptr: unsafe extern "C" fn(*mut u8) -> *mut Vec<u64>,
+    pub dict_order_clone: unsafe extern "C" fn(*mut u8, *mut *const u64, *mut usize) -> i32,
+
+    // --- Iteration ---
+    pub molt_iter: unsafe extern "C" fn(u64) -> u64,
+    pub molt_iter_next: unsafe extern "C" fn(u64, *mut u64) -> i32,
+    pub raise_not_iterable: unsafe extern "C" fn(u64) -> u64,
+    pub molt_sorted_builtin: unsafe extern "C" fn(u64) -> u64,
+    pub molt_mul: unsafe extern "C" fn(u64, u64) -> u64,
+
+    // --- OS ---
+    pub fill_os_random: unsafe extern "C" fn(*mut u8, usize) -> i32,
+}
+
+// SAFETY: The vtable is populated once at init time and then only read.
+// All function pointers are plain `extern "C"` fn pointers (Send + Sync).
+unsafe impl Send for RuntimeVtable {}
+unsafe impl Sync for RuntimeVtable {}
