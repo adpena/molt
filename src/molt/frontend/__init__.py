@@ -10807,6 +10807,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="CONST", args=[0], result=zero))
         one = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[1], result=one))
+        # If the iteration variable is boxed, save the current cell value so
+        # we can restore it after the comprehension (CPython scoping: the comp
+        # does not leak its iteration variable into the enclosing scope).
+        cell = self._load_boxed_cell(target_name)
+        saved_cell_val: MoltValue | None = None
+        if cell is not None:
+            _save_idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=_save_idx))
+            saved_cell_val = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(MoltOp(kind="INDEX", args=[cell, _save_idx], result=saved_cell_val))
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
         pair = self._emit_iter_next_checked(iter_obj)
         done = MoltValue(self.next_var(), type_hint="bool")
@@ -10820,6 +10830,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # Bind the loop variable so the element expression can reference it.
         old_local = self.locals.get(target_name)
         self.locals[target_name] = item
+        # If the variable is boxed, write through to the cell so that
+        # _load_local_value reads the current iteration value.
+        if cell is not None:
+            _box_idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=_box_idx))
+            self.emit(
+                MoltOp(
+                    kind="STORE_INDEX",
+                    args=[cell, _box_idx, item],
+                    result=MoltValue("none"),
+                )
+            )
         # Evaluate optional filter conditions.
         skip_label_needed = bool(comp.ifs)
         if skip_label_needed:
@@ -10848,6 +10870,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.locals.pop(target_name, None)
         self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+        # Post-loop: restore the saved cell value so that the outer scope sees
+        # its original value (e.g. ``print(i)`` after the comp returns the
+        # outer for-loop's final ``i``, not the comp's last iteration value).
+        if cell is not None and saved_cell_val is not None:
+            _post_idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=_post_idx))
+            self.emit(
+                MoltOp(
+                    kind="STORE_INDEX",
+                    args=[cell, _post_idx, saved_cell_val],
+                    result=MoltValue("none"),
+                )
+            )
         return res
 
     def visit_ListComp(self, node: ast.ListComp) -> Any:
