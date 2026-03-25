@@ -567,6 +567,16 @@ impl<'a> SsaContext<'a> {
             attrs.insert("_original_kind".into(), AttrValue::Str(op.kind.clone()));
         }
 
+        // For call variants that are not literally "call", preserve the
+        // original kind so the lowering back to SimpleIR emits the correct
+        // op kind (call_func, call_indirect, call_bind, etc.).
+        if opcode == OpCode::Call && op.kind != "call" {
+            attrs.insert("_original_kind".into(), AttrValue::Str(op.kind.clone()));
+        }
+        if opcode == OpCode::CallBuiltin && !matches!(op.kind.as_str(), "call_builtin") {
+            attrs.insert("_original_kind".into(), AttrValue::Str(op.kind.clone()));
+        }
+
         TirOp {
             dialect: Dialect::Molt,
             opcode,
@@ -773,9 +783,10 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "index" => OpCode::Index,
         "store_index" | "index_set" => OpCode::StoreIndex,
         "del_index" => OpCode::DelIndex,
-        "call" => OpCode::Call,
+        "call" | "call_func" | "call_internal" | "call_indirect" | "call_bind"
+        | "call_function" | "call_guarded" | "invoke_ffi" => OpCode::Call,
         "call_method" => OpCode::CallMethod,
-        "call_builtin" => OpCode::CallBuiltin,
+        "call_builtin" | "builtin_print" | "print" => OpCode::CallBuiltin,
         "box" | "box_from_raw_int" => OpCode::BoxVal,
         "unbox" | "unbox_to_raw_int" => OpCode::UnboxVal,
         "type_guard" => OpCode::TypeGuard,
