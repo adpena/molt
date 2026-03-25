@@ -284,14 +284,20 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         }),
 
         // Call — s_value holds the target function name, value holds the code_id.
-        OpCode::Call => Some(OpIR {
-            kind: "call".to_string(),
-            s_value: attr_str(&op.attrs, "s_value"),
-            args: Some(operand_args(op)),
-            out: out_var,
-            value: attr_int(&op.attrs, "value"),
-            ..OpIR::default()
-        }),
+        // Recover the original SimpleIR kind (call_func, call_indirect, etc.)
+        // if it was preserved during the SSA lift.
+        OpCode::Call => {
+            let kind = attr_str(&op.attrs, "_original_kind")
+                .unwrap_or_else(|| "call".to_string());
+            Some(OpIR {
+                kind,
+                s_value: attr_str(&op.attrs, "s_value"),
+                args: Some(operand_args(op)),
+                out: out_var,
+                value: attr_int(&op.attrs, "value"),
+                ..OpIR::default()
+            })
+        },
         OpCode::CallMethod => Some(OpIR {
             kind: "call_method".to_string(),
             args: Some(operand_args(op)),
@@ -299,13 +305,17 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             out: out_var,
             ..OpIR::default()
         }),
-        OpCode::CallBuiltin => Some(OpIR {
-            kind: "call_builtin".to_string(),
-            args: Some(operand_args(op)),
-            s_value: attr_str(&op.attrs, "name"),
-            out: out_var,
-            ..OpIR::default()
-        }),
+        OpCode::CallBuiltin => {
+            let kind = attr_str(&op.attrs, "_original_kind")
+                .unwrap_or_else(|| "call_builtin".to_string());
+            Some(OpIR {
+                kind,
+                args: Some(operand_args(op)),
+                s_value: attr_str(&op.attrs, "name"),
+                out: out_var,
+                ..OpIR::default()
+            })
+        },
 
         // Box/unbox — no-ops at SimpleIR level (type info discarded).
         OpCode::BoxVal | OpCode::UnboxVal | OpCode::TypeGuard => {
