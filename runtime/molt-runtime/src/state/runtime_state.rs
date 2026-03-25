@@ -429,6 +429,16 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     if !RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst).is_null() {
         return 1;
     }
+    if shutdown_trace_enabled() {
+        eprintln!("molt shutdown: molt_runtime_init ALLOCATING NEW STATE");
+        unsafe {
+            let mut addrs = [std::ptr::null_mut(); 32];
+            let count = libc::backtrace(addrs.as_mut_ptr(), addrs.len() as i32);
+            if count > 0 {
+                libc::backtrace_symbols_fd(addrs.as_ptr(), count, 2);
+            }
+        }
+    }
     let state = Box::new(RuntimeState::new());
     let ptr = Box::into_raw(state);
     RUNTIME_STATE_PTR.store(ptr, AtomicOrdering::SeqCst);
