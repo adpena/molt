@@ -14745,6 +14745,7 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let lhs = obj_from_bits(a_bits);
         let rhs = obj_from_bits(b_bits);
+        eprintln!("[divmod] a_bits={:#018x} b_bits={:#018x} lhs.is_float()={} rhs.is_float()={}", a_bits, b_bits, lhs.is_float(), rhs.is_float());
         // If either operand is a float, skip the integer fast path so that
         // divmod(7, 2.0) returns (3.0, 1.0) instead of (3, 1).
         if !lhs.is_float() && !rhs.is_float() && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {

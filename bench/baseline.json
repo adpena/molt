@@ -491,5 +491,55 @@
     "note": "Updated 2026-03-21 -- definitive post-optimization baseline (63 commits). 21/54 benchmarks passing.",
     "old_median": 0.27,
     "new_median": 0.31
+  },
+  "native_cranelift_baseline": {
+    "machine": "Apple M5 Max",
+    "ram_gb": 128,
+    "python_version": "3.14.3",
+    "date": "2026-03-25T23:20:53Z",
+    "commit": "d60af842",
+    "backend": "cranelift",
+    "profile": "release",
+    "notes": "Native binary benchmarks. dict_1m and calls_1m hang due to while-loop bug with dict access and function calls in loop body. While loops with only simple arithmetic (2+ assignments) work correctly.",
+    "benchmarks": {
+      "sum_10m": {
+        "description": "sum integers 0..10M in while loop",
+        "molt_s": 0.0167,
+        "cpython_s": 0.6659,
+        "speedup": 39.87,
+        "status": "ok",
+        "output_match": true
+      },
+      "while_10m": {
+        "description": "while loop counter 10M iterations (2-var pattern)",
+        "molt_s": 0.0171,
+        "cpython_s": 0.4667,
+        "speedup": 27.29,
+        "status": "ok",
+        "output_match": true
+      },
+      "fib_30": {
+        "description": "recursive fibonacci(30)",
+        "molt_s": 0.0652,
+        "cpython_s": 0.0784,
+        "speedup": 1.2,
+        "status": "ok",
+        "output_match": true
+      },
+      "dict_1m": {
+        "description": "dict insert+lookup 1M entries",
+        "molt_s": null,
+        "cpython_s": 0.1954,
+        "speedup": null,
+        "status": "hang_native_binary"
+      },
+      "calls_1m": {
+        "description": "function calls 1M iterations",
+        "molt_s": null,
+        "cpython_s": 0.0975,
+        "speedup": null,
+        "status": "hang_native_binary"
+      }
+    }
   }
 }
