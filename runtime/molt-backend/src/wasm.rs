@@ -1467,7 +1467,7 @@ impl WasmBackend {
             crate::passes::hoist_loop_invariants(func_ir);
         }
         // ── TIR optimization pipeline (default ON; set MOLT_TIR_OPT=0 to disable) ──
-        if crate::env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
+        if crate::env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
             let tir_dump = crate::env_setting("TIR_DUMP").as_deref() == Some("1");
             let tir_stats = crate::env_setting("TIR_OPT_STATS").as_deref() == Some("1");
             let mut tir_cache = crate::tir::cache::CompilationCache::open(
