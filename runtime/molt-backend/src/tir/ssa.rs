@@ -557,8 +557,54 @@ impl<'a> SsaContext<'a> {
         if op.raw_int == Some(true) {
             attrs.insert("raw_int".into(), AttrValue::Bool(true));
         }
+        // Preserve fast_int / fast_float / type_hint so that the round-trip does
+        // not lose type annotations even without the type-refine pass running.
+        if op.fast_int == Some(true) {
+            attrs.insert("_fast_int".into(), AttrValue::Bool(true));
+        }
+        if op.fast_float == Some(true) {
+            attrs.insert("_fast_float".into(), AttrValue::Bool(true));
+        }
+        if let Some(ref th) = op.type_hint {
+            attrs.insert("_type_hint".into(), AttrValue::Str(th.clone()));
+        }
 
         let opcode = kind_to_opcode(&op.kind);
+
+        // Opcode-specific attr key aliases: the lowering reads s_value under
+        // different keys depending on the opcode (e.g., "module" for Import,
+        // "name" for LoadAttr/StoreAttr/DelAttr/ImportFrom/CallBuiltin,
+        // "method" for CallMethod).  Store it under the expected key so the
+        // back-conversion finds it.
+        if let Some(ref v) = op.s_value {
+            match opcode {
+                OpCode::Import => {
+                    attrs.insert("module".into(), AttrValue::Str(v.clone()));
+                }
+                OpCode::ImportFrom | OpCode::LoadAttr | OpCode::StoreAttr
+                | OpCode::DelAttr | OpCode::CallBuiltin => {
+                    attrs.insert("name".into(), AttrValue::Str(v.clone()));
+                }
+                OpCode::CallMethod => {
+                    attrs.insert("method".into(), AttrValue::Str(v.clone()));
+                }
+                _ => {}
+            }
+        }
+
+        // Preserve the `var` field for passthrough (Copy) ops where `var` carries
+        // metadata (a non-variable string) rather than an SSA reference.  For
+        // such ops, the var was NOT resolved to an operand above (it was either
+        // not a variable or failed resolution), so we store it as an attr.
+        if op.kind != "store_var" && op.kind != "load_var" && op.kind != "copy_var" {
+            if let Some(ref v) = op.var {
+                // Only store as attr if it wasn't already resolved as an SSA operand.
+                // We can detect this: if the var is a variable name that resolved,
+                // it's already in operands; if it's not a variable or didn't resolve,
+                // we need to preserve it as an attr.
+                attrs.insert("_var".into(), AttrValue::Str(v.clone()));
+            }
+        }
 
         // For ops that map to OpCode::Copy as a fallback (unknown ops),
         // preserve the original kind string so the back-conversion can

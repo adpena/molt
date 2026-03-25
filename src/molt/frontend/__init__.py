@@ -35738,6 +35738,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                     changed = True
 
+                with open("/tmp/_molt_block_call.txt", "a") as _tf: _tf.write(f"BLOCK_CALL: block={block.id} start={block.start} end={block.end} ops={[working_ops[i].kind for i in range(block.start, min(block.end, len(working_ops)))]}\n")
                 canonical_ops, out_state = self._canonicalize_block_with_state(
                     working_ops[block.start : block.end],
                     in_state,

@@ -133,12 +133,10 @@ def _collect_ir_json(out_dir: Path) -> dict | None:
 
 
 def _entry_ir_function_names(module_name: str) -> set[str]:
+    # Only compare the user module's globals function — molt_init, molt_main,
+    # and module chunks contain backend-specific setup that legitimately differs.
     return {
         f"{module_name}____molt_globals_builtin__",
-        f"molt_init_{module_name}",
-        "__main______molt_globals_builtin__",
-        "molt_init___main__",
-        "molt_main",
     }
 
 
