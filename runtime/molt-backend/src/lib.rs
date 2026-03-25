@@ -2439,6 +2439,15 @@ impl SimpleBackend {
             }
             if let Err(e) = Self::emit_trap_stub(&mut self.module, fid, &sig, &name) {
                 eprintln!("WARNING: failed to emit trap stub for `{}`: {}", name, e);
+                // Trap stub failed (function may already be defined with a
+                // different body, or another edge case).  As a last resort,
+                // try to downgrade the linkage to Import so `finish()` does
+                // not panic with "Export must be defined."
+                let _ = self.module.declare_function(
+                    &name,
+                    cranelift_module::Linkage::Import,
+                    &sig,
+                );
             } else {
                 stubs_emitted += 1;
             }
