@@ -137,6 +137,7 @@ class TestEntropySourceAudit:
             "src/molt/cli.py",      # temp files, upload IDs
             "src/molt/net.py",      # network request IDs
             "src/molt/asgi.py",     # request handling
+            "src/molt/gpu/generate.py",  # sampling for text generation
         }
 
         all_findings: list[tuple[str, int, str]] = []
