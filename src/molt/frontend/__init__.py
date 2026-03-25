@@ -22175,11 +22175,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         self._box_local(name)
                 self._visit_block(node.orelse)
             return None
-        cond = self.visit(node.test)
         if not self.is_async():
             assigned = self._collect_assigned_names(node.body + node.orelse)
+            assigned |= self._collect_namedexpr_names(node.test)
             for name in sorted(assigned):
                 self._box_local(name)
+        cond = self.visit(node.test)
         self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
         self.control_flow_depth += 1
         try:
