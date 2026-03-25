@@ -149,36 +149,44 @@ def test_package_intrinsics_delegate_to_stdlib_loader(
     fake_loader.load_intrinsic = _load  # type: ignore[attr-defined]
     fake_loader.require_intrinsic = _require  # type: ignore[attr-defined]
     fake_loader.runtime_active = _runtime_active  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "_intrinsics", fake_loader)
-
     import molt.intrinsics as package_intrinsics
 
+    # Save original _loader so we can restore after the test.
+    original_loader = package_intrinsics._loader  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "_intrinsics", fake_loader)
     package_intrinsics = importlib.reload(package_intrinsics)
-    namespace = {"k": "v"}
-    assert package_intrinsics.runtime_active() is True
-    assert package_intrinsics.load("molt_probe", namespace) == (
-        "load",
-        "molt_probe",
-        namespace,
-    )
-    assert package_intrinsics.load_intrinsic("molt_probe", namespace) == (
-        "load",
-        "molt_probe",
-        namespace,
-    )
-    assert package_intrinsics.require("molt_need", namespace) == (
-        "require",
-        "molt_need",
-        namespace,
-    )
-    assert package_intrinsics.require_intrinsic("molt_need", namespace) == (
-        "require",
-        "molt_need",
-        namespace,
-    )
-    assert ("runtime_active", "") in calls
-    assert ("load", "molt_probe") in calls
-    assert ("require", "molt_need") in calls
+
+    try:
+        namespace = {"k": "v"}
+        assert package_intrinsics.runtime_active() is True
+        assert package_intrinsics.load("molt_probe", namespace) == (
+            "load",
+            "molt_probe",
+            namespace,
+        )
+        assert package_intrinsics.load_intrinsic("molt_probe", namespace) == (
+            "load",
+            "molt_probe",
+            namespace,
+        )
+        assert package_intrinsics.require("molt_need", namespace) == (
+            "require",
+            "molt_need",
+            namespace,
+        )
+        assert package_intrinsics.require_intrinsic("molt_need", namespace) == (
+            "require",
+            "molt_need",
+            namespace,
+        )
+        assert ("runtime_active", "") in calls
+        assert ("load", "molt_probe") in calls
+        assert ("require", "molt_need") in calls
+    finally:
+        # Restore the real _loader so later tests using molt.intrinsics
+        # (e.g. capabilities) don't see the fake.
+        package_intrinsics._loader = original_loader  # type: ignore[attr-defined]
 
 
 def test_capabilities_use_package_intrinsics_loader(

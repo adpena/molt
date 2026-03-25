@@ -8,10 +8,12 @@ with strict reproducibility, rigorous testing, and staged compatibility.
 Canonical status lives in [docs/spec/STATUS.md](docs/spec/STATUS.md) (README and [ROADMAP.md](ROADMAP.md) are kept in sync).
 
 ## Strategic Targets
+- CPython `>=3.12` parity target for the verified subset that Molt compiles.
 - Performance: parity with or superiority to Codon on tracked benchmarks.
 - Coverage/interoperability: approach Nuitka-level CPython surface coverage and
   interoperability for Molt-supported semantics, while honoring Molt vision
   constraints (determinism, capability gates, and no hidden host fallback).
+- Standalone binaries run without a host Python installation.
 
 ## Documentation Quick Links
 - Docs index (canonical navigation): [docs/INDEX.md](docs/INDEX.md)

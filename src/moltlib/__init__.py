@@ -5,13 +5,15 @@ from __future__ import annotations
 from typing import Any
 import importlib
 
-__all__ = ["molt_db"]
+__all__ = ["asgi", "concurrency", "molt_db", "net"]
+
+_LAZY_SUBMODULES = {"asgi", "concurrency", "molt_db", "net"}
 
 
 def __getattr__(name: str) -> Any:
-    if name != "molt_db":
+    if name not in _LAZY_SUBMODULES:
         raise AttributeError(name)
-    module = importlib.import_module("moltlib.molt_db")
+    module = importlib.import_module(f"moltlib.{name}")
     globals()[name] = module
     return module
 
