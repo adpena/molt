@@ -80,8 +80,6 @@ def test_tkinter_ttk_script_compiles_via_cli_build() -> None:
                 "-m",
                 "molt.cli",
                 "build",
-                "--profile",
-                "dev",
                 "--fallback",
                 "error",
                 "--output",
