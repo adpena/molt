@@ -38,7 +38,16 @@ PROGRAMS: list[tuple[str, str]] = [
     ("nested_if", "x = 7\nif x > 5:\n    if x < 10:\n        print(1)\n"),
 ]
 
+# All backends for output-parity tests.
 BACKENDS = ["native", "wasm", "luau"]
+
+# Backends with identical frontend configuration for IR-parity tests.
+# WASM is excluded because the test sets MOLT_WASM_MODULE_CHUNK_OPS=0 which
+# disables module chunking in the frontend, producing structurally different IR
+# (missing chunk functions, different parameter passing for module objects).
+# Native and Luau share the same frontend configuration and must produce
+# identical IR.
+IR_PARITY_BACKENDS = ["native", "luau"]
 
 # Timeout for subprocess calls.
 _SUBPROCESS_TIMEOUT = float(
@@ -180,12 +189,16 @@ class TestBackendIRParity:
 
         Since all backends share the same frontend and midend, the IR
         (before backend-specific lowering) should be identical.
+
+        Only backends with identical frontend configuration are compared
+        (IR_PARITY_BACKENDS).  WASM is excluded because the test disables
+        module chunking, which produces structurally different IR.
         """
         src_file = tmp_path / f"{name}.py"
         src_file.write_text(source)
 
         ir_outputs: dict[str, dict | None] = {}
-        for backend in BACKENDS:
+        for backend in IR_PARITY_BACKENDS:
             out_dir = tmp_path / f"out_{backend}"
             out_dir.mkdir(exist_ok=True)
             try:
