@@ -3701,7 +3701,7 @@ impl SimpleBackend {
                         );
 
                         // Initialize header fields (offsets relative to data_ptr).
-                        // type_id (u32 at -40)
+                        // type_id (u32 at -16)
                         let type_id_val = builder.ins().iconst(types::I32, 206); // TYPE_ID_TUPLE
                         builder.ins().store(
                             MemFlags::trusted(),
@@ -3709,7 +3709,7 @@ impl SimpleBackend {
                             data_ptr,
                             -HEADER_SIZE_BYTES,
                         );
-                        // ref_count (u32 at -36) — set to u32::MAX (immortal)
+                        // ref_count (u32 at -12) — set to u32::MAX (immortal)
                         // so the runtime never frees the stack memory.
                         let rc_val = builder.ins().iconst(types::I32, u32::MAX as i64);
                         builder.ins().store(

@@ -1,6 +1,6 @@
 // Many Py* functions are kept for tests but their #[no_mangle] export lives in
 // molt-lang-cpython-abi.  Suppress the dead-code warnings for those stubs.
-#![allow(dead_code)]
+#![allow(dead_code, non_snake_case)]
 
 use crate::builtins::exceptions::molt_exception_new_from_class;
 use crate::concurrency::gil::{gil_held, release_runtime_gil};
@@ -4046,7 +4046,7 @@ pub extern "C" fn PyErr_NoMemory() -> u64 {
 // ---------------------------------------------------------------------------
 
 /// `Py_IncRef(obj)` — increment the reference count.
-#[unsafe(no_mangle)]
+/// NOTE: canonical `#[no_mangle]` is in `molt-lang-cpython-abi`.
 pub extern "C" fn Py_IncRef(obj: u64) {
     if obj == 0 {
         return;
@@ -4059,7 +4059,7 @@ pub extern "C" fn Py_IncRef(obj: u64) {
 }
 
 /// `Py_DecRef(obj)` — decrement the reference count.
-#[unsafe(no_mangle)]
+/// NOTE: canonical `#[no_mangle]` is in `molt-lang-cpython-abi`.
 pub extern "C" fn Py_DecRef(obj: u64) {
     if obj == 0 {
         return;
