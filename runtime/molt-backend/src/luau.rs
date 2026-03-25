@@ -4357,7 +4357,6 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
                         kind: "nop".to_string(),
                         s_value: Some(format!("try/finally fast-path begin (n={n})")),
                         ..OpIR::default()
-                        ic_index: None,
                     });
                 } else {
                     let start_idx = result.len();
@@ -4365,7 +4364,6 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
                         kind: "pcall_wrap_begin".to_string(),
                         value: Some(n as i64),
                         ..OpIR::default()
-                        ic_index: None,
                     });
                     pcall_ranges.push((start_idx, 0, n));
                 }
@@ -4381,7 +4379,6 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
                                 kind: "nop".to_string(),
                                 s_value: Some(format!("try/finally fast-path end (n={n})")),
                                 ..OpIR::default()
-                                ic_index: None,
                             });
                         } else {
                             let end_idx = result.len();
@@ -4389,7 +4386,6 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
                                 kind: "pcall_wrap_end".to_string(),
                                 value: Some(n as i64),
                                 ..OpIR::default()
-                                ic_index: None,
                             });
                             suppress_jumps = true;
                             if let Some(range) =
@@ -4402,7 +4398,6 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
                         result.push(OpIR {
                             kind: "pcall_handler_end".to_string(),
                             ..OpIR::default()
-                            ic_index: None,
                         });
                     }
                 } else {
@@ -4410,7 +4405,6 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
                         kind: "nop".to_string(),
                         s_value: Some("try_end (no matching start)".to_string()),
                         ..OpIR::default()
-                        ic_index: None,
                     });
                 }
             }
@@ -4625,7 +4619,6 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                     out: Some(value_var.clone()),
                     args: Some(vec![iterable.clone()]),
                     ..OpIR::default()
-                    ic_index: None,
                 });
 
                 // Find where the loop body starts: after the break-on-exhausted
@@ -4748,7 +4741,6 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                 result.push(OpIR {
                     kind: "end_for".to_string(),
                     ..OpIR::default()
-                    ic_index: None,
                 });
 
                 // Skip past the entire original pattern.
@@ -8725,50 +8717,42 @@ mod tests {
                 out: Some("v_it".to_string()),
                 args: Some(vec!["v_src".to_string()]),
                 ..OpIR::default()
-                ic_index: None,
             },
             OpIR {
                 kind: "loop_start".to_string(),
                 ..OpIR::default()
-                ic_index: None,
             },
             OpIR {
                 kind: "iter_next".to_string(),
                 out: Some("v_next".to_string()),
                 args: Some(vec!["v_it".to_string()]),
                 ..OpIR::default()
-                ic_index: None,
             },
             OpIR {
                 kind: "index".to_string(),
                 out: Some("v_exhausted".to_string()),
                 args: Some(vec!["v_next".to_string(), "v_idx1".to_string()]),
                 ..OpIR::default()
-                ic_index: None,
             },
             OpIR {
                 kind: "loop_break_if_true".to_string(),
                 args: Some(vec!["v_other_cond".to_string()]),
                 ..OpIR::default()
-                ic_index: None,
             },
             OpIR {
                 kind: "index".to_string(),
                 out: Some("v_value".to_string()),
                 args: Some(vec!["v_next".to_string(), "v_idx0".to_string()]),
                 ..OpIR::default()
-                ic_index: None,
             },
             OpIR {
                 kind: "store_local".to_string(),
                 args: Some(vec!["v_sink".to_string(), "v_value".to_string()]),
                 ..OpIR::default()
-                ic_index: None,
             },
             OpIR {
                 kind: "loop_end".to_string(),
                 ..OpIR::default()
-                ic_index: None,
             },
         ];
 
@@ -8818,13 +8802,11 @@ mod tests {
                         kind: "label".to_string(),
                         value: Some(0),
                         ..OpIR::default()
-                        ic_index: None,
                     },
                     OpIR {
                         kind: "jump".to_string(),
                         value: Some(1),
                         ..OpIR::default()
-                        ic_index: None,
                     },
                 ],
             }],
@@ -8856,12 +8838,10 @@ mod tests {
                         s_value: Some("append".to_string()),
                         args: Some(vec!["xs".to_string(), "v".to_string()]),
                         ..OpIR::default()
-                        ic_index: None,
                     },
                     OpIR {
                         kind: "ret_void".to_string(),
                         ..OpIR::default()
-                        ic_index: None,
                     },
                 ],
             }],
@@ -8907,7 +8887,6 @@ mod tests {
         ];
         let (_, escaped) = lower_try_to_pcall(&ops);
         assert!(escaped.contains("v0"), "v0 should escape pcall scope: {:?}", escaped);
-        ic_index: None,
     }
 
     #[test]
@@ -8929,7 +8908,6 @@ mod tests {
                     OpIR { kind: "call_function".into(), s_value: Some("print".into()), args: Some(vec!["print".into(), "v4".into()]), out: Some("v5".into()), ..OpIR::default() },
                     OpIR { kind: "ret_void".into(), ..OpIR::default() },
                 ],
-                ic_index: None,
             }],
             profile: None,
         };
