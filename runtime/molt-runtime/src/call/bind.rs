@@ -566,14 +566,6 @@ unsafe fn call_type_with_builder(
         }
         let mut default_new = false;
         let is_exc_subclass = issubclass_bits(class_bits, builtins.base_exception);
-        if std::env::var("MOLT_DEBUG_EXC_NEW").ok().as_deref() == Some("1") {
-            let cn = class_name_for_error(class_bits);
-            let has_kw = if !builder_ptr.is_null() {
-                let ap = callargs_ptr(builder_ptr);
-                if !ap.is_null() { (*ap).kw_names.len() } else { 0 }
-            } else { 0 };
-            eprintln!("molt call_type_with_builder: class={cn} bits=0x{class_bits:x} is_exc={is_exc_subclass} kw_count={has_kw}");
-        }
         let inst_bits = if is_exc_subclass {
             let new_name_bits =
                 intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
@@ -1707,11 +1699,7 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             };
             let mut func_bits = call_bits;
             let mut self_bits = None;
-            let _tid = object_type_id(call_ptr);
-            if std::env::var("MOLT_DEBUG_EXC_NEW").ok().as_deref() == Some("1") {
-                eprintln!("molt call_bind: type_id={_tid} call_bits=0x{call_bits:x}");
-            }
-            match _tid {
+            match object_type_id(call_ptr) {
                 TYPE_ID_FUNCTION => {}
                 TYPE_ID_BOUND_METHOD => {
                     func_bits = bound_method_func_bits(call_ptr);
