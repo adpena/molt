@@ -943,32 +943,32 @@ fn alloc_optional_char_bits(_py: &PyToken, value: Option<char>) -> Result<(u64, 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_quote_minimal() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { MoltObject::from_int(QUOTE_MINIMAL).bits() })
+    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_MINIMAL).bits() )
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_quote_all() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { MoltObject::from_int(QUOTE_ALL).bits() })
+    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_ALL).bits() )
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_quote_nonnumeric() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { MoltObject::from_int(QUOTE_NONNUMERIC).bits() })
+    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_NONNUMERIC).bits() )
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_quote_none() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { MoltObject::from_int(QUOTE_NONE).bits() })
+    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_NONE).bits() )
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_quote_strings() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { MoltObject::from_int(QUOTE_STRINGS).bits() })
+    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_STRINGS).bits() )
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_quote_notnull() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { MoltObject::from_int(QUOTE_NOTNULL).bits() })
+    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_NOTNULL).bits() )
 }
 
 // ── field_size_limit (arity 1) ────────────────────────────────────────────────

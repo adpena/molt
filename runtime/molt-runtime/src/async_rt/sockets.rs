@@ -417,7 +417,7 @@ pub(crate) fn io_wait_release_socket(_py: &PyToken<'_>, future_ptr: *mut u8) {
     if future_ptr.is_null() {
         return;
     }
-    let header = unsafe { header_from_obj_ptr(future_ptr) };
+    let _header = unsafe { header_from_obj_ptr(future_ptr) };
     let payload_bytes = unsafe {
         crate::object::object_payload_size(future_ptr)
     };

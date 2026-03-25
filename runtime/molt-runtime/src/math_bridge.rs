@@ -6,7 +6,7 @@
 
 use crate::*;
 use crate::builtins::classes::class_name_for_error as _class_name_for_error;
-use crate::builtins::containers::{dict_len as _dict_len, list_len as _list_len};
+use crate::builtins::containers::list_len as _list_len;
 use crate::builtins::numbers::{
     bigint_bits as _bigint_bits,
     bigint_from_f64_trunc as _bigint_from_f64_trunc,

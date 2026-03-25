@@ -2202,7 +2202,7 @@ pub(crate) fn block_on_wait_spec(
             timeout: Option<Duration>,
         ) -> Option<BlockOnWaitSpec> {
             unsafe {
-                let header = header_from_obj_ptr(cursor);
+                let _header = header_from_obj_ptr(cursor);
                 let poll_fn = crate::object::object_poll_fn(cursor);
                 if poll_fn == io_wait_poll_fn_addr() {
                     let payload_bytes = crate::object::object_payload_size(cursor);

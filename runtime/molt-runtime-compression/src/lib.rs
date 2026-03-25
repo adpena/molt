@@ -10,6 +10,7 @@ pub mod gzip;
 pub mod zlib;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod lzma;
+#[allow(dead_code)]
 pub mod lzma_wasm;
 pub mod tarfile;
 pub mod zipfile;

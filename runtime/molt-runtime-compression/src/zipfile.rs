@@ -130,9 +130,9 @@ pub extern "C" fn molt_zipfile_writestr(
         let data: Vec<u8> = if let Some(s) = string_obj_to_owned(data_obj) {
             s.into_bytes()
         } else if let Some(ptr) = data_obj.as_ptr() {
-            if unsafe { object_type_id(ptr) } == TYPE_ID_BYTES {
-                let len = unsafe { bytes_len(ptr) };
-                let raw = unsafe { bytes_data(ptr) };
+            if object_type_id(ptr) == TYPE_ID_BYTES {
+                let len = bytes_len(ptr);
+                let raw = bytes_data(ptr);
                 unsafe { std::slice::from_raw_parts(raw, len) }.to_vec()
             } else {
                 return raise_exception(_py, "TypeError", "data must be bytes or str");

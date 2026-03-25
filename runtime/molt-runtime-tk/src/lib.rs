@@ -6,4 +6,5 @@
 #[cfg(feature = "tk")]
 pub mod tkinter_core;
 #[cfg(feature = "tk")]
+#[allow(dead_code)]
 pub mod tk;

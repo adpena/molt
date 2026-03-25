@@ -345,7 +345,7 @@ pub extern "C" fn molt_tk_event_build_from_args(_widget_path_bits: u64, args_bit
 ///   - If value is a string and `value.lstrip("-").isdigit()`, parse as int.
 ///   - Otherwise return value unchanged.
 pub extern "C" fn molt_tk_event_int(value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { event_int_convert(value_bits) })
+    molt_runtime_core::with_gil_entry!(_py, event_int_convert(value_bits))
 }
 
 /// Decode an event state bitmask into a list of modifier name strings.

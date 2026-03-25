@@ -20,34 +20,34 @@ pub(crate) const PRESET_EXTREME: i64 = 1 << 31;
 
 // ── Constant intrinsics ───────────────────────────────────────────────────────
 pub extern "C" fn molt_lzma_format_auto() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, FORMAT_AUTO) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_AUTO) )
 }
 pub extern "C" fn molt_lzma_format_xz() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, FORMAT_XZ) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_XZ) )
 }
 pub extern "C" fn molt_lzma_format_alone() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, FORMAT_ALONE) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_ALONE) )
 }
 pub extern "C" fn molt_lzma_format_raw() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, FORMAT_RAW) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_RAW) )
 }
 pub extern "C" fn molt_lzma_check_none() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, CHECK_NONE) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_NONE) )
 }
 pub extern "C" fn molt_lzma_check_crc32() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, CHECK_CRC32) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_CRC32) )
 }
 pub extern "C" fn molt_lzma_check_crc64() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, CHECK_CRC64) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_CRC64) )
 }
 pub extern "C" fn molt_lzma_check_sha256() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, CHECK_SHA256) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_SHA256) )
 }
 pub extern "C" fn molt_lzma_preset_default() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, PRESET_DEFAULT) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, PRESET_DEFAULT) )
 }
 pub extern "C" fn molt_lzma_preset_extreme() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, PRESET_EXTREME) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, PRESET_EXTREME) )
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

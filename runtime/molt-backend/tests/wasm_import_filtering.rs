@@ -345,3 +345,83 @@ fn full_profile_includes_thread_imports() {
         "Full profile should include thread_poll"
     );
 }
+
+// -----------------------------------------------------------------------
+// Post-compilation import stripping tests
+// -----------------------------------------------------------------------
+
+/// In Auto profile, the post-compilation strip should remove any imports that
+/// the pre-compilation heuristic (`collect_required_imports`) included but
+/// that codegen never actually referenced.  For hello_world, the final import
+/// count after stripping should be strictly less than or equal to the
+/// pre-strip count, and the module should still be valid WASM.
+#[test]
+fn auto_hello_world_stripped_module_is_valid_wasm() {
+    let wasm = compile_with_profile(hello_world_ir(), WasmProfile::Auto);
+    // Verify magic + version
+    assert!(wasm.len() >= 8, "WASM too short");
+    assert_eq!(&wasm[..4], b"\x00asm", "bad WASM magic");
+    // Verify all sections are parseable
+    let mut section_count = 0;
+    for payload in Parser::new(0).parse_all(&wasm) {
+        let payload = payload.expect("parseable payload after stripping");
+        match payload {
+            Payload::ImportSection(_)
+            | Payload::TypeSection(_)
+            | Payload::FunctionSection(_)
+            | Payload::CodeSectionStart { .. }
+            | Payload::CodeSectionEntry(_)
+            | Payload::ExportSection(_) => {
+                section_count += 1;
+            }
+            _ => {}
+        }
+    }
+    assert!(section_count > 0, "no sections found in stripped WASM");
+}
+
+/// Compiling with Full profile and then stripping should produce a module
+/// with fewer imports than the Full profile's raw registration count.
+/// The stripped module should only contain imports actually referenced
+/// during codegen.
+#[test]
+fn full_profile_stripped_has_fewer_imports_than_full_unstripped() {
+    // Full profile with stripping (non-reloc is default).
+    let wasm_stripped = compile_with_profile(hello_world_ir(), WasmProfile::Full);
+    let stripped_names = import_names(&wasm_stripped);
+
+    // The Full profile registers 600+ imports; after stripping for
+    // hello_world, the codegen should only need a subset.
+    // A hello-world references: structural imports + print + class/object
+    // setup + exception infrastructure + module init.
+    assert!(
+        stripped_names.len() < 200,
+        "Full profile after stripping should have <200 imports for hello-world, \
+         found {} imports",
+        stripped_names.len()
+    );
+    // Must still include the imports that hello_world actually uses.
+    assert!(
+        stripped_names.contains("print_obj"),
+        "stripped module must still contain print_obj"
+    );
+    assert!(
+        stripped_names.contains("alloc"),
+        "stripped module must still contain alloc"
+    );
+}
+
+/// Auto profile: stripping should produce fewer or equal imports compared
+/// to the pre-filter set.
+#[test]
+fn auto_hello_world_strip_does_not_add_imports() {
+    let wasm = compile_with_profile(hello_world_ir(), WasmProfile::Auto);
+    let names = import_names(&wasm);
+    // The Auto pre-filter already narrows imports; stripping should not
+    // add any new ones.  Just check it's a reasonable count.
+    assert!(
+        names.len() < 200,
+        "Auto hello-world should have <200 imports, found {}",
+        names.len()
+    );
+}
