@@ -100,7 +100,8 @@ mod native_backend_consts {
     //   offset  8: flags      (u32)
     //   offset 12: size_class (u16) + _pad (u16)
     // Data pointer = header_ptr + 16, so offsets from data_ptr are negative.
-    pub(super) const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
+    // NOTE: HEADER_STATE_OFFSET removed — state lives in cold header now;
+    // the native JIT uses molt_obj_get_state/molt_obj_set_state C API calls.
     pub(super) const HEADER_REFCOUNT_OFFSET: i32 = -(HEADER_SIZE_BYTES - 4);
     pub(super) const HEADER_FLAGS_OFFSET: i32 = -(HEADER_SIZE_BYTES - 8);
     pub(super) const HEADER_FLAG_IMMORTAL: u64 = 1 << 15;
