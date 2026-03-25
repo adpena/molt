@@ -3,10 +3,8 @@ use crate::{obj_from_bits, resolve_ptr};
 pub(crate) fn resolve_task_ptr(bits: u64) -> Option<*mut u8> {
     let obj = obj_from_bits(bits);
     if let Some(ptr) = obj.as_ptr() {
-        unsafe {
-            if crate::object::object_poll_fn(ptr) == 0 {
-                return None;
-            }
+        if crate::object::object_poll_fn(ptr) == 0 {
+            return None;
         }
         return Some(ptr);
     }
@@ -20,10 +18,8 @@ pub(crate) fn resolve_task_ptr(bits: u64) -> Option<*mut u8> {
             return None;
         }
         let ptr = resolve_ptr(bits)?;
-        unsafe {
-            if crate::object::object_poll_fn(ptr) == 0 {
-                return None;
-            }
+        if crate::object::object_poll_fn(ptr) == 0 {
+            return None;
         }
         return Some(ptr);
     }

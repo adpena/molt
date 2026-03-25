@@ -1853,7 +1853,7 @@ pub(crate) fn await_waiter_register(_py: &PyToken<'_>, waiter_ptr: *mut u8, awai
         std::env::var("MOLT_TRACE_PROMISE").ok().as_deref(),
         Some("1")
     ) {
-        let poll_fn = unsafe { crate::object::object_poll_fn(awaited_ptr) };
+        let poll_fn = crate::object::object_poll_fn(awaited_ptr);
         if poll_fn == promise_poll_fn_addr() {
             eprintln!(
                 "molt async trace: await_register_promise waiter=0x{:x} awaited=0x{:x}",

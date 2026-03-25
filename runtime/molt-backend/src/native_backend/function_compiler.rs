@@ -9130,7 +9130,7 @@ impl SimpleBackend {
                         let val = entry_vars.get(name).copied()
                             .or_else(|| var_get(&mut builder, &vars, name).map(|v| *v));
                         let Some(val) = val else { continue; };
-                        emit_dec_ref_obj(&mut builder, val, local_dec_ref_obj);
+                        builder.ins().call(local_dec_ref_obj, &[val]);
                     }
                     for name in &origin_ptr_cleanup {
                         let val = entry_vars.get(name).copied()
@@ -9139,7 +9139,7 @@ impl SimpleBackend {
                         builder.ins().call(local_dec_ref, &[val]);
                     }
                     for val in &arg_cleanup {
-                        emit_dec_ref_obj(&mut builder, *val, local_dec_ref_obj);
+                        builder.ins().call(local_dec_ref_obj, &[*val]);
                     }
                     // Remove cleaned-up names from entry-tracked lists so the
                     // function-return cleanup does not dec-ref them a second
@@ -13398,7 +13398,7 @@ impl SimpleBackend {
             }
             for name in &tracked_obj_vars {
                 if let Some(val) = entry_vars.get(name) {
-                    emit_dec_ref_obj(&mut builder, *val, local_dec_ref_obj);
+                    builder.ins().call(local_dec_ref_obj, &[*val]);
                 }
             }
             if has_ret {

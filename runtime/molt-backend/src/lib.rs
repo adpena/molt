@@ -964,6 +964,7 @@ fn drain_cleanup_tracked(
 }
 
 #[cfg(feature = "native-backend")]
+#[allow(dead_code)]
 fn collect_cleanup_tracked(
     names: &[String],
     last_use: &BTreeMap<String, usize>,
@@ -1646,9 +1647,9 @@ impl SimpleBackend {
         // Backend selection: MOLT_BACKEND=llvm routes through LLVM when the feature is
         // available; otherwise falls back to Cranelift with a warning.
         let _use_llvm = env_setting("MOLT_BACKEND").as_deref() == Some("llvm");
-        #[cfg(not(feature = "llvm-backend"))]
+        #[cfg(not(feature = "llvm"))]
         if _use_llvm {
-            eprintln!("[molt] WARNING: MOLT_BACKEND=llvm requested but llvm-backend feature is not compiled in; falling back to Cranelift");
+            eprintln!("[molt] WARNING: MOLT_BACKEND=llvm requested but llvm feature is not compiled in; falling back to Cranelift");
         }
         apply_profile_order(&mut ir);
         for func_ir in &mut ir.functions {
@@ -1836,7 +1837,7 @@ impl SimpleBackend {
         eprintln!("MOLT_BACKEND: compiling {func_count} functions ({total_ops} total ops)");
         let codegen_start = std::time::Instant::now();
         let mut compiled = 0u32;
-        let mut failed = 0u32;
+        let failed = 0u32;
         let mut slowest_func: Option<(String, std::time::Duration)> = None;
         // Progress reporting: pick interval based on function count so the
         // user sees roughly 20 updates during a long build, but at least
