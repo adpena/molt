@@ -238,11 +238,13 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             ..OpIR::default()
         }),
 
-        // Call.
+        // Call — s_value holds the target function name, value holds the code_id.
         OpCode::Call => Some(OpIR {
             kind: "call".to_string(),
+            s_value: attr_str(&op.attrs, "s_value"),
             args: Some(operand_args(op)),
             out: out_var,
+            value: attr_int(&op.attrs, "value"),
             ..OpIR::default()
         }),
         OpCode::CallMethod => Some(OpIR {
