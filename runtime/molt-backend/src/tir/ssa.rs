@@ -421,15 +421,6 @@ impl<'a> SsaContext<'a> {
         // this, their ops would be silently dropped, causing the native
         // backend to crash on missing state_block_start / check_exception.
         {
-            let visited: HashSet<usize> = pushed.iter().enumerate()
-                .filter(|(_, p)| !p.is_empty() || dom_children.get(self.cfg.entry).map_or(false, |_| true))
-                .map(|(bid, _)| bid)
-                .collect();
-            // Actually, track visited more reliably: any block that was the
-            // target of a dom-tree walk had its terminator set to non-Unreachable
-            // (unless it truly is unreachable).  The simplest check: the entry
-            // block is always visited, and any block whose terminator was set is
-            // visited.
             for bid in 0..n {
                 // Skip if the block was already processed (has ops or a non-Unreachable
                 // terminator, or is the entry block which may legitimately be empty).
