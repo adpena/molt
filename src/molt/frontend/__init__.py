@@ -37225,6 +37225,9 @@ def compile_to_tir(
     type_hint_policy: Literal["ignore", "trust", "check"] = "ignore",
     fallback_policy: FallbackPolicy = "error",
 ) -> dict[str, Any]:
+    # Reset the IC counter so that repeated compilations of the same source
+    # produce identical IR (determinism guarantee).
+    _ic_counter[0] = 0
     tree = ast.parse(source)
     gen = SimpleTIRGenerator(
         parse_codec=parse_codec,
