@@ -1641,12 +1641,11 @@ impl SimpleBackend {
                         builder.append_block_param(merge_block, types::I64);
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
-                        let prod = builder.ins().imul(lhs_val, rhs_val);
+                        let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, prod);
-                        let fits_inline = int_value_fits_inline(&mut builder, prod);
                         builder
                             .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
+                            .brif(fits, fast_block, &[], slow_block, &[]);
 
                         builder.switch_to_block(fast_block);
                         builder.seal_block(fast_block);
@@ -1687,12 +1686,11 @@ impl SimpleBackend {
 
                         builder.switch_to_block(fast_block);
                         builder.seal_block(fast_block);
-                        let prod = builder.ins().imul(lhs_val, rhs_val);
+                        let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, prod);
-                        let fits_inline = int_value_fits_inline(&mut builder, prod);
                         brif_block(
                             &mut builder,
-                            fits_inline,
+                            fits,
                             merge_block,
                             &[fast_res],
                             slow_block,
@@ -1757,12 +1755,11 @@ impl SimpleBackend {
                         builder.append_block_param(merge_block, types::I64);
                         let lhs_val = unbox_int(&mut builder, *lhs);
                         let rhs_val = unbox_int(&mut builder, *rhs);
-                        let prod = builder.ins().imul(lhs_val, rhs_val);
+                        let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, prod);
-                        let fits_inline = int_value_fits_inline(&mut builder, prod);
                         builder
                             .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
+                            .brif(fits, fast_block, &[], slow_block, &[]);
 
                         builder.switch_to_block(fast_block);
                         builder.seal_block(fast_block);
@@ -1803,12 +1800,11 @@ impl SimpleBackend {
 
                         builder.switch_to_block(fast_block);
                         builder.seal_block(fast_block);
-                        let prod = builder.ins().imul(lhs_val, rhs_val);
+                        let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, prod);
-                        let fits_inline = int_value_fits_inline(&mut builder, prod);
                         brif_block(
                             &mut builder,
-                            fits_inline,
+                            fits,
                             merge_block,
                             &[fast_res],
                             slow_block,
@@ -3246,9 +3242,8 @@ impl SimpleBackend {
                         // exp == 2 → base * base with overflow check
                         builder.switch_to_block(exp2_fast_block);
                         builder.seal_block(exp2_fast_block);
-                        let sq = builder.ins().imul(base_val, base_val);
+                        let (sq, fits) = imul_checked_inline(&mut builder, base_val, base_val);
                         let sq_res = box_int_value(&mut builder, sq);
-                        let fits = int_value_fits_inline(&mut builder, sq);
                         brif_block(
                             &mut builder,
                             fits,
