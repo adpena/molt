@@ -896,7 +896,9 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
         // of checking every arithmetic op is unnecessary.
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+        // Guard: skip int fast path if either operand is a float, because
+        // to_i64 coerces exact-integer floats (e.g. 2.0 -> 2).
+        if !lhs.is_float() && !rhs.is_float() && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
             let res = li as i128 + ri as i128;
             return int_bits_from_i128(_py, res);
         }
@@ -1117,7 +1119,7 @@ pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+        if !lhs.is_float() && !rhs.is_float() && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
             let res = li as i128 - ri as i128;
             return int_bits_from_i128(_py, res);
         }
@@ -1533,7 +1535,7 @@ pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+        if !lhs.is_float() && !rhs.is_float() && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
             let res = li as i128 * ri as i128;
             return int_bits_from_i128(_py, res);
         }
@@ -1679,7 +1681,8 @@ pub extern "C" fn molt_floordiv(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if !lhs.is_float() && !rhs.is_float() && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+        let either_float = lhs.is_float() || rhs.is_float();
+        if !either_float && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
             if ri == 0 {
                 return raise_exception::<_>(
                     _py,
@@ -1696,7 +1699,7 @@ pub extern "C" fn molt_floordiv(a: u64, b: u64) -> u64 {
                 return MoltObject::from_int(res).bits();
             }
         }
-        if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+        if !either_float && let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
             if r_big.is_zero() {
                 return raise_exception::<_>(
                     _py,
@@ -2731,7 +2734,8 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
         let rhs = obj_from_bits(b);
         // Int fast path first — much more common than string % formatting.
         // Skip if either operand is a float so that e.g. 7 % 2.0 returns 1.0 (float).
-        if !lhs.is_float() && !rhs.is_float() && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+        let either_float = lhs.is_float() || rhs.is_float();
+        if !either_float && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
             if ri == 0 {
                 return raise_exception::<_>(_py, "ZeroDivisionError", "integer division or modulo by zero");
             }
@@ -2757,7 +2761,7 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
                 }
             }
         }
-        if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+        if !either_float && let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
             if r_big.is_zero() {
                 return raise_exception::<_>(_py, "ZeroDivisionError", "integer division or modulo by zero");
             }
@@ -14745,11 +14749,12 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let lhs = obj_from_bits(a_bits);
         let rhs = obj_from_bits(b_bits);
-        eprintln!("[divmod] a_bits={:#018x} b_bits={:#018x} lhs.is_float()={} rhs.is_float()={}", a_bits, b_bits, lhs.is_float(), rhs.is_float());
-        // If either operand is a float, skip the integer fast path so that
+        // If either operand is a float, skip ALL integer paths so that
         // divmod(7, 2.0) returns (3.0, 1.0) instead of (3, 1).
-        if !lhs.is_float() && !rhs.is_float() && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
-            eprintln!("[divmod] INT PATH: li={} ri={}", li, ri);
+        // Note: to_i64 / to_bigint coerce exact-integer floats (e.g. 2.0 -> 2),
+        // so we must guard the bigint path too, not just the i64 fast path.
+        let either_float = lhs.is_float() || rhs.is_float();
+        if !either_float && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
             if ri == 0 {
                 return raise_exception::<_>(
                     _py,
@@ -14772,10 +14777,7 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
             }
             return MoltObject::from_ptr(tuple_ptr).bits();
         }
-        eprintln!("[divmod] skipped int path, trying bigint. to_bigint(lhs)={} to_bigint(rhs)={}", to_bigint(lhs).is_some(), to_bigint(rhs).is_some());
-        if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
-            eprintln!("[divmod] BIGINT PATH: l={} r={}", l_big, r_big);
-
+        if !either_float && let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
             if r_big.is_zero() {
                 return raise_exception::<_>(
                     _py,
@@ -15084,7 +15086,13 @@ pub extern "C" fn molt_sorted_builtin(iter_bits: u64, key_bits: u64, reverse_bit
                         dec_ref_bits(_py, item.key_bits);
                     }
                 }
-                return MoltObject::none().bits();
+                // If an exception is pending, propagate it; otherwise the
+                // iterator returned a non-pointer sentinel — treat as done
+                // and fall through to build the (possibly empty) sorted list.
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                break;
             };
             unsafe {
                 if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
