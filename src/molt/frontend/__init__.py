@@ -85,6 +85,10 @@ class LoopBoundFact:
     compare_result: str
 
 
+# 47-bit signed inline integer range for NaN-boxing.
+_INLINE_INT_MIN = -(1 << 46)
+_INLINE_INT_MAX = (1 << 46) - 1
+
 _FAST_ARITH_OPS = frozenset({
     "ADD", "SUB", "MUL",
     "INPLACE_ADD", "INPLACE_SUB", "INPLACE_MUL",
@@ -5550,8 +5554,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return res
         if isinstance(value, int):
             res = MoltValue(self.next_var(), type_hint="int")
-            inline_min = -(1 << 46)
-            inline_max = (1 << 46) - 1
             if inline_min <= value <= inline_max:
                 self.emit(MoltOp(kind="CONST", args=[value], result=res))
             else:
@@ -10187,10 +10189,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="CONST_BOOL", args=[node.value], result=res))
             return res
         if isinstance(node.value, int):
-            inline_min = -(1 << 46)
-            inline_max = (1 << 46) - 1
             res = MoltValue(self.next_var(), type_hint="int")
-            if inline_min <= node.value <= inline_max:
+            if _INLINE_INT_MIN <= node.value <= _INLINE_INT_MAX:
                 self.emit(MoltOp(kind="CONST", args=[node.value], result=res))
             else:
                 self.emit(
@@ -27169,7 +27169,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if (
                     isinstance(value, int)
                     and not isinstance(value, bool)
-                    and not (-(1 << 46) <= value <= (1 << 46) - 1)
+                    and not (_INLINE_INT_MIN <= value <= _INLINE_INT_MAX)
                 ):
                     json_ops.append(
                         {
@@ -27268,9 +27268,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 result_val = lhs_c - rhs_c
                             else:
                                 result_val = lhs_c * rhs_c
-                            _inline_min = -(1 << 46)
-                            _inline_max = (1 << 46) - 1
-                            if not (_inline_min <= result_val <= _inline_max):
+                            if not (_INLINE_INT_MIN <= result_val <= _INLINE_INT_MAX):
                                 json_ops.append(
                                     {
                                         "kind": "const_bigint",
@@ -32566,11 +32564,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             # constants, compute the result.  If it overflows the
             # 47-bit signed inline range, replace with CONST_BIGINT
             # to prevent Cranelift 0.130 constant-folding miscompilation.
-            _INLINE_MIN = -(1 << 46)
-            _INLINE_MAX = (1 << 46) - 1
             _folded_to_bigint = False
-            with open("/tmp/_molt_all_ops.txt", "a") as _tf:
-                _tf.write(f"op: {canonical_op.kind} result={result_name}\n")
             if (
                 canonical_op.kind in {"ADD", "SUB", "MUL"}
                 and len(canonical_op.args) == 2
@@ -32586,7 +32580,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             folded = lhs_const - rhs_const
                         else:
                             folded = lhs_const * rhs_const
-                        if not (_INLINE_MIN <= folded <= _INLINE_MAX):
+                        if not (_INLINE_INT_MIN <= folded <= _INLINE_INT_MAX):
                             canonical_op = MoltOp(
                                 kind="CONST_BIGINT",
                                 args=[str(folded)],
@@ -35729,7 +35723,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                     changed = True
 
-                with open("/tmp/_molt_block_call.txt", "a") as _tf: _tf.write(f"BLOCK_CALL: block={block.id} start={block.start} end={block.end} ops={[working_ops[i].kind for i in range(block.start, min(block.end, len(working_ops)))]}\n")
                 canonical_ops, out_state = self._canonicalize_block_with_state(
                     working_ops[block.start : block.end],
                     in_state,
@@ -35763,7 +35756,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         *,
         allow_cross_block_const_dedupe: bool,
     ) -> list[MoltOp]:
-        with open("/tmp/_molt_impl.txt", "a") as _tf: _tf.write(f"impl called: {len(ops)} ops\n")
         self._refresh_midend_env_config_if_needed()
         # Current contract: sparse SCCP covers arithmetic/boolean/comparison/type
         # families plus bounded loop facts used by today’s fixed-point passes;
