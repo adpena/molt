@@ -12557,8 +12557,8 @@ def _build_native_link_command(
     else:
         if sys.platform == "darwin":
             link_cmd.append("-Wl,-dead_strip")
-            link_cmd.append("-Wl,-exported_symbol,_main")
-            link_cmd.extend(["-Wl,-x", "-Wl,-S"])
+            # link_cmd.append("-Wl,-exported_symbol,_main")
+            # link_cmd.extend(["-Wl,-x", "-Wl,-S"])
             link_cmd.append("-lc++")
         elif sys.platform.startswith("linux"):
             link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
@@ -19938,7 +19938,14 @@ def _detect_macos_deployment_target(arch: str | None = None) -> str | None:
     # Stable per-arch baselines when no environment override is present.
     if arch in ("x86_64", "amd64"):
         return "10.13"
-    # arm64, aarch64, and any unknown arch default to 11.0.
+    # arm64, aarch64, and any unknown arch: use the current system version
+    # to avoid linker warnings about object files built for a newer macOS.
+    import platform
+    ver = platform.mac_ver()[0]
+    if ver:
+        # Use major.minor (e.g., "15.0" from "15.0.1")
+        parts = ver.split(".")
+        return ".".join(parts[:2]) if len(parts) >= 2 else ver
     return "11.0"
 
 
