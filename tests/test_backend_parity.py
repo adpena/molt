@@ -88,7 +88,7 @@ def _run_molt_build(
         "molt.cli",
         "build",
         str(src_path),
-        "--profile",
+        "--build-profile",
         "dev",
         "--target",
         target,
