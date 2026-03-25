@@ -1935,6 +1935,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "LINE",
             "TRACE_ENTER_SLOT",
             "TRACE_EXIT",
+            "CONST",
+            "CONST_NONE",
+            "CONST_BOOL",
+            "CONST_STR",
+            "CONST_FLOAT",
+            "CONST_BYTES",
             "ret",
         }:
             return
@@ -2294,6 +2300,30 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             stack.extend(ast.iter_child_nodes(current))
         return False
 
+    @staticmethod
+    def _function_needs_exception_stack(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> bool:
+        """Return True if the function body contains try/except/with statements.
+
+        Functions without these constructs do not need the exception stack
+        bookkeeping (EXCEPTION_STACK_ENTER/DEPTH/EXIT, CHECK_EXCEPTION after
+        every op, raise-if-pending at return points).  Skipping this overhead
+        saves 8+ ops per function call.
+        """
+        stack: list[ast.AST] = list(node.body)
+        while stack:
+            current = stack.pop()
+            if isinstance(current, (ast.Try, ast.TryStar, ast.With, ast.AsyncWith)):
+                return True
+            if isinstance(
+                current,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+            ):
+                continue
+            stack.extend(ast.iter_child_nodes(current))
+        return False
+
     def _signature_contains_yield(
         self,
         *,
@@ -2450,6 +2480,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         params: list[str] | None = None,
         type_facts_name: str | None = None,
         needs_return_slot: bool = False,
+        needs_exception_stack: bool = True,
     ) -> None:
         if name not in self.funcs_map:
             self.funcs_map[name] = FuncInfo(
@@ -2501,25 +2532,32 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.try_scopes = []
         self.try_suppress_depth = None
         self.try_handler_scopes = []
-        self.function_exception_label = self.next_label()
-        self.exception_stack_prev_baseline = MoltValue(self.next_var(), type_hint="int")
-        self.emit(
-            MoltOp(
-                kind="EXCEPTION_STACK_ENTER",
-                args=[],
-                result=self.exception_stack_prev_baseline,
+        if needs_exception_stack:
+            self.function_exception_label = self.next_label()
+            self.exception_stack_prev_baseline = MoltValue(
+                self.next_var(), type_hint="int"
             )
-        )
-        self.exception_stack_depth_baseline = MoltValue(
-            self.next_var(), type_hint="int"
-        )
-        self.emit(
-            MoltOp(
-                kind="EXCEPTION_STACK_DEPTH",
-                args=[],
-                result=self.exception_stack_depth_baseline,
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_STACK_ENTER",
+                    args=[],
+                    result=self.exception_stack_prev_baseline,
+                )
             )
-        )
+            self.exception_stack_depth_baseline = MoltValue(
+                self.next_var(), type_hint="int"
+            )
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_STACK_DEPTH",
+                    args=[],
+                    result=self.exception_stack_depth_baseline,
+                )
+            )
+        else:
+            self.function_exception_label = None
+            self.exception_stack_prev_baseline = None
+            self.exception_stack_depth_baseline = None
         self.return_unwind_depth = 0
         self.return_unwind_popped_scopes = []
         self.active_exceptions = []
@@ -8983,6 +9021,28 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         item = MoltValue(self.next_var(), type_hint="Any")
         self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
+        # Validate that the yielded item has at least 2 elements before
+        # indexing, so non-tuple / short-sequence inputs produce a clear
+        # ValueError instead of an opaque crash.
+        two = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[2], result=two))
+        item_len = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="LEN", args=[item], result=item_len))
+        item_too_short = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="LT", args=[item_len, two], result=item_too_short))
+        self.emit(MoltOp(kind="IF", args=[item_too_short], result=MoltValue("none")))
+        err_msg = MoltValue(self.next_var(), type_hint="str")
+        self.emit(
+            MoltOp(
+                kind="CONST_STR",
+                args=["dictionary update sequence element has length less than 2"],
+                result=err_msg,
+            )
+        )
+        err_exc = self._emit_exception_new("ValueError", err_msg)
+        self.emit(MoltOp(kind="RAISE", args=[err_exc], result=MoltValue("none")))
+        self._emit_raise_exit()
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         key = MoltValue(self.next_var(), type_hint="Any")
         self.emit(MoltOp(kind="INDEX", args=[item, zero], result=key))
         val = MoltValue(self.next_var(), type_hint="Any")
@@ -23355,6 +23415,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            # Finally raised a new exception -- chain __context__ to the
+            # original exception so it is not silently lost (CPython 3.12+).
+            _orig_exc = self._active_exception_value(final_entry)
+            _orig_is_none = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(
+                    kind="IS", args=[_orig_exc, none_after], result=_orig_is_none
+                )
+            )
+            self.emit(MoltOp(kind="IF", args=[_orig_is_none], result=MoltValue("none")))
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[exc_after, "__context__", _orig_exc],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             self.active_exceptions.pop()
 
@@ -23417,6 +23497,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 MoltOp(
                     kind="EXCEPTION_SET_LAST",
                     args=[restored_exc],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            # Finally raised a new exception -- chain __context__ to the
+            # original exception so it is not silently lost (CPython 3.12+).
+            _orig_exc = self._active_exception_value(else_final_entry)
+            _orig_is_none = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(
+                    kind="IS", args=[_orig_exc, none_after], result=_orig_is_none
+                )
+            )
+            self.emit(MoltOp(kind="IF", args=[_orig_is_none], result=MoltValue("none")))
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[else_after, "__context__", _orig_exc],
                     result=MoltValue("none"),
                 )
             )
@@ -23841,6 +23941,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            # Finally raised a new exception -- chain __context__ to the
+            # original exception so it is not silently lost (CPython 3.12+).
+            _orig_exc = self._active_exception_value(final_entry)
+            _orig_is_none = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(
+                    kind="IS", args=[_orig_exc, none_after], result=_orig_is_none
+                )
+            )
+            self.emit(MoltOp(kind="IF", args=[_orig_is_none], result=MoltValue("none")))
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[exc_after, "__context__", _orig_exc],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             self.active_exceptions.pop()
 
@@ -23903,6 +24023,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 MoltOp(
                     kind="EXCEPTION_SET_LAST",
                     args=[restored_exc],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            # Finally raised a new exception -- chain __context__ to the
+            # original exception so it is not silently lost (CPython 3.12+).
+            _orig_exc = self._active_exception_value(else_final_entry)
+            _orig_is_none = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(
+                    kind="IS", args=[_orig_exc, none_after], result=_orig_is_none
+                )
+            )
+            self.emit(MoltOp(kind="IF", args=[_orig_is_none], result=MoltValue("none")))
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[else_after, "__context__", _orig_exc],
                     result=MoltValue("none"),
                 )
             )
@@ -24473,9 +24613,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if val is None:
             val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
-        if self.return_unwind_depth == 0:
+        _has_exc_stack = self.exception_stack_prev_baseline is not None
+        if _has_exc_stack and self.return_unwind_depth == 0:
             self._emit_raise_if_pending(emit_exit=True)
-        if self.return_unwind_depth > 0:
+        if _has_exc_stack and self.return_unwind_depth > 0:
             self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
         none_exc = None
         if self.try_scopes:
@@ -24523,8 +24664,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         self.active_exceptions = prior_active
         # Return-time context cleanup is handled by per-scope CONTEXT_UNWIND_TO
         # above. A full CONTEXT_UNWIND here can incorrectly unwind caller frames.
-        self._emit_restore_exception_stack_depth(exit_baseline=False)
-        self._emit_raise_if_pending()
+        if _has_exc_stack:
+            self._emit_restore_exception_stack_depth(exit_baseline=False)
+            self._emit_raise_if_pending()
         self._emit_return_value(val)
         return None
 
@@ -25142,6 +25284,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         is_generator = self._function_contains_yield(node)
         needs_locals_cache = self._function_contains_locals_call(node)
         has_return = self._function_contains_return(node)
+        needs_exc_stack = self._function_needs_exception_stack(node)
         func_name = node.name
         qualname = self._qualname_for_def(func_name)
         if is_generator:
@@ -25551,7 +25694,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             func_symbol,
             params=func_params,
             type_facts_name=func_name,
-            needs_return_slot=has_return,
+            needs_return_slot=has_return and needs_exc_stack,
+            needs_exception_stack=needs_exc_stack,
         )
         self.current_method_first_param = params[0] if params else None
         if has_closure:
@@ -25967,7 +26111,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.current_class = None
         prev_first_param = self.current_method_first_param
         self.start_function(
-            func_symbol, params=func_params, type_facts_name=func_symbol
+            func_symbol,
+            params=func_params,
+            type_facts_name=func_symbol,
+            needs_exception_stack=False,
         )
         self.current_method_first_param = params[0] if params else None
         if has_closure:
