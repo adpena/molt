@@ -551,6 +551,80 @@ fn both_float_check(builder: &mut FunctionBuilder, lhs: Value, rhs: Value) -> Va
     builder.ins().icmp_imm(IntCC::Equal, either_special, 0)
 }
 
+/// Check whether a NaN-boxed value carries the int tag.
+#[cfg(feature = "native-backend")]
+fn is_nanboxed_int(builder: &mut FunctionBuilder, val: Value) -> Value {
+    let shift48 = builder.ins().iconst(types::I64, 48);
+    let tag16 = builder.ins().ushr(val, shift48);
+    let expected = builder.ins().iconst(types::I64, ((QNAN | TAG_INT) >> 48) as i64);
+    builder.ins().icmp(IntCC::Equal, tag16, expected)
+}
+
+/// Emit inline mixed int+float arithmetic.  When exactly one operand is a
+/// NaN-boxed int and the other is a plain f64, convert the int to f64 via
+/// `fcvt_from_sint` and perform the requested float operation inline.
+///
+/// `f_op`: 0 = fadd, 1 = fsub, 2 = fmul.
+#[cfg(feature = "native-backend")]
+fn emit_mixed_int_float_op(
+    builder: &mut FunctionBuilder,
+    lhs: Value,
+    rhs: Value,
+    nbc: &NanBoxConsts,
+    f_op: u8,
+    merge_block: Block,
+) {
+    let lhs_is_int = is_nanboxed_int(builder, lhs);
+    let rhs_is_int = is_nanboxed_int(builder, rhs);
+    let lhs_special = is_nanboxed_special(builder, lhs);
+    let rhs_special = is_nanboxed_special(builder, rhs);
+    let rhs_not_special = builder.ins().icmp_imm(IntCC::Equal, rhs_special, 0);
+    let lhs_not_special = builder.ins().icmp_imm(IntCC::Equal, lhs_special, 0);
+    let case_a = builder.ins().band(lhs_is_int, rhs_not_special);
+    let case_b = builder.ins().band(rhs_is_int, lhs_not_special);
+    let lhs_int_block = builder.create_block();
+    let check_rhs_block = builder.create_block();
+    let rhs_int_block = builder.create_block();
+    let not_mixed_block = builder.create_block();
+    builder.set_cold_block(not_mixed_block);
+    builder.ins().brif(case_a, lhs_int_block, &[], check_rhs_block, &[]);
+    // LHS is int, RHS is float
+    builder.switch_to_block(lhs_int_block);
+    builder.seal_block(lhs_int_block);
+    let lhs_int_val = unbox_int(builder, lhs, nbc);
+    let lhs_conv = builder.ins().fcvt_from_sint(types::F64, lhs_int_val);
+    let rhs_flt = builder.ins().bitcast(types::F64, MemFlags::new(), rhs);
+    let res_a = match f_op {
+        0 => builder.ins().fadd(lhs_conv, rhs_flt),
+        1 => builder.ins().fsub(lhs_conv, rhs_flt),
+        2 => builder.ins().fmul(lhs_conv, rhs_flt),
+        _ => unreachable!(),
+    };
+    let boxed_a = box_float_value(builder, res_a);
+    jump_block(builder, merge_block, &[boxed_a]);
+    // Check case_b
+    builder.switch_to_block(check_rhs_block);
+    builder.seal_block(check_rhs_block);
+    builder.ins().brif(case_b, rhs_int_block, &[], not_mixed_block, &[]);
+    // RHS is int, LHS is float
+    builder.switch_to_block(rhs_int_block);
+    builder.seal_block(rhs_int_block);
+    let rhs_int_val = unbox_int(builder, rhs, nbc);
+    let rhs_conv = builder.ins().fcvt_from_sint(types::F64, rhs_int_val);
+    let lhs_flt = builder.ins().bitcast(types::F64, MemFlags::new(), lhs);
+    let res_b = match f_op {
+        0 => builder.ins().fadd(lhs_flt, rhs_conv),
+        1 => builder.ins().fsub(lhs_flt, rhs_conv),
+        2 => builder.ins().fmul(lhs_flt, rhs_conv),
+        _ => unreachable!(),
+    };
+    let boxed_b = box_float_value(builder, res_b);
+    jump_block(builder, merge_block, &[boxed_b]);
+    // Not mixed: caller emits slow path
+    builder.switch_to_block(not_mixed_block);
+    builder.seal_block(not_mixed_block);
+}
+
 #[cfg(feature = "native-backend")]
 fn box_int_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
     let mask = builder.ins().iconst(types::I64, INT_MASK as i64);
