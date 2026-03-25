@@ -49,7 +49,7 @@ pub use crate::ir::{
 use crate::native_backend::TrampolineKey;
 pub use crate::passes::{
     apply_profile_order, build_const_int_map, elide_dead_struct_allocs,
-    eliminate_dead_functions, escape_analysis,
+    elide_safe_exception_checks, eliminate_dead_functions, escape_analysis,
     fold_constants, fold_constants_cross_block, hoist_loop_invariants,
     inline_functions, propagate_loop_fast_int, rc_coalescing,
     split_megafunctions,
@@ -1667,6 +1667,9 @@ impl SimpleBackend {
         for func_ir in &mut ir.functions {
             fold_constants(&mut func_ir.ops);
             fold_constants_cross_block(&mut func_ir.ops);
+        }
+        for func_ir in &mut ir.functions {
+            elide_safe_exception_checks(func_ir);
         }
         for func_ir in &mut ir.functions {
             hoist_loop_invariants(func_ir);
