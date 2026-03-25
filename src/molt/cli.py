@@ -8871,8 +8871,27 @@ def _kill_stale_backend_daemon() -> None:
 
 
 def _backend_daemon_binary_is_newer(backend_bin: Path, pid_path: Path) -> bool:
+    """Check if the backend binary OR runtime library is newer than the daemon.
+
+    This prevents the daemon from serving stale compiled code when either
+    the backend or runtime has been rebuilt.
+    """
     try:
-        return backend_bin.stat().st_mtime > (pid_path.stat().st_mtime + 1e-6)
+        pid_mtime = pid_path.stat().st_mtime + 1e-6
+        if backend_bin.stat().st_mtime > pid_mtime:
+            return True
+        # Also check if the runtime library was rebuilt — the daemon
+        # links compiled output against the runtime, so a stale daemon
+        # produces binaries with old runtime behavior.
+        project_root = backend_bin.parent.parent.parent  # target/<profile>/molt-backend -> project root
+        for profile_dir in ("release", "release-fast", "debug"):
+            runtime_lib = project_root / "target" / profile_dir / "libmolt_runtime.a"
+            try:
+                if runtime_lib.stat().st_mtime > pid_mtime:
+                    return True
+            except OSError:
+                continue
+        return False
     except OSError:
         return False
 
@@ -9419,6 +9438,10 @@ def _start_backend_daemon(
     if existing_pid is not None:
         if _pid_alive(existing_pid):
             if _backend_daemon_binary_is_newer(backend_bin, pid_path):
+                print(
+                    "Backend or runtime rebuilt; restarting daemon...",
+                    file=sys.stderr,
+                )
                 _terminate_backend_daemon_pid(existing_pid, grace=1.0)
                 _remove_backend_daemon_pid(pid_path)
                 try:
