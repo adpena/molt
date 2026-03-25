@@ -7561,7 +7561,7 @@ fn strip_dead_gotos_and_labels(source: &mut String) {
 /// 2. **Trivial forward gotos** where the target label is the next non-label,
 ///    non-empty line are removed (jump to immediately next statement).
 /// 3. **Remaining forward gotos** are replaced with a skip-flag pattern:
-///    ```
+///    ```text
 ///    local _molt_skip_N = false
 ///    ...
 ///    _molt_skip_N = true  -- replaces: goto label_N
