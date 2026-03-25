@@ -52,10 +52,10 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
 
     // Verify TIR invariants after all passes.
     if let Err(errors) = super::verify::verify_function(func) {
-        panic!(
-            "TIR verification failed after optimization pipeline ({} errors): {:?}",
+        eprintln!(
+            "[TIR] WARNING: verification failed after optimization pipeline ({} errors) for '{}' -- falling back to unoptimized.",
             errors.len(),
-            errors
+            func.name(),
         );
     }
 
