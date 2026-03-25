@@ -1825,16 +1825,18 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
                         }
                     }
                 }
-                _ => {
-                    // Some ops embed function names in s_value for
-                    // generator/coroutine wiring (e.g. task_new, generator_send).
-                    // Conservatively retain anything that names a defined function.
+                // Only specific op kinds legitimately reference functions by name.
+                "task_new" | "generator_send" | "generator_create" | "coro_create"
+                | "spawn" | "call_func" | "call_method" | "import_from"
+                | "import_name" | "class_def" | "make_function" | "decorator"
+                | "super_call" | "yield_from" | "await" => {
                     if let Some(name) = op.s_value.as_ref() {
                         if defined.contains(name.as_str()) {
                             refs.insert(name.clone());
                         }
                     }
                 }
+                _ => {}
             }
         }
         references.insert(func.name.clone(), refs);
@@ -2050,6 +2052,17 @@ pub fn split_large_function(func: FunctionIR, max_ops: usize) -> Result<(Functio
     boundaries.push(0);
     boundaries.extend_from_slice(&selected);
     boundaries.push(func.ops.len());
+
+    // Validate: ensure no chunk exceeds max_ops. If any chunk is oversized,
+    // the function has a deeply nested region that can't be split cleanly.
+    for window in boundaries.windows(2) {
+        let chunk_size = window[1] - window[0];
+        if chunk_size > max_ops * 2 {
+            // Allow up to 2x max_ops for the final chunk — beyond that,
+            // return Err to fall back to single-module compilation.
+            return Err(func);
+        }
+    }
 
     let sanitized_name = func
         .name
