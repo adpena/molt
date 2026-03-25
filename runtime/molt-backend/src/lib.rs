@@ -2292,8 +2292,18 @@ impl SimpleBackend {
             tir_cache.save_index();
         }
         // Post-TIR: analysis + inlining (from main)
+        // Capture task_kinds and task_closure_sizes BEFORE megafunction splitting.
+        // Megafunction splitting can separate `func_new` from its corresponding
+        // `set_attr_generic_obj(__molt_is_generator__)` into different chunk
+        // functions, which breaks the per-function cross-reference in
+        // `analyze_native_backend_ir`.  By capturing generator/coroutine
+        // annotations now, we ensure they survive the split.
+        let pre_split_task_kinds: BTreeMap<String, TrampolineKind>;
+        let pre_split_task_closure_sizes: BTreeMap<String, i64>;
         {
             let analysis = analyze_native_backend_ir(&ir);
+            pre_split_task_kinds = analysis.task_kinds;
+            pre_split_task_closure_sizes = analysis.task_closure_sizes;
             if analysis.needs_inlining && !self.skip_ir_passes {
                 inline_functions(&mut ir);
             }
@@ -2405,7 +2415,18 @@ impl SimpleBackend {
         // Re-analyze after dead function elimination and megafunction
         // splitting so defined_functions/closure_functions reflect only the
         // surviving (and newly created chunk) functions.
-        let ir_analysis = analyze_native_backend_ir(&ir);
+        let mut ir_analysis = analyze_native_backend_ir(&ir);
+        // Merge pre-split task annotations: megafunction splitting can
+        // separate `func_new` from `set_attr_generic_obj(__molt_is_generator__)`
+        // into different chunk functions, causing the post-split analysis to
+        // miss generator/coroutine annotations.  The pre-split analysis
+        // captured these correctly before the ops were split apart.
+        for (name, kind) in &pre_split_task_kinds {
+            ir_analysis.task_kinds.entry(name.clone()).or_insert(*kind);
+        }
+        for (name, size) in &pre_split_task_closure_sizes {
+            ir_analysis.task_closure_sizes.entry(name.clone()).or_insert(*size);
+        }
         // Conditional trace elimination: skip emitting trace_enter/trace_exit calls
         // when tracing is disabled. Each guarded call site emits 2 trace function calls
         // (enter + exit); eliminating them saves codegen work on cache misses and
