@@ -93,10 +93,16 @@ mod native_backend_consts {
     pub(super) const FUNC_DEFAULT_DICT_POP: i64 = 2;
     #[allow(dead_code)]
     pub(super) const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
-    pub(super) const HEADER_SIZE_BYTES: i32 = 40;
+    pub(super) const HEADER_SIZE_BYTES: i32 = 16;
+    // MoltHeader layout (16 bytes total):
+    //   offset  0: type_id    (u32)
+    //   offset  4: ref_count  (u32 / AtomicU32)
+    //   offset  8: flags      (u32)
+    //   offset 12: size_class (u16) + _pad (u16)
+    // Data pointer = header_ptr + 16, so offsets from data_ptr are negative.
     pub(super) const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
     pub(super) const HEADER_REFCOUNT_OFFSET: i32 = -(HEADER_SIZE_BYTES - 4);
-    pub(super) const HEADER_FLAGS_OFFSET: i32 = -(HEADER_SIZE_BYTES - 32);
+    pub(super) const HEADER_FLAGS_OFFSET: i32 = -(HEADER_SIZE_BYTES - 8);
     pub(super) const HEADER_FLAG_IMMORTAL: u64 = 1 << 15;
 }
 
@@ -2212,6 +2218,7 @@ impl SimpleBackend {
         // optimized and emitted as a native object file.
         #[cfg(feature = "llvm")]
         if _use_llvm {
+            let _ = std::fs::write("/tmp/molt_llvm_sentinel.txt", format!("LLVM backend reached: {} functions", ir.functions.len()));
             use crate::llvm_backend::{LlvmBackend, MoltOptLevel};
             use crate::tir::lower_from_simple::lower_to_tir;
 
@@ -2280,6 +2287,7 @@ impl SimpleBackend {
                 );
             }
 
+            let _ = std::fs::write("/tmp/molt_llvm_debug_bytes.o", &bytes);
             return bytes;
         }
         // Re-analyze after dead function elimination and megafunction
