@@ -1775,15 +1775,40 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
     // When they are NOT reachable from molt_main (the common case for
     // simple programs), their bodies are inert stubs.
     {
-        // Check if molt_main actually calls either isolate function.
-        let main_calls_isolate = ir.functions.iter()
-            .find(|f| f.name == "molt_main")
-            .map_or(false, |main_fn| {
-                main_fn.ops.iter().any(|op| {
-                    op.s_value.as_deref()
-                        .map_or(false, |s| s.starts_with("molt_isolate_"))
-                })
-            });
+        // Check if molt_isolate_import / molt_isolate_bootstrap are
+        // transitively reachable from molt_main.  The previous check only
+        // looked at molt_main's direct ops, missing cases where the module
+        // body (called from molt_main) invokes the isolate functions.
+        let main_calls_isolate = {
+            // Quick BFS from molt_main to see if any reachable function
+            // references molt_isolate_*.
+            let func_map: BTreeMap<&str, &crate::FunctionIR> =
+                ir.functions.iter().map(|f| (f.name.as_str(), f)).collect();
+            let mut visited: BTreeSet<&str> = BTreeSet::new();
+            let mut queue: std::collections::VecDeque<&str> =
+                std::collections::VecDeque::new();
+            if func_map.contains_key("molt_main") {
+                visited.insert("molt_main");
+                queue.push_back("molt_main");
+            }
+            let mut found = false;
+            'bfs: while let Some(current) = queue.pop_front() {
+                if let Some(func) = func_map.get(current) {
+                    for op in &func.ops {
+                        if let Some(s) = op.s_value.as_deref() {
+                            if s.starts_with("molt_isolate_") {
+                                found = true;
+                                break 'bfs;
+                            }
+                            if func_map.contains_key(s) && visited.insert(s) {
+                                queue.push_back(s);
+                            }
+                        }
+                    }
+                }
+            }
+            found
+        };
         if !main_calls_isolate {
             for func in &mut ir.functions {
                 if func.name == "molt_isolate_import" {
@@ -1849,6 +1874,15 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
                             if defined.contains(poll_name.as_str()) {
                                 refs.insert(poll_name);
                             }
+                        }
+                    }
+                }
+                // Ops that take a function pointer address via s_value.
+                "fn_ptr_code_set" | "asyncgen_locals_register"
+                | "gen_locals_register" => {
+                    if let Some(name) = op.s_value.as_ref() {
+                        if defined.contains(name.as_str()) {
+                            refs.insert(name.clone());
                         }
                     }
                 }
