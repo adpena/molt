@@ -595,54 +595,134 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             // ── Call ──
             OpCode::Call => {
-                // Generic call: operands[0] = callable, rest = positional args.
-                // For now, use the callargs builder protocol.
-                let result_id = op.results[0];
-                let callable = self.resolve(op.operands[0]);
-                let callable_i64 = self.ensure_i64(callable);
-
-                let n_args = (op.operands.len() - 1) as u64;
                 let i64_ty = self.backend.context.i64_type();
 
-                // Build call args
-                let new_fn = self.backend.module.get_function("molt_callargs_new").unwrap();
-                let builder_val = self
-                    .backend
-                    .builder
-                    .build_call(
-                        new_fn,
-                        &[
-                            i64_ty.const_int(n_args, false).into(),
-                            i64_ty.const_int(0, false).into(),
-                        ],
-                        "callargs",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
+                // Direct call by name: call_guarded stores the target function
+                // name in s_value / _var, with all operands being arguments
+                // (not a callable reference).  If the target already exists in
+                // the LLVM module (same compilation unit), call it directly.
+                let direct_target: Option<String> = op
+                    .attrs
+                    .get("s_value")
+                    .or_else(|| op.attrs.get("_var"))
+                    .and_then(|v| match v {
+                        AttrValue::Str(s) if !s.is_empty() => Some(s.clone()),
+                        _ => None,
+                    });
 
-                let push_fn = self.backend.module.get_function("molt_callargs_push_pos").unwrap();
-                for &arg_id in &op.operands[1..] {
-                    let arg = self.resolve(arg_id);
-                    let arg_i64 = self.ensure_i64(arg);
-                    // Update builder_val (push returns the updated builder)
-                    self.backend
+                if let Some(ref target_name) = direct_target {
+                    if let Some(target_fn) = self.backend.module.get_function(target_name) {
+                        // Direct call — all operands are positional args.
+                        let args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = op
+                            .operands
+                            .iter()
+                            .map(|&id| {
+                                let v = self.resolve(id);
+                                let v_i64 = self.ensure_i64(v);
+                                v_i64.into()
+                            })
+                            .collect();
+                        let call_result = self
+                            .backend
+                            .builder
+                            .build_call(target_fn, &args, "direct_call")
+                            .unwrap();
+                        if let Some(&result_id) = op.results.first() {
+                            let result = call_result
+                                .try_as_basic_value()
+                                .left()
+                                .unwrap_or_else(|| i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false).into());
+                            self.values.insert(result_id, result);
+                            self.value_types.insert(result_id, TirType::DynBox);
+                        }
+                    } else {
+                        // Target not yet in module — forward-declare it and call.
+                        let param_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+                            op.operands.iter().map(|_| i64_ty.into()).collect();
+                        let fn_ty = i64_ty.fn_type(&param_types, false);
+                        let target_fn = self.backend.module.add_function(
+                            target_name,
+                            fn_ty,
+                            Some(inkwell::module::Linkage::External),
+                        );
+                        let args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = op
+                            .operands
+                            .iter()
+                            .map(|&id| {
+                                let v = self.resolve(id);
+                                let v_i64 = self.ensure_i64(v);
+                                v_i64.into()
+                            })
+                            .collect();
+                        let result = self
+                            .backend
+                            .builder
+                            .build_call(target_fn, &args, "direct_call")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap_or_else(|| i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false).into());
+                        if let Some(&result_id) = op.results.first() {
+                            self.values.insert(result_id, result);
+                            self.value_types.insert(result_id, TirType::DynBox);
+                        }
+                    }
+                } else if !op.operands.is_empty() {
+                    // Indirect call: operands[0] = callable, rest = positional args.
+                    let callable = self.resolve(op.operands[0]);
+                    let callable_i64 = self.ensure_i64(callable);
+
+                    let n_args = (op.operands.len() - 1) as u64;
+
+                    let new_fn = self.backend.module.get_function("molt_callargs_new").unwrap();
+                    let builder_val = self
+                        .backend
                         .builder
-                        .build_call(push_fn, &[builder_val.into(), arg_i64.into()], "push")
-                        .unwrap();
+                        .build_call(
+                            new_fn,
+                            &[
+                                i64_ty.const_int(n_args, false).into(),
+                                i64_ty.const_int(0, false).into(),
+                            ],
+                            "callargs",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic();
+
+                    let push_fn = self.backend.module.get_function("molt_callargs_push_pos").unwrap();
+                    for &arg_id in &op.operands[1..] {
+                        let arg = self.resolve(arg_id);
+                        let arg_i64 = self.ensure_i64(arg);
+                        self.backend
+                            .builder
+                            .build_call(push_fn, &[builder_val.into(), arg_i64.into()], "push")
+                            .unwrap();
+                    }
+
+                    let bind_fn = self.backend.module.get_function("molt_call_bind").unwrap();
+                    let result = self
+                        .backend
+                        .builder
+                        .build_call(bind_fn, &[callable_i64.into(), builder_val.into()], "call_result")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic();
+
+                    if let Some(&result_id) = op.results.first() {
+                        self.values.insert(result_id, result);
+                        self.value_types.insert(result_id, TirType::DynBox);
+                    }
+                } else {
+                    // No operands, no direct target — emit None.
+                    if let Some(&result_id) = op.results.first() {
+                        let none_val: BasicValueEnum<'ctx> = i64_ty
+                            .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
+                            .into();
+                        self.values.insert(result_id, none_val);
+                        self.value_types.insert(result_id, TirType::DynBox);
+                    }
                 }
-
-                let bind_fn = self.backend.module.get_function("molt_call_bind").unwrap();
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(bind_fn, &[callable_i64.into(), builder_val.into()], "call_result")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-
-                self.values.insert(result_id, result);
-                self.value_types.insert(result_id, TirType::DynBox);
             }
 
             // ── SSA Copy ──
@@ -755,55 +835,164 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             // ── CallBuiltin: builtin_name(args...) ──
-            // Protocol: molt_call_builtin(name_bits, args_builder) -> u64
-            // operands: [builtin_name, arg0, arg1, ...]
+            //
+            // Two patterns reach here:
+            //   A) `call_builtin` from the frontend: s_value / name attr holds the
+            //      builtin name, operands[0] is a ConstStr with the name bits,
+            //      rest are positional args.
+            //   B) `print` / `builtin_print`: the op kind IS the builtin name,
+            //      stored in `_original_kind`.  ALL operands are arguments — the
+            //      first is NOT a name.
+            //
+            // We detect (B) by checking for `_original_kind` (only set when the
+            // SSA converter wraps a non-canonical kind).  For (A), the `name`
+            // attr holds the builtin name string.
             OpCode::CallBuiltin => {
                 let i64_ty = self.backend.context.i64_type();
-                let builtin_name = if !op.operands.is_empty() {
-                    let bv = self.resolve(op.operands[0]);
-                    self.ensure_i64(bv)
-                } else {
-                    i64_ty.const_int(0, false)
+
+                // Determine the builtin name and where positional args start.
+                let (builtin_name_str, args_start): (Option<String>, usize) = {
+                    let original_kind = op.attrs.get("_original_kind").and_then(|v| match v {
+                        AttrValue::Str(s) => Some(s.as_str()),
+                        _ => None,
+                    });
+                    let name_attr = op.attrs.get("name").and_then(|v| match v {
+                        AttrValue::Str(s) => Some(s.as_str()),
+                        _ => None,
+                    });
+                    if let Some(kind) = original_kind {
+                        // Pattern B: print, builtin_print, etc.
+                        // All operands are args.
+                        (Some(kind.to_string()), 0)
+                    } else if let Some(name) = name_attr {
+                        // Pattern A: call_builtin with explicit name.
+                        // operands[0] is the name ConstStr, rest are args.
+                        (Some(name.to_string()), 1)
+                    } else {
+                        // Fallback: operands[0] is the name bits.
+                        (None, 1)
+                    }
                 };
 
-                let n_args = op.operands.len().saturating_sub(1) as u64;
-                let new_fn = self.backend.module.get_function("molt_callargs_new").unwrap();
-                let args_builder = self
-                    .backend
-                    .builder
-                    .build_call(
-                        new_fn,
-                        &[i64_ty.const_int(n_args, false).into(), i64_ty.const_int(0, false).into()],
-                        "cb_args",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                let push_fn = self.backend.module.get_function("molt_callargs_push_pos").unwrap();
-                for &arg_id in op.operands.get(1..).unwrap_or(&[]) {
-                    let arg = self.resolve(arg_id);
-                    let arg_i64 = self.ensure_i64(arg);
-                    self.backend
-                        .builder
-                        .build_call(push_fn, &[args_builder.into(), arg_i64.into()], "cb_push")
-                        .unwrap();
-                }
+                // For "print", use the dedicated molt_print_obj runtime
+                // function which handles printing + newline in one call.
+                if builtin_name_str.as_deref() == Some("print")
+                    || builtin_name_str.as_deref() == Some("builtin_print")
+                {
+                    let print_fn = if let Some(f) = self.backend.module.get_function("molt_print_obj") {
+                        f
+                    } else {
+                        // Forward-declare molt_print_obj(u64) -> void
+                        let void_ty = self.backend.context.void_type();
+                        let fn_ty = void_ty.fn_type(&[i64_ty.into()], false);
+                        self.backend.module.add_function(
+                            "molt_print_obj",
+                            fn_ty,
+                            Some(inkwell::module::Linkage::External),
+                        )
+                    };
+                    for &arg_id in op.operands.get(args_start..).unwrap_or(&[]) {
+                        let arg = self.resolve(arg_id);
+                        let arg_i64 = self.ensure_i64(arg);
+                        self.backend
+                            .builder
+                            .build_call(print_fn, &[arg_i64.into()], "print")
+                            .unwrap();
+                    }
+                    // print returns None
+                    if let Some(&result_id) = op.results.first() {
+                        let none_val: BasicValueEnum<'ctx> = i64_ty
+                            .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
+                            .into();
+                        self.values.insert(result_id, none_val);
+                        self.value_types.insert(result_id, TirType::DynBox);
+                    }
+                } else {
+                    // Generic builtin call via molt_call_builtin.
+                    let builtin_name_bits = if let Some(ref name) = builtin_name_str {
+                        // We need a runtime interned string for the name.
+                        // For now, emit a ConstStr-style placeholder.
+                        // The runtime will resolve it via the builtin registry.
+                        let intern_fn = if let Some(f) = self.backend.module.get_function("molt_intern_string") {
+                            f
+                        } else {
+                            let fn_ty = i64_ty.fn_type(&[
+                                self.backend.context.ptr_type(inkwell::AddressSpace::default()).into(),
+                                i64_ty.into(),
+                            ], false);
+                            self.backend.module.add_function(
+                                "molt_intern_string",
+                                fn_ty,
+                                Some(inkwell::module::Linkage::External),
+                            )
+                        };
+                        let name_bytes = name.as_bytes();
+                        let global = self.backend.module.add_global(
+                            self.backend.context.i8_type().array_type(name_bytes.len() as u32),
+                            None,
+                            &format!("__builtin_name_{name}"),
+                        );
+                        global.set_initializer(
+                            &self.backend.context.const_string(name_bytes, false),
+                        );
+                        global.set_constant(true);
+                        global.set_unnamed_addr(true);
+                        let ptr = global.as_pointer_value();
+                        let len = i64_ty.const_int(name_bytes.len() as u64, false);
+                        self.backend
+                            .builder
+                            .build_call(intern_fn, &[ptr.into(), len.into()], "intern_name")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .map(|v| self.ensure_i64(v))
+                            .unwrap_or_else(|| i64_ty.const_int(0, false))
+                    } else if args_start <= op.operands.len() && !op.operands.is_empty() {
+                        let bv = self.resolve(op.operands[0]);
+                        self.ensure_i64(bv)
+                    } else {
+                        i64_ty.const_int(0, false)
+                    };
 
-                let call_builtin_fn = self.backend.module.get_function("molt_call_builtin").unwrap();
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(
-                        call_builtin_fn,
-                        &[builtin_name.into(), args_builder.into()],
-                        "call_builtin",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
+                    let n_args = op.operands.len().saturating_sub(args_start) as u64;
+                    let new_fn = self.backend.module.get_function("molt_callargs_new").unwrap();
+                    let args_builder = self
+                        .backend
+                        .builder
+                        .build_call(
+                            new_fn,
+                            &[i64_ty.const_int(n_args, false).into(), i64_ty.const_int(0, false).into()],
+                            "cb_args",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic();
+                    let push_fn = self.backend.module.get_function("molt_callargs_push_pos").unwrap();
+                    for &arg_id in op.operands.get(args_start..).unwrap_or(&[]) {
+                        let arg = self.resolve(arg_id);
+                        let arg_i64 = self.ensure_i64(arg);
+                        self.backend
+                            .builder
+                            .build_call(push_fn, &[args_builder.into(), arg_i64.into()], "cb_push")
+                            .unwrap();
+                    }
+
+                    let call_builtin_fn = self.backend.module.get_function("molt_call_builtin").unwrap();
+                    let result = self
+                        .backend
+                        .builder
+                        .build_call(
+                            call_builtin_fn,
+                            &[builtin_name_bits.into(), args_builder.into()],
+                            "call_builtin",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic();
+                    if let Some(&result_id) = op.results.first() {
+                        self.values.insert(result_id, result);
+                        self.value_types.insert(result_id, TirType::DynBox);
+                    }
                 }
             }
 
