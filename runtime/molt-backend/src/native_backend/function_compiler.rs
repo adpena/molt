@@ -994,18 +994,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function(
-                            "molt_vec_sum_int_range_iter_trusted",
-                            Linkage::Import,
-                            &sig,
-                        )
-                        .unwrap();
+                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_sum_int_range_iter_trusted", &[types::I64, types::I64], &[types::I64]);
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
@@ -1069,18 +1058,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function(
-                            "molt_vec_sum_float_range_iter_trusted",
-                            Linkage::Import,
-                            &sig,
-                        )
-                        .unwrap();
+                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_sum_float_range_iter_trusted", &[types::I64, types::I64], &[types::I64]);
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
@@ -5720,11 +5698,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[val]);
                 }
                 "print_newline" => {
-                    let sig = self.module.make_signature();
-                    let callee = self
-                        .module
-                        .declare_function("molt_print_newline", Linkage::Import, &sig)
-                        .unwrap();
+                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_print_newline", &[], &[]);
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[]);
                 }
@@ -5736,23 +5710,13 @@ impl SimpleBackend {
                             .or_else(|| var_get(&mut builder, &vars, arg_name))
                             .expect("String ptr not found");
 
-                        let mut sig = self.module.make_signature();
-                        sig.params.push(AbiParam::new(types::I64)); // ptr
-                        sig.params.push(AbiParam::new(types::I64)); // len
-                        sig.params.push(AbiParam::new(types::I64)); // out ptr
-                        sig.returns.push(AbiParam::new(types::I32)); // status
-
+                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_json_parse_scalar", &[types::I64, types::I64, types::I64], &[types::I32]);
                         let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
                             8,
                             3,
                         ));
                         let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
-
-                        let callee = self
-                            .module
-                            .declare_function("molt_json_parse_scalar", Linkage::Import, &sig)
-                            .unwrap();
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*ptr, *len, out_ptr]);
                         let rc = builder.inst_results(call)[0];
@@ -5775,17 +5739,7 @@ impl SimpleBackend {
                         builder.seal_block(err_block);
                         let arg_bits =
                             var_get(&mut builder, &vars, arg_name).expect("String arg not found");
-                        let mut err_sig = self.module.make_signature();
-                        err_sig.params.push(AbiParam::new(types::I64));
-                        err_sig.returns.push(AbiParam::new(types::I64));
-                        let err_callee = self
-                            .module
-                            .declare_function(
-                                "molt_json_parse_scalar_obj",
-                                Linkage::Import,
-                                &err_sig,
-                            )
-                            .unwrap();
+                        let err_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_json_parse_scalar_obj", &[types::I64], &[types::I64]);
                         let err_local = self.module.declare_func_in_func(err_callee, builder.func);
                         let err_call = builder.ins().call(err_local, &[*arg_bits]);
                         let err_res = builder.inst_results(err_call)[0];
@@ -5813,23 +5767,13 @@ impl SimpleBackend {
                             .or_else(|| var_get(&mut builder, &vars, arg_name))
                             .expect("Bytes ptr not found");
 
-                        let mut sig = self.module.make_signature();
-                        sig.params.push(AbiParam::new(types::I64)); // ptr
-                        sig.params.push(AbiParam::new(types::I64)); // len
-                        sig.params.push(AbiParam::new(types::I64)); // out ptr
-                        sig.returns.push(AbiParam::new(types::I32)); // status
-
+                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_msgpack_parse_scalar", &[types::I64, types::I64, types::I64], &[types::I32]);
                         let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
                             8,
                             3,
                         ));
                         let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
-
-                        let callee = self
-                            .module
-                            .declare_function("molt_msgpack_parse_scalar", Linkage::Import, &sig)
-                            .unwrap();
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*ptr, *len, out_ptr]);
                         let rc = builder.inst_results(call)[0];
@@ -5852,17 +5796,7 @@ impl SimpleBackend {
                         builder.seal_block(err_block);
                         let arg_bits =
                             var_get(&mut builder, &vars, arg_name).expect("Bytes arg not found");
-                        let mut err_sig = self.module.make_signature();
-                        err_sig.params.push(AbiParam::new(types::I64));
-                        err_sig.returns.push(AbiParam::new(types::I64));
-                        let err_callee = self
-                            .module
-                            .declare_function(
-                                "molt_msgpack_parse_scalar_obj",
-                                Linkage::Import,
-                                &err_sig,
-                            )
-                            .unwrap();
+                        let err_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_msgpack_parse_scalar_obj", &[types::I64], &[types::I64]);
                         let err_local = self.module.declare_func_in_func(err_callee, builder.func);
                         let err_call = builder.ins().call(err_local, &[*arg_bits]);
                         let err_res = builder.inst_results(err_call)[0];
@@ -5875,17 +5809,7 @@ impl SimpleBackend {
                     } else {
                         let arg_bits =
                             var_get(&mut builder, &vars, arg_name).expect("Bytes arg not found");
-                        let mut sig = self.module.make_signature();
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.returns.push(AbiParam::new(types::I64));
-                        let callee = self
-                            .module
-                            .declare_function(
-                                "molt_msgpack_parse_scalar_obj",
-                                Linkage::Import,
-                                &sig,
-                            )
-                            .unwrap();
+                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_msgpack_parse_scalar_obj", &[types::I64], &[types::I64]);
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*arg_bits]);
                         let res = builder.inst_results(call)[0];
@@ -5900,23 +5824,13 @@ impl SimpleBackend {
                             .or_else(|| var_get(&mut builder, &vars, arg_name))
                             .expect("Bytes ptr not found");
 
-                        let mut sig = self.module.make_signature();
-                        sig.params.push(AbiParam::new(types::I64)); // ptr
-                        sig.params.push(AbiParam::new(types::I64)); // len
-                        sig.params.push(AbiParam::new(types::I64)); // out ptr
-                        sig.returns.push(AbiParam::new(types::I32)); // status
-
+                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_cbor_parse_scalar", &[types::I64, types::I64, types::I64], &[types::I32]);
                         let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
                             8,
                             3,
                         ));
                         let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
-
-                        let callee = self
-                            .module
-                            .declare_function("molt_cbor_parse_scalar", Linkage::Import, &sig)
-                            .unwrap();
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*ptr, *len, out_ptr]);
                         let rc = builder.inst_results(call)[0];
@@ -5939,17 +5853,7 @@ impl SimpleBackend {
                         builder.seal_block(err_block);
                         let arg_bits =
                             var_get(&mut builder, &vars, arg_name).expect("Bytes arg not found");
-                        let mut err_sig = self.module.make_signature();
-                        err_sig.params.push(AbiParam::new(types::I64));
-                        err_sig.returns.push(AbiParam::new(types::I64));
-                        let err_callee = self
-                            .module
-                            .declare_function(
-                                "molt_cbor_parse_scalar_obj",
-                                Linkage::Import,
-                                &err_sig,
-                            )
-                            .unwrap();
+                        let err_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_cbor_parse_scalar_obj", &[types::I64], &[types::I64]);
                         let err_local = self.module.declare_func_in_func(err_callee, builder.func);
                         let err_call = builder.ins().call(err_local, &[*arg_bits]);
                         let err_res = builder.inst_results(err_call)[0];
@@ -7448,17 +7352,7 @@ impl SimpleBackend {
                     {
                         let func_obj_bits = *var_get(&mut builder, &vars, func_obj_var)
                             .expect("Closure func obj not found for direct call");
-                        let mut extract_sig = self.module.make_signature();
-                        extract_sig.params.push(AbiParam::new(types::I64));
-                        extract_sig.returns.push(AbiParam::new(types::I64));
-                        let extract_fn = self
-                            .module
-                            .declare_function(
-                                "molt_function_closure_bits",
-                                Linkage::Import,
-                                &extract_sig,
-                            )
-                            .unwrap();
+                        let extract_fn = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_function_closure_bits", &[types::I64], &[types::I64]);
                         let extract_local =
                             self.module.declare_func_in_func(extract_fn, builder.func);
                         let extract_call = builder.ins().call(extract_local, &[func_obj_bits]);
@@ -10016,32 +9910,12 @@ impl SimpleBackend {
                         }
                     }
                     if matches!(task_kind, "future" | "coroutine") {
-                        let mut get_sig = self.module.make_signature();
-                        get_sig.returns.push(AbiParam::new(types::I64));
-                        let get_callee = self
-                            .module
-                            .declare_function(
-                                "molt_cancel_token_get_current",
-                                Linkage::Import,
-                                &get_sig,
-                            )
-                            .unwrap();
+                        let get_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_cancel_token_get_current", &[], &[types::I64]);
                         let get_local = self.module.declare_func_in_func(get_callee, builder.func);
                         let get_call = builder.ins().call(get_local, &[]);
                         let current_token = builder.inst_results(get_call)[0];
 
-                        let mut reg_sig = self.module.make_signature();
-                        reg_sig.params.push(AbiParam::new(types::I64));
-                        reg_sig.params.push(AbiParam::new(types::I64));
-                        reg_sig.returns.push(AbiParam::new(types::I64));
-                        let reg_callee = self
-                            .module
-                            .declare_function(
-                                "molt_task_register_token_owned",
-                                Linkage::Import,
-                                &reg_sig,
-                            )
-                            .unwrap();
+                        let reg_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_task_register_token_owned", &[types::I64, types::I64], &[types::I64]);
                         let reg_local = self.module.declare_func_in_func(reg_callee, builder.func);
                         builder.ins().call(reg_local, &[obj, current_token]);
                     }
