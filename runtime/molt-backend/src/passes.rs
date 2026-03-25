@@ -1833,8 +1833,24 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
                         }
                     }
                 }
-                // Only specific op kinds legitimately reference functions by name.
-                "task_new" | "generator_send" | "generator_create" | "coro_create"
+                // Generator/coroutine ops reference a base function AND its
+                // companion _poll function (the actual state-machine body).
+                // Both backends derive the poll name as "{base}_poll", so we
+                // must mark both as referenced to prevent the poll function
+                // from being eliminated.
+                "generator_create" | "coro_create" => {
+                    if let Some(name) = op.s_value.as_ref() {
+                        if defined.contains(name.as_str()) {
+                            refs.insert(name.clone());
+                        }
+                        let poll_name = format!("{name}_poll");
+                        if defined.contains(poll_name.as_str()) {
+                            refs.insert(poll_name);
+                        }
+                    }
+                }
+                // Other op kinds that legitimately reference functions by name.
+                "task_new" | "generator_send"
                 | "spawn" | "call_func" | "call_method" | "import_from"
                 | "import_name" | "class_def" | "make_function" | "decorator"
                 | "super_call" | "yield_from" | "await" => {
