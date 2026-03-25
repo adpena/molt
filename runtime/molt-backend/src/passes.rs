@@ -1943,7 +1943,7 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
 // ---------------------------------------------------------------------------
 
 /// Default maximum number of ops before a function is split into chunks.
-const DEFAULT_MAX_FUNCTION_OPS: usize = 2000;
+const DEFAULT_MAX_FUNCTION_OPS: usize = 4000;
 
 /// Split a single large function into multiple chunk functions.
 ///
@@ -1960,9 +1960,14 @@ pub fn split_large_function(func: FunctionIR, max_ops: usize) -> Result<(Functio
         return Err(func);
     }
 
-    // Functions with exception handling CAN be split, but only at boundaries
-    // outside check_exception → label spans. The forbidden_ranges logic below
-    // ensures split points don't bisect exception handler control flow.
+    // Functions with exception handling cannot be safely split — check_exception
+    // ops act as conditional branches to labels that must stay in scope.
+    // Splitting them creates invalid control flow (orphan if/end_if, dangling labels).
+    // The incremental compilation cache handles large stdlib functions instead.
+    let has_exceptions = func.ops.iter().any(|op| op.kind == "check_exception");
+    if has_exceptions {
+        return Err(func);
+    }
 
     // ---------------------------------------------------------------
     // 1. Find safe split points (indices where depth == 0).
