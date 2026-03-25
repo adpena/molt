@@ -307,6 +307,7 @@ pub(crate) use crate::builtins::io::{
 };
 pub use crate::builtins::ipaddress::*;
 pub use crate::builtins::itertools::*;
+#[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::json::*;
 pub use crate::builtins::logging_ext::*;
 #[cfg(feature = "stdlib_compression")]
