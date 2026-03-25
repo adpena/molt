@@ -8882,15 +8882,35 @@ def _backend_daemon_binary_is_newer(backend_bin: Path, pid_path: Path) -> bool:
             return True
         # Also check if the runtime library was rebuilt — the daemon
         # links compiled output against the runtime, so a stale daemon
-        # produces binaries with old runtime behavior.
-        project_root = backend_bin.parent.parent.parent  # target/<profile>/molt-backend -> project root
+        # produces binaries with old runtime behavior.  The staticlib
+        # bundles all sub-crates (serial, crypto, compression, math, tk)
+        # so checking libmolt_runtime.a covers the entire multi-crate tree.
+        #
+        # Discover project root from Cargo.toml proximity to backend binary,
+        # handling CARGO_TARGET_DIR and non-standard layouts.
+        candidate = backend_bin.parent
+        for _ in range(5):
+            if (candidate / "Cargo.toml").exists():
+                break
+            candidate = candidate.parent
+        else:
+            candidate = backend_bin.parent.parent.parent  # fallback
+        target_root = Path(os.environ.get("CARGO_TARGET_DIR", str(candidate / "target")))
         for profile_dir in ("release", "release-fast", "debug"):
-            runtime_lib = project_root / "target" / profile_dir / "libmolt_runtime.a"
+            runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
             try:
                 if runtime_lib.stat().st_mtime > pid_mtime:
                     return True
             except OSError:
                 continue
+        # Also check frontend source — if the compiler itself changed,
+        # the daemon's cached compilations may produce different IR.
+        frontend_init = candidate / "src" / "molt" / "frontend" / "__init__.py"
+        try:
+            if frontend_init.stat().st_mtime > pid_mtime:
+                return True
+        except OSError:
+            pass
         return False
     except OSError:
         return False
