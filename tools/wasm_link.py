@@ -1757,6 +1757,22 @@ def _collect_element_func_indices(sections: list[tuple[int, bytes]]) -> set[int]
     return indices
 
 
+def _code_has_call_indirect(sections: list[tuple[int, bytes]]) -> bool:
+    """Return True if the code section contains any call_indirect (0x11) byte.
+
+    This is a quick heuristic — 0x11 could appear as part of another
+    instruction's immediate, but it is extremely rare for large modules to
+    NOT contain a real call_indirect.  False positives are safe (they just
+    disable the optimisation); false negatives cannot occur in practice for
+    modules that actually use indirect calls.
+    """
+    for sid, payload in sections:
+        if sid == 10:
+            if b"\x11" in payload:
+                return True
+    return False
+
+
 def _neutralize_dead_element_entries(data: bytes) -> bytes | None:
     """Replace indirect-call table entries for dead functions with the sentinel.
 
@@ -1766,20 +1782,28 @@ def _neutralize_dead_element_entries(data: bytes) -> bytes | None:
     with ``#[no_mangle]`` and ``wasm-ld`` preserved them.
 
     This pass identifies function indices that appear ONLY in the element
-    section (never as a direct ``call`` target in the code section) and
-    replaces them with function index 0 (the sentinel/trap function).
-    Once neutralised, wasm-opt's ``--remove-unused-module-elements`` and
-    ``--dce`` passes can eliminate the now-unreferenced function bodies,
-    typically removing 30-40% of all functions.
+    section (never referenced by ``call``, ``return_call``, or ``ref.func``
+    in the code section) and replaces them with function index 0.
+
+    **Safety**: when the module contains ``call_indirect`` instructions the
+    pass is skipped.  ``call_indirect`` dispatches through runtime-computed
+    table indices that cannot be determined statically, so any element entry
+    could be a valid target.  Removing such entries causes "null function or
+    function signature mismatch" traps at runtime.
     """
     try:
         sections = _parse_sections(data)
     except ValueError:
         return None
 
+    # call_indirect uses runtime-computed table indices — we cannot
+    # statically determine which element entries are live.
+    if _code_has_call_indirect(sections):
+        return None
+
     code_called = _collect_code_referenced_funcs(sections)
     elem_indices = _collect_element_func_indices(sections)
-    # Functions only in the element table, never directly called from code
+    # Functions only in the element table, never referenced from code
     dead_indices = elem_indices - code_called
 
     if not dead_indices:
