@@ -41,7 +41,13 @@ pub struct SsaOutput {
 /// All values are typed as [`TirType::DynBox`] since type refinement is a
 /// later pass.
 pub fn convert_to_ssa(cfg: &CFG, ops: &[OpIR]) -> SsaOutput {
-    let mut ctx = SsaContext::new(cfg, ops);
+    convert_to_ssa_with_params(cfg, ops, &[])
+}
+
+/// SSA conversion with explicit function parameter names.
+/// Parameters are treated as implicit definitions in the entry block.
+pub fn convert_to_ssa_with_params(cfg: &CFG, ops: &[OpIR], params: &[String]) -> SsaOutput {
+    let mut ctx = SsaContext::new(cfg, ops, params);
     ctx.run();
     ctx.into_output()
 }
@@ -81,10 +87,12 @@ struct SsaContext<'a> {
     value_types: HashMap<ValueId, TirType>,
     /// Inline constant ops generated during translate_op (drained after each call).
     pending_inline_consts: Vec<super::ops::TirOp>,
+    /// Function parameter names (treated as implicit entry-block definitions).
+    params: Vec<String>,
 }
 
 impl<'a> SsaContext<'a> {
-    fn new(cfg: &'a CFG, ops: &'a [OpIR]) -> Self {
+    fn new(cfg: &'a CFG, ops: &'a [OpIR], params: &[String]) -> Self {
         let n = cfg.blocks.len();
         Self {
             cfg,
@@ -97,6 +105,7 @@ impl<'a> SsaContext<'a> {
             tir_blocks: Vec::new(),
             value_types: HashMap::new(),
             pending_inline_consts: Vec::new(),
+            params: params.to_vec(),
         }
     }
 
@@ -180,6 +189,15 @@ impl<'a> SsaContext<'a> {
                 }
             }
 
+            // Function parameters are implicit definitions in the entry block.
+            if bb.id == self.cfg.entry {
+                for p in &self.params {
+                    if is_variable(p) {
+                        defs.insert(p.clone());
+                        self.all_vars.insert(p.clone());
+                    }
+                }
+            }
             self.block_info.push(BlockInfo {
                 defs,
                 uses,
@@ -225,6 +243,18 @@ impl<'a> SsaContext<'a> {
     fn insert_block_arguments(&mut self) {
         // For each variable, compute the iterated dominance frontier of all
         // blocks that define it, then insert a block argument at those blocks.
+
+        // Function parameters are implicit definitions available at the entry
+        // block. Add them as entry-block arguments so the rename phase creates
+        // proper ValueIds and subsequent ops can resolve them.
+        if !self.params.is_empty() && !self.cfg.blocks.is_empty() {
+            let entry = self.cfg.entry;
+            for p in self.params.clone() {
+                if is_variable(&p) && !self.block_arg_vars[entry].contains(&p) {
+                    self.block_arg_vars[entry].push(p);
+                }
+            }
+        }
 
         // Which blocks define which variables.
         let n = self.cfg.blocks.len();

@@ -1473,11 +1473,15 @@ impl WasmBackend {
 
                 match result {
                     Ok(optimized_ops) => {
-                        // Store the optimized ops in the cache for future runs.
-                        let serialized =
-                            crate::tir::serialize::serialize_ops(&optimized_ops);
-                        tir_cache.put(&content_hash, &serialized, vec![]);
-                        func_ir.ops = optimized_ops;
+                        let valid = crate::tir::lower_to_simple::validate_labels(&optimized_ops);
+                        if valid {
+                            let serialized =
+                                crate::tir::serialize::serialize_ops(&optimized_ops);
+                            tir_cache.put(&content_hash, &serialized, vec![]);
+                            func_ir.ops = optimized_ops;
+                        } else {
+                            func_ir.ops = original_ops;
+                        }
                     }
                     Err(_panic) => {
                         eprintln!(
