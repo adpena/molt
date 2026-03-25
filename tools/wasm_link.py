@@ -1791,9 +1791,6 @@ def _neutralize_dead_element_entries(data: bytes) -> bytes | None:
     except ValueError:
         return None
 
-    if _code_section_has_call_indirect(sections):
-        return None
-
     code_called = _collect_code_referenced_funcs(sections)
     elem_indices = _collect_element_func_indices(sections)
     # Functions only in the element table, never directly called from code
