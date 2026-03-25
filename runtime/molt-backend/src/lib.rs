@@ -566,7 +566,7 @@ fn is_nanboxed_int(builder: &mut FunctionBuilder, val: Value) -> Value {
 ///
 /// `f_op`: 0 = fadd, 1 = fsub, 2 = fmul.
 #[cfg(feature = "native-backend")]
-fn emit_mixed_int_float_op(
+pub(crate) fn emit_mixed_int_float_op(
     builder: &mut FunctionBuilder,
     lhs: Value,
     rhs: Value,
@@ -1919,6 +1919,11 @@ impl SimpleBackend {
                     crate::tir::type_refine::refine_types(&mut tir_func);
                     let type_map = crate::tir::type_refine::extract_type_map(&tir_func);
                     let stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                    // Empty stats = verification failed; skip lowering to
+                    // avoid corrupted IR that crashes codegen under panic=abort.
+                    if stats.is_empty() {
+                        return None;
+                    }
                     if tir_dump {
                         eprintln!("{}", crate::tir::printer::print_function(&tir_func));
                     }
@@ -1930,11 +1935,11 @@ impl SimpleBackend {
                             );
                         }
                     }
-                    crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func, &type_map)
+                    Some(crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func, &type_map))
                 }));
 
                 match result {
-                    Ok(optimized_ops) => {
+                    Ok(Some(optimized_ops)) => {
                         // Validate: every label referenced by jump/br_if/check_exception
                         // must exist as a label op.  If not, fall back to original ops.
                         let valid = crate::tir::lower_to_simple::validate_labels(&optimized_ops);
@@ -1951,9 +1956,16 @@ impl SimpleBackend {
                             func_ir.ops = original_ops;
                         }
                     }
+                    Ok(None) => {
+                        // TIR verification failed — fall back to unoptimized.
+                        eprintln!(
+                            "[TIR] WARNING: verification failed on function '{}' — falling back to unoptimized.",
+                            func_name
+                        );
+                        func_ir.ops = original_ops;
+                    }
                     Err(_panic) => {
                         // TIR failed on this function — fall back to unoptimized ops.
-                        // Log the failure so it's visible, not silent.
                         eprintln!(
                             "[TIR] WARNING: optimization panicked on function '{}' — falling back to unoptimized. \
                              Set MOLT_TIR_OPT=0 to disable TIR, or report this bug.",
@@ -2107,6 +2119,14 @@ impl SimpleBackend {
             if !self.external_function_names.is_empty()
                 && self.external_function_names.contains(&name)
             {
+                // Function exists in another batch — ld -r will provide
+                // the real definition.  Downgrade from Export to Import
+                // so Cranelift's ObjectModule doesn't require a body.
+                let _ = self.module.declare_function(
+                    &name,
+                    cranelift_module::Linkage::Import,
+                    &sig,
+                );
                 continue;
             }
             if let Err(e) = Self::emit_trap_stub(&mut self.module, fid, &sig, &name) {
