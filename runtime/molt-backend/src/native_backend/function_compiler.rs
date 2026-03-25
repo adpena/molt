@@ -8664,8 +8664,18 @@ impl SimpleBackend {
                             func_sig.params.push(AbiParam::new(types::I64));
                         }
                         func_sig.returns.push(AbiParam::new(types::I64));
+                        // Use Export only when the target is defined in this
+                        // compilation unit; otherwise Import (resolved at link
+                        // time).  Using unconditional Export here was causing
+                        // "Export must be defined" panics when dead function
+                        // elimination removed the target.
+                        let linkage = if defined_functions.contains(func_name) {
+                            Linkage::Export
+                        } else {
+                            Linkage::Import
+                        };
                         self.module
-                            .declare_function(func_name, Linkage::Export, &func_sig)
+                            .declare_function(func_name, linkage, &func_sig)
                             .unwrap()
                     };
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
@@ -8706,8 +8716,13 @@ impl SimpleBackend {
                             func_sig.params.push(AbiParam::new(types::I64));
                         }
                         func_sig.returns.push(AbiParam::new(types::I64));
+                        let linkage = if defined_functions.contains(func_name) {
+                            Linkage::Export
+                        } else {
+                            Linkage::Import
+                        };
                         self.module
-                            .declare_function(func_name, Linkage::Export, &func_sig)
+                            .declare_function(func_name, linkage, &func_sig)
                             .unwrap()
                     };
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
