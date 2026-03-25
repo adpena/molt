@@ -433,18 +433,34 @@ impl<'a> SsaContext<'a> {
                 if !tir_blocks[bid].ops.is_empty() {
                     continue;
                 }
-                // This block was not visited.  Translate its ops with empty var_stacks.
-                let empty_stacks: HashMap<String, Vec<ValueId>> = HashMap::new();
+                // This block was not visited.  Translate its ops with
+                // var_stacks seeded from the block arguments so that
+                // (a) incoming branch args match block params, and
+                // (b) any references inside the block resolve to the
+                //     block's own arg values (avoiding dominance errors).
+                let arg_vars = self.block_arg_vars[bid].clone();
+                let mut local_stacks: HashMap<String, Vec<ValueId>> = HashMap::new();
+                for var in &arg_vars {
+                    let vid = self.fresh_value_typed();
+                    tir_blocks[bid].args.push(TirValue {
+                        id: vid,
+                        ty: TirType::DynBox,
+                    });
+                    local_stacks.entry(var.clone()).or_default().push(vid);
+                }
                 let op_indices = self.block_info[bid].op_indices.clone();
                 for &op_idx in &op_indices {
                     let op = &self.ops[op_idx];
-                    let tir_op = self.translate_op(op, &empty_stacks);
+                    let tir_op = self.translate_op(op, &local_stacks);
 
                     // If this op defines a variable, create a ValueId for it.
-                    if let Some(_) = self.get_def_var(op) {
-                        if tir_op.results.first().is_none() {
-                            self.fresh_value_typed();
-                        }
+                    if let Some(ref var) = self.get_def_var(op) {
+                        let vid = if let Some(result_vid) = tir_op.results.first() {
+                            *result_vid
+                        } else {
+                            self.fresh_value_typed()
+                        };
+                        local_stacks.entry(var.clone()).or_default().push(vid);
                     }
 
                     for const_op in self.pending_inline_consts.drain(..) {
@@ -453,7 +469,7 @@ impl<'a> SsaContext<'a> {
                     tir_blocks[bid].ops.push(tir_op);
                 }
                 // Build terminator for this unreachable block.
-                let terminator = self.build_terminator(bid, &empty_stacks);
+                let terminator = self.build_terminator(bid, &local_stacks);
                 tir_blocks[bid].terminator = terminator;
             }
         }

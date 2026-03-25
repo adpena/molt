@@ -9621,9 +9621,11 @@ impl SimpleBackend {
                     if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "call_func" => {
-                    // Outlined: delegates to molt_call_func_dispatch runtime helper.
-                    // This replaces ~960 lines of inline Cranelift IR that previously
-                    // emitted 92 instructions and 39 basic blocks per call site.
+                    // Fast-path: for 0–3 positional args with no tracing (code_id == 0),
+                    // call molt_call_func_fast{0,1,2,3} which passes args in registers
+                    // and does a streamlined type-check + direct fn_ptr call.
+                    // This eliminates: stack spill/reload, GIL re-acquisition,
+                    // inline_buf copy, and match-on-arity dispatch.
                     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let func_bits =
                         var_get(&mut builder, &vars, &args_names[0]).expect("Func not found");
@@ -9633,38 +9635,70 @@ impl SimpleBackend {
                     }
                     let code_id = op.value.unwrap_or(0);
                     let nargs = args.len();
-                    // Spill args to a stack slot — must stay inline because
-                    // Cranelift manages the stack frame at compile time.
-                    let slot_size = std::cmp::max(nargs, 1) * 8;
-                    let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        slot_size as u32,
-                        3, // align_shift: 2^3 = 8-byte alignment
-                    ));
-                    for (i, arg) in args.iter().enumerate() {
-                        builder
-                            .ins()
-                            .stack_store(*arg, args_slot, (i * 8) as i32);
-                    }
-                    let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
-                    let nargs_val = builder.ins().iconst(types::I64, nargs as i64);
-                    let code_id_val = builder.ins().iconst(types::I64, code_id);
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64)); // func_bits
-                    sig.params.push(AbiParam::new(types::I64)); // args_ptr
-                    sig.params.push(AbiParam::new(types::I64)); // nargs
-                    sig.params.push(AbiParam::new(types::I64)); // code_id
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_call_func_dispatch", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(
-                        local_callee,
-                        &[*func_bits, args_ptr, nargs_val, code_id_val],
-                    );
-                    let res = builder.inst_results(call)[0];
+
+                    let use_fast_path = nargs <= 3 && code_id == 0;
+
+                    let res = if use_fast_path {
+                        // Register-passed fast path — no stack spill needed.
+                        let fast_name: &'static str = match nargs {
+                            0 => "molt_call_func_fast0",
+                            1 => "molt_call_func_fast1",
+                            2 => "molt_call_func_fast2",
+                            3 => "molt_call_func_fast3",
+                            _ => unreachable!(),
+                        };
+                        // Build params: func_bits + args (all i64)
+                        let mut param_types = Vec::with_capacity(nargs + 1);
+                        for _ in 0..=nargs {
+                            param_types.push(types::I64);
+                        }
+                        let fast_ref = import_func_ref(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            fast_name,
+                            &param_types,
+                            &[types::I64],
+                        );
+                        let mut call_args = Vec::with_capacity(nargs + 1);
+                        call_args.push(*func_bits);
+                        call_args.extend_from_slice(&args);
+                        let call = builder.ins().call(fast_ref, &call_args);
+                        builder.inst_results(call)[0]
+                    } else {
+                        // Fallback: spill to stack + call molt_call_func_dispatch.
+                        let slot_size = std::cmp::max(nargs, 1) * 8;
+                        let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            slot_size as u32,
+                            3, // align_shift: 2^3 = 8-byte alignment
+                        ));
+                        for (i, arg) in args.iter().enumerate() {
+                            builder
+                                .ins()
+                                .stack_store(*arg, args_slot, (i * 8) as i32);
+                        }
+                        let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
+                        let nargs_val = builder.ins().iconst(types::I64, nargs as i64);
+                        let code_id_val = builder.ins().iconst(types::I64, code_id);
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64)); // func_bits
+                        sig.params.push(AbiParam::new(types::I64)); // args_ptr
+                        sig.params.push(AbiParam::new(types::I64)); // nargs
+                        sig.params.push(AbiParam::new(types::I64)); // code_id
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_call_func_dispatch", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(
+                            local_callee,
+                            &[*func_bits, args_ptr, nargs_val, code_id_val],
+                        );
+                        builder.inst_results(call)[0]
+                    };
                     if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "invoke_ffi" => {
@@ -11760,10 +11794,33 @@ impl SimpleBackend {
                         let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                         let start = var_get(&mut builder, &vars, &args[0])
                             .expect("Loop index start not found");
-                        ensure_block_in_layout(&mut builder, loop_block);
-                        reachable_blocks.insert(loop_block);
-                        jump_block(&mut builder, loop_block, &[*start]);
-                        switch_to_block_tracking(&mut builder, loop_block, &mut is_block_filled);
+                        // Workaround for Cranelift 0.130 remove_constant_phis
+                        // bug: when inside a nested loop the start value is
+                        // derived from the outer loop's block param. The
+                        // remove_constant_phis pass incorrectly tries to
+                        // rewrite the inner loop header, panicking at
+                        // "you cannot switch to a block which is already
+                        // filled". Routing through a dedicated pre-header
+                        // block isolates the entry edge so the pass does not
+                        // see a single-source constant phi on the loop header.
+                        if loop_depth > 0 {
+                            let preheader = builder.create_block();
+                            let ph_param = builder.append_block_param(preheader, types::I64);
+                            ensure_block_in_layout(&mut builder, preheader);
+                            reachable_blocks.insert(preheader);
+                            jump_block(&mut builder, preheader, &[*start]);
+                            switch_to_block_tracking(&mut builder, preheader, &mut is_block_filled);
+                            builder.seal_block(preheader);
+                            ensure_block_in_layout(&mut builder, loop_block);
+                            reachable_blocks.insert(loop_block);
+                            jump_block(&mut builder, loop_block, &[ph_param]);
+                            switch_to_block_tracking(&mut builder, loop_block, &mut is_block_filled);
+                        } else {
+                            ensure_block_in_layout(&mut builder, loop_block);
+                            reachable_blocks.insert(loop_block);
+                            jump_block(&mut builder, loop_block, &[*start]);
+                            switch_to_block_tracking(&mut builder, loop_block, &mut is_block_filled);
+                        }
                     } else {
                         is_block_filled = true;
                     }

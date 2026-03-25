@@ -1205,9 +1205,14 @@ fn main() -> io::Result<()> {
                         .collect();
                     let user_func_set: std::collections::BTreeSet<_> = user_funcs.iter().cloned().collect();
                     let all_funcs: Vec<_> = ir.functions.drain(..).collect();
-                    let (user_remaining, stdlib_funcs): (Vec<_>, Vec<_>) = all_funcs
+                    let (user_remaining, mut stdlib_funcs): (Vec<_>, Vec<_>) = all_funcs
                         .into_iter()
                         .partition(|f| user_func_set.contains(&f.name));
+                    // Deduplicate stdlib functions by name (keep first occurrence).
+                    {
+                        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+                        stdlib_funcs.retain(|f| seen.insert(f.name.clone()));
+                    }
                     // Compile stdlib
                     eprintln!(
                         "MOLT_BACKEND: first build — caching {} stdlib functions to {}",
@@ -1305,6 +1310,15 @@ fn main() -> io::Result<()> {
             // majority of stdlib functions, cutting the binary from ~29 MB to
             // ~3 MB and cold-cache startup from ~300 ms to <10 ms.
             molt_backend::eliminate_dead_functions(&mut ir);
+
+            // Deduplicate functions by name — the compiler can emit the same
+            // function name multiple times (e.g. stdlib re-imports).  Keep the
+            // first (largest) definition; duplicates cause "duplicate symbol"
+            // errors during ld -r batched compilation.
+            {
+                let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+                ir.functions.retain(|f| seen.insert(f.name.clone()));
+            }
 
             let func_count = ir.functions.len();
             let batch_size: usize = std::env::var("MOLT_BACKEND_BATCH_SIZE")

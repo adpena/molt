@@ -4353,6 +4353,10 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
     let mut try_stack: Vec<(u32, i32)> = Vec::new();
     let mut depth: i32 = 0;
     let mut pcall_ranges: Vec<(usize, usize, u32)> = Vec::new();
+    // Track recently popped try IDs so handler-closing try_end ops
+    // (which arrive when try_stack is already empty) can correctly
+    // emit pcall_handler_end instead of being dropped as unmatched.
+    let mut recently_popped_main: Vec<u32> = Vec::new();
     // After pcall_wrap_end, suppress jump ops until the next label.
     // These jumps target exception handler labels that pcall absorbs.
     let mut suppress_jumps = false;
@@ -4393,6 +4397,7 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
                     if depth == pre_depth + 1 {
                         depth -= 1;
                         try_stack.pop();
+                        recently_popped_main.push(n);
                         if finally_only.contains(&n) {
                             // try/finally fast-path: no pcall closure to close.
                             result.push(OpIR {
@@ -4420,6 +4425,14 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
                             ..OpIR::default()
                         });
                     }
+                } else if recently_popped_main.pop().is_some() {
+                    // Handler-closing try_end after the body-closing try_end
+                    // already popped the stack.  Emit pcall_handler_end so
+                    // the try_depth_counter is properly popped during codegen.
+                    result.push(OpIR {
+                        kind: "pcall_handler_end".to_string(),
+                        ..OpIR::default()
+                    });
                 } else {
                     result.push(OpIR {
                         kind: "nop".to_string(),
