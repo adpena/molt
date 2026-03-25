@@ -4632,7 +4632,8 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                 // Look for the pattern: get_item, const, get_item, if, break, end_if,
                 // then optional store into a slot variable.
                 let mut break_end = in_idx + 1;
-                let mut depth = 0i32;
+                #[allow(unused_assignments)]
+        let mut depth = 0i32;
                 let mut seen_break_check = false;
                 for j in (in_idx + 1)..le_idx {
                     match ops[j].kind.as_str() {
@@ -6030,12 +6031,14 @@ fn is_simple_var_ref(s: &str) -> bool {
 }
 
 /// Check if `s` matches the Molt IR variable pattern `v\d+`.
+#[allow(dead_code)]
 fn is_molt_var(s: &str) -> bool {
     s.starts_with('v') && s.len() > 1 && s[1..].chars().all(|c| c.is_ascii_digit())
 }
 
 /// Scan source lines and count whole-word references to `v\d+` variables.
 /// Returns a map from variable name → reference count.
+#[allow(dead_code)]
 fn count_var_uses(lines: &[&str]) -> BTreeMap<String, usize> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for line in lines {
@@ -7275,14 +7278,15 @@ fn rehoist_escaped_locals(source: &mut String) {
 
         let func_start = i;
         // Find function end by counting depth.
-        let func_indent = lines[i].len() - t.len();
+        let _func_indent = lines[i].len() - t.len();
+        #[allow(unused_assignments)]
         let mut depth = 0i32;
         let mut func_end = i + 1;
         // Count the opening `function` as depth 1
         depth = 1;
         while func_end < lines.len() {
             let ft = lines[func_end].trim();
-            let fi = lines[func_end].len() - ft.len();
+            let _fi = lines[func_end].len() - ft.len();
             // Count block openers/closers
             if ft == "while true do" || ft.starts_with("for ") && ft.ends_with(" do")
                 || ft.starts_with("if ") && ft.ends_with(" then")
@@ -7776,6 +7780,7 @@ fn eliminate_goto_labels(source: &mut String) {
 /// Strip orphaned label definitions that have no corresponding goto.
 /// The `eliminate_goto_labels` pass removes gotos but may leave the
 /// `::label_N::` definitions behind, which Luau's parser rejects.
+#[allow(dead_code)]
 fn strip_orphaned_labels(source: &mut String) {
     let lines: Vec<&str> = source.lines().collect();
     // Collect all goto targets
@@ -7943,7 +7948,6 @@ fn spill_excess_locals(source: &mut String) {
                 if in_do {
                     result.push_str(indent_str);
                     result.push_str("end\n");
-                    in_do = false;
                     total_blocks += 1;
                 }
                 result.push_str(lines[i]);
@@ -8001,6 +8005,7 @@ fn spill_excess_locals(source: &mut String) {
     }
 }
 
+#[allow(dead_code)]
 fn freeze_constant_tables(source: &mut String) {
     let lines: Vec<&str> = source.lines().collect();
     let mut inserts: BTreeMap<usize, String> = BTreeMap::new();

@@ -1198,7 +1198,7 @@ fn main() -> io::Result<()> {
                     );
                 } else {
                     // First build — compile stdlib separately, cache it
-                    let total = ir.functions.len();
+                    let _total = ir.functions.len();
                     let user_funcs: Vec<_> = ir.functions.iter()
                         .filter(|f| is_user_func(&f.name))
                         .map(|f| f.name.clone())
