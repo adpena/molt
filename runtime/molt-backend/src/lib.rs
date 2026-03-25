@@ -1425,7 +1425,7 @@ impl SimpleBackend {
                 // When opt_level=none, default to the fast single-pass
                 // allocator regardless of build profile — the user has
                 // explicitly asked for compile-time speed.
-                if cfg!(debug_assertions) || opt_level == "none" {
+                if opt_level == "none" {
                     "single_pass".to_string()
                 } else {
                     "backtracking".to_string()
