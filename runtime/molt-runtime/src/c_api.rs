@@ -1,3 +1,7 @@
+// Many Py* functions are kept for tests but their #[no_mangle] export lives in
+// molt-lang-cpython-abi.  Suppress the dead-code warnings for those stubs.
+#![allow(dead_code)]
+
 use crate::builtins::exceptions::molt_exception_new_from_class;
 use crate::concurrency::gil::{gil_held, release_runtime_gil};
 use crate::state::runtime_state::{

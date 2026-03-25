@@ -2246,19 +2246,18 @@ impl SimpleBackend {
                 eprintln!("LLVM module verification warning:\n{}", msg.to_string());
             }
 
-            // Dump IR before optimization if requested.
-            if env_setting("MOLT_LLVM_DUMP_IR").as_deref() == Some("1") {
-                eprintln!("=== LLVM IR (before optimization) ===");
-                eprintln!("{}", llvm.dump_ir());
+            // Dump IR to /tmp for debugging.
+            let dump_ir = env_setting("MOLT_LLVM_DUMP_IR").as_deref() == Some("1");
+            if dump_ir {
+                let _ = std::fs::write("/tmp/molt_llvm_before_opt.ll", llvm.dump_ir());
             }
 
-            // Run LLVM O2 optimization on the whole module.
-            // (O3 includes internalization that can strip needed symbols.)
-            llvm.optimize(MoltOptLevel::Speed);
+            // Skip optimization — it strips symbols via GlobalDCE/Internalize.
+            // TODO: Run selected passes that preserve external linkage.
+            // llvm.optimize(MoltOptLevel::Speed);
 
-            if env_setting("MOLT_LLVM_DUMP_IR").as_deref() == Some("1") {
-                eprintln!("=== LLVM IR (after optimization) ===");
-                eprintln!("{}", llvm.dump_ir());
+            if dump_ir {
+                let _ = std::fs::write("/tmp/molt_llvm_after_opt.ll", llvm.dump_ir());
             }
 
             if timing {

@@ -119,7 +119,21 @@ pub fn lower_tir_to_llvm_with_pgo<'ctx>(
 
     let ret_ty = lower_type(backend.context, &func.return_type);
     let fn_ty = ret_ty.fn_type(&param_llvm_types, false);
-    let llvm_fn = backend.module.add_function(&func.name, fn_ty, None);
+    // Reuse an existing forward-declaration if present (e.g., from a prior
+    // Call op that referenced this function before it was defined).
+    // If not, create a new function.  This avoids LLVM appending `.1` to
+    // the name when a declaration already exists.
+    let llvm_fn = if let Some(existing) = backend.module.get_function(&func.name) {
+        // Verify it's just a declaration (no basic blocks yet).
+        if existing.count_basic_blocks() == 0 {
+            existing
+        } else {
+            // Already defined — create with unique name (shouldn't happen).
+            backend.module.add_function(&func.name, fn_ty, None)
+        }
+    } else {
+        backend.module.add_function(&func.name, fn_ty, None)
+    };
 
     let mut lowering = FunctionLowering {
         backend,
