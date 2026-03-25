@@ -19,9 +19,11 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
 - **Tier/Milestone:** `TC*` (type coverage), `SL*` (stdlib), `DB*` (database), `DF*` (dataframe/pandas), `LF*` (language features), `RT*` (runtime), `TL*` (tooling), `M*` (syntax milestones), `M-GPU-*` (GPU acceleration).
 
 ## Strategic North-Star
+- Scope: full CPython `>=3.12` verified-subset parity; no host CPython runtime required.
 - Performance target: parity with or superiority to Codon on tracked benches.
 - Compatibility target: near-Nuitka CPython coverage + interoperability for
-  Molt-supported semantics, without violating Molt break-policy constraints.
+  Molt-supported semantics, without violating Molt break-policy constraints
+  (no runtime monkeypatching, no hidden host Python installation fallback).
 
 ## Current Validation Note (2026-03-19)
 - Targeted correctness recovery landed for three immediate blockers:
