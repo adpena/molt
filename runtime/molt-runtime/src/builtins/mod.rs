@@ -64,7 +64,6 @@ pub(crate) mod inspect;
 pub(crate) mod io;
 pub(crate) mod ipaddress;
 pub(crate) mod itertools;
-#[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod json;
 pub(crate) mod logging_ext;
 mod micro_stubs;
