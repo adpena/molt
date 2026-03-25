@@ -11578,8 +11578,16 @@ def _build_module_code_ops(
     entry_path: Path | None,
     register_global_code_id: Callable[[str], int],
     next_var: int,
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int, dict[str, list[dict[str, Any]]]]:
+    """Build code-slot setup ops for each module.
+
+    Returns ``(all_ops, next_var, per_module_ops)`` where *per_module_ops*
+    maps each module name to its individual code-slot setup ops.  The flat
+    *all_ops* list is the concatenation of all per-module ops (kept for
+    backwards compatibility with ``molt_isolate_bootstrap``).
+    """
     module_code_ops: list[dict[str, Any]] = []
+    per_module_ops: dict[str, list[dict[str, Any]]] = {}
     for module_name in module_order:
         module_path = module_graph[module_name]
         logical_source_path = generated_module_source_paths.get(
@@ -11587,22 +11595,28 @@ def _build_module_code_ops(
         )
         init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
         code_id = register_global_code_id(init_symbol)
+        this_module_ops: list[dict[str, Any]] = []
         next_var = _append_module_code_slot_ops(
-            module_code_ops,
+            this_module_ops,
             logical_source_path=logical_source_path,
             code_id=code_id,
             next_var=next_var,
         )
+        per_module_ops[module_name] = this_module_ops
+        module_code_ops.extend(this_module_ops)
     if entry_module != "__main__" and entry_path is not None:
         init_symbol = SimpleTIRGenerator.module_init_symbol("__main__")
         code_id = register_global_code_id(init_symbol)
+        main_ops: list[dict[str, Any]] = []
         next_var = _append_module_code_slot_ops(
-            module_code_ops,
+            main_ops,
             logical_source_path=entry_path.as_posix(),
             code_id=code_id,
             next_var=next_var,
         )
-    return module_code_ops, next_var
+        per_module_ops["__main__"] = main_ops
+        module_code_ops.extend(main_ops)
+    return module_code_ops, next_var, per_module_ops
 
 
 def _replace_entry_call_with_spawn_override(
@@ -11687,6 +11701,7 @@ def _build_isolate_import_ops(
     *,
     module_order: Sequence[str],
     register_global_code_id: Callable[[str], int],
+    per_module_code_ops: Mapping[str, Sequence[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     import_ops: list[dict[str, Any]] = []
     import_var_idx = 0
@@ -11696,6 +11711,31 @@ def _build_isolate_import_ops(
         name = f"v{import_var_idx}"
         import_var_idx += 1
         return name
+
+    def _revar_ops(ops: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Re-number variable names in *ops* into the import_var namespace."""
+        var_map: dict[str, str] = {}
+        rewritten: list[dict[str, Any]] = []
+        for op in ops:
+            new_op = dict(op)
+            out = new_op.get("out")
+            if isinstance(out, str) and out.startswith("v"):
+                mapped = var_map.get(out)
+                if mapped is None:
+                    mapped = import_var()
+                    var_map[out] = mapped
+                new_op["out"] = mapped
+            args = new_op.get("args")
+            if isinstance(args, list):
+                new_args = []
+                for a in args:
+                    if isinstance(a, str) and a.startswith("v"):
+                        new_args.append(var_map.get(a, a))
+                    else:
+                        new_args.append(a)
+                new_op["args"] = new_args
+            rewritten.append(new_op)
+        return rewritten
 
     name_var = "p0"
     module_var = import_var()
@@ -11716,6 +11756,9 @@ def _build_isolate_import_ops(
                 {"kind": "string_eq", "args": [name_var, match_name_var], "out": match_var}
             )
             import_ops.append({"kind": "if", "args": [match_var]})
+            # Emit lazy code-slot setup for this module (if available).
+            if per_module_code_ops and module_name in per_module_code_ops:
+                import_ops.extend(_revar_ops(per_module_code_ops[module_name]))
             init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
             init_out = import_var()
             import_ops.append(
@@ -11884,7 +11927,7 @@ def _prepare_backend_ir(
             lazy=False,
         )
         entry_call_idx = _entry_call_index(entry_ops, entry_init)
-    module_code_ops, next_var = _build_module_code_ops(
+    module_code_ops, next_var, per_module_ops = _build_module_code_ops(
         module_order=module_order,
         module_graph=module_graph,
         generated_module_source_paths=generated_module_source_paths,
@@ -11893,7 +11936,44 @@ def _prepare_backend_ir(
         register_global_code_id=register_global_code_id,
         next_var=next_var,
     )
-    entry_ops[entry_call_idx:entry_call_idx] = module_code_ops
+
+    # ── Lazy stdlib initialisation ──
+    #
+    # Previously *all* module code-slot metadata was set up eagerly in
+    # ``molt_main`` before any module init ran.  This meant that even modules
+    # the program never imports paid the cost of allocating a code object at
+    # startup.
+    #
+    # Each module's own ``molt_init_*`` function already contains a
+    # ``CODE_SLOT_SET`` emitted by the frontend, so it is safe to omit the
+    # duplicate setup from ``molt_main`` for modules that are not needed at
+    # startup.  Only the entry module (and ``sys`` when eagerly injected in
+    # the ``full`` profile) keep their code-slot ops in ``molt_main``.
+    eager_modules: set[str] = {entry_module}
+    if entry_module != "__main__":
+        eager_modules.add("__main__")
+    # When sys is eagerly injected (full profile), its code-slot metadata
+    # must also be set up before the init call runs.
+    if _inject_sys_init:
+        eager_modules.add("sys")
+
+    # Collect only the eager module code-slot ops for molt_main.
+    entry_module_code_ops: list[dict[str, Any]] = []
+    for mod_name in eager_modules:
+        entry_module_code_ops.extend(per_module_ops.get(mod_name, []))
+
+    # Lazy modules: all modules NOT in the eager set.  Their code-slot ops
+    # are emitted inside ``molt_isolate_import`` (for isolate callers) and
+    # are already present inside each ``molt_init_*`` body (emitted by the
+    # frontend).
+    lazy_module_ops: dict[str, list[dict[str, Any]]] = {
+        mod_name: ops
+        for mod_name, ops in per_module_ops.items()
+        if mod_name not in eager_modules
+    }
+
+    entry_call_idx = _entry_call_index(entry_ops, entry_init)
+    entry_ops[entry_call_idx:entry_call_idx] = entry_module_code_ops
     if spawn_enabled:
         _replace_entry_call_with_spawn_override(
             entry_ops,
@@ -11906,7 +11986,7 @@ def _prepare_backend_ir(
     isolate_bootstrap_ops = _build_isolate_bootstrap_ops(
         code_slot_count=len(global_code_ids),
         version_ops=version_ops,
-        module_code_ops=module_code_ops,
+        module_code_ops=entry_module_code_ops,
     )
     functions.append(
         {"name": "molt_isolate_bootstrap", "params": [], "ops": isolate_bootstrap_ops}
@@ -11914,6 +11994,7 @@ def _prepare_backend_ir(
     import_ops = _build_isolate_import_ops(
         module_order=module_order,
         register_global_code_id=register_global_code_id,
+        per_module_code_ops=lazy_module_ops,
     )
     functions.append(
         {"name": "molt_isolate_import", "params": ["p0"], "ops": import_ops}

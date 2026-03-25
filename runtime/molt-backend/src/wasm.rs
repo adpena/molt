@@ -3676,10 +3676,28 @@ impl WasmBackend {
         // After compilation, TrackedImportIds knows exactly which imports were
         // referenced during code emission.  Strip the unused ones from the
         // serialized module and remap all function indices.
+        // Only applies to non-relocatable output (relocatable modules are
+        // linked by wasm-ld which performs its own --gc-sections pass).
         if !reloc_enabled {
             let unused: BTreeSet<String> = self.import_ids.unused_names().into_iter().collect();
-            if !unused.is_empty() {
-                bytes = strip_unused_imports(bytes, &unused);
+            if !unused.is_empty() && validate_wasm_sections(&bytes) {
+                let before_len = bytes.len();
+                let stripped = strip_unused_imports(bytes.clone(), &unused);
+                if validate_wasm_sections(&stripped) {
+                    eprintln!(
+                        "[molt-wasm-strip] eliminated {} unused imports, \
+                         {} -> {} bytes (saved {})",
+                        unused.len(), before_len, stripped.len(),
+                        before_len.saturating_sub(stripped.len()),
+                    );
+                    bytes = stripped;
+                } else {
+                    eprintln!(
+                        "[molt-wasm-strip] WARNING: stripped output invalid, \
+                         keeping original ({} unused imports)",
+                        unused.len(),
+                    );
+                }
             }
         }
 
@@ -12123,6 +12141,34 @@ fn strip_unused_imports(bytes: Vec<u8>, unused_names: &BTreeSet<String>) -> Vec<
     }
 
     out
+}
+
+/// Validate that a WASM binary has well-formed section structure.
+/// Returns true if all section IDs are valid and sizes don't overflow.
+fn validate_wasm_sections(bytes: &[u8]) -> bool {
+    if bytes.len() < 8 {
+        return false;
+    }
+    if &bytes[0..4] != b"\x00asm" {
+        return false;
+    }
+    let mut pos = 8usize;
+    while pos < bytes.len() {
+        let section_id = bytes[pos];
+        if section_id > 12 {
+            return false;
+        }
+        pos += 1;
+        if pos >= bytes.len() {
+            return false;
+        }
+        let (size, new_pos) = read_u32_leb128(bytes, pos);
+        pos = new_pos + size as usize;
+        if pos > bytes.len() {
+            return false;
+        }
+    }
+    pos == bytes.len()
 }
 
 /// Convert a wasmparser RefType to a wasm_encoder RefType.

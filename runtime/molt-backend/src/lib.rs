@@ -674,6 +674,36 @@ fn emit_maybe_ref_adjust_v2(builder: &mut FunctionBuilder, val: Value, call_ref:
     }
 }
 
+/// Emit a dec_ref_obj with an inlined tag check: if the value is not a heap
+/// pointer (e.g. NaN-boxed int/float/bool/none), skip the dec_ref call
+/// entirely. This eliminates function-call + GIL overhead for the common case
+/// where cleanup values are immediate integers.
+#[cfg(feature = "native-backend")]
+fn emit_dec_ref_obj(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef) {
+    if !inline_rc_enabled() {
+        builder.ins().call(call_ref, &[val]);
+        return;
+    }
+    // Inline tag check: (val & (QNAN | TAG_MASK)) == (QNAN | TAG_PTR)
+    let call_block = builder.create_block();
+    let merge_block = builder.create_block();
+
+    let tag_check_mask = builder.ins().iconst(types::I64, (QNAN | TAG_MASK) as i64);
+    let tag_bits = builder.ins().band(val, tag_check_mask);
+    let ptr_tag = builder.ins().iconst(types::I64, (QNAN | TAG_PTR) as i64);
+    let is_ptr = builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
+    brif_block(builder, is_ptr, call_block, &[], merge_block, &[]);
+
+    // Only call dec_ref_obj for actual heap pointers.
+    builder.switch_to_block(call_block);
+    builder.ins().call(call_ref, &[val]);
+    jump_block(builder, merge_block, &[]);
+
+    builder.switch_to_block(merge_block);
+    builder.seal_block(call_block);
+    builder.seal_block(merge_block);
+}
+
 #[derive(Clone, Copy)]
 #[cfg(feature = "native-backend")]
 struct VarValue(Value);
