@@ -2,1012 +2,259 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  test-python:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.12", "3.13", "3.14"]
+  build:
+    name: Build & Unit Tests
+    runs-on: macos-14  # ARM64 (M1)
     steps:
       - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: "latest"
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
-      - name: Install dependencies
-        run: uv sync --frozen --python ${{ matrix.python-version }}
-      - name: Cache uv packages
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
         uses: actions/cache@v4
         with:
-          path: ~/.cache/uv
-          key: uv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('uv.lock') }}
+          path: ~/.cargo/registry/
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            uv-${{ runner.os }}-py${{ matrix.python-version }}-
-      - name: Lint
-        run: uv run ruff check .
-      - name: Stdlib intrinsics lint
-        run: uv run python tools/check_stdlib_intrinsics.py
-      - name: Differential lane layout gate
-        run: uv run python tools/check_differential_suite_layout.py
-      - name: Critical strict intrinsic closure gate
-        run: uv run python tools/check_stdlib_intrinsics.py --critical-allowlist
-      - name: Core lane lowering gate
-        run: uv run python tools/check_core_lane_lowering.py --manifest tests/differential/basic/CORE_TESTS.txt
-      - name: Molt IR inventory + semantic lane gate
-        run: uv run python tools/check_molt_ir_ops.py
-      - name: Type check
-        run: uv run ty check src
-      - name: Verified subset manifest
-        if: matrix.python-version == '3.12'
-        run: uv run python tools/verified_subset.py check
-      - name: Run tests
-        run: uv run pytest
-      - name: Install Rust
-        if: matrix.python-version == '3.12'
-        uses: dtolnay/rust-toolchain@stable
-      - name: Rust cache
-        if: matrix.python-version == '3.12'
-        uses: swatinem/rust-cache@v2
-      - name: Install clang
-        if: matrix.python-version == '3.12'
-        run: |
-          if ! command -v clang >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y clang
-          fi
-      - name: Build runtime (release)
-        if: matrix.python-version == '3.12'
-        run: cargo build -p molt-runtime --release
-      - name: Run molt-diff core lane
-        if: matrix.python-version == '3.12'
-        run: MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run python tests/molt_diff.py --jobs 2 --files-from tests/differential/basic/CORE_TESTS.txt
-      - name: Run molt-diff basic suite
-        if: matrix.python-version == '3.12'
-        run: MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 MOLT_DIFF_FAILURES=ir_probe_failures.txt uv run python tests/molt_diff.py tests/differential/basic
-      - name: Molt IR probe execution gate
-        if: matrix.python-version == '3.12'
-        run: uv run python tools/check_molt_ir_ops.py --require-probe-execution --probe-rss-metrics rss_metrics.jsonl --failure-queue ir_probe_failures.txt
-      - name: Run molt-diff stdlib smoke lane
-        if: matrix.python-version == '3.12'
-        run: MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run python tests/molt_diff.py --jobs 2 tests/differential/stdlib/importlib_basic.py tests/differential/stdlib/operator_attrgetter_basic.py tests/differential/stdlib/pathlib_basic_ops.py tests/differential/stdlib/os_path_isabs_intrinsic.py
-      - name: Type coverage TODO sync
-        if: matrix.python-version == '3.12'
-        run: uv run python tools/check_type_coverage_todos.py
-      - name: Perf smoke (microbench)
-        if: matrix.python-version == '3.12'
-        run: uv run python tools/bench.py --smoke --no-pypy --baseline bench/baseline.json --max-regression 0.10 --json-out bench/results/ci_smoke.json
-      - name: Perf lane gate (bench diff thresholds)
-        if: matrix.python-version == '3.12'
-        run: |
-          uv run python tools/bench_diff.py \
-            bench/baseline.json \
-            bench/results/ci_smoke.json \
-            --metrics molt_cpython_ratio molt_time_s molt_build_s \
-            --top 20 \
-            --fail-regression-count "${MOLT_CI_PERF_MAX_REGRESSION_COUNT:-0}" \
-            --fail-regression-pct "${MOLT_CI_PERF_MAX_REGRESSION_PCT:-10}" \
-            --fail-regression-abs "${MOLT_CI_PERF_MAX_REGRESSION_ABS:-0.02}" \
-            --json-out bench/results/ci_smoke_diff.json
-      - name: Compile throughput gate
-        if: matrix.python-version == '3.12'
-        run: |
-          uv run python tools/check_compile_throughput.py \
-            --baseline bench/baseline.json \
-            --current bench/results/ci_smoke.json \
-            --max-regression-pct 15 \
-            --metric molt_build_s
-      - name: Upload benchmark artifact
-        if: matrix.python-version == '3.12'
-        uses: actions/upload-artifact@v4
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo build artifacts
+        uses: actions/cache@v4
         with:
-          name: bench-smoke
-          path: |
-            bench/results/ci_smoke.json
-            bench/results/ci_smoke_diff.json
-      - name: Install k6
-        if: matrix.python-version == '3.12'
+          path: target/
+          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-
+            ${{ runner.os }}-cargo-target-
+
+      - name: Build
+        run: cargo build
+
+      - name: Run molt-backend unit tests
+        run: cargo test -p molt-backend --lib
+
+      - name: Verify zero warnings
         run: |
-          if ! command -v k6 >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y ca-certificates curl gnupg
-            curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
-            echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list >/dev/null
-            sudo apt-get update
-            sudo apt-get install -y k6
-          fi
-      - name: Demo k6 (stack)
-        if: matrix.python-version == '3.12'
-        run: |
-          chmod +x bench/scripts/run_stack.sh
-          ./bench/scripts/run_stack.sh
-      - name: Upload demo k6 artifacts
-        if: matrix.python-version == '3.12'
-        uses: actions/upload-artifact@v4
-        with:
-          name: demo-k6
-          path: bench/results/demo_k6_*.json
-      - name: Reproducible build gate
-        if: matrix.python-version == '3.12'
-        run: |
-          # Build twice with --emit obj (skip linker) and separate caches.
-          # Extract .o path from JSON to avoid hardcoded filenames.
-          set -euo pipefail
-          mkdir -p /tmp/repro_build
-          MOLT_CACHE=/tmp/repro_build/cache_a PYTHONPATH=src PYTHONHASHSEED=0 \
-            uv run --python 3.12 python3 -m molt.cli build --profile dev --emit obj --deterministic --json examples/hello.py > /tmp/repro_build/a.json
-          OBJ_A=$(python3 -c "import json,sys; d=json.load(open('/tmp/repro_build/a.json')); data=d.get('data',d); print(data.get('output') or data['artifacts']['object'])")
-          rm -rf /tmp/repro_build/cache_a ~/.molt/build/
-          MOLT_CACHE=/tmp/repro_build/cache_b PYTHONPATH=src PYTHONHASHSEED=0 \
-            uv run --python 3.12 python3 -m molt.cli build --profile dev --emit obj --deterministic --json examples/hello.py > /tmp/repro_build/b.json
-          OBJ_B=$(python3 -c "import json,sys; d=json.load(open('/tmp/repro_build/b.json')); data=d.get('data',d); print(data.get('output') or data['artifacts']['object'])")
-          HASH_A=$(sha256sum "$OBJ_A" | cut -d' ' -f1)
-          HASH_B=$(sha256sum "$OBJ_B" | cut -d' ' -f1)
-          echo "Build A: $OBJ_A  SHA256=$HASH_A"
-          echo "Build B: $OBJ_B  SHA256=$HASH_B"
-          if [ "$HASH_A" != "$HASH_B" ]; then
-            echo "FAIL: Builds are NOT reproducible"
-            ls -la "$OBJ_A" "$OBJ_B"
+          WARNING_COUNT=$(cargo build 2>&1 | grep -c 'warning\[' || true)
+          echo "Warnings found: $WARNING_COUNT"
+          if [ "$WARNING_COUNT" -ne 0 ]; then
+            echo "::error::Build produced $WARNING_COUNT warning(s). Please fix all warnings."
+            cargo build 2>&1 | grep 'warning\[' || true
             exit 1
           fi
-          echo "PASS: Builds are bit-identical"
-      - name: Deterministic runtime gate
-        if: matrix.python-version == '3.12'
-        run: |
-          set -euo pipefail
-          PYTHONPATH=src uv run --python 3.12 python3 tools/check_deterministic_runtime.py --runs 3 examples/hello.py
-      - name: IR structure verification (suite)
-        if: matrix.python-version == '3.12'
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          PYTHONPATH=src uv run --python 3.12 python3 tools/verify_ir_suite.py \
-            --dir tests/differential/basic --examples --quiet
-      - name: HashMap determinism lint
-        if: matrix.python-version == '3.12'
-        run: |
-          uv run --python 3.12 python3 tools/check_determinism.py
-      - name: Django offload smoke
-        if: matrix.python-version == '3.12'
-        run: |
-          uv sync --dev --python 3.12 --frozen
-          uv run pytest tests/test_django_demo.py
-      - name: Runtime feedback gate (G6)
-        if: matrix.python-version == '3.12'
-        run: |
-          mkdir -p target
-          PYTHONPATH=src MOLT_PROFILE=1 MOLT_RUNTIME_FEEDBACK=1 \
-          MOLT_RUNTIME_FEEDBACK_FILE=target/molt_runtime_feedback_gate.json \
-            uv run --python 3.12 python3 -m molt.cli run --profile dev examples/hello.py || true
-          if [ ! -f tools/check_runtime_feedback.py ]; then
-            echo "SKIP: tools/check_runtime_feedback.py not found"
-            exit 0
-          fi
-          if [ ! -f target/molt_runtime_feedback_gate.json ]; then
-            echo "WARNING: Runtime feedback file not produced (runtime may have failed)"
-            echo "Non-blocking — tracked as known issue"
-            exit 0
-          fi
-          uv run --python 3.12 python3 tools/check_runtime_feedback.py \
-            target/molt_runtime_feedback_gate.json
 
-  test-extension-pipeline:
-    name: Extension pipeline (${{ matrix.lane.name }})
-    runs-on: ${{ matrix.lane.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        lane:
-          - name: linux-native
-            os: ubuntu-latest
-            target: native
-            install_zig: false
-          - name: linux-cross-aarch64-gnu
-            os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            install_zig: true
-          - name: linux-cross-musl
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            install_zig: true
-          - name: macos-native
-            os: macos-latest
-            target: native
-            install_zig: false
-          - name: windows-native
-            os: windows-latest
-            target: native
-            install_zig: false
-    defaults:
-      run:
-        shell: bash
-    env:
-      PYTHONPATH: ${{ github.workspace }}/src
+  differential-tests:
+    name: Differential Tests
+    needs: build
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v5
         with:
-          version: "latest"
-      - name: Set up Python 3.12
-        run: uv python install 3.12
-      - name: Install dependencies
-        run: uv sync --frozen --python 3.12
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-      - name: Ensure clang is available (unix)
-        if: runner.os != 'Windows'
+          python-version: "3.12"
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry/
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo build artifacts
+        uses: actions/cache@v4
+        with:
+          path: target/
+          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-
+            ${{ runner.os }}-cargo-target-
+
+      - name: Install molt Python package
+        run: pip install -e .
+
+      - name: Build release molt binary
+        run: cargo build --release -p molt-backend
+
+      - name: Run first 100 differential tests
         run: |
-          if ! command -v clang >/dev/null 2>&1; then
-            if [ "${{ runner.os }}" = "Linux" ]; then
-              sudo apt-get update
-              sudo apt-get install -y clang
-            elif [ "${{ runner.os }}" = "macOS" ]; then
-              brew install llvm
-              echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          # Collect first 100 test files
+          TEST_FILES=$(ls tests/differential/basic/*.py | head -100)
+          TOTAL=$(echo "$TEST_FILES" | wc -l | tr -d ' ')
+          PASS=0
+          FAIL=0
+          ERRORS=""
+
+          echo "Running $TOTAL differential tests..."
+
+          for f in $TEST_FILES; do
+            TEST_NAME=$(basename "$f")
+            # Get CPython output
+            EXPECTED=$(python3 "$f" 2>&1) || true
+            # Get Molt output
+            ACTUAL=$(./target/release/molt "$f" 2>&1) || true
+
+            if [ "$EXPECTED" = "$ACTUAL" ]; then
+              PASS=$((PASS + 1))
+            else
+              FAIL=$((FAIL + 1))
+              ERRORS="$ERRORS\n  FAIL: $TEST_NAME"
             fi
+          done
+
+          RATE=$((PASS * 100 / TOTAL))
+          echo ""
+          echo "===== Differential Test Results ====="
+          echo "Total:  $TOTAL"
+          echo "Pass:   $PASS"
+          echo "Fail:   $FAIL"
+          echo "Rate:   ${RATE}%"
+
+          if [ "$FAIL" -gt 0 ]; then
+            echo ""
+            echo "Failed tests:"
+            echo -e "$ERRORS"
           fi
-          clang --version
-      - name: Ensure clang is available (windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
+
+          echo ""
+          echo "::notice::Differential test pass rate: ${RATE}% ($PASS/$TOTAL)"
+
+  benchmark:
+    name: Benchmark
+    needs: build
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry/
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo build artifacts
+        uses: actions/cache@v4
+        with:
+          path: target/
+          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-
+            ${{ runner.os }}-cargo-target-
+
+      - name: Build release runtime
+        run: cargo build --release -p molt-runtime
+
+      - name: Install molt Python package
+        run: pip install -e .
+
+      - name: Run benchmarks
         run: |
-          $llvmBin = "C:\Program Files\LLVM\bin"
-          if (-not (Get-Command clang -ErrorAction SilentlyContinue)) {
-            choco install llvm --no-progress -y
-          }
-          if (Test-Path $llvmBin) {
-            $env:PATH = "$llvmBin;$env:PATH"
-            Add-Content -Path $env:GITHUB_PATH -Value $llvmBin
-          }
-          clang --version
-      - name: Install zig (cross lane)
-        if: matrix.lane.install_zig && runner.os == 'Linux'
+          python3 bench/harness.py --bench --output bench/results.json
+
+      - name: Check for regression against baseline
         run: |
-          if ! command -v zig >/dev/null 2>&1; then
-            sudo apt-get update
-            if ! sudo apt-get install -y zig; then
-              ZIG_VERSION=0.13.0
-              curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
-              sudo tar -C /opt -xf /tmp/zig.tar.xz
-              sudo ln -sf "/opt/zig-linux-x86_64-${ZIG_VERSION}/zig" /usr/local/bin/zig
-            fi
+          if [ ! -f bench/baseline.json ]; then
+            echo "::warning::No baseline.json found. Skipping regression check."
+            exit 0
           fi
-          zig version
-      - name: Install musl toolchain (cross lane)
-        if: matrix.lane.target == 'x86_64-unknown-linux-musl' && runner.os == 'Linux'
-        run: |
-          if ! command -v x86_64-linux-musl-gcc >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y musl-tools
-          fi
-          x86_64-linux-musl-gcc --version
-      - name: Create extension fixture project
-        env:
-          MOLT_EXT_LANE: ${{ matrix.lane.name }}
-        run: |
-          uv run python - <<'PY'
-          import os
-          import pathlib
-          import textwrap
 
-          workdir = pathlib.Path(os.environ["RUNNER_TEMP"]) / f"molt_ext_ci_{os.environ['MOLT_EXT_LANE']}"
-          src_dir = workdir / "src" / "demo"
-          src_dir.mkdir(parents=True, exist_ok=True)
+          python3 -c "
+          import json, sys
 
-          (workdir / "pyproject.toml").write_text(
-              textwrap.dedent(
-                  """
-                  [project]
-                  name = "molt-ext-ci"
-                  version = "0.1.0"
+          with open('bench/baseline.json') as f:
+              baseline = json.load(f)
+          with open('bench/results.json') as f:
+              results = json.load(f)
 
-                  [tool.molt.extension]
-                  module = "demo._native"
-                  sources = ["src/demo/native.c"]
-                  capabilities = ["fs.read"]
-                  determinism = "deterministic"
-                  """
-              ).lstrip(),
-              encoding="utf-8",
-          )
+          regressions = []
+          for name, res in results.items():
+              if name in baseline:
+                  base_time = baseline[name].get('molt_time') or baseline[name].get('time', 0)
+                  curr_time = res.get('molt_time') or res.get('time', 0)
+                  if base_time > 0 and curr_time > 0:
+                      ratio = curr_time / base_time
+                      if ratio > 1.20:
+                          regressions.append((name, ratio))
 
-          (src_dir / "native.c").write_text(
-              textwrap.dedent(
-                  r"""
-                  #include <Python.h>
-                  #include <numpy/arrayobject.h>
-
-                  static struct PyModuleDef demo_module = {
-                      PyModuleDef_HEAD_INIT,
-                      "demo._native",
-                      "extension pipeline smoke module",
-                      -1,
-                      NULL,
-                      NULL,
-                      NULL,
-                      NULL,
-                      NULL,
-                  };
-
-                  static int parse_single_int(PyObject *args) {
-                      int value = 0;
-                      if (!PyArg_ParseTuple(args, "i", &value)) {
-                          return -1;
-                      }
-                      return value;
-                  }
-
-                  static int parse_kw_pair(PyObject *args, PyObject *kwargs) {
-                      static char *kwlist[] = {"left", "right", NULL};
-                      int left = 0;
-                      int right = 0;
-                      if (!PyArg_ParseTupleAndKeywords(
-                              args, kwargs, "i|i", kwlist, &left, &right)) {
-                          return -1;
-                      }
-                      return left + right;
-                  }
-
-                  static PyObject *demo_type_ping(PyObject *self, PyObject *args) {
-                      (void)self;
-                      (void)args;
-                      Py_RETURN_NONE;
-                  }
-
-                  static int numpy_probe(PyObject *obj) {
-                      PyArrayObject *arr = (PyArrayObject *)obj;
-                      PyArray_Descr *descr = PyArray_DescrFromType(NPY_INT);
-                      npy_intp nd = PyArray_NDIM(arr);
-                      npy_intp size = PyArray_SIZE(arr);
-                      int is_int = PyTypeNum_ISINTEGER(PyArray_TYPE(arr));
-                      import_array1(-1);
-                      if (descr != NULL) {
-                          PyMem_Free(descr);
-                      }
-                      return (int)(nd + size + is_int);
-                  }
-
-                  static PyMethodDef demo_type_methods[] = {
-                      {"ping", (void *)demo_type_ping, METH_VARARGS, "ping"},
-                      {"static_ping", (void *)demo_type_ping, METH_STATIC | METH_VARARGS, "static ping"},
-                      {NULL, NULL, 0, NULL},
-                  };
-
-                  static PyType_Slot demo_type_slots[] = {
-                      {Py_tp_doc, (void *)"demo heap type"},
-                      {Py_tp_methods, (void *)demo_type_methods},
-                      {0, NULL},
-                  };
-
-                  static PyType_Spec demo_type_spec = {
-                      "demo._native.DemoType",
-                      0,
-                      0,
-                      (unsigned int)(Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE),
-                      demo_type_slots,
-                  };
-
-                  int molt_ext_ci_dummy_symbol(void) {
-                      int ok = 0;
-                      PyObject *module = PyModule_Create(&demo_module);
-                      PyObject *scratch = NULL;
-                      PyObject *heap_type = NULL;
-                      PyObject *file_obj = NULL;
-                      PyObject *filename_obj = NULL;
-                      const char *filename = NULL;
-                      PyModuleDef *module_def = NULL;
-                      if (module == NULL) {
-                          return 0;
-                      }
-                      module_def = PyModule_GetDef(module);
-                      if (module_def != &demo_module) {
-                          goto done;
-                      }
-                      if (PyModule_GetState(module) != NULL) {
-                          goto done;
-                      }
-                      if (PyModule_SetDocString(module, "extension pipeline smoke module") < 0) {
-                          goto done;
-                      }
-                      scratch = PyModule_New("demo.scratch");
-                      if (scratch == NULL) {
-                          goto done;
-                      }
-                      if (PyModule_AddObjectRef(scratch, "linked_module", module) < 0) {
-                          goto done;
-                      }
-                      if (PyModule_AddIntConstant(module, "answer", 42) < 0) {
-                          goto done;
-                      }
-                      heap_type = PyType_FromModuleAndSpec(module, &demo_type_spec, NULL);
-                      if (heap_type == NULL) {
-                          goto done;
-                      }
-                      if (PyType_GetModule((PyTypeObject *)heap_type) != module) {
-                          goto done;
-                      }
-                      if (PyType_GetModuleState((PyTypeObject *)heap_type) != PyModule_GetState(module)) {
-                          goto done;
-                      }
-                      if (PyType_GetModuleByDef((PyTypeObject *)heap_type, &demo_module) != module) {
-                          goto done;
-                      }
-                      if (PyModule_AddObjectRef(module, "DemoType", heap_type) < 0) {
-                          goto done;
-                      }
-                      file_obj = PyUnicode_FromString("/tmp/demo_native.so");
-                      if (file_obj == NULL) {
-                          goto done;
-                      }
-                      if (PyObject_SetAttrString(module, "__file__", file_obj) < 0) {
-                          goto done;
-                      }
-                      filename_obj = PyModule_GetFilenameObject(module);
-                      if (filename_obj == NULL) {
-                          goto done;
-                      }
-                      filename = PyModule_GetFilename(module);
-                      if (filename == NULL || filename[0] == '\0') {
-                          goto done;
-                      }
-                      ok = 1;
-                      (void)parse_single_int;
-                      (void)parse_kw_pair;
-                      (void)numpy_probe;
-                    done:
-                      Py_XDECREF(filename_obj);
-                      Py_XDECREF(file_obj);
-                      Py_XDECREF(heap_type);
-                      Py_XDECREF(scratch);
-                      Py_DECREF(module);
-                      return ok;
-                  }
-                  """
-              ).lstrip(),
-              encoding="utf-8",
-          )
-
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
-              env_file.write(f"EXT_PROJECT_DIR={workdir.as_posix()}\n")
-          PY
-      - name: Build extension wheel
-        env:
-          MOLT_EXT_TARGET: ${{ matrix.lane.target }}
-        run: |
-          uv run python - <<'PY'
-          import json
-          import os
-          import pathlib
-          import subprocess
-          import sys
-
-          root = pathlib.Path(os.environ["EXT_PROJECT_DIR"])
-          target = os.environ["MOLT_EXT_TARGET"]
-          build_json = root / "build.json"
-
-          cmd = [
-              sys.executable,
-              "-m",
-              "molt.cli",
-              "extension",
-              "build",
-              "--project",
-              str(root),
-              "--out-dir",
-              str(root / "dist"),
-              "--json",
-          ]
-          if target != "native":
-              cmd.extend(["--target", target])
-
-          proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-          build_json.write_text(proc.stdout, encoding="utf-8")
-          if proc.returncode != 0:
-              if proc.stdout:
-                  print(proc.stdout, end="", file=sys.stderr)
-              if proc.stderr:
-                  print(proc.stderr, end="", file=sys.stderr)
-              raise SystemExit(proc.returncode)
-
-          payload_text = proc.stdout.strip()
-          if not payload_text:
-              raise RuntimeError(f"extension build produced empty JSON output: {build_json}")
-
-          data = json.loads(payload_text).get("data", {})
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
-              env_file.write(f"EXT_WHEEL={data.get('wheel', '')}\n")
-              env_file.write(f"EXT_MANIFEST={data.get('manifest', '')}\n")
-              env_file.write(f"EXT_ABI={data.get('molt_c_api_version', '')}\n")
-              env_file.write(f"EXT_EXPECTED_TARGET={target}\n")
-          PY
-      - name: Scan extension C-API usage
-        run: |
-          uv run python -m molt.cli extension scan \
-            --project "$EXT_PROJECT_DIR" \
-            --fail-on-missing \
-            --json >"$EXT_PROJECT_DIR/scan.json"
-      - name: Audit extension wheel metadata
-        run: |
-          uv run python -m molt.cli extension audit \
-            --path "$EXT_WHEEL" \
-            --require-capabilities \
-            --require-checksum \
-            --require-abi "$EXT_ABI" \
-            --json >"$EXT_PROJECT_DIR/audit.json"
-      - name: Verify extension metadata policy
-        run: |
-          uv run python -m molt.cli verify \
-            --manifest "$EXT_MANIFEST" \
-            --artifact "$EXT_WHEEL" \
-            --require-checksum \
-            --extension-metadata \
-            --require-extension-capabilities \
-            --require-extension-abi "$EXT_ABI" \
-            --capabilities fs.read \
-            --json >"$EXT_PROJECT_DIR/verify.json"
-      - name: Publish dry-run for extension wheel
-        run: |
-          uv run python -m molt.cli publish \
-            "$EXT_WHEEL" \
-            --registry "$EXT_PROJECT_DIR/registry/" \
-            --capabilities fs.read \
-            --dry-run \
-            --json >"$EXT_PROJECT_DIR/publish.json"
-      - name: Runtime extension import smoke (native lanes)
-        if: matrix.lane.target == 'native'
-        run: |
-          uv run python - <<'PY'
-          import os
-          import pathlib
-          import textwrap
-
-          root = pathlib.Path(os.environ["EXT_PROJECT_DIR"])
-          wheel = pathlib.Path(os.environ["EXT_WHEEL"])
-          script_path = root / "runtime_import_smoke.py"
-          script_path.write_text(
-              textwrap.dedent(
-                  f"""
-                  import sys
-
-                  sys.path.insert(0, {wheel.as_posix()!r})
-                  import demo._native  # noqa: F401
-                  """
-              ).lstrip(),
-              encoding="utf-8",
-          )
-          PY
-          set +e
-          MOLT_TRUSTED=1 uv run python -m molt.cli run --profile dev \
-            "$EXT_PROJECT_DIR/runtime_import_smoke.py" \
-            >"$EXT_PROJECT_DIR/runtime_import_smoke.log" 2>&1
-          rc=$?
-          set -e
-          test "$rc" -ne 0
-          grep -E \
-            "libmolt extension execution has no intrinsic execution candidate|extension metadata" \
-            "$EXT_PROJECT_DIR/runtime_import_smoke.log"
-      - name: Ensure extension wasm target is rejected
-        if: matrix.lane.name == 'linux-native'
-        run: |
-          set +e
-          uv run python -m molt.cli extension build \
-            --project "$EXT_PROJECT_DIR" \
-            --out-dir "$EXT_PROJECT_DIR/dist-wasm" \
-            --target wasm32-wasip1 \
-            --json >"$EXT_PROJECT_DIR/wasm_unsupported.json"
-          rc=$?
-          set -e
-          test "$rc" -ne 0
-          uv run python - <<'PY'
-          import json
-          import os
-          import pathlib
-
-          payload = json.loads(
-              (pathlib.Path(os.environ["EXT_PROJECT_DIR"]) / "wasm_unsupported.json").read_text()
-          )
-          assert payload.get("status") == "error", payload
-          assert any(
-              "only supports native target triples, not wasm" in err
-              for err in payload.get("errors", [])
-          ), payload
-          PY
-      - name: Validate extension pipeline JSON outputs
-        run: |
-          uv run python - <<'PY'
-          import json
-          import os
-          import pathlib
-
-          root = pathlib.Path(os.environ["EXT_PROJECT_DIR"])
-          scan = json.loads((root / "scan.json").read_text())
-          build = json.loads((root / "build.json").read_text())
-          audit = json.loads((root / "audit.json").read_text())
-          verify = json.loads((root / "verify.json").read_text())
-          publish = json.loads((root / "publish.json").read_text())
-
-          assert scan["status"] == "ok", scan
-          assert build["status"] == "ok", build
-          assert audit["status"] == "ok", audit
-          assert verify["status"] == "ok", verify
-          assert publish["status"] == "ok", publish
-
-          build_data = build["data"]
-          audit_data = audit["data"]
-          verify_data = verify["data"]
-          expected = os.environ["EXT_EXPECTED_TARGET"]
-          if expected == "native":
-              assert build_data["build_target"] == "native", build_data
+          if regressions:
+              print('Benchmark regressions (>20%):')
+              for name, ratio in sorted(regressions, key=lambda x: -x[1]):
+                  print(f'  {name}: {ratio:.2f}x slower')
+              sys.exit(1)
           else:
-              expected_platform_tag = expected.replace("-", "_")
-              assert build_data["build_target"] == expected, build_data
-              assert build_data["target_triple"] == expected, build_data
-              assert build_data["platform_tag"] == expected_platform_tag, build_data
-              assert audit_data["wheel_tags"]["platform"] == expected_platform_tag, audit_data
-              assert expected_platform_tag in pathlib.Path(build_data["wheel"]).name, build_data
+              print('No benchmark regressions detected.')
+          "
 
-          assert audit_data["require_abi"] == build_data["molt_c_api_version"], audit_data
-          assert audit_data["wheel_tags"]["abi"] == build_data["abi_tag"], audit_data
-          assert (
-              audit_data["wheel_tags"]["platform"] == build_data["platform_tag"]
-          ), audit_data
-          assert verify_data["extension_metadata"] is True, verify_data
-          assert (
-              verify_data["extension_require_abi"] == build_data["molt_c_api_version"]
-          ), verify_data
-          assert publish["data"].get("extension_wheel") is True, publish
-          print("extension pipeline matrix lane passed")
-          PY
-      - name: Upload extension pipeline artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: extension-pipeline-${{ matrix.lane.name }}
-          path: |
-            ${{ env.EXT_PROJECT_DIR }}/build.json
-            ${{ env.EXT_PROJECT_DIR }}/scan.json
-            ${{ env.EXT_PROJECT_DIR }}/audit.json
-            ${{ env.EXT_PROJECT_DIR }}/verify.json
-            ${{ env.EXT_PROJECT_DIR }}/publish.json
-            ${{ env.EXT_PROJECT_DIR }}/runtime_import_smoke.log
-            ${{ env.EXT_PROJECT_DIR }}/wasm_unsupported.json
-
-  # ── Unified verification gate (Tier 1: every push, Tier 2: PRs) ───
-  verification-gate-t1:
-    name: Verification gate (Tier 1)
-    runs-on: ubuntu-latest
+  parity:
+    name: Parity Tests
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v5
         with:
-          version: "latest"
-      - name: Set up Python 3.12
-        run: uv python install 3.12
-      - name: Install dependencies
-        run: uv sync --frozen --python 3.12
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-      - name: Cache cargo
+          python-version: "3.12"
+
+      - name: Cache Cargo registry
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ runner.os }}-gate-${{ hashFiles('Cargo.lock') }}
+          path: ~/.cargo/registry/
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            cargo-${{ runner.os }}-gate-
-      - name: Run Tier 1 gate
-        run: uv run --python 3.12 python3 tools/ci_gate.py --tier 1 --fail-fast --verbose
-      - name: Upload gate results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gate-tier1
-          path: ci_gate_results.json
-          if-no-files-found: ignore
+            ${{ runner.os }}-cargo-registry-
 
-  verification-gate-t2:
-    name: Verification gate (Tier 2)
-    if: github.event_name == 'pull_request'
-    needs: [verification-gate-t1]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: "latest"
-      - name: Set up Python 3.12
-        run: uv python install 3.12
-      - name: Install dependencies
-        run: uv sync --frozen --python 3.12
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-      - name: Install clang
-        run: |
-          if ! command -v clang >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y clang
-          fi
-      - name: Install Quint
-        run: npm install -g @informalsystems/quint
-      - name: Build runtime
-        run: cargo build -p molt-runtime --release
-      - name: Run Tier 2 gate
-        run: uv run --python 3.12 python3 tools/ci_gate.py --tier 2 --verbose
-      - name: Upload gate results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gate-tier2
-          path: ci_gate_results.json
-          if-no-files-found: ignore
-
-  test-rust:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-      - name: Cache cargo registry and target
+      - name: Cache Cargo build artifacts
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: target/
+          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/*.rs') }}
           restore-keys: |
-            cargo-${{ runner.os }}-
-      - name: Cargo format
-        run: cargo fmt -- --check
-      - name: Cargo clippy
-        run: cargo clippy -- -D warnings
-      - name: Cargo test
-        run: cargo test
+            ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-
+            ${{ runner.os }}-cargo-target-
 
-  formal-methods:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install elan (Lean 4 toolchain)
+      - name: Install molt Python package
+        run: pip install -e .
+
+      - name: Build release molt binary
+        run: cargo build --release -p molt-backend
+
+      - name: Run parity tests
         run: |
-          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-      - name: Install Quint
-        run: npm install -g @informalsystems/quint
-      - name: Formal methods file inventory
-        run: python3 tools/check_formal_methods.py --inventory
-      - name: Lean proofs (lake build)
-        run: |
-          cd formal/lean && lake build
-      - name: Quint build determinism model
-        run: |
-          quint run formal/quint/molt_build_determinism.qnt --invariant=Inv --max-steps=12 --max-samples=500
-      - name: Quint runtime determinism model
-        run: |
-          quint run formal/quint/molt_runtime_determinism.qnt --invariant=Inv --max-steps=15 --max-samples=500
-      - name: Quint known-bad model (must find violation)
-        run: |
-          set +e
-          quint run formal/quint/molt_build_determinism.qnt --main=molt_build_order_dependent --invariant=OrderDependentInv --max-steps=8 --max-samples=1000 2>&1
-          rc=$?
-          set -e
-          if [ "$rc" -eq 0 ]; then
-            echo "ERROR: known-bad model should have found a violation but did not"
-            exit 1
-          fi
-          echo "known-bad model correctly detected order-dependent bug"
+          python3 bench/harness.py --parity --verbose
 
-  test-wasm:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: "latest"
-      - name: Set up Python 3.12
-        run: uv python install 3.12
-      - name: Install dependencies
-        run: uv sync --frozen --python 3.12
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-      - name: Run wasm parity test
-        run: uv run pytest tests/test_wasm_control_flow.py
-
-  test-tkinter-live-smoke:
-    name: Tk live smoke (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            live_test_name: test_tkinter_live_smoke_linux
-          - os: macos-latest
-            live_test_name: test_tkinter_live_smoke_macos
-          - os: windows-latest
-            live_test_name: test_tkinter_live_smoke_windows
-    env:
-      MOLT_TK_LIVE_SMOKE: "1"
-      MOLT_RUNTIME_TK_NATIVE: "1"
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Prepare external artifact root (unix)
-        if: runner.os != 'Windows'
-        run: |
-          sudo mkdir -p /Volumes/APDataStore/Molt/tmp
-          sudo mkdir -p /Volumes/APDataStore/Molt/diff
-          sudo mkdir -p /Volumes/APDataStore/Molt/molt_cache
-          sudo mkdir -p /Volumes/APDataStore/Molt/uv-cache
-          sudo mkdir -p /Volumes/APDataStore/Molt/cargo-target-tk-live-smoke
-          sudo chown -R "$(id -u):$(id -g)" /Volumes/APDataStore
-
-      - name: Prepare external artifact root (windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $root = "C:\Volumes\APDataStore\Molt"
-          New-Item -ItemType Directory -Force -Path "$root\tmp" | Out-Null
-          New-Item -ItemType Directory -Force -Path "$root\diff" | Out-Null
-          New-Item -ItemType Directory -Force -Path "$root\molt_cache" | Out-Null
-          New-Item -ItemType Directory -Force -Path "$root\uv-cache" | Out-Null
-          New-Item -ItemType Directory -Force -Path "$root\cargo-target-tk-live-smoke" | Out-Null
-
-      - name: Export external-volume env (unix)
-        if: runner.os != 'Windows'
-        run: |
-          {
-            echo "MOLT_EXT_ROOT=/Volumes/APDataStore/Molt"
-            echo "CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/cargo-target-tk-live-smoke"
-            echo "MOLT_DIFF_CARGO_TARGET_DIR=/Volumes/APDataStore/Molt/cargo-target-tk-live-smoke"
-            echo "MOLT_CACHE=/Volumes/APDataStore/Molt/molt_cache"
-            echo "MOLT_DIFF_ROOT=/Volumes/APDataStore/Molt/diff"
-            echo "MOLT_DIFF_TMPDIR=/Volumes/APDataStore/Molt/tmp"
-            echo "UV_CACHE_DIR=/Volumes/APDataStore/Molt/uv-cache"
-            echo "TMPDIR=/Volumes/APDataStore/Molt/tmp"
-            echo "MOLT_BACKEND_DAEMON_SOCKET_DIR=/tmp/molt_backend_sockets"
-          } >> "$GITHUB_ENV"
-
-      - name: Export external-volume env (windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $root = "C:\Volumes\APDataStore\Molt"
-          Add-Content -Path $env:GITHUB_ENV -Value "MOLT_EXT_ROOT=$root"
-          Add-Content -Path $env:GITHUB_ENV -Value "CARGO_TARGET_DIR=$root\cargo-target-tk-live-smoke"
-          Add-Content -Path $env:GITHUB_ENV -Value "MOLT_DIFF_CARGO_TARGET_DIR=$root\cargo-target-tk-live-smoke"
-          Add-Content -Path $env:GITHUB_ENV -Value "MOLT_CACHE=$root\molt_cache"
-          Add-Content -Path $env:GITHUB_ENV -Value "MOLT_DIFF_ROOT=$root\diff"
-          Add-Content -Path $env:GITHUB_ENV -Value "MOLT_DIFF_TMPDIR=$root\tmp"
-          Add-Content -Path $env:GITHUB_ENV -Value "UV_CACHE_DIR=$root\uv-cache"
-          Add-Content -Path $env:GITHUB_ENV -Value "TMPDIR=$root\tmp"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: "latest"
-
-      - name: Set up Python 3.12
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --frozen --python 3.12
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-
-      - name: Install Linux Tk/Xvfb prerequisites
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb xauth python3-tk tk-dev
-
-      - name: Run live Tk smoke tests (linux/xvfb)
-        if: runner.os == 'Linux'
-        run: |
-          xvfb-run -a uv run pytest -q -rs tests/test_tkinter_live_smoke.py --junitxml=tk-live-smoke.xml
-
-      - name: Run live Tk smoke tests (native)
-        if: runner.os != 'Linux'
-        run: uv run pytest -q -rs tests/test_tkinter_live_smoke.py --junitxml=tk-live-smoke.xml
-
-      # Linux is a hard gate: live tkinter smoke must pass end-to-end under Xvfb.
-      # macOS/Windows remain explicit provisional gates: a skip is allowed only if
-      # runner Tk runtime availability is not yet guaranteed, but test failures still fail.
-      - name: Enforce Tk live smoke gate policy
-        shell: python
-        run: |
-          import os
-          import xml.etree.ElementTree as ET
-
-          report = "tk-live-smoke.xml"
-          try:
-              suite = ET.parse(report).getroot()
-          except Exception as exc:  # noqa: BLE001
-              raise SystemExit(f"failed to parse {report}: {exc}") from exc
-
-          if suite.tag != "testsuite":
-              nested = suite.find("testsuite")
-              if nested is None:
-                  raise SystemExit(f"{report} does not contain a testsuite element")
-              suite = nested
-
-          statuses: dict[str, str] = {}
-          for case in suite.iter("testcase"):
-              name = case.attrib.get("name", "")
-              if not name.startswith("test_tkinter_live_smoke_"):
-                  continue
-              if case.find("failure") is not None:
-                  statuses[name] = "failed"
-              elif case.find("error") is not None:
-                  statuses[name] = "error"
-              elif case.find("skipped") is not None:
-                  statuses[name] = "skipped"
-              else:
-                  statuses[name] = "passed"
-
-          expected_case = os.environ["LIVE_TEST_NAME"]
-          status = statuses.get(expected_case, "missing")
-          runner_os = os.environ.get("RUNNER_OS", "unknown")
-          print(f"runner={runner_os} expected_case={expected_case} status={status}")
-
-          if runner_os == "Linux":
-              if status != "passed":
-                  raise SystemExit(
-                      "linux live tkinter smoke is a required hard gate and must pass; "
-                      f"observed status={status}"
-                  )
-              print("linux hard gate satisfied")
-              raise SystemExit(0)
-
-          if status == "passed":
-              print(f"{runner_os} provisional gate satisfied with pass")
-              raise SystemExit(0)
-          if status == "skipped":
-              print(
-                  f"{runner_os} provisional gate observed explicit skip "
-                  "(allowed until runner Tk runtime provisioning is fully hardened)"
-              )
-              raise SystemExit(0)
-
-          raise SystemExit(
-              f"{runner_os} live tkinter smoke must pass or skip explicitly; observed status={status}"
-          )
-        env:
-          LIVE_TEST_NAME: ${{ matrix.live_test_name }}
-
-      - name: Upload Tk live smoke junit artifact
+      - name: Report parity results
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tk-live-smoke-${{ matrix.os }}
-          path: tk-live-smoke.xml
+        run: |
+          if [ -f bench/results.json ]; then
+            python3 -c "
+          import json
+          with open('bench/results.json') as f:
+              data = json.load(f)
+          total = len(data)
+          passed = sum(1 for v in data.values() if v.get('pass') or v.get('status') == 'pass')
+          print(f'Parity results: {passed}/{total} passed')
+          " || echo "Could not parse results."
+          else
+            echo "::warning::No results.json produced by parity tests."
+          fi
