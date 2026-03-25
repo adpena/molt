@@ -737,7 +737,9 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_float.unwrap_or(false) {
+                    let res = if op.fast_float.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("float")
+                    {
                         // Both operands known to be f64 — direct float arithmetic.
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
@@ -841,6 +843,9 @@ impl SimpleBackend {
 
                         builder.switch_to_block(call_block);
                         builder.seal_block(call_block);
+                        emit_mixed_int_float_op(
+                            &mut builder, *lhs, *rhs, &nbc, 0, merge_block,
+                        );
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
@@ -855,7 +860,9 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_float.unwrap_or(false) {
+                    let res = if op.fast_float.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("float")
+                    {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
@@ -957,6 +964,9 @@ impl SimpleBackend {
 
                         builder.switch_to_block(call_block);
                         builder.seal_block(call_block);
+                        emit_mixed_int_float_op(
+                            &mut builder, *lhs, *rhs, &nbc, 0, merge_block,
+                        );
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
@@ -1421,7 +1431,9 @@ impl SimpleBackend {
                     let rhs = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
                         panic!("RHS not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let res = if op.fast_float.unwrap_or(false) {
+                    let res = if op.fast_float.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("float")
+                    {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
@@ -1521,6 +1533,9 @@ impl SimpleBackend {
 
                         builder.switch_to_block(call_block);
                         builder.seal_block(call_block);
+                        emit_mixed_int_float_op(
+                            &mut builder, *lhs, *rhs, &nbc, 1, merge_block,
+                        );
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
@@ -1539,7 +1554,9 @@ impl SimpleBackend {
                     let rhs = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
                         panic!("RHS not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let res = if op.fast_float.unwrap_or(false) {
+                    let res = if op.fast_float.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("float")
+                    {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
@@ -1639,6 +1656,9 @@ impl SimpleBackend {
 
                         builder.switch_to_block(call_block);
                         builder.seal_block(call_block);
+                        emit_mixed_int_float_op(
+                            &mut builder, *lhs, *rhs, &nbc, 1, merge_block,
+                        );
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
@@ -1653,7 +1673,9 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_float.unwrap_or(false) {
+                    let res = if op.fast_float.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("float")
+                    {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
@@ -1753,6 +1775,9 @@ impl SimpleBackend {
 
                         builder.switch_to_block(call_block);
                         builder.seal_block(call_block);
+                        emit_mixed_int_float_op(
+                            &mut builder, *lhs, *rhs, &nbc, 2, merge_block,
+                        );
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
@@ -1767,7 +1792,9 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_float.unwrap_or(false) {
+                    let res = if op.fast_float.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("float")
+                    {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
@@ -1867,6 +1894,9 @@ impl SimpleBackend {
 
                         builder.switch_to_block(call_block);
                         builder.seal_block(call_block);
+                        emit_mixed_int_float_op(
+                            &mut builder, *lhs, *rhs, &nbc, 2, merge_block,
+                        );
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);

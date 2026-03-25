@@ -27,9 +27,14 @@ pub struct PassStats {
     pub ops_added: usize,
 }
 
+/// Sentinel value: when `run_pipeline` returns exactly this many stats
+/// with all zeroes, it means verification failed and the caller should
+/// fall back to unoptimized code.
+pub const VERIFICATION_FAILED_SENTINEL: usize = 0;
+
 /// Run the full TIR optimization pipeline on a function.
 ///
-/// Pass order is critical — each pass feeds into the next:
+/// Pass order is critical -- each pass feeds into the next:
 /// 1. Unboxing (needs types from type_refine)
 /// 2. Escape analysis (benefits from unboxed info)
 /// 3. SCCP (folds constants after unboxing reveals types)
@@ -37,7 +42,9 @@ pub struct PassStats {
 /// 5. BCE (after SCCP/SR simplify loop bounds)
 /// 6. DCE (cleans up dead code from all prior passes)
 ///
-/// The TIR verifier runs after all passes to catch invariant violations.
+/// If post-pipeline verification fails, returns an EMPTY Vec to signal
+/// the caller should fall back to unoptimized code.  This avoids panicking
+/// (fatal under panic=abort profiles).
 pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     let mut stats = Vec::with_capacity(8);
 
@@ -50,13 +57,16 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     stats.push(bce::run(func));
     stats.push(dce::run(func));
 
-    // Verify TIR invariants after all passes.
+    // Verify TIR invariants after all passes.  Instead of panicking
+    // (which kills the process under panic=abort profiles), return an
+    // empty Vec to signal the caller to fall back to unoptimized code.
     if let Err(errors) = super::verify::verify_function(func) {
         eprintln!(
             "[TIR] WARNING: verification found {} error(s) after optimization: {:?}",
             errors.len(),
             errors
         );
+        return Vec::new();  // signal: verification failed
     }
 
     // Print stats if TIR_OPT_STATS=1
