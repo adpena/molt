@@ -8867,7 +8867,7 @@ impl SimpleBackend {
                                 let val = entry_vars.get(&name).copied()
                                     .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
                                 let Some(val) = val else { continue; };
-                                builder.ins().call(local_dec_ref, &[val]);
+                                builder.ins().call(local_dec_ref_obj, &[val]);
                                 entry_vars.remove(&name);
                             }
                         }
@@ -13720,7 +13720,12 @@ impl SimpleBackend {
                 let cleanup =
                     drain_cleanup_entry_tracked(&mut tracked_vars, &mut entry_vars, &last_use, op_idx);
                 for val in cleanup {
-                    builder.ins().call(local_dec_ref, &[val]);
+                    // Use dec_ref_obj (NaN-box aware) instead of dec_ref (raw ptr).
+                    // entry_vars always stores NaN-boxed bits, not raw pointers,
+                    // so we must use the variant that checks the tag before
+                    // dereferencing.  Using raw dec_ref here would SIGSEGV for
+                    // any non-pointer NaN-boxed value (floats, inline ints, etc.).
+                    builder.ins().call(local_dec_ref_obj, &[val]);
                 }
             }
 
@@ -13760,9 +13765,13 @@ impl SimpleBackend {
 
         // Finalize Master Return Block
         if !is_block_filled {
+            // Both tracked_vars and tracked_obj_vars store NaN-boxed bits in
+            // entry_vars, so always use dec_ref_obj (NaN-box aware) for cleanup.
+            // Using raw dec_ref on NaN-boxed bits causes SIGSEGV for non-pointer
+            // values (floats from abs/round, inline ints, etc.).
             for name in &tracked_vars {
                 if let Some(val) = entry_vars.get(name) {
-                    builder.ins().call(local_dec_ref, &[*val]);
+                    builder.ins().call(local_dec_ref_obj, &[*val]);
                 }
             }
             for name in &tracked_obj_vars {
