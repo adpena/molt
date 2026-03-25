@@ -4153,15 +4153,38 @@ pub extern "C" fn molt_exception_new_from_class(class_bits: u64, args_bits: u64)
     crate::with_gil_entry!(_py, {
         let class_obj = obj_from_bits(class_bits);
         let Some(class_ptr) = class_obj.as_ptr() else {
+            eprintln!("[DEBUG] molt_exception_new_from_class: class_bits={:#x} is not a ptr", class_bits);
             return raise_exception::<u64>(_py, "TypeError", "exception class must be a type");
         };
         unsafe {
             if object_type_id(class_ptr) != TYPE_ID_TYPE {
+                eprintln!("[DEBUG] molt_exception_new_from_class: class_bits={:#x} type_id={} (not TYPE)", class_bits, object_type_id(class_ptr));
                 return raise_exception::<u64>(_py, "TypeError", "exception class must be a type");
             }
         }
         let builtins = builtin_classes(_py);
-        if !issubclass_bits(class_bits, builtins.base_exception) {
+        let is_sub = issubclass_bits(class_bits, builtins.base_exception);
+        unsafe {
+            let class_name = string_obj_to_owned(obj_from_bits(class_name_bits(class_ptr))).unwrap_or_else(|| "<unknown>".to_string());
+            eprintln!("[DEBUG] molt_exception_new_from_class: class={} bits={:#x} base_exception={:#x} issubclass={}", class_name, class_bits, builtins.base_exception, is_sub);
+            if let Some(mro) = crate::builtins::type_ops::class_mro_ref(class_ptr) {
+                let names: Vec<String> = mro.iter().map(|b| {
+                    if let Some(p) = obj_from_bits(*b).as_ptr() {
+                        if object_type_id(p) == TYPE_ID_TYPE {
+                            string_obj_to_owned(obj_from_bits(class_name_bits(p))).unwrap_or_else(|| format!("{:#x}", b))
+                        } else {
+                            format!("{:#x}(tid={})", b, object_type_id(p))
+                        }
+                    } else {
+                        format!("{:#x}(noptr)", b)
+                    }
+                }).collect();
+                eprintln!("[DEBUG]   MRO: {:?}", names);
+            } else {
+                eprintln!("[DEBUG]   MRO ref is None");
+            }
+        }
+        if !is_sub {
             return raise_exception::<u64>(
                 _py,
                 "TypeError",
@@ -4170,9 +4193,16 @@ pub extern "C" fn molt_exception_new_from_class(class_bits: u64, args_bits: u64)
         }
         let ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
         if ptr.is_null() {
+            eprintln!("[DEBUG] molt_exception_new_from_class: alloc returned null");
             MoltObject::none().bits()
         } else {
-            MoltObject::from_ptr(ptr).bits()
+            let result_bits = MoltObject::from_ptr(ptr).bits();
+            unsafe {
+                let tid = object_type_id(ptr);
+                let exc_class = exception_class_bits(ptr);
+                eprintln!("[DEBUG] molt_exception_new_from_class: result type_id={} exc_class={:#x} result_bits={:#x}", tid, exc_class, result_bits);
+            }
+            result_bits
         }
     })
 }

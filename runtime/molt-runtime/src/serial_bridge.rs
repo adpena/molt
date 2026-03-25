@@ -1,8 +1,8 @@
-//! FFI bridge shims for `molt-runtime-serial`.
+//! FFI bridge for `molt-runtime-serial`.
 //!
-//! Each function here is a thin `#[no_mangle] extern "C"` wrapper around an
-//! internal `pub(crate)` function.  The serial crate declares matching
-//! `extern "C"` imports and they are resolved at link time.
+//! The serial crate dispatches through a single `RuntimeVtable` obtained via
+//! `__molt_serial_get_vtable()`.  All bridge functions are private to this
+//! module — no individual `#[no_mangle]` C symbols are exported.
 
 use crate::*;
 use crate::builtins::classes::class_name_for_error as _class_name_for_error;
@@ -30,8 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // Exception / error handling
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_raise_exception(
+extern "C" fn bridge_raise_exception(
     type_ptr: *const u8,
     type_len: usize,
     msg_ptr: *const u8,
@@ -44,8 +43,7 @@ pub extern "C" fn __molt_serial_raise_exception(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_exception_pending() -> i32 {
+extern "C" fn bridge_exception_pending() -> i32 {
     crate::with_gil_entry!(_py, {
         if exception_pending(_py) { 1 } else { 0 }
     })
@@ -55,32 +53,28 @@ pub extern "C" fn __molt_serial_exception_pending() -> i32 {
 // Object allocation
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
+extern "C" fn bridge_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
     crate::with_gil_entry!(_py, {
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_tuple(_py, elems)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
+extern "C" fn bridge_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
     crate::with_gil_entry!(_py, {
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_list(_py, elems)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
+extern "C" fn bridge_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
     crate::with_gil_entry!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8 {
+extern "C" fn bridge_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8 {
     crate::with_gil_entry!(_py, {
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_bytes(_py, data)
@@ -91,13 +85,11 @@ pub extern "C" fn __molt_serial_alloc_bytes(data_ptr: *const u8, data_len: usize
 // Object inspection
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_object_type_id(ptr: *mut u8) -> u32 {
+extern "C" fn bridge_object_type_id(ptr: *mut u8) -> u32 {
     unsafe { object_type_id(ptr) }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_string_obj_to_owned(
+extern "C" fn bridge_string_obj_to_owned(
     bits: u64,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
@@ -118,8 +110,7 @@ pub extern "C" fn __molt_serial_string_obj_to_owned(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_type_name(
+extern "C" fn bridge_type_name(
     bits: u64,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
@@ -138,16 +129,14 @@ pub extern "C" fn __molt_serial_type_name(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_is_truthy(bits: u64) -> i32 {
+extern "C" fn bridge_is_truthy(bits: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(bits);
         if is_truthy(_py, obj) { 1 } else { 0 }
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_bytes_like_slice(
+extern "C" fn bridge_bytes_like_slice(
     ptr: *mut u8,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
@@ -164,8 +153,7 @@ pub extern "C" fn __molt_serial_bytes_like_slice(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_string_bytes(
+extern "C" fn bridge_string_bytes(
     ptr: *mut u8,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
@@ -179,8 +167,7 @@ pub extern "C" fn __molt_serial_string_bytes(
     1
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_string_len(ptr: *mut u8) -> usize {
+extern "C" fn bridge_string_len(ptr: *mut u8) -> usize {
     unsafe { string_len(ptr) }
 }
 
@@ -188,8 +175,7 @@ pub extern "C" fn __molt_serial_string_len(ptr: *mut u8) -> usize {
 // Memoryview / bytes-like helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_bytes_like_slice_raw(
+extern "C" fn bridge_bytes_like_slice_raw(
     ptr: *mut u8,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
@@ -206,28 +192,23 @@ pub extern "C" fn __molt_serial_bytes_like_slice_raw(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_memoryview_is_c_contiguous_view(ptr: *mut u8) -> i32 {
+extern "C" fn bridge_memoryview_is_c_contiguous_view(ptr: *mut u8) -> i32 {
     if unsafe { crate::object::memoryview::memoryview_is_c_contiguous_view(ptr) } { 1 } else { 0 }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_memoryview_readonly(ptr: *mut u8) -> i32 {
+extern "C" fn bridge_memoryview_readonly(ptr: *mut u8) -> i32 {
     if unsafe { memoryview_readonly(ptr) } { 1 } else { 0 }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_memoryview_nbytes(ptr: *mut u8) -> usize {
+extern "C" fn bridge_memoryview_nbytes(ptr: *mut u8) -> usize {
     unsafe { crate::object::memoryview::memoryview_nbytes(ptr) }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_memoryview_offset(ptr: *mut u8) -> isize {
+extern "C" fn bridge_memoryview_offset(ptr: *mut u8) -> isize {
     unsafe { memoryview_offset(ptr) }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_memoryview_owner_bits(ptr: *mut u8) -> u64 {
+extern "C" fn bridge_memoryview_owner_bits(ptr: *mut u8) -> u64 {
     unsafe { memoryview_owner_bits(ptr) }
 }
 
@@ -235,20 +216,17 @@ pub extern "C" fn __molt_serial_memoryview_owner_bits(ptr: *mut u8) -> u64 {
 // Reference counting / pointer management
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_release_ptr(ptr: *mut u8) {
+extern "C" fn bridge_release_ptr(ptr: *mut u8) {
     release_ptr(ptr);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_dec_ref_bits(bits: u64) {
+extern "C" fn bridge_dec_ref_bits(bits: u64) {
     crate::with_gil_entry!(_py, {
         dec_ref_bits(_py, bits);
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_inc_ref_bits(bits: u64) {
+extern "C" fn bridge_inc_ref_bits(bits: u64) {
     crate::with_gil_entry!(_py, {
         inc_ref_bits(_py, bits);
     })
@@ -258,8 +236,7 @@ pub extern "C" fn __molt_serial_inc_ref_bits(bits: u64) {
 // Numeric helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_to_i64(bits: u64, out: *mut i64) -> i32 {
+extern "C" fn bridge_to_i64(bits: u64, out: *mut i64) -> i32 {
     let obj = obj_from_bits(bits);
     match to_i64(obj) {
         Some(v) => {
@@ -270,8 +247,7 @@ pub extern "C" fn __molt_serial_to_i64(bits: u64, out: *mut i64) -> i32 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_to_f64(bits: u64, out: *mut f64) -> i32 {
+extern "C" fn bridge_to_f64(bits: u64, out: *mut f64) -> i32 {
     let obj = obj_from_bits(bits);
     match _to_f64(obj) {
         Some(v) => {
@@ -282,8 +258,7 @@ pub extern "C" fn __molt_serial_to_f64(bits: u64, out: *mut f64) -> i32 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_to_bigint(
+extern "C" fn bridge_to_bigint(
     bits: u64,
     out_sign: *mut i32,
     out_ptr: *mut *const u8,
@@ -312,23 +287,20 @@ pub extern "C" fn __molt_serial_to_bigint(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_int_bits_from_i64(val: i64) -> u64 {
+extern "C" fn bridge_int_bits_from_i64(val: i64) -> u64 {
     crate::with_gil_entry!(_py, {
         int_bits_from_i64(_py, val)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_int_bits_from_i128(val_lo: u64, val_hi: u64) -> u64 {
+extern "C" fn bridge_int_bits_from_i128(val_lo: u64, val_hi: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let val = (val_hi as i128) << 64 | (val_lo as u128 as i128);
         crate::builtins::numbers::int_bits_from_i128(_py, val)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_int_bits_from_bigint(
+extern "C" fn bridge_int_bits_from_bigint(
     sign: i32,
     data_ptr: *const u8,
     data_len: usize,
@@ -345,16 +317,14 @@ pub extern "C" fn __molt_serial_int_bits_from_bigint(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_bigint_ptr_from_bits(bits: u64) -> *mut u8 {
+extern "C" fn bridge_bigint_ptr_from_bits(bits: u64) -> *mut u8 {
     match builtins::numbers::bigint_ptr_from_bits(bits) {
         Some(ptr) => ptr,
         None => std::ptr::null_mut(),
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_bigint_ref(
+extern "C" fn bridge_bigint_ref(
     ptr: *mut u8,
     out_sign: *mut i32,
     out_ptr: *mut *const u8,
@@ -378,8 +348,7 @@ pub extern "C" fn __molt_serial_bigint_ref(
     1
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_bigint_from_f64_trunc(
+extern "C" fn bridge_bigint_from_f64_trunc(
     val: f64,
     out_sign: *mut i32,
     out_ptr: *mut *const u8,
@@ -403,8 +372,7 @@ pub extern "C" fn __molt_serial_bigint_from_f64_trunc(
     1
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_bigint_bits(
+extern "C" fn bridge_bigint_bits(
     sign: i32,
     data_ptr: *const u8,
     data_len: usize,
@@ -421,8 +389,7 @@ pub extern "C" fn __molt_serial_bigint_bits(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_bigint_to_inline(
+extern "C" fn bridge_bigint_to_inline(
     sign: i32,
     data_ptr: *const u8,
     data_len: usize,
@@ -440,8 +407,7 @@ pub extern "C" fn __molt_serial_bigint_to_inline(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_index_i64_from_obj(
+extern "C" fn bridge_index_i64_from_obj(
     obj_bits: u64,
     err_ptr: *const u8,
     err_len: usize,
@@ -452,8 +418,7 @@ pub extern "C" fn __molt_serial_index_i64_from_obj(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_index_bigint_from_obj(
+extern "C" fn bridge_index_bigint_from_obj(
     obj_bits: u64,
     err_ptr: *const u8,
     err_len: usize,
@@ -490,22 +455,19 @@ pub extern "C" fn __molt_serial_index_bigint_from_obj(
 // Callable / protocol helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_call_callable0(call_bits: u64) -> u64 {
+extern "C" fn bridge_call_callable0(call_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         unsafe { call_callable0(_py, call_bits) }
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_call_callable2(call_bits: u64, arg0: u64, arg1: u64) -> u64 {
+extern "C" fn bridge_call_callable2(call_bits: u64, arg0: u64, arg1: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         unsafe { call_callable2(_py, call_bits, arg0, arg1) }
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_attr_lookup_ptr_allow_missing(ptr: *mut u8, name_bits: u64) -> u64 {
+extern "C" fn bridge_attr_lookup_ptr_allow_missing(ptr: *mut u8, name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         match unsafe { attr_lookup_ptr_allow_missing(_py, ptr, name_bits) } {
             Some(bits) => bits,
@@ -545,8 +507,7 @@ fn intern_slot_for(key: &[u8]) -> &'static AtomicU64 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64 {
+extern "C" fn bridge_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64 {
     crate::with_gil_entry!(_py, {
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
         let slot = intern_slot_for(key);
@@ -576,8 +537,7 @@ pub extern "C" fn __molt_serial_intern_static_name(key_ptr: *const u8, key_len: 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_class_name_for_error(
+extern "C" fn bridge_class_name_for_error(
     type_bits: u64,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
@@ -593,32 +553,26 @@ pub extern "C" fn __molt_serial_class_name_for_error(
     1
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_type_of_bits(val_bits: u64) -> u64 {
+extern "C" fn bridge_type_of_bits(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         _type_of_bits(_py, val_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_maybe_ptr_from_bits(bits: u64) -> *mut u8 {
+extern "C" fn bridge_maybe_ptr_from_bits(bits: u64) -> *mut u8 {
     match maybe_ptr_from_bits(bits) {
         Some(ptr) => ptr,
         None => std::ptr::null_mut(),
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_molt_is_callable(bits: u64) -> i32 {
-    // molt_is_callable is already a pub extern "C" function that does its own GIL entry.
-    // We call it directly and check its result (returns True/False bits).
+extern "C" fn bridge_molt_is_callable(bits: u64) -> i32 {
     let result = builtins::callable::molt_is_callable(bits);
     let obj = MoltObject::from_bits(result);
     if obj.as_bool() == Some(true) { 1 } else { 0 }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_format_obj(
+extern "C" fn bridge_format_obj(
     bits: u64,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
@@ -637,8 +591,7 @@ pub extern "C" fn __molt_serial_format_obj(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_format_obj_str(
+extern "C" fn bridge_format_obj_str(
     bits: u64,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
@@ -662,8 +615,7 @@ pub extern "C" fn __molt_serial_format_obj_str(
 // ---------------------------------------------------------------------------
 
 #[allow(improper_ctypes_definitions)]
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_bytearray_vec(ptr: *mut u8) -> *mut Vec<u8> {
+extern "C" fn bridge_bytearray_vec(ptr: *mut u8) -> *mut Vec<u8> {
     unsafe { crate::object::layout::bytearray_vec_ptr(ptr) }
 }
 
@@ -671,8 +623,7 @@ pub extern "C" fn __molt_serial_bytearray_vec(ptr: *mut u8) -> *mut Vec<u8> {
 // Container helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_dict_get_in_place(
+extern "C" fn bridge_dict_get_in_place(
     dict_ptr: *mut u8,
     key_bits: u64,
     out: *mut u64,
@@ -688,8 +639,7 @@ pub extern "C" fn __molt_serial_dict_get_in_place(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_dict_set_in_place(
+extern "C" fn bridge_dict_set_in_place(
     dict_ptr: *mut u8,
     key_bits: u64,
     val_bits: u64,
@@ -700,14 +650,12 @@ pub extern "C" fn __molt_serial_dict_set_in_place(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_list_len(ptr: *mut u8) -> usize {
+extern "C" fn bridge_list_len(ptr: *mut u8) -> usize {
     unsafe { _list_len(ptr) }
 }
 
 #[allow(improper_ctypes_definitions)]
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
+extern "C" fn bridge_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
     unsafe { seq_vec_ptr(ptr) }
 }
 
@@ -715,20 +663,14 @@ pub extern "C" fn __molt_serial_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
 // Iteration helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_molt_iter(bits: u64) -> u64 {
-    // molt_iter is a pub extern "C" fn(u64) -> u64 that does its own GIL entry.
+extern "C" fn bridge_molt_iter(bits: u64) -> u64 {
     crate::object::ops_iter::molt_iter(bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_molt_iter_next(iter_bits: u64, out: *mut u64) -> i32 {
-    // molt_iter_next returns the next element or a sentinel for StopIteration.
+extern "C" fn bridge_molt_iter_next(iter_bits: u64, out: *mut u64) -> i32 {
     let result = crate::object::ops_iter::molt_iter_next(iter_bits);
-    // Convention: None bits (0x7FF8_0000_0000_0000) signals exhaustion.
     let none_bits = MoltObject::none().bits();
     if result == none_bits {
-        // Could be actual None or exhaustion — check exception pending.
         crate::with_gil_entry!(_py, {
             if exception_pending(_py) {
                 0 // StopIteration or error
@@ -744,25 +686,19 @@ pub extern "C" fn __molt_serial_molt_iter_next(iter_bits: u64, out: *mut u64) ->
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_raise_not_iterable(bits: u64) -> u64 {
+extern "C" fn bridge_raise_not_iterable(bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         raise_not_iterable::<u64>(_py, bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_molt_sorted_builtin(bits: u64) -> u64 {
-    // molt_sorted_builtin takes (iter_bits, key_bits, reverse_bits)
-    // We pass None for key and False for reverse (default sorted behavior).
+extern "C" fn bridge_molt_sorted_builtin(bits: u64) -> u64 {
     let none = MoltObject::none().bits();
     let false_bits = MoltObject::from_bool(false).bits();
     crate::object::ops::molt_sorted_builtin(bits, none, false_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_molt_mul(a: u64, b: u64) -> u64 {
-    // molt_mul is pub extern "C" fn(u64, u64) -> u64
+extern "C" fn bridge_molt_mul(a: u64, b: u64) -> u64 {
     crate::object::ops::molt_mul(a, b)
 }
 
@@ -770,8 +706,7 @@ pub extern "C" fn __molt_serial_molt_mul(a: u64, b: u64) -> u64 {
 // OS randomness
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_fill_os_random(buf_ptr: *mut u8, buf_len: usize) -> i32 {
+extern "C" fn bridge_fill_os_random(buf_ptr: *mut u8, buf_len: usize) -> i32 {
     let buf = unsafe { std::slice::from_raw_parts_mut(buf_ptr, buf_len) };
     match crate::randomness::fill_os_random(buf) {
         Ok(()) => 1,
@@ -783,16 +718,14 @@ pub extern "C" fn __molt_serial_fill_os_random(buf_ptr: *mut u8, buf_len: usize)
 // Dict helpers (configparser-specific)
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_alloc_dict_with_pairs(pairs_ptr: *const u64, pairs_len: usize) -> *mut u8 {
+extern "C" fn bridge_alloc_dict_with_pairs(pairs_ptr: *const u64, pairs_len: usize) -> *mut u8 {
     crate::with_gil_entry!(_py, {
         let pairs = unsafe { std::slice::from_raw_parts(pairs_ptr, pairs_len) };
         alloc_dict_with_pairs(_py, pairs)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_serial_dict_order_clone(
+extern "C" fn bridge_dict_order_clone(
     ptr: *mut u8,
     out_ptr: *mut *const u64,
     out_len: *mut usize,
@@ -809,72 +742,72 @@ pub extern "C" fn __molt_serial_dict_order_clone(
 }
 
 // ---------------------------------------------------------------------------
-// RuntimeVtable — single-dispatch replacement for 58 individual FFI shims
+// RuntimeVtable — single-dispatch entry point for the serial crate
 // ---------------------------------------------------------------------------
 
 use molt_runtime_core::RuntimeVtable;
 
-/// The global vtable populated with pointers to the shim functions above.
-/// The serial crate fetches this once at init time.
+/// The global vtable populated with pointers to the private bridge functions.
+/// The serial crate fetches this once at init time via `__molt_serial_get_vtable()`.
 static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
-    raise_exception: __molt_serial_raise_exception,
-    exception_pending: __molt_serial_exception_pending,
-    alloc_tuple: __molt_serial_alloc_tuple,
-    alloc_list: __molt_serial_alloc_list,
-    alloc_string: __molt_serial_alloc_string,
-    alloc_bytes: __molt_serial_alloc_bytes,
-    alloc_dict_with_pairs: __molt_serial_alloc_dict_with_pairs,
-    object_type_id: __molt_serial_object_type_id,
-    string_obj_to_owned: __molt_serial_string_obj_to_owned,
-    type_name: __molt_serial_type_name,
-    is_truthy: __molt_serial_is_truthy,
-    bytes_like_slice: __molt_serial_bytes_like_slice,
-    string_bytes: __molt_serial_string_bytes,
-    string_len: __molt_serial_string_len,
-    bytes_like_slice_raw: __molt_serial_bytes_like_slice_raw,
-    format_obj: __molt_serial_format_obj,
-    format_obj_str: __molt_serial_format_obj_str,
-    class_name_for_error: __molt_serial_class_name_for_error,
-    type_of_bits: __molt_serial_type_of_bits,
-    maybe_ptr_from_bits: __molt_serial_maybe_ptr_from_bits,
-    molt_is_callable: __molt_serial_molt_is_callable,
-    memoryview_is_c_contiguous_view: __molt_serial_memoryview_is_c_contiguous_view,
-    memoryview_readonly: __molt_serial_memoryview_readonly,
-    memoryview_nbytes: __molt_serial_memoryview_nbytes,
-    memoryview_offset: __molt_serial_memoryview_offset,
-    memoryview_owner_bits: __molt_serial_memoryview_owner_bits,
-    release_ptr: __molt_serial_release_ptr,
-    dec_ref_bits: __molt_serial_dec_ref_bits,
-    inc_ref_bits: __molt_serial_inc_ref_bits,
-    to_i64: __molt_serial_to_i64,
-    to_f64: __molt_serial_to_f64,
-    to_bigint: __molt_serial_to_bigint,
-    int_bits_from_i64: __molt_serial_int_bits_from_i64,
-    int_bits_from_i128: __molt_serial_int_bits_from_i128,
-    int_bits_from_bigint: __molt_serial_int_bits_from_bigint,
-    bigint_ptr_from_bits: __molt_serial_bigint_ptr_from_bits,
-    bigint_ref: __molt_serial_bigint_ref,
-    bigint_from_f64_trunc: __molt_serial_bigint_from_f64_trunc,
-    bigint_bits: __molt_serial_bigint_bits,
-    bigint_to_inline: __molt_serial_bigint_to_inline,
-    index_i64_from_obj: __molt_serial_index_i64_from_obj,
-    index_bigint_from_obj: __molt_serial_index_bigint_from_obj,
-    call_callable0: __molt_serial_call_callable0,
-    call_callable2: __molt_serial_call_callable2,
-    attr_lookup_ptr_allow_missing: __molt_serial_attr_lookup_ptr_allow_missing,
-    intern_static_name: __molt_serial_intern_static_name,
-    bytearray_vec: __molt_serial_bytearray_vec,
-    dict_get_in_place: __molt_serial_dict_get_in_place,
-    dict_set_in_place: __molt_serial_dict_set_in_place,
-    list_len: __molt_serial_list_len,
-    seq_vec_ptr: __molt_serial_seq_vec_ptr,
-    dict_order_clone: __molt_serial_dict_order_clone,
-    molt_iter: __molt_serial_molt_iter,
-    molt_iter_next: __molt_serial_molt_iter_next,
-    raise_not_iterable: __molt_serial_raise_not_iterable,
-    molt_sorted_builtin: __molt_serial_molt_sorted_builtin,
-    molt_mul: __molt_serial_molt_mul,
-    fill_os_random: __molt_serial_fill_os_random,
+    raise_exception: bridge_raise_exception,
+    exception_pending: bridge_exception_pending,
+    alloc_tuple: bridge_alloc_tuple,
+    alloc_list: bridge_alloc_list,
+    alloc_string: bridge_alloc_string,
+    alloc_bytes: bridge_alloc_bytes,
+    alloc_dict_with_pairs: bridge_alloc_dict_with_pairs,
+    object_type_id: bridge_object_type_id,
+    string_obj_to_owned: bridge_string_obj_to_owned,
+    type_name: bridge_type_name,
+    is_truthy: bridge_is_truthy,
+    bytes_like_slice: bridge_bytes_like_slice,
+    string_bytes: bridge_string_bytes,
+    string_len: bridge_string_len,
+    bytes_like_slice_raw: bridge_bytes_like_slice_raw,
+    format_obj: bridge_format_obj,
+    format_obj_str: bridge_format_obj_str,
+    class_name_for_error: bridge_class_name_for_error,
+    type_of_bits: bridge_type_of_bits,
+    maybe_ptr_from_bits: bridge_maybe_ptr_from_bits,
+    molt_is_callable: bridge_molt_is_callable,
+    memoryview_is_c_contiguous_view: bridge_memoryview_is_c_contiguous_view,
+    memoryview_readonly: bridge_memoryview_readonly,
+    memoryview_nbytes: bridge_memoryview_nbytes,
+    memoryview_offset: bridge_memoryview_offset,
+    memoryview_owner_bits: bridge_memoryview_owner_bits,
+    release_ptr: bridge_release_ptr,
+    dec_ref_bits: bridge_dec_ref_bits,
+    inc_ref_bits: bridge_inc_ref_bits,
+    to_i64: bridge_to_i64,
+    to_f64: bridge_to_f64,
+    to_bigint: bridge_to_bigint,
+    int_bits_from_i64: bridge_int_bits_from_i64,
+    int_bits_from_i128: bridge_int_bits_from_i128,
+    int_bits_from_bigint: bridge_int_bits_from_bigint,
+    bigint_ptr_from_bits: bridge_bigint_ptr_from_bits,
+    bigint_ref: bridge_bigint_ref,
+    bigint_from_f64_trunc: bridge_bigint_from_f64_trunc,
+    bigint_bits: bridge_bigint_bits,
+    bigint_to_inline: bridge_bigint_to_inline,
+    index_i64_from_obj: bridge_index_i64_from_obj,
+    index_bigint_from_obj: bridge_index_bigint_from_obj,
+    call_callable0: bridge_call_callable0,
+    call_callable2: bridge_call_callable2,
+    attr_lookup_ptr_allow_missing: bridge_attr_lookup_ptr_allow_missing,
+    intern_static_name: bridge_intern_static_name,
+    bytearray_vec: bridge_bytearray_vec,
+    dict_get_in_place: bridge_dict_get_in_place,
+    dict_set_in_place: bridge_dict_set_in_place,
+    list_len: bridge_list_len,
+    seq_vec_ptr: bridge_seq_vec_ptr,
+    dict_order_clone: bridge_dict_order_clone,
+    molt_iter: bridge_molt_iter,
+    molt_iter_next: bridge_molt_iter_next,
+    raise_not_iterable: bridge_raise_not_iterable,
+    molt_sorted_builtin: bridge_molt_sorted_builtin,
+    molt_mul: bridge_molt_mul,
+    fill_os_random: bridge_fill_os_random,
 };
 
 #[unsafe(no_mangle)]

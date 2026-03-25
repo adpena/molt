@@ -17,6 +17,8 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("alloc_class_trusted", 3),
     ("dec_ref_obj", 1),
     ("inc_ref_obj", 1),
+    ("obj_get_state", 14),  // (i32) -> i64
+    ("obj_set_state", 39),  // (i32, i64) -> ()
     // ── INTERNAL: Module system ──
     ("module_cache_get", 2),
     ("module_cache_set", 3),
@@ -1232,10 +1234,21 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
         "closure_store",
         "future_poll",
         "handle_resolve",
+        "obj_get_state",
+        "obj_set_state",
         "sleep_register",
     ]),
     ("state_yield", &[
         "inc_ref_obj",
+        "obj_set_state",
+    ]),
+    ("chan_send_yield", &[
+        "chan_send",
+        "obj_set_state",
+    ]),
+    ("chan_recv_yield", &[
+        "chan_recv",
+        "obj_set_state",
     ]),
     ("store", &[
         "object_field_set",
