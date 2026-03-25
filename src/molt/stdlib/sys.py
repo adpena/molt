@@ -40,7 +40,10 @@ if _existing_modules is None:
         modules = {}
 else:
     modules = _existing_modules
-modules.setdefault("_intrinsics", _stdlib_intrinsics)
+# NOTE: _stdlib_intrinsics is defined in molt.stdlib.__init__, not here.
+# The _intrinsics module will be seeded into sys.modules when stdlib.__init__
+# runs or when _intrinsics is first imported.  Attempting to reference
+# _stdlib_intrinsics here would raise NameError.
 
 
 TYPE_CHECKING = False
