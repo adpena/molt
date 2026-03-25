@@ -236,8 +236,8 @@ impl SimpleBackend {
         defined_functions: &BTreeSet<String>,
         closure_functions: &BTreeSet<String>,
         emit_traces: bool,
-        raw_int_mode: bool,
-        typed_int_functions: &BTreeSet<String>,
+        _raw_int_mode: bool,
+        _typed_int_functions: &BTreeSet<String>,
     ) {
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
