@@ -3448,7 +3448,8 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "list_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let empty_args: Vec<String> = Vec::new();
+                    let args = op.args.as_ref().unwrap_or(&empty_args);
                     let out_name = op.out.unwrap();
                     let size = builder.ins().iconst(types::I64, box_int(args.len() as i64));
 
@@ -3616,7 +3617,8 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "tuple_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let empty_args: Vec<String> = Vec::new();
+                    let args = op.args.as_ref().unwrap_or(&empty_args);
                     let out_name = op.out.unwrap();
 
                     if op.stack_eligible == Some(true) && args.len() <= 4 {
@@ -4023,7 +4025,8 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "dict_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let empty_args: Vec<String> = Vec::new();
+                    let args = op.args.as_ref().unwrap_or(&empty_args);
                     let out_name = op.out.unwrap();
                     let size = builder.ins().iconst(types::I64, (args.len() / 2) as i64);
 
@@ -4076,7 +4079,8 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "set_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let empty_args: Vec<String> = Vec::new();
+                    let args = op.args.as_ref().unwrap_or(&empty_args);
                     let out_name = op.out.unwrap();
                     let size = builder.ins().iconst(types::I64, args.len() as i64);
 
@@ -4112,7 +4116,8 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, out_name, set_bits);
                 }
                 "frozenset_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let empty_args: Vec<String> = Vec::new();
+                    let args = op.args.as_ref().unwrap_or(&empty_args);
                     let out_name = op.out.unwrap();
                     let size = builder.ins().iconst(types::I64, args.len() as i64);
 
@@ -8440,23 +8445,37 @@ impl SimpleBackend {
                     func_sig.returns.push(AbiParam::new(types::I64));
                     self.declared_func_arities.insert(func_name.clone(), func_sig.params.len());
                     let mut actual_closure_name = func_name.clone();
-                    let func_id = match self
-                        .module
-                        .declare_function(&actual_closure_name, Linkage::Export, &func_sig)
+                    // Use Export linkage only when the closure target is
+                    // defined in this compilation unit; otherwise Import
+                    // (resolved at link time for batched builds).
+                    let closure_linkage = if defined_functions.contains(func_name) {
+                        Linkage::Export
+                    } else {
+                        Linkage::Import
+                    };
+                    let func_id = if let Some(cranelift_module::FuncOrDataId::Func(id)) =
+                        self.module.get_name(&actual_closure_name)
                     {
-                        Ok(id) => id,
-                        Err(_) => {
-                            let mut suffix = 1u32;
-                            loop {
-                                actual_closure_name =
-                                    format!("{}__ov{}", func_name, suffix);
-                                match self.module.declare_function(
-                                    &actual_closure_name,
-                                    Linkage::Export,
-                                    &func_sig,
-                                ) {
-                                    Ok(id) => break id,
-                                    Err(_) => suffix += 1,
+                        id
+                    } else {
+                        match self
+                            .module
+                            .declare_function(&actual_closure_name, closure_linkage, &func_sig)
+                        {
+                            Ok(id) => id,
+                            Err(_) => {
+                                let mut suffix = 1u32;
+                                loop {
+                                    actual_closure_name =
+                                        format!("{}__ov{}", func_name, suffix);
+                                    match self.module.declare_function(
+                                        &actual_closure_name,
+                                        closure_linkage,
+                                        &func_sig,
+                                    ) {
+                                        Ok(id) => break id,
+                                        Err(_) => suffix += 1,
+                                    }
                                 }
                             }
                         }
