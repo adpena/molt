@@ -37,7 +37,7 @@ LOCK_NB = 4
 LOCK_UN = 8
 
 
-def fcntl(fd, cmd, arg=0):
+def fcntl(fd, cmd, arg=0, _fcntl=_MOLT_FCNTL):
     """Perform the operation *cmd* on file descriptor *fd*.
 
     The values *cmd* and *arg* are integers; see the C library ``fcntl``
@@ -49,7 +49,7 @@ def fcntl(fd, cmd, arg=0):
     """
     if hasattr(fd, "fileno"):
         fd = fd.fileno()
-    return int(_MOLT_FCNTL(fd, cmd, arg))
+    return int(_fcntl(fd, cmd, arg))
 
 
 def ioctl(fd, request, arg=0, mutate_flag=True):
@@ -65,3 +65,10 @@ def flock(fd, operation):
 def lockf(fd, cmd, len=0, start=0, whence=0):
     """lockf stub — raises OSError."""
     raise OSError("lockf is not supported in this runtime")
+
+
+# Clean up module-level intrinsic references.
+del _MOLT_FCNTL, _MOLT_FCNTL_F_GETFL, _MOLT_FCNTL_F_SETFL
+del _MOLT_FCNTL_F_GETFD, _MOLT_FCNTL_F_SETFD, _MOLT_FCNTL_FD_CLOEXEC
+del _MOLT_FCNTL_O_NONBLOCK
+globals().pop("_require_intrinsic", None)
