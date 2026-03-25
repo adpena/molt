@@ -30,6 +30,13 @@ impl TempArena {
         self.offset = 0;
     }
 
+    /// Release ALL heap memory, including the outer Vec's buffer.
+    /// After this call, dropping `self` will not invoke the allocator.
+    pub fn drain(&mut self) {
+        self.chunks = Vec::new();
+        self.offset = 0;
+    }
+
     pub fn alloc_slice<T>(&mut self, len: usize) -> *mut T {
         if len == 0 {
             return std::ptr::null_mut();

@@ -21,6 +21,16 @@ impl Nursery {
         }
     }
 
+    /// Create a nursery with zero-capacity backing storage.
+    /// Used during shutdown to replace the active nursery so that when
+    /// Rust's TLS destructor runs, `Vec::drop` is a no-op (no dealloc).
+    pub fn empty() -> Self {
+        Self {
+            data: Vec::new(),
+            cursor: 0,
+        }
+    }
+
     /// Bump-allocate `size` bytes with `align` alignment.
     /// Returns None if nursery is full (caller falls back to heap).
     ///

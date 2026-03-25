@@ -180,6 +180,55 @@ pub fn string_len(ptr: *mut u8) -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// Memoryview / bytes-like helpers
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn __molt_serial_bytes_like_slice_raw(
+        ptr: *mut u8,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+    ) -> i32;
+    fn __molt_serial_memoryview_is_c_contiguous_view(ptr: *mut u8) -> i32;
+    fn __molt_serial_memoryview_readonly(ptr: *mut u8) -> i32;
+    fn __molt_serial_memoryview_nbytes(ptr: *mut u8) -> usize;
+    fn __molt_serial_memoryview_offset(ptr: *mut u8) -> isize;
+    fn __molt_serial_memoryview_owner_bits(ptr: *mut u8) -> u64;
+}
+
+pub unsafe fn bytes_like_slice_raw(ptr: *mut u8) -> Option<&'static [u8]> {
+    let mut out_ptr: *const u8 = std::ptr::null();
+    let mut out_len: usize = 0;
+    unsafe {
+        if __molt_serial_bytes_like_slice_raw(ptr, &mut out_ptr, &mut out_len) != 0 {
+            Some(std::slice::from_raw_parts(out_ptr, out_len))
+        } else {
+            None
+        }
+    }
+}
+
+pub unsafe fn memoryview_is_c_contiguous_view(ptr: *mut u8) -> bool {
+    unsafe { __molt_serial_memoryview_is_c_contiguous_view(ptr) != 0 }
+}
+
+pub unsafe fn memoryview_readonly(ptr: *mut u8) -> bool {
+    unsafe { __molt_serial_memoryview_readonly(ptr) != 0 }
+}
+
+pub unsafe fn memoryview_nbytes(ptr: *mut u8) -> usize {
+    unsafe { __molt_serial_memoryview_nbytes(ptr) }
+}
+
+pub unsafe fn memoryview_offset(ptr: *mut u8) -> isize {
+    unsafe { __molt_serial_memoryview_offset(ptr) }
+}
+
+pub unsafe fn memoryview_owner_bits(ptr: *mut u8) -> u64 {
+    unsafe { __molt_serial_memoryview_owner_bits(ptr) }
+}
+
+// ---------------------------------------------------------------------------
 // Reference counting / pointer management
 // ---------------------------------------------------------------------------
 
@@ -275,6 +324,16 @@ pub fn to_bigint(obj: MoltObject) -> Option<num_bigint::BigInt> {
 
 pub fn int_bits_from_i64(_py: &PyToken, val: i64) -> u64 {
     unsafe { __molt_serial_int_bits_from_i64(val) }
+}
+
+unsafe extern "C" {
+    fn __molt_serial_int_bits_from_i128(val_lo: u64, val_hi: u64) -> u64;
+}
+
+pub fn int_bits_from_i128(_py: &PyToken, val: i128) -> u64 {
+    let lo = val as u64;
+    let hi = (val >> 64) as u64;
+    unsafe { __molt_serial_int_bits_from_i128(lo, hi) }
 }
 
 pub fn int_bits_from_bigint(_py: &PyToken, value: num_bigint::BigInt) -> u64 {
@@ -472,6 +531,19 @@ pub fn format_obj_str(_py: &PyToken, obj: MoltObject) -> String {
     } else {
         "<?>".to_string()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Bytearray helpers
+// ---------------------------------------------------------------------------
+
+#[allow(improper_ctypes)]
+unsafe extern "C" {
+    fn __molt_serial_bytearray_vec(ptr: *mut u8) -> *mut Vec<u8>;
+}
+
+pub unsafe fn bytearray_vec(ptr: *mut u8) -> &'static mut Vec<u8> {
+    unsafe { &mut *__molt_serial_bytearray_vec(ptr) }
 }
 
 // ---------------------------------------------------------------------------

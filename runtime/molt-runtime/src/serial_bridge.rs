@@ -185,6 +185,53 @@ pub extern "C" fn __molt_serial_string_len(ptr: *mut u8) -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// Memoryview / bytes-like helpers
+// ---------------------------------------------------------------------------
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_serial_bytes_like_slice_raw(
+    ptr: *mut u8,
+    out_ptr: *mut *const u8,
+    out_len: *mut usize,
+) -> i32 {
+    match unsafe { crate::object::memoryview::bytes_like_slice_raw(ptr) } {
+        Some(slice) => {
+            unsafe {
+                *out_ptr = slice.as_ptr();
+                *out_len = slice.len();
+            }
+            1
+        }
+        None => 0,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_serial_memoryview_is_c_contiguous_view(ptr: *mut u8) -> i32 {
+    if unsafe { crate::object::memoryview::memoryview_is_c_contiguous_view(ptr) } { 1 } else { 0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_serial_memoryview_readonly(ptr: *mut u8) -> i32 {
+    if unsafe { memoryview_readonly(ptr) } { 1 } else { 0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_serial_memoryview_nbytes(ptr: *mut u8) -> usize {
+    unsafe { crate::object::memoryview::memoryview_nbytes(ptr) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_serial_memoryview_offset(ptr: *mut u8) -> isize {
+    unsafe { memoryview_offset(ptr) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_serial_memoryview_owner_bits(ptr: *mut u8) -> u64 {
+    unsafe { memoryview_owner_bits(ptr) }
+}
+
+// ---------------------------------------------------------------------------
 // Reference counting / pointer management
 // ---------------------------------------------------------------------------
 
@@ -269,6 +316,14 @@ pub extern "C" fn __molt_serial_to_bigint(
 pub extern "C" fn __molt_serial_int_bits_from_i64(val: i64) -> u64 {
     crate::with_gil_entry!(_py, {
         int_bits_from_i64(_py, val)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_serial_int_bits_from_i128(val_lo: u64, val_hi: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let val = (val_hi as i128) << 64 | (val_lo as u128 as i128);
+        crate::builtins::numbers::int_bits_from_i128(_py, val)
     })
 }
 
@@ -600,6 +655,16 @@ pub extern "C" fn __molt_serial_format_obj_str(
         }
         1
     })
+}
+
+// ---------------------------------------------------------------------------
+// Bytearray helpers
+// ---------------------------------------------------------------------------
+
+#[allow(improper_ctypes_definitions)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_serial_bytearray_vec(ptr: *mut u8) -> *mut Vec<u8> {
+    unsafe { crate::object::layout::bytearray_vec_ptr(ptr) }
 }
 
 // ---------------------------------------------------------------------------

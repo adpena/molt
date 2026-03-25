@@ -2799,9 +2799,11 @@ name = "molt-runtime-serial"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "memchr",
  "molt-lang-obj-model",
  "molt-runtime-core",
  "num-bigint",
+ "num-traits",
  "serde_json",
 ]
 

@@ -517,6 +517,18 @@ pub(crate) fn nursery_reset() {
     NURSERY_TLS.with(|cell| cell.borrow_mut().reset());
 }
 
+/// Release the nursery's heap-backed buffer entirely.  After this call the
+/// nursery's backing `Vec` has zero capacity, so dropping the TLS variable
+/// will not invoke the allocator.  Used during shutdown to prevent a
+/// use-after-free when mimalloc's thread-local state is torn down before
+/// Rust's TLS destructors run.
+#[allow(dead_code)]
+pub(crate) fn nursery_drain() {
+    let _ = NURSERY_TLS.try_with(|cell| {
+        *cell.borrow_mut() = nursery::Nursery::empty();
+    });
+}
+
 /// Return current nursery usage in bytes (useful for diagnostics).
 #[inline(always)]
 #[allow(dead_code)]
