@@ -28,30 +28,21 @@ _NET_EXPORTS = {
     "ws_connect",
 }
 
-__all__ = sorted(_CONCURRENCY_EXPORTS | _NET_EXPORTS)
-
-
-def _load_runtime_symbol(name: str) -> Any:
-    if name in _CONCURRENCY_EXPORTS:
-        from molt import concurrency as _concurrency
-
-        return getattr(_concurrency, name)
-    if name in _NET_EXPORTS:
-        from molt import net as _net
-
-        return getattr(_net, name)
-    raise AttributeError(name)
+# Runtime symbols are NOT part of the core namespace; they live in
+# moltlib.concurrency / moltlib.net and are only available when the
+# Molt runtime is active inside a compiled binary.
+__all__: list[str] = []
 
 
 def __getattr__(name: str) -> Any:
-    if name in _CONCURRENCY_EXPORTS or name in _NET_EXPORTS:
-        if not _intrinsics.runtime_active():
-            raise RuntimeError(
-                "molt runtime intrinsics are unavailable outside compiled binaries"
-            )
-        value = _load_runtime_symbol(name)
-        globals()[name] = value
-        return value
+    if name in _CONCURRENCY_EXPORTS:
+        raise AttributeError(
+            f"moltlib.concurrency.{name} — use 'from moltlib.concurrency import {name}'"
+        )
+    if name in _NET_EXPORTS:
+        raise AttributeError(
+            f"moltlib.net.{name} — use 'from moltlib.net import {name}'"
+        )
     raise AttributeError(name)
 
 

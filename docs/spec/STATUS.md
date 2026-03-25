@@ -7,11 +7,12 @@ limitations. Update this file whenever behavior or scope changes, and keep
 README and [ROADMAP.md](../../ROADMAP.md) in sync.
 
 ## Strategic Target
+- Scope: full CPython `>=3.12` verified-subset parity; no host Python installation required.
 - Performance: reach parity with or exceed Codon on representative native and
   wasm-relevant workloads.
 - Coverage/interoperability: approach Nuitka-level CPython surface coverage and
   ecosystem interoperability, while preserving Molt vision constraints
-  (determinism, explicit capabilities, and no implicit host-Python fallback).
+  (determinism, explicit capabilities, no runtime monkeypatching, and no implicit host-Python fallback).
 
 ## Validation Recovery (2026-03-19)
 - Fixed: persisted module-analysis cache serialization now handles `bytes` defaults in `src/molt/cli.py`, unblocking targeted differential builds that were failing with `TypeError: Object of type bytes is not JSON serializable`.

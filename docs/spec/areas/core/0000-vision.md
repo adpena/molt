@@ -7,12 +7,13 @@ Molt compiles a **verified per-application subset of Python** into **small, fast
 - **Whole-program optimization**: Tiered compilation with aggressive specialization for stable code paths.
 - **Production-grade safety**: Soundness rules and explicit guard/deopt for dynamic behavior.
 - **Practical deployment**: Single-file executables with clear capability boundaries.
-- **Version focus**: Target Python 3.12+ semantics; document any version-specific differences.
+- **Version focus**: CPython `>=3.12` parity target for the verified subset; document any version-specific differences.
 
 ## Non-goals (near-term)
 - Full CPython compatibility for every dynamic feature.
 - CPython C-extension ABI compatibility in Tier 0 (recompile against `libmolt` instead).
 - Browser-side JIT or hidden nondeterminism.
+- No host-CPython fallback: binaries are fully standalone.
 
 ## Compatibility model
 - **Minimal Python Subset (MPS)** is derived per application and encoded in an Optimization Manifest.

@@ -12410,7 +12410,7 @@ def _build_native_link_command(
             or platform.machine()
         )
         link_cmd.extend(["-arch", arch])
-        deployment_target = _detect_macos_deployment_target()
+        deployment_target = _detect_macos_deployment_target(arch)
         if deployment_target:
             link_cmd.append(f"-mmacosx-version-min={deployment_target}")
     # Include cached stdlib .o if it exists (incremental compilation)
@@ -19812,26 +19812,33 @@ def _detect_macos_arch(obj_path: Path) -> str | None:
     return archs[0] if archs else None
 
 
-def _detect_macos_deployment_target() -> str | None:
+def _detect_macos_deployment_target(arch: str | None = None) -> str | None:
     env_target = os.environ.get("MOLT_MACOSX_DEPLOYMENT_TARGET")
     if env_target:
         return env_target
     env_target = os.environ.get("MACOSX_DEPLOYMENT_TARGET")
     if env_target:
         return env_target
-    try:
-        result = subprocess.run(
-            ["xcrun", "--show-sdk-version"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return None
-    if result.returncode != 0:
-        return None
-    version = result.stdout.strip()
-    return version or None
+    # Stable per-arch baselines when no environment override is present.
+    if arch in ("x86_64", "amd64"):
+        return "10.13"
+    # arm64, aarch64, and any unknown arch default to 11.0.
+    return "11.0"
+
+
+def _append_darwin_runtime_frameworks(
+    args: list[str],
+    *,
+    target_triple: str | None = None,
+) -> None:
+    """Append macOS framework flags when targeting Darwin."""
+    is_darwin = False
+    if target_triple:
+        is_darwin = "apple" in target_triple or "darwin" in target_triple
+    else:
+        is_darwin = sys.platform == "darwin"
+    if is_darwin:
+        args.extend(["-framework", "Security", "-framework", "CoreFoundation"])
 
 
 def build(

@@ -7,7 +7,7 @@
 ---
 
 ## 1. Current Policy (Default, Active)
-For compiled Molt binaries, the following are intentionally unsupported as active roadmap targets:
+For compiled Molt binaries, CPython dynamic semantics are fully supported except for the carve-outs below:
 - unrestricted `eval`/`exec` execution paths
 - runtime monkeypatching as a general semantic compatibility goal
 - unrestricted reflection/introspection lanes that block static reasoning
