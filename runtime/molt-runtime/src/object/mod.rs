@@ -1311,6 +1311,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             }
             weakref_clear_for_ptr(py, ptr);
             match header.type_id {
+                // Hot path: most-frequently-freed types first
                 TYPE_ID_STRING => {
                     utf8_cache_remove(py, ptr as usize);
                 }
@@ -1321,18 +1322,6 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                         for bits in vec.iter() {
                             dec_ref_bits(py, *bits);
                         }
-                    }
-                }
-                TYPE_ID_LIST_BUILDER => {
-                    let vec_ptr = *(ptr as *mut *mut Vec<u64>);
-                    if !vec_ptr.is_null() {
-                        drop(Box::from_raw(vec_ptr));
-                    }
-                }
-                TYPE_ID_BYTEARRAY => {
-                    let vec_ptr = bytearray_vec_ptr(ptr);
-                    if !vec_ptr.is_null() {
-                        drop(Box::from_raw(vec_ptr));
                     }
                 }
                 TYPE_ID_TUPLE => {
@@ -1355,6 +1344,18 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     }
                     if !table_ptr.is_null() {
                         drop(Box::from_raw(table_ptr));
+                    }
+                }
+                TYPE_ID_LIST_BUILDER => {
+                    let vec_ptr = *(ptr as *mut *mut Vec<u64>);
+                    if !vec_ptr.is_null() {
+                        drop(Box::from_raw(vec_ptr));
+                    }
+                }
+                TYPE_ID_BYTEARRAY => {
+                    let vec_ptr = bytearray_vec_ptr(ptr);
+                    if !vec_ptr.is_null() {
+                        drop(Box::from_raw(vec_ptr));
                     }
                 }
                 TYPE_ID_DICT_BUILDER => {

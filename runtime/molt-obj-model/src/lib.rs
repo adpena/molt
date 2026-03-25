@@ -285,9 +285,9 @@ impl MoltObject {
     pub fn as_int(&self) -> Option<i64> {
         if self.is_int() {
             let val = self.0 & INT_MASK;
-            // Sign-extend if needed (assuming 47-bit signed)
+            // Sign-extend from 47-bit using safe bitwise ops
             if (val & INT_SIGN_BIT) != 0 {
-                Some((val as i64) - ((1u64 << INT_WIDTH) as i64))
+                Some((val as i64) | !(INT_MASK as i64))
             } else {
                 Some(val as i64)
             }
@@ -300,7 +300,7 @@ impl MoltObject {
     pub fn as_int_unchecked(&self) -> i64 {
         let val = self.0 & INT_MASK;
         if (val & INT_SIGN_BIT) != 0 {
-            (val as i64) - ((1u64 << INT_WIDTH) as i64)
+            (val as i64) | !(INT_MASK as i64)
         } else {
             val as i64
         }
