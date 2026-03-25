@@ -15413,8 +15413,11 @@ pub extern "C" fn molt_setattr_builtin(obj_bits: u64, name_bits: u64, val_bits: 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_delattr_builtin(obj_bits: u64, name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        molt_object_delattr(obj_bits, name_bits);
-        MoltObject::none().bits()
+        let res = molt_object_delattr(obj_bits, name_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        res
     })
 }
 
