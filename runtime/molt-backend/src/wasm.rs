@@ -9673,8 +9673,11 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(src));
                         func.instruction(&Instruction::LocalGet(dst));
                         emit_call(func, reloc_enabled, import_ids["module_import_star"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() {
+                            func.instruction(&Instruction::LocalSet(locals[out]));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
                     }
                     "alloc_task" => {
                         let total = op.value.unwrap_or(0);
@@ -9820,20 +9823,31 @@ impl WasmBackend {
                     }
                     "exception_pop" => {
                         if native_eh_enabled {
-                            // Native EH: no-op; handler popped when try_table ends.
                             const_cache.emit_none(func);
                         } else {
                             emit_call(func, reloc_enabled, import_ids["exception_pop"]);
                         }
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() {
+                            func.instruction(&Instruction::LocalSet(locals[out]));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
                     }
                     "exception_stack_clear" => {
                         emit_call(func, reloc_enabled, import_ids["exception_stack_clear"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() {
+                            func.instruction(&Instruction::LocalSet(locals[out]));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
                     }
                     "exception_last" => {
                         emit_call(func, reloc_enabled, import_ids["exception_last"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() {
+                            func.instruction(&Instruction::LocalSet(locals[out]));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
                     }
                     "exception_new" => {
                         let args = op.args.as_ref().unwrap();
