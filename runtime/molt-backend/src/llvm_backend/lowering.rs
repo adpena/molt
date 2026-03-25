@@ -520,15 +520,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::LoadAttr => {
                 let result_id = op.results[0];
                 let obj = self.resolve(op.operands[0]);
-                let name = self.resolve(op.operands[1]);
+                // Attribute name is stored in attrs["name"], not as a second operand.
+                let attr_name = op.attrs.get("name")
+                    .and_then(|v| if let AttrValue::Str(s) = v { Some(s.as_str()) } else { None })
+                    .unwrap_or("<unknown>");
+                let name = self.intern_string_const(attr_name);
                 let val = self.call_runtime_2("molt_get_attr_name", obj, name);
                 self.values.insert(result_id, val);
                 self.value_types.insert(result_id, TirType::DynBox);
             }
             OpCode::StoreAttr => {
                 let obj = self.resolve(op.operands[0]);
-                let name = self.resolve(op.operands[1]);
-                let val = self.resolve(op.operands[2]);
+                let attr_name = op.attrs.get("name")
+                    .and_then(|v| if let AttrValue::Str(s) = v { Some(s.as_str()) } else { None })
+                    .unwrap_or("<unknown>");
+                let name = self.intern_string_const(attr_name);
+                let val = self.resolve(op.operands[1]);
                 let obj_i64 = self.ensure_i64(obj);
                 let name_i64 = self.ensure_i64(name);
                 let val_i64 = self.ensure_i64(val);
@@ -555,7 +562,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             OpCode::DelAttr => {
                 let obj = self.resolve(op.operands[0]);
-                let name = self.resolve(op.operands[1]);
+                let attr_name = op.attrs.get("name")
+                    .and_then(|v| if let AttrValue::Str(s) = v { Some(s.as_str()) } else { None })
+                    .unwrap_or("<unknown>");
+                let name = self.intern_string_const(attr_name);
                 let val = self.call_runtime_2("molt_del_attr_name", obj, name);
                 if !op.results.is_empty() {
                     self.values.insert(op.results[0], val);
@@ -2514,7 +2524,47 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .try_as_basic_value()
             .unwrap_basic()
     }
-}
+
+    /// Emit a global string constant and call `molt_intern_string` to get
+    /// a NaN-boxed interned string value at runtime.
+    fn intern_string_const(&self, s: &str) -> BasicValueEnum<'ctx> {
+        let i64_ty = self.backend.context.i64_type();
+        let intern_fn = if let Some(f) = self.backend.module.get_function("molt_intern_string") {
+            f
+        } else {
+            let fn_ty = i64_ty.fn_type(&[
+                self.backend.context.ptr_type(inkwell::AddressSpace::default()).into(),
+                i64_ty.into(),
+            ], false);
+            self.backend.module.add_function(
+                "molt_intern_string",
+                fn_ty,
+                Some(inkwell::module::Linkage::External),
+            )
+        };
+        let name_bytes = s.as_bytes();
+        let global = self.backend.module.add_global(
+            self.backend.context.i8_type().array_type(name_bytes.len() as u32),
+            None,
+            &format!("__attr_str_{}", s.replace(|c: char| !c.is_alphanumeric(), "_")),
+        );
+        global.set_initializer(
+            &self.backend.context.const_string(name_bytes, false),
+        );
+        global.set_constant(true);
+        global.set_unnamed_addr(true);
+        let ptr = global.as_pointer_value();
+        let len = i64_ty.const_int(name_bytes.len() as u64, false);
+        self.backend
+            .builder
+            .build_call(intern_fn, &[ptr.into(), len.into()], "intern_attr")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .map(|v| self.ensure_i64(v).into())
+            .unwrap_or_else(|| i64_ty.const_int(0, false).into())
+    }
+    }
 
 // ── Tests ──
 
