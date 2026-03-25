@@ -67,25 +67,6 @@ bench/friends/repos/
 runtime/molt-runtime/fuzz/corpus/
 runtime/molt-runtime/fuzz/artifacts/
 packaging/out/
-*.md
-!bench/README.md
-!bench/friends/README.md
-!/README.md
-!/AGENTS.md
-!/CONTRIBUTING.md
-!/GEMINI.md
-!/OPTIMIZATIONS_PLAN.md
-!/ROADMAP.md
-!/SUPPORTED.md
-!/WORKFLOW.md
-!/CLAUDE.md
-!/STATUS.md
-!/INDEX.md
-!/tests/**/INDEX.md
-!/docs/**/*.md
-!/packaging/**/*.md
-!/examples/README.md
-!/demo/README.md
 .claude/worktrees/
 
 # Agent worktrees — Claude Code, Codex, Gemini
