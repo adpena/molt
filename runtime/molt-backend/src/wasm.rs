@@ -6205,7 +6205,7 @@ impl WasmBackend {
                     "alloc" => {
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         emit_call(func, reloc_enabled, import_ids["alloc"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "alloc_class" => {
                         let args = op.args.as_ref().unwrap();
@@ -6213,7 +6213,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::LocalGet(class_bits));
                         emit_call(func, reloc_enabled, import_ids["alloc_class"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "alloc_class_trusted" => {
                         let args = op.args.as_ref().unwrap();
@@ -6221,7 +6221,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::LocalGet(class_bits));
                         emit_call(func, reloc_enabled, import_ids["alloc_class_trusted"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "alloc_class_static" => {
                         let args = op.args.as_ref().unwrap();
@@ -6229,7 +6229,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         func.instruction(&Instruction::LocalGet(class_bits));
                         emit_call(func, reloc_enabled, import_ids["alloc_class_static"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "json_parse" => {
                         let args = op.args.as_ref().unwrap();
@@ -8568,7 +8568,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
                         emit_call(func, reloc_enabled, import_ids["closure_load"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "closure_store" => {
                         let args = op.args.as_ref().unwrap();
@@ -8690,11 +8690,11 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(tmp_val));
                         emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
                         func.instruction(&Instruction::LocalGet(tmp_val));
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
 
                         func.instruction(&Instruction::Else);
                         func.instruction(&Instruction::LocalGet(tmp_val));
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                         func.instruction(&Instruction::End);
 
                         func.instruction(&Instruction::Else);
@@ -8706,7 +8706,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         emit_call(func, reloc_enabled, import_ids["guarded_field_get_ptr"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                         func.instruction(&Instruction::End);
                     }
                     "guarded_field_set" => {
@@ -9558,7 +9558,7 @@ impl WasmBackend {
                         let cap = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(cap));
                         emit_call(func, reloc_enabled, import_ids["chan_new"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "chan_drop" => {
                         let args = op.args.as_ref().unwrap();
@@ -9767,14 +9767,14 @@ impl WasmBackend {
                         let payload = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(payload));
                         emit_call(func, reloc_enabled, import_ids["context_null"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "context_enter" => {
                         let args = op.args.as_ref().unwrap();
                         let ctx = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(ctx));
                         emit_call(func, reloc_enabled, import_ids["context_enter"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "context_exit" => {
                         let args = op.args.as_ref().unwrap();
@@ -9783,18 +9783,18 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(ctx));
                         func.instruction(&Instruction::LocalGet(exc));
                         emit_call(func, reloc_enabled, import_ids["context_exit"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "context_unwind" => {
                         let args = op.args.as_ref().unwrap();
                         let exc = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(exc));
                         emit_call(func, reloc_enabled, import_ids["context_unwind"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "context_depth" => {
                         emit_call(func, reloc_enabled, import_ids["context_depth"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "context_unwind_to" => {
                         let args = op.args.as_ref().unwrap();
@@ -9803,14 +9803,14 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(depth));
                         func.instruction(&Instruction::LocalGet(exc));
                         emit_call(func, reloc_enabled, import_ids["context_unwind_to"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "context_closing" => {
                         let args = op.args.as_ref().unwrap();
                         let payload = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(payload));
                         emit_call(func, reloc_enabled, import_ids["context_closing"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "exception_push" => {
                         if native_eh_enabled {
@@ -9819,7 +9819,7 @@ impl WasmBackend {
                         } else {
                             emit_call(func, reloc_enabled, import_ids["exception_push"]);
                         }
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "exception_pop" => {
                         if native_eh_enabled {
@@ -9856,7 +9856,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(kind));
                         func.instruction(&Instruction::LocalGet(args_bits));
                         emit_call(func, reloc_enabled, import_ids["exception_new"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "exception_new_from_class" => {
                         let args = op.args.as_ref().unwrap();
@@ -9865,7 +9865,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(class_bits));
                         func.instruction(&Instruction::LocalGet(args_bits));
                         emit_call(func, reloc_enabled, import_ids["exception_new_from_class"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "exceptiongroup_match" => {
                         let args = op.args.as_ref().unwrap();
@@ -9874,14 +9874,14 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(exc));
                         func.instruction(&Instruction::LocalGet(matcher));
                         emit_call(func, reloc_enabled, import_ids["exceptiongroup_match"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "exceptiongroup_combine" => {
                         let args = op.args.as_ref().unwrap();
                         let items = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(items));
                         emit_call(func, reloc_enabled, import_ids["exceptiongroup_combine"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "exception_clear" => {
                         emit_call(func, reloc_enabled, import_ids["exception_clear"]);
@@ -9896,21 +9896,21 @@ impl WasmBackend {
                         let exc = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(exc));
                         emit_call(func, reloc_enabled, import_ids["exception_kind"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "exception_class" => {
                         let args = op.args.as_ref().unwrap();
                         let kind = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(kind));
                         emit_call(func, reloc_enabled, import_ids["exception_class"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "exception_message" => {
                         let args = op.args.as_ref().unwrap();
                         let exc = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(exc));
                         emit_call(func, reloc_enabled, import_ids["exception_message"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "exception_set_cause" => {
                         let args = op.args.as_ref().unwrap();
@@ -9919,7 +9919,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(exc));
                         func.instruction(&Instruction::LocalGet(cause));
                         emit_call(func, reloc_enabled, import_ids["exception_set_cause"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "exception_set_value" => {
                         let args = op.args.as_ref().unwrap();
@@ -9928,21 +9928,21 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(exc));
                         func.instruction(&Instruction::LocalGet(value));
                         emit_call(func, reloc_enabled, import_ids["exception_set_value"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "exception_context_set" => {
                         let args = op.args.as_ref().unwrap();
                         let exc = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(exc));
                         emit_call(func, reloc_enabled, import_ids["exception_context_set"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "exception_set_last" => {
                         let args = op.args.as_ref().unwrap();
                         let exc = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(exc));
                         emit_call(func, reloc_enabled, import_ids["exception_set_last"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "raise" => {
                         let args = op.args.as_ref().unwrap();
@@ -9972,7 +9972,7 @@ impl WasmBackend {
                         let msg = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(msg));
                         emit_call(func, reloc_enabled, import_ids["bridge_unavailable"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "file_open" => {
                         let args = op.args.as_ref().unwrap();
@@ -9981,7 +9981,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(path));
                         func.instruction(&Instruction::LocalGet(mode));
                         emit_call(func, reloc_enabled, import_ids["file_open"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "file_read" => {
                         let args = op.args.as_ref().unwrap();
@@ -9990,7 +9990,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(handle));
                         func.instruction(&Instruction::LocalGet(size));
                         emit_call(func, reloc_enabled, import_ids["file_read"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "file_write" => {
                         let args = op.args.as_ref().unwrap();
@@ -9999,56 +9999,56 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(handle));
                         func.instruction(&Instruction::LocalGet(data));
                         emit_call(func, reloc_enabled, import_ids["file_write"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "file_close" => {
                         let args = op.args.as_ref().unwrap();
                         let handle = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(handle));
                         emit_call(func, reloc_enabled, import_ids["file_close"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "file_flush" => {
                         let args = op.args.as_ref().unwrap();
                         let handle = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(handle));
                         emit_call(func, reloc_enabled, import_ids["file_flush"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "cancel_token_new" => {
                         let args = op.args.as_ref().unwrap();
                         let parent = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(parent));
                         emit_call(func, reloc_enabled, import_ids["cancel_token_new"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "cancel_token_clone" => {
                         let args = op.args.as_ref().unwrap();
                         let token = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(token));
                         emit_call(func, reloc_enabled, import_ids["cancel_token_clone"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "cancel_token_drop" => {
                         let args = op.args.as_ref().unwrap();
                         let token = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(token));
                         emit_call(func, reloc_enabled, import_ids["cancel_token_drop"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "cancel_token_cancel" => {
                         let args = op.args.as_ref().unwrap();
                         let token = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(token));
                         emit_call(func, reloc_enabled, import_ids["cancel_token_cancel"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "future_cancel" => {
                         let args = op.args.as_ref().unwrap();
                         let future = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(future));
                         emit_call(func, reloc_enabled, import_ids["future_cancel"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "future_cancel_msg" => {
                         let args = op.args.as_ref().unwrap();
@@ -10057,18 +10057,18 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(future));
                         func.instruction(&Instruction::LocalGet(msg));
                         emit_call(func, reloc_enabled, import_ids["future_cancel_msg"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "future_cancel_clear" => {
                         let args = op.args.as_ref().unwrap();
                         let future = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(future));
                         emit_call(func, reloc_enabled, import_ids["future_cancel_clear"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "promise_new" => {
                         emit_call(func, reloc_enabled, import_ids["promise_new"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "promise_set_result" => {
                         let args = op.args.as_ref().unwrap();
@@ -10077,7 +10077,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(future));
                         func.instruction(&Instruction::LocalGet(result));
                         emit_call(func, reloc_enabled, import_ids["promise_set_result"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "promise_set_exception" => {
                         let args = op.args.as_ref().unwrap();
@@ -10086,7 +10086,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(future));
                         func.instruction(&Instruction::LocalGet(exc));
                         emit_call(func, reloc_enabled, import_ids["promise_set_exception"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "thread_submit" => {
                         let args = op.args.as_ref().unwrap();
@@ -10097,7 +10097,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(call_args));
                         func.instruction(&Instruction::LocalGet(call_kwargs));
                         emit_call(func, reloc_enabled, import_ids["thread_submit"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "task_register_token_owned" => {
                         let args = op.args.as_ref().unwrap();
@@ -10106,7 +10106,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(task));
                         func.instruction(&Instruction::LocalGet(token));
                         emit_call(func, reloc_enabled, import_ids["task_register_token_owned"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "spawn" => {
                         let args = op.args.as_ref().unwrap();
@@ -10118,32 +10118,32 @@ impl WasmBackend {
                         let token = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(token));
                         emit_call(func, reloc_enabled, import_ids["cancel_token_is_cancelled"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "cancel_token_set_current" => {
                         let args = op.args.as_ref().unwrap();
                         let token = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(token));
                         emit_call(func, reloc_enabled, import_ids["cancel_token_set_current"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "cancel_token_get_current" => {
                         emit_call(func, reloc_enabled, import_ids["cancel_token_get_current"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "cancelled" => {
                         emit_call(func, reloc_enabled, import_ids["cancelled"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "cancel_current" => {
                         emit_call(func, reloc_enabled, import_ids["cancel_current"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "block_on" => {
                         let args = op.args.as_ref().unwrap();
                         func.instruction(&Instruction::LocalGet(locals[&args[0]]));
                         emit_call(func, reloc_enabled, import_ids["block_on"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() { func.instruction(&Instruction::LocalSet(locals[out])); } else { func.instruction(&Instruction::Drop); }
                     }
                     "ret" => {
                         let ret_var = op.var.as_ref();
