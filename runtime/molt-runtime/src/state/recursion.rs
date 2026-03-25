@@ -11,10 +11,6 @@ pub static molt_fast_recursion_depth: AtomicUsize = AtomicUsize::new(0);
 #[unsafe(no_mangle)]
 pub static molt_fast_recursion_limit: AtomicUsize = AtomicUsize::new(1000);
 
-// Aliases for internal use.
-fn fast_recursion_depth() -> &'static AtomicUsize { &molt_fast_recursion_depth }
-fn fast_recursion_limit() -> &'static AtomicUsize { &molt_fast_recursion_limit }
-
 pub(crate) fn recursion_limit_get() -> usize {
     RECURSION_LIMIT.with(|limit| limit.get())
 }
