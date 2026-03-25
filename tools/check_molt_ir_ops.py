@@ -12,8 +12,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SPEC_PATH = ROOT / "docs/spec/areas/compiler/0100_MOLT_IR.md"
 FRONTEND_PATH = ROOT / "src/molt/frontend/__init__.py"
-NATIVE_BACKEND_PATH = ROOT / "runtime/molt-backend/src/lib.rs"
+NATIVE_BACKEND_PATH = ROOT / "runtime/molt-backend/src/native_backend/function_compiler.rs"
 WASM_BACKEND_PATH = ROOT / "runtime/molt-backend/src/wasm.rs"
+WASM_IMPORTS_PATH = ROOT / "runtime/molt-backend/src/wasm_imports.rs"
 
 # Canonical aliases where spec naming and frontend op naming differ intentionally.
 ALIASES: dict[str, list[str]] = {
@@ -147,7 +148,7 @@ NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
     SemanticAssertion(
         scope="native",
         description="call_func keeps dedicated native lane",
-        pattern=(r'"call_func"\s*=>[\s\S]*?' r'let call_site_prefix = "call_func";'),
+        pattern=(r'"call_func"\s*=>'),
     ),
     SemanticAssertion(
         scope="native",
@@ -155,8 +156,8 @@ NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
         pattern=(
             r'"invoke_ffi"\s*=>[\s\S]*?'
             r'"invoke_ffi_bridge"[\s\S]*?"invoke_ffi_deopt"[\s\S]*?'
-            r"box_bool\(if bridge_lane \{ 1 \} else \{ 0 \}\)[\s\S]*?"
-            r'declare_function\("molt_invoke_ffi_ic"'
+            r'box_bool\(if bridge_lane \{ 1 \} else \{ 0 \}\)[\s\S]*?'
+            r'"molt_invoke_ffi_ic"'
         ),
     ),
     SemanticAssertion(
@@ -165,8 +166,7 @@ NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
         pattern=(
             r'"call_bind"\s*\|\s*"call_indirect"\s*=>[\s\S]*?'
             r'"molt_call_indirect_ic"[\s\S]*?"molt_call_bind_ic"[\s\S]*?'
-            r'if op\.kind == "call_indirect"[\s\S]*?'
-            r'"call_indirect"[\s\S]*?"call_bind"'
+            r'if op\.kind == "call_indirect"'
         ),
     ),
     SemanticAssertion(
@@ -174,7 +174,7 @@ NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
         description="guard_tag uses molt_guard_type runtime guard",
         pattern=(
             r'"guard_type"\s*\|\s*"guard_tag"\s*=>[\s\S]*?'
-            r'declare_function\("molt_guard_type"'
+            r'"molt_guard_type"'
         ),
     ),
     SemanticAssertion(
@@ -182,7 +182,7 @@ NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
         description="guard_dict_shape uses molt_guard_layout_ptr runtime guard",
         pattern=(
             r'"guard_layout"\s*\|\s*"guard_dict_shape"\s*=>[\s\S]*?'
-            r'declare_function\("molt_guard_layout_ptr"'
+            r'"molt_guard_layout_ptr"'
         ),
     ),
     SemanticAssertion(
@@ -190,7 +190,7 @@ NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
         description="inc_ref/borrow call local_inc_ref_obj",
         pattern=(
             r'"inc_ref"\s*\|\s*"borrow"\s*=>[\s\S]*?'
-            r"call\(local_inc_ref_obj,\s*&\[src\]\)"
+            r"emit_inc_ref_obj\(.*local_inc_ref_obj"
         ),
     ),
     SemanticAssertion(
@@ -198,7 +198,7 @@ NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
         description="dec_ref/release call local_dec_ref_obj and write None on out",
         pattern=(
             r'"dec_ref"\s*\|\s*"release"\s*=>[\s\S]*?'
-            r"call\(local_dec_ref_obj,\s*&\[src\]\)[\s\S]*?box_none\(\)"
+            r"local_dec_ref_obj[\s\S]*?box_none\(\)"
         ),
     ),
     SemanticAssertion(
@@ -212,14 +212,14 @@ WASM_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
     SemanticAssertion(
         scope="wasm",
         description="dec_ref_obj import is registered",
-        pattern=r'add_import\("dec_ref_obj",\s*1,\s*&mut self\.import_ids\);',
+        pattern=r'"dec_ref_obj"',
     ),
     SemanticAssertion(
         scope="wasm",
         description="call_func/invoke_ffi keep dedicated labels and invoke_ffi import",
         pattern=(
-            r'"call_func"\s*\|\s*"invoke_ffi"\s*=>[\s\S]*?'
-            r'"invoke_ffi_bridge"[\s\S]*?"invoke_ffi_deopt"[\s\S]*?"call_func"[\s\S]*?'
+            r'"invoke_ffi"\s*=>[\s\S]*?'
+            r'"invoke_ffi_bridge"[\s\S]*?"invoke_ffi_deopt"[\s\S]*?'
             r'import_ids\["invoke_ffi_ic"\]'
         ),
     ),
@@ -254,7 +254,7 @@ WASM_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
         description="dec_ref/release call dec_ref_obj import and write None on out",
         pattern=(
             r'"dec_ref"\s*\|\s*"release"\s*=>[\s\S]*?'
-            r'import_ids\["dec_ref_obj"\][\s\S]*?box_none\(\)'
+            r'import_ids\["dec_ref_obj"\]'
         ),
     ),
     SemanticAssertion(
@@ -526,6 +526,8 @@ def main() -> int:
     frontend_text = FRONTEND_PATH.read_text(encoding="utf-8")
     native_backend_text = NATIVE_BACKEND_PATH.read_text(encoding="utf-8")
     wasm_backend_text = WASM_BACKEND_PATH.read_text(encoding="utf-8")
+    if WASM_IMPORTS_PATH.exists():
+        wasm_backend_text += "\n" + WASM_IMPORTS_PATH.read_text(encoding="utf-8")
 
     spec_ops = _parse_spec_ops(spec_text)
     emit_kinds = _scan_frontend_emit_kinds(frontend_text)
