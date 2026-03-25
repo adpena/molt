@@ -1763,11 +1763,21 @@ impl SimpleBackend {
 
                 match result {
                     Ok(optimized_ops) => {
-                        // Store the optimized ops in the cache for future runs.
-                        let serialized =
-                            crate::tir::serialize::serialize_ops(&optimized_ops);
-                        tir_cache.put(&content_hash, &serialized, vec![]);
-                        func_ir.ops = optimized_ops;
+                        // Validate: every label referenced by jump/br_if/check_exception
+                        // must exist as a label op.  If not, fall back to original ops.
+                        let valid = crate::tir::lower_to_simple::validate_labels(&optimized_ops);
+                        if valid {
+                            let serialized =
+                                crate::tir::serialize::serialize_ops(&optimized_ops);
+                            tir_cache.put(&content_hash, &serialized, vec![]);
+                            func_ir.ops = optimized_ops;
+                        } else {
+                            eprintln!(
+                                "[TIR] WARNING: label validation failed on function \'{}\' — falling back to unoptimized.",
+                                func_name
+                            );
+                            func_ir.ops = original_ops;
+                        }
                     }
                     Err(_panic) => {
                         // TIR failed on this function — fall back to unoptimized ops.

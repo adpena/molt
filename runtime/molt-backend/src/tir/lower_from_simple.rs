@@ -10,7 +10,7 @@ use crate::ir::FunctionIR;
 use super::blocks::{BlockId, TirBlock};
 use super::cfg::CFG;
 use super::function::TirFunction;
-use super::ssa::{convert_to_ssa, SsaOutput};
+use super::ssa::{convert_to_ssa_with_params, SsaOutput};
 use super::types::TirType;
 use super::values::ValueId;
 
@@ -25,8 +25,8 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     // 1. Build CFG from the linear op stream.
     let cfg = CFG::build(&ir.ops);
 
-    // 2. Convert to SSA with block arguments.
-    let ssa = convert_to_ssa(&cfg, &ir.ops);
+    // 2. Convert to SSA with block arguments (pass params for implicit entry defs).
+    let ssa = convert_to_ssa_with_params(&cfg, &ir.ops, &ir.params);
 
     // 3. Assemble the TirFunction from the SSA output.
     assemble_function(ir, &cfg, ssa)
