@@ -1818,7 +1818,7 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
         let mut refs: BTreeSet<String> = BTreeSet::new();
         for op in &func.ops {
             match op.kind.as_str() {
-                "call_internal" | "func_new" | "func_new_closure"
+                "call" | "call_internal" | "func_new" | "func_new_closure"
                 | "func_new_builtin" | "code_new" | "call_guarded" => {
                     if let Some(name) = op.s_value.as_ref() {
                         if defined.contains(name.as_str()) {
