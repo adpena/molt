@@ -1467,8 +1467,16 @@ pub fn compute_rc_coalesce_skips(
             Some(name) if name != "none" => name,
             _ => continue,
         };
-        let last = last_use.get(out_name).copied().unwrap_or(idx);
-        if last <= idx {
+        // If the variable appears in last_use, check if its final use is at or
+        // before this inc_ref — that means the inc_ref output is dead. If the
+        // variable is completely absent from last_use (never used anywhere),
+        // the inc_ref is also dead. We explicitly distinguish these cases to
+        // avoid silently eliding an inc_ref due to variable name mismatches.
+        let is_dead = match last_use.get(out_name) {
+            Some(&last) => last <= idx,
+            None => true, // Variable never used after definition — dead inc_ref.
+        };
+        if is_dead {
             skip_ops.insert(idx);
             skip_dec_ref.insert(out_name.to_string());
         }
