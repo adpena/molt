@@ -11419,9 +11419,16 @@ impl SimpleBackend {
                         builder.ins().call(local_dec_ref, &[*val]);
                     }
                     let has_explicit_else = if_to_else.contains_key(&op_idx);
-                    let end_if_idx = *if_to_end_if
-                        .get(&op_idx)
-                        .expect("if without matching end_if");
+                    let end_if_idx = match if_to_end_if.get(&op_idx) {
+                        Some(&idx) => idx,
+                        None => {
+                            eprintln!(
+                                "WARNING: `if` at op {} in function `{}` has no matching end_if — skipping",
+                                op_idx, func_ir.name
+                            );
+                            continue;
+                        }
+                    };
                     let has_phi_join = func_ir
                         .ops
                         .get(end_if_idx + 1)
