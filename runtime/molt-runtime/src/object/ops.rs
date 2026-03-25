@@ -31688,6 +31688,18 @@ fn hash_bytes_cached(_py: &PyToken<'_>, ptr: *mut u8, bytes: &[u8]) -> i64 {
 }
 
 fn hash_int(val: i64) -> i64 {
+    // Fast path: for values whose magnitude fits within PY_HASH_MODULUS
+    // (which includes all 47-bit inline NaN-boxed ints), skip the i128
+    // modulus arithmetic entirely.
+    if val >= 0 && (val as u64) < PY_HASH_MODULUS {
+        return val; // val >= 0 so val != -1, fix_hash not needed
+    }
+    if val < 0 && val != i64::MIN {
+        let mag = (-val) as u64;
+        if mag < PY_HASH_MODULUS {
+            return fix_hash(val); // fix_hash handles -1 -> -2
+        }
+    }
     let mut mag = val as i128;
     let sign = if mag < 0 { -1 } else { 1 };
     if mag < 0 {
@@ -32413,7 +32425,8 @@ pub(crate) fn dict_find_entry_fast(
         }
         let entry_idx = entry - 1;
         let entry_key = order[entry_idx * 2];
-        if obj_eq(_py, obj_from_bits(entry_key), obj_from_bits(key_bits)) {
+        // Fast path: identical bit patterns are always equal.
+        if entry_key == key_bits || obj_eq(_py, obj_from_bits(entry_key), obj_from_bits(key_bits)) {
             return Some(entry_idx);
         }
         slot = (slot + 1) & mask;
@@ -32443,6 +32456,10 @@ pub(crate) fn dict_find_entry(
         }
         let entry_idx = entry - 1;
         let entry_key = order[entry_idx * 2];
+        // Fast path: identical bit patterns are always equal.
+        if entry_key == key_bits {
+            return Some(entry_idx);
+        }
         if let Some(eq) = unsafe { string_bits_eq(entry_key, key_bits) } {
             if eq {
                 return Some(entry_idx);
@@ -32641,6 +32658,10 @@ pub(crate) fn dict_find_entry_with_hash(
         }
         let entry_idx = entry - 1;
         let entry_key = order[entry_idx * 2];
+        // Fast path: identical bit patterns are always equal.
+        if entry_key == key_bits {
+            return Some(entry_idx);
+        }
         if let Some(eq) = unsafe { string_bits_eq(entry_key, key_bits) } {
             if eq {
                 return Some(entry_idx);
@@ -32857,10 +32878,23 @@ pub(crate) unsafe fn dict_set_in_place(
 ) {
     unsafe {
         crate::gil_assert();
-        if !ensure_hashable(_py, key_bits) {
-            return;
-        }
-        let hash = hash_bits(_py, key_bits);
+        // Fast path: inline NaN-boxed ints, bools, and None are always
+        // hashable and their hash can be computed without pointer
+        // indirection.  Skip the ensure_hashable + full hash_bits dispatch.
+        let key_obj = obj_from_bits(key_bits);
+        let hash = if let Some(i) = key_obj.as_int() {
+            hash_int(i) as u64
+        } else if key_obj.as_ptr().is_none() {
+            // Bool, None, or other inline -- still always hashable, use
+            // the normal hash path but skip ensure_hashable.
+            hash_bits(_py, key_bits)
+        } else {
+            // Heap-allocated key: need full hashability check.
+            if !ensure_hashable(_py, key_bits) {
+                return;
+            }
+            hash_bits(_py, key_bits)
+        };
         if exception_pending(_py) {
             return;
         }

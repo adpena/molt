@@ -298,10 +298,34 @@ pub(crate) unsafe fn dict_update_apply(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !ensure_hashable(_py, key_bits) {
+        let obj = obj_from_bits(dict_bits);
+        let Some(ptr) = obj.as_ptr() else {
             return MoltObject::none().bits();
+        };
+        unsafe {
+            let Some(real_dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
+                // Fallback: not a plain dict, use the general store path.
+                if !ensure_hashable(_py, key_bits) {
+                    return MoltObject::none().bits();
+                }
+                return molt_store_index(dict_bits, key_bits, val_bits);
+            };
+            let Some(dict_ptr) = obj_from_bits(real_dict_bits).as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                if !ensure_hashable(_py, key_bits) {
+                    return MoltObject::none().bits();
+                }
+                return molt_store_index(dict_bits, key_bits, val_bits);
+            }
+            // Direct dict set -- bypasses the generic molt_store_index dispatch.
+            dict_set_in_place(_py, dict_ptr, key_bits, val_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            dict_bits
         }
-        molt_store_index(dict_bits, key_bits, val_bits)
     })
 }
 
