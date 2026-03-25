@@ -196,10 +196,16 @@ class TestBackendIRParity:
                     extra_args=["--emit-ir"],
                 )
             except subprocess.TimeoutExpired:
-                pytest.skip(f"Build timed out for {backend}")
-            if result.returncode != 0:
-                # Backend may not be available (e.g., no wasm-ld), skip.
+                # Even on timeout, the frontend may have already written the
+                # IR file before the backend phase started.  Try to collect it.
+                ir_output = _collect_ir_json(out_dir)
+                if ir_output is not None:
+                    ir_output = _filter_entry_ir(ir_output, src_file.stem)
+                    ir_outputs[backend] = ir_output
                 continue
+            # The frontend writes --emit-ir before backend compilation, so
+            # the IR file may exist even when the backend fails (rc != 0).
+            # Always try to collect it.
             ir_output = _collect_ir_json(out_dir)
             if ir_output is not None:
                 ir_output = _filter_entry_ir(ir_output, src_file.stem)

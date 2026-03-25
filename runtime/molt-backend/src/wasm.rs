@@ -9660,8 +9660,11 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(name));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["module_set_attr"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() {
+                            func.instruction(&Instruction::LocalSet(locals[out]));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
                     }
                     "module_import_star" => {
                         let args = op.args.as_ref().unwrap();
