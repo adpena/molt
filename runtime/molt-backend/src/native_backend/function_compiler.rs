@@ -7673,12 +7673,19 @@ impl SimpleBackend {
                 }
                 "state_switch" => {
                     let self_ptr = builder.block_params(entry_block)[0];
-                    let state = builder.ins().load(
-                        types::I64,
-                        MemFlags::trusted(),
-                        self_ptr,
-                        HEADER_STATE_OFFSET,
+                    // State lives in the cold header (HashMap) — call through
+                    // the C API instead of an inline memory load.
+                    let get_state_ref = import_func_ref(
+                        self.module,
+                        &mut import_ids,
+                        &mut builder,
+                        &mut local_refs,
+                        "molt_obj_get_state",
+                        &[types::I64],
+                        &[types::I64],
                     );
+                    let state_call = builder.ins().call(get_state_ref, &[self_ptr]);
+                    let state = builder.inst_results(state_call)[0];
                     let self_bits = box_ptr_value(&mut builder, self_ptr, &nbc);
                     def_var_named(&mut builder, &vars, "self", self_bits);
 
@@ -7720,12 +7727,16 @@ impl SimpleBackend {
                     let self_ptr = unbox_ptr_value(&mut builder, self_bits, &nbc);
 
                     let pending_state_id = unbox_int(&mut builder, pending_state_bits, &nbc);
-                    builder.ins().store(
-                        MemFlags::trusted(),
-                        pending_state_id,
-                        self_ptr,
-                        HEADER_STATE_OFFSET,
+                    let set_state_ref = import_func_ref(
+                        self.module,
+                        &mut import_ids,
+                        &mut builder,
+                        &mut local_refs,
+                        "molt_obj_set_state",
+                        &[types::I64, types::I64],
+                        &[],
                     );
+                    builder.ins().call(set_state_ref, &[self_ptr, pending_state_id]);
 
                     let mut poll_sig = self.module.make_signature();
                     poll_sig.params.push(AbiParam::new(types::I64));
