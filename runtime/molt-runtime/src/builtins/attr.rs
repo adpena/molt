@@ -20,7 +20,7 @@ use crate::{
     class_name_for_error, classmethod_func_bits, clear_exception, dataclass_desc_ptr,
     dataclass_dict_bits, dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits,
     dict_get_in_place, dict_order, dict_set_in_place, exception_class_bits, exception_dict_bits,
-    exception_kind_bits, exception_pending, exception_type_bits_from_name, header_from_obj_ptr,
+    exception_kind_bits, exception_pending, exception_type_bits_from_name,
     inc_ref_bits, init_atomic_bits, instance_dict_bits, instance_set_dict_bits, intern_static_name,
     is_builtin_class_bits, is_missing_bits, is_truthy, issubclass_bits, maybe_ptr_from_bits,
     module_dict_bits, molt_awaitable_await, molt_bound_method_new, molt_exception_last,

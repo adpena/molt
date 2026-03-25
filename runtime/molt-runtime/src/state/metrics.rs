@@ -67,7 +67,18 @@ mod native {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn molt_profile_enabled() -> u64 {
-        crate::with_gil_entry!(_py, { if profile_enabled(_py) { 1 } else { 0 } })
+        // Fast path: check the OnceLock without acquiring the GIL.
+        // profile_enabled is set once at startup and never changes.
+        if let Some(state) = crate::state::runtime_state::runtime_state_for_gil() {
+            let enabled = state.profile_enabled.get_or_init(|| {
+                std::env::var("MOLT_PROFILE")
+                    .map(|val| !val.is_empty() && val != "0")
+                    .unwrap_or(false)
+            });
+            if *enabled { 1 } else { 0 }
+        } else {
+            0
+        }
     }
 
     pub(crate) fn profile_hit(_py: &PyToken<'_>, counter: &AtomicU64) {

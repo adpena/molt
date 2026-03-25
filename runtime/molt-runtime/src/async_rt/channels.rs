@@ -1808,7 +1808,7 @@ pub(crate) fn ws_wait_release(_py: &PyToken<'_>, future_ptr: *mut u8) {
     if future_ptr.is_null() {
         return;
     }
-    let header = unsafe { header_from_obj_ptr(future_ptr) };
+    let _header = unsafe { header_from_obj_ptr(future_ptr) };
     let payload_bytes = unsafe {
         crate::object::object_payload_size(future_ptr)
     };
@@ -2426,7 +2426,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
             return MoltObject::none().bits() as i64;
         }
         // SAFETY: `obj_bits` must reference a live awaitable object.
-        let header = unsafe { header_from_obj_ptr(obj_ptr) };
+        let _header = unsafe { header_from_obj_ptr(obj_ptr) };
         // SAFETY: header pointer came from a live object header.
         let payload_bytes = unsafe {
             crate::object::object_payload_size(obj_ptr)
@@ -2455,7 +2455,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
             return raise_exception::<i64>(_py, "ValueError", "events must be non-zero");
         }
         // SAFETY: header points at the awaitable header allocated for this object.
-        if unsafe { crate::object::object_state(obj_ptr) == 0 } {
+        if crate::object::object_state(obj_ptr) == 0 {
             let mut timeout: Option<f64> = None;
             if payload_len >= 3 {
                 // SAFETY: payload length check guarantees index 2 exists.
@@ -2574,7 +2574,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
             return raise_exception::<i64>(_py, "ValueError", "events must be non-zero");
         }
         // SAFETY: header points at mutable state for this awaitable object.
-        if unsafe { crate::object::object_state(obj_ptr) == 0 } {
+        if crate::object::object_state(obj_ptr) == 0 {
             let mut timeout: Option<f64> = None;
             if payload_len >= 3 {
                 // SAFETY: payload length check guarantees index 2 exists.
