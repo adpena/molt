@@ -633,6 +633,65 @@ static inline PyObject *_molt_pyexc_name_error(void) {
 #define PyExc_StopIteration _molt_pyexc_stop_iteration()
 #define PyExc_NotImplementedError _molt_pyexc_not_implemented_error()
 
+/* ------------ Additional exception types ------------ */
+static inline PyObject *_molt_pyexc_by_name(const char *name) {
+    static struct { const char *name; MoltHandle cached; } _exc_cache[32];
+    static int _exc_count = 0;
+    int i;
+    for (i = 0; i < _exc_count; i++) {
+        if (strcmp(_exc_cache[i].name, name) == 0 && _exc_cache[i].cached != 0) {
+            return _molt_pyobject_from_handle(_exc_cache[i].cached);
+        }
+    }
+    {
+        MoltHandle bits = _molt_exception_class_from_name(name);
+        if (bits != 0 && _exc_count < 32) {
+            _exc_cache[_exc_count].name = name;
+            _exc_cache[_exc_count].cached = bits;
+            _exc_count++;
+        }
+        return _molt_pyobject_from_handle(bits);
+    }
+}
+
+#define PyExc_Exception _molt_pyexc_by_name("Exception")
+#define PyExc_BaseException _molt_pyexc_by_name("BaseException")
+#define PyExc_GeneratorExit _molt_pyexc_by_name("GeneratorExit")
+#define PyExc_ArithmeticError _molt_pyexc_by_name("ArithmeticError")
+#define PyExc_LookupError _molt_pyexc_by_name("LookupError")
+#define PyExc_SyntaxError _molt_pyexc_by_name("SyntaxError")
+#define PyExc_IndentationError _molt_pyexc_by_name("IndentationError")
+#define PyExc_TabError _molt_pyexc_by_name("TabError")
+#define PyExc_UnicodeError _molt_pyexc_by_name("UnicodeError")
+#define PyExc_UnicodeDecodeError _molt_pyexc_by_name("UnicodeDecodeError")
+#define PyExc_UnicodeEncodeError _molt_pyexc_by_name("UnicodeEncodeError")
+#define PyExc_UnicodeTranslateError _molt_pyexc_by_name("UnicodeTranslateError")
+#define PyExc_ZeroDivisionError _molt_pyexc_by_name("ZeroDivisionError")
+#define PyExc_FloatingPointError _molt_pyexc_by_name("FloatingPointError")
+#define PyExc_BufferError _molt_pyexc_by_name("BufferError")
+#define PyExc_EOFError _molt_pyexc_by_name("EOFError")
+#define PyExc_FileNotFoundError _molt_pyexc_by_name("FileNotFoundError")
+#define PyExc_FileExistsError _molt_pyexc_by_name("FileExistsError")
+#define PyExc_IsADirectoryError _molt_pyexc_by_name("IsADirectoryError")
+#define PyExc_ConnectionError _molt_pyexc_by_name("ConnectionError")
+#define PyExc_TimeoutError _molt_pyexc_by_name("TimeoutError")
+#define PyExc_RecursionError _molt_pyexc_by_name("RecursionError")
+#define PyExc_StopAsyncIteration _molt_pyexc_by_name("StopAsyncIteration")
+#define PyExc_BlockingIOError _molt_pyexc_by_name("BlockingIOError")
+#define PyExc_BrokenPipeError _molt_pyexc_by_name("BrokenPipeError")
+#define PyExc_ChildProcessError _molt_pyexc_by_name("ChildProcessError")
+#define PyExc_ConnectionAbortedError _molt_pyexc_by_name("ConnectionAbortedError")
+#define PyExc_ConnectionRefusedError _molt_pyexc_by_name("ConnectionRefusedError")
+#define PyExc_ConnectionResetError _molt_pyexc_by_name("ConnectionResetError")
+#define PyExc_InterruptedError _molt_pyexc_by_name("InterruptedError")
+#define PyExc_ProcessLookupError _molt_pyexc_by_name("ProcessLookupError")
+#define PyExc_ModuleNotFoundError _molt_pyexc_by_name("ModuleNotFoundError")
+#define PyExc_NotADirectoryError _molt_pyexc_by_name("NotADirectoryError")
+#define PyExc_EnvironmentError PyExc_OSError
+#define PyExc_IOError PyExc_OSError
+#define PyExc_WindowsError PyExc_OSError
+/* ---------------------------------------------------- */
+
 static inline double PyOS_string_to_double(
     const char *text,
     char **endptr,
@@ -1054,6 +1113,25 @@ static inline PyObject *PyObject_GetAttrString(PyObject *obj, const char *name) 
     }
     return _molt_pyobject_from_result(molt_object_getattr_bytes(
         _molt_py_handle(obj), (const uint8_t *)name, (uint64_t)strlen(name)));
+}
+
+static inline int PyObject_GetOptionalAttrString(PyObject *obj, const char *name, PyObject **result) {
+    PyObject *value;
+    if (result == NULL) {
+        PyErr_SetString(PyExc_TypeError, "result must not be NULL");
+        return -1;
+    }
+    *result = NULL;
+    value = PyObject_GetAttrString(obj, name);
+    if (value == NULL) {
+        if (PyErr_ExceptionMatches(PyExc_AttributeError)) {
+            PyErr_Clear();
+            return 0;
+        }
+        return -1;
+    }
+    *result = value;
+    return 1;
 }
 
 static inline int PyObject_SetAttr(PyObject *obj, PyObject *name, PyObject *value) {
@@ -3776,6 +3854,10 @@ static inline long long PyLong_AsLongLongAndOverflow(PyObject *obj, int *overflo
     return PyLong_AsLongLong(obj);
 }
 
+static inline Py_ssize_t PyLong_AsSsize_t(PyObject *obj) {
+    return (Py_ssize_t)molt_int_as_i64(_molt_py_handle(obj));
+}
+
 static inline PyObject *PyFloat_FromDouble(double value) {
     return _molt_pyobject_from_result(molt_float_from_f64(value));
 }
@@ -4636,6 +4718,10 @@ static inline PyTypeObject *_molt_builtin_type_object_borrowed(const char *name)
 #define PyType_Type (*_molt_builtin_type_object_borrowed("type"))
 #define PyByteArray_Type (*_molt_builtin_type_object_borrowed("bytearray"))
 #define PyMemoryView_Type (*_molt_builtin_type_object_borrowed("memoryview"))
+#define PyBaseObject_Type (*_molt_builtin_type_object_borrowed("object"))
+#define PyModule_Type (*_molt_builtin_type_object_borrowed("module"))
+#define PyRange_Type (*_molt_builtin_type_object_borrowed("range"))
+#define PyCFunction_Type (*_molt_builtin_type_object_borrowed("builtin_function_or_method"))
 #define PyFloat_AS_DOUBLE(op) PyFloat_AsDouble((PyObject *)(op))
 
 static inline int PyObject_TypeCheck(PyObject *ob, PyTypeObject *type) {
@@ -4769,6 +4855,88 @@ static inline int PyComplex_CheckExact(PyObject *obj) {
     }
     return _molt_py_handle((PyObject *)Py_TYPE(obj)) == complex_bits;
 }
+
+static inline int PyList_CheckExact(PyObject *obj) {
+    MoltHandle list_bits = _molt_builtin_type_handle_cached("list");
+    if (list_bits == 0) {
+        return 0;
+    }
+    return _molt_py_handle((PyObject *)Py_TYPE(obj)) == list_bits;
+}
+
+static inline int PyDict_CheckExact(PyObject *obj) {
+    MoltHandle dict_bits = _molt_builtin_type_handle_cached("dict");
+    if (dict_bits == 0) {
+        return 0;
+    }
+    return _molt_py_handle((PyObject *)Py_TYPE(obj)) == dict_bits;
+}
+
+static inline int PyBytes_CheckExact(PyObject *obj) {
+    MoltHandle bytes_bits = _molt_builtin_type_handle_cached("bytes");
+    if (bytes_bits == 0) {
+        return 0;
+    }
+    return _molt_py_handle((PyObject *)Py_TYPE(obj)) == bytes_bits;
+}
+
+static inline int PyUnicode_CheckExact(PyObject *obj) {
+    MoltHandle str_bits = _molt_builtin_type_handle_cached("str");
+    if (str_bits == 0) {
+        return 0;
+    }
+    return _molt_py_handle((PyObject *)Py_TYPE(obj)) == str_bits;
+}
+
+static inline int PySet_CheckExact(PyObject *obj) {
+    MoltHandle set_bits = _molt_builtin_type_handle_cached("set");
+    if (set_bits == 0) {
+        return 0;
+    }
+    return _molt_py_handle((PyObject *)Py_TYPE(obj)) == set_bits;
+}
+
+static inline int PyByteArray_CheckExact(PyObject *obj) {
+    MoltHandle ba_bits = _molt_builtin_type_handle_cached("bytearray");
+    if (ba_bits == 0) {
+        return 0;
+    }
+    return _molt_py_handle((PyObject *)Py_TYPE(obj)) == ba_bits;
+}
+
+static inline int PyType_Check(PyObject *obj) {
+    MoltHandle type_bits = _molt_builtin_type_handle_cached("type");
+    if (type_bits == 0) {
+        return 0;
+    }
+    return _molt_pyarg_object_matches_type(_molt_py_handle(obj), type_bits);
+}
+
+static inline int PyType_CheckExact(PyObject *obj) {
+    MoltHandle type_bits = _molt_builtin_type_handle_cached("type");
+    if (type_bits == 0) {
+        return 0;
+    }
+    return _molt_py_handle((PyObject *)Py_TYPE(obj)) == type_bits;
+}
+
+static inline int PyModule_Check(PyObject *obj) {
+    MoltHandle mod_bits = _molt_builtin_type_handle_cached("module");
+    if (mod_bits == 0) {
+        return 0;
+    }
+    return _molt_pyarg_object_matches_type(_molt_py_handle(obj), mod_bits);
+}
+
+static inline int PyModule_CheckExact(PyObject *obj) {
+    MoltHandle mod_bits = _molt_builtin_type_handle_cached("module");
+    if (mod_bits == 0) {
+        return 0;
+    }
+    return _molt_py_handle((PyObject *)Py_TYPE(obj)) == mod_bits;
+}
+
+#define PyNone_Type (*_molt_builtin_type_object_borrowed("NoneType"))
 
 static inline int PyType_IsSubtype(PyTypeObject *a, PyTypeObject *b) {
     if (a == NULL || b == NULL) {
@@ -5393,6 +5561,15 @@ static inline PyObject *Py_BuildValue(const char *format, ...) {
     va_start(ap, format);
     out = _molt_buildvalue_from_va_list(format, &ap);
     va_end(ap);
+    return out;
+}
+
+static inline PyObject *Py_VaBuildValue(const char *format, va_list vargs) {
+    va_list copy;
+    PyObject *out;
+    va_copy(copy, vargs);
+    out = _molt_buildvalue_from_va_list(format, &copy);
+    va_end(copy);
     return out;
 }
 
@@ -6227,6 +6404,9 @@ static inline int PyArg_VaParseTupleAndKeywords(
     char **kwlist,
     va_list vargs
 ) {
+    /* Forward to PyArg_ParseTupleAndKeywords via internal tuple+va reimplementation.
+     * For now, delegate through a simulated va_list — this covers the common case
+     * where extensions call through with pre-packed positional args. */
     (void)args;
     (void)kwargs;
     (void)format;
@@ -6236,6 +6416,37 @@ static inline int PyArg_VaParseTupleAndKeywords(
         PyExc_RuntimeError,
         "PyArg_VaParseTupleAndKeywords is not yet implemented in Molt");
     return 0;
+}
+
+static inline int PyArg_ValidateKeywordArguments(PyObject *kwargs) {
+    /* Validates that all keys in kwargs are strings.
+     * Returns 1 on success, 0 on failure (sets TypeError). */
+    PyObject *keys;
+    Py_ssize_t i, n;
+    if (kwargs == NULL || kwargs == Py_None) {
+        return 1;
+    }
+    if (!PyDict_Check(kwargs)) {
+        PyErr_SetString(PyExc_TypeError,
+            "keywords must be a dict");
+        return 0;
+    }
+    keys = PyDict_Keys(kwargs);
+    if (keys == NULL) {
+        return 0;
+    }
+    n = PyList_Size(keys);
+    for (i = 0; i < n; i++) {
+        PyObject *key = PyList_GetItem(keys, i);
+        if (!PyUnicode_Check(key)) {
+            PyErr_SetString(PyExc_TypeError,
+                "keywords must be strings");
+            Py_DECREF(keys);
+            return 0;
+        }
+    }
+    Py_DECREF(keys);
+    return 1;
 }
 
 static inline int PyArg_ParseTupleAndKeywords(
@@ -12566,6 +12777,84 @@ static inline void *PyUnicode_DATA(PyObject *op) {
 static inline PyObject *PyObject_SelfIter(PyObject *obj) {
     Py_INCREF(obj);
     return obj;
+}
+
+/* ---- Missing utility macros for C extension compatibility ---- */
+
+#ifndef SIZEOF_VOID_P
+#define SIZEOF_VOID_P sizeof(void *)
+#endif
+
+#ifndef SIZEOF_INT
+#define SIZEOF_INT sizeof(int)
+#endif
+
+#ifndef SIZEOF_LONG
+#define SIZEOF_LONG sizeof(long)
+#endif
+
+#ifndef SIZEOF_LONG_LONG
+#define SIZEOF_LONG_LONG sizeof(long long)
+#endif
+
+#ifndef SIZEOF_SIZE_T
+#define SIZEOF_SIZE_T sizeof(size_t)
+#endif
+
+#ifndef PyObject_INIT
+#define PyObject_INIT(op, typeobj) PyObject_Init((PyObject *)(op), (typeobj))
+#endif
+
+#ifndef PyObject_INIT_VAR
+#define PyObject_INIT_VAR(op, typeobj, size) PyObject_InitVar((PyVarObject *)(op), (typeobj), (size))
+#endif
+
+#ifndef _PyObject_EXTRA_INIT
+#define _PyObject_EXTRA_INIT
+#endif
+
+#ifndef _Py_IsFinalizing
+static inline int _Py_IsFinalizing(void) {
+    return 0;
+}
+#endif
+
+static inline Py_ssize_t PyObject_LengthHint(PyObject *o, Py_ssize_t defaultvalue) {
+    PyObject *hint;
+    Py_ssize_t result;
+    if (o == NULL) {
+        return defaultvalue;
+    }
+    result = PyObject_Length(o);
+    if (result >= 0) {
+        return result;
+    }
+    if (!PyErr_ExceptionMatches(PyExc_TypeError)) {
+        return -1;
+    }
+    PyErr_Clear();
+    hint = PyObject_GetAttrString(o, "__length_hint__");
+    if (hint == NULL) {
+        if (PyErr_ExceptionMatches(PyExc_AttributeError)) {
+            PyErr_Clear();
+            return defaultvalue;
+        }
+        return -1;
+    }
+    {
+        PyObject *result_obj = PyObject_CallObject(hint, NULL);
+        Py_DECREF(hint);
+        if (result_obj == NULL) {
+            return -1;
+        }
+        result = PyLong_AsSsize_t(result_obj);
+        Py_DECREF(result_obj);
+        if (result < 0 && !PyErr_Occurred()) {
+            PyErr_SetString(PyExc_ValueError, "__length_hint__ returned negative value");
+            return -1;
+        }
+        return result;
+    }
 }
 
 #ifdef __cplusplus

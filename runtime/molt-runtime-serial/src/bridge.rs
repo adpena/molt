@@ -1,12 +1,40 @@
 //! FFI bridge to molt-runtime internal functions.
 //!
-//! These `extern "C"` declarations are resolved at link time when
-//! molt-runtime-serial is linked into the same binary as molt-runtime.
-//! Each function has a corresponding `#[no_mangle]` shim in
-//! `molt-runtime/src/serial_bridge.rs`.
+//! Two dispatch paths:
+//! 1. **Vtable** (preferred): Single `RuntimeVtable` fetched once at init.
+//! 2. **Direct extern "C"** (fallback): Individual symbol resolution at link time.
+//!
+//! Both paths coexist. The vtable is populated by calling `init_vtable()` from
+//! the runtime. If not initialized, functions fall back to direct extern "C" calls.
 
 use molt_runtime_core::prelude::*;
+use molt_runtime_core::RuntimeVtable;
 use std::borrow::Cow;
+use std::sync::OnceLock;
+
+/// Global vtable reference, populated once at init time.
+/// Falls back to individual extern "C" calls if not initialized.
+static VTABLE: OnceLock<&'static RuntimeVtable> = OnceLock::new();
+
+/// Initialize the vtable. Called once by the runtime at startup.
+/// After this, all bridge functions dispatch through the vtable.
+pub fn init_vtable() {
+    unsafe extern "C" {
+        fn __molt_serial_get_vtable() -> *const RuntimeVtable;
+    }
+    let ptr = unsafe { __molt_serial_get_vtable() };
+    if !ptr.is_null() {
+        let vtable = unsafe { &*ptr };
+        let _ = VTABLE.set(vtable);
+    }
+}
+
+/// Get the vtable reference, if initialized.
+#[inline(always)]
+#[allow(dead_code)]
+fn vt() -> Option<&'static RuntimeVtable> {
+    VTABLE.get().copied()
+}
 
 // ---------------------------------------------------------------------------
 // Exception / error handling
