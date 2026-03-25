@@ -9,19 +9,7 @@ pub(crate) unsafe fn class_mro_ref(class_ptr: *mut u8) -> Option<&'static Vec<u6
         if object_type_id(mro_ptr) != TYPE_ID_TUPLE {
             return None;
         }
-        let vec_ref = seq_vec_ref(mro_ptr);
-        // Sanity-check the Vec buffer pointer.  A corrupted / use-after-free
-        // tuple will have a wild buffer pointer that would segfault on
-        // iteration.  Treat it as "no MRO" rather than crashing.
-        let buf_ptr = vec_ref.as_ptr();
-        if buf_ptr.is_null() || (buf_ptr as usize) < 0x1000 {
-            return None;
-        }
-        // Guard against absurdly large lengths (likely corruption)
-        if vec_ref.len() > 256 {
-            return None;
-        }
-        Some(vec_ref)
+        Some(seq_vec_ref(mro_ptr))
     }
 }
 

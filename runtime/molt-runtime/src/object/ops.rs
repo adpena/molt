@@ -24448,6 +24448,20 @@ pub unsafe extern "C" fn molt_buffer_export(obj_bits: u64, out_ptr: *mut BufferE
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        // Fast path: dict[key] — skips exception_pending and type dispatch chain.
+        if let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() {
+            unsafe {
+                if object_type_id(obj_ptr) == TYPE_ID_DICT {
+                    if let Some(val) = dict_get_in_place(_py, obj_ptr, key_bits) {
+                        if obj_from_bits(val).as_ptr().is_some() {
+                            inc_ref_bits(_py, val);
+                        }
+                        return val;
+                    }
+                    return raise_key_error_with_key(_py, key_bits);
+                }
+            }
+        }
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -25032,7 +25046,10 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         return MoltObject::none().bits();
                     };
                     if let Some(val) = dict_get_in_place(_py, dict_ptr, key_bits) {
-                        inc_ref_bits(_py, val);
+                        // Skip inc_ref for inline values (ints, bools, None).
+                        if obj_from_bits(val).as_ptr().is_some() {
+                            inc_ref_bits(_py, val);
+                        }
                         return val;
                     }
                     if object_type_id(ptr) != TYPE_ID_DICT
@@ -25116,6 +25133,18 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
 pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(obj_bits);
+        // Fast path: dict[key] = val — skips type dispatch chain.
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                if object_type_id(ptr) == TYPE_ID_DICT {
+                    dict_set_in_place(_py, ptr, key_bits, val_bits);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    return obj_bits;
+                }
+            }
+        }
         let key = obj_from_bits(key_bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
@@ -32558,7 +32587,15 @@ const TABLE_TOMBSTONE: usize = usize::MAX;
 fn dict_insert_entry(_py: &PyToken<'_>, order: &[u64], table: &mut [usize], entry_idx: usize) {
     let mask = table.len() - 1;
     let key_bits = order[entry_idx * 2];
-    let mut slot = (hash_bits(_py, key_bits) as usize) & mask;
+    // Fast path: inline int keys use hash_int directly, avoiding the
+    // full hash_bits dispatch through exception-checking code paths.
+    let key_obj = obj_from_bits(key_bits);
+    let hash = if let Some(i) = key_obj.as_int() {
+        hash_int(i) as u64
+    } else {
+        hash_bits(_py, key_bits)
+    };
+    let mut slot = (hash as usize) & mask;
     let mut first_tombstone = None;
     loop {
         let entry = table[slot];
@@ -33081,13 +33118,13 @@ pub(crate) unsafe fn dict_set_in_place(
 ) {
     unsafe {
         crate::gil_assert();
-        // Fast path: inline NaN-boxed ints, bools, and None are always
-        // hashable and their hash can be computed without pointer
-        // indirection.  Skip the ensure_hashable + full hash_bits dispatch.
+        // Fast path: inline NaN-boxed ints bypass all exception checks,
+        // hashability validation, and refcounting overhead.
         let key_obj = obj_from_bits(key_bits);
-        let hash = if let Some(i) = key_obj.as_int() {
-            hash_int(i) as u64
-        } else if key_obj.as_ptr().is_none() {
+        if let Some(i) = key_obj.as_int() {
+            return dict_set_inline_int_in_place(_py, ptr, key_bits, i, val_bits);
+        }
+        let hash = if key_obj.as_ptr().is_none() {
             // Bool, None, or other inline -- still always hashable, use
             // the normal hash path but skip ensure_hashable.
             hash_bits(_py, key_bits)
@@ -33134,6 +33171,112 @@ pub(crate) unsafe fn dict_set_in_place(
         inc_ref_bits(_py, val_bits);
         let entry_idx = order.len() / 2 - 1;
         dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
+    }
+}
+
+/// Ultra-fast dict set for inline NaN-boxed integer keys AND values.
+/// Skips: ensure_hashable (ints always hashable), exception_pending checks
+/// (hash_int + bit-equality cannot raise), and inc_ref/dec_ref (inline
+/// values have no heap allocation).
+#[inline]
+pub(crate) unsafe fn dict_set_inline_int_in_place(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    key_bits: u64,
+    key_int: i64,
+    val_bits: u64,
+) {
+    unsafe {
+        let hash = hash_int(key_int) as u64;
+        let order = dict_order(ptr);
+        let table = dict_table(ptr);
+
+        // Inline find: for integer keys, bit-equality is sufficient.
+        if !table.is_empty() {
+            let mask = table.len() - 1;
+            let mut slot = (hash as usize) & mask;
+            loop {
+                let entry = table[slot];
+                if entry == 0 {
+                    break;
+                }
+                if entry != TABLE_TOMBSTONE {
+                    let entry_idx = entry - 1;
+                    if order[entry_idx * 2] == key_bits {
+                        // Key exists -- update value in place.
+                        let val_idx = entry_idx * 2 + 1;
+                        let old_bits = order[val_idx];
+                        if old_bits != val_bits {
+                            let old_obj = obj_from_bits(old_bits);
+                            let new_obj = obj_from_bits(val_bits);
+                            if old_obj.as_ptr().is_some() {
+                                dec_ref_bits(_py, old_bits);
+                            }
+                            if new_obj.as_ptr().is_some() {
+                                inc_ref_bits(_py, val_bits);
+                            }
+                            order[val_idx] = val_bits;
+                        }
+                        return;
+                    }
+                }
+                slot = (slot + 1) & mask;
+            }
+        }
+
+        // Key not found: insert.
+        let new_entries = (order.len() / 2) + 1;
+        let needs_resize = table.is_empty() || new_entries * 10 >= table.len() * 7;
+        if needs_resize {
+            let capacity = dict_table_capacity(new_entries);
+            dict_rebuild(_py, order, table, capacity);
+        }
+
+        order.push(key_bits);
+        order.push(val_bits);
+        // key is inline int: no refcount needed.
+        // value: only inc_ref if heap-allocated.
+        let val_obj = obj_from_bits(val_bits);
+        if val_obj.as_ptr().is_some() {
+            inc_ref_bits(_py, val_bits);
+        }
+        let entry_idx = order.len() / 2 - 1;
+        dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
+    }
+}
+
+/// Ultra-fast dict get for inline NaN-boxed integer keys.
+/// Skips: ensure_hashable, exception state save/restore, and the
+/// string_bits_eq / eq_bool_from_bits fallback paths.
+#[inline]
+pub(crate) unsafe fn dict_get_inline_int_in_place(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    key_bits: u64,
+    key_int: i64,
+) -> Option<u64> {
+    unsafe {
+        let hash = hash_int(key_int) as u64;
+        let order = dict_order(ptr);
+        let table = dict_table(ptr);
+        if table.is_empty() {
+            return None;
+        }
+        let mask = table.len() - 1;
+        let mut slot = (hash as usize) & mask;
+        loop {
+            let entry = table[slot];
+            if entry == 0 {
+                return None;
+            }
+            if entry != TABLE_TOMBSTONE {
+                let entry_idx = entry - 1;
+                if order[entry_idx * 2] == key_bits {
+                    return Some(order[entry_idx * 2 + 1]);
+                }
+            }
+            slot = (slot + 1) & mask;
+        }
     }
 }
 
@@ -33256,10 +33399,15 @@ pub(crate) unsafe fn dict_get_in_place(
     key_bits: u64,
 ) -> Option<u64> {
     unsafe {
+        // Fast path for inline integer keys: skip all exception handling,
+        // hashability checks, and the heavy dict_find_entry dispatch.
+        let key_obj = obj_from_bits(key_bits);
+        if let Some(i) = key_obj.as_int() {
+            return dict_get_inline_int_in_place(_py, ptr, key_bits, i);
+        }
         // Pre-materialize the key to force NaN-box pointer resolution and
         // hash caching. This prevents Cranelift-compiled code from producing
         // stale or incorrect hash values during dict_find_entry.
-        let key_obj = obj_from_bits(key_bits);
         if let Some(key_ptr) = key_obj.as_ptr()
             && object_type_id(key_ptr) == TYPE_ID_STRING
         {

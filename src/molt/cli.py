@@ -12557,8 +12557,8 @@ def _build_native_link_command(
     else:
         if sys.platform == "darwin":
             link_cmd.append("-Wl,-dead_strip")
-            # link_cmd.append("-Wl,-exported_symbol,_main")
-            # link_cmd.extend(["-Wl,-x", "-Wl,-S"])
+            link_cmd.append("-Wl,-exported_symbol,_main")
+            link_cmd.extend(["-Wl,-x", "-Wl,-S"])
             link_cmd.append("-lc++")
         elif sys.platform.startswith("linux"):
             link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
