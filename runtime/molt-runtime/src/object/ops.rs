@@ -14108,10 +14108,10 @@ pub extern "C" fn molt_call_func_dispatch(
         let args_ptr = args_ptr_bits as usize as *const u64;
 
         // Read arguments into an inline stack buffer to avoid heap allocation
-        // on every function call.  Falls back to Vec only for >8 args (rare).
-        let mut inline_buf = [0u64; 8];
+        // on every function call.  Falls back to Vec only for >16 args (very rare).
+        let mut inline_buf = [0u64; 16];
         let heap_args: Vec<u64>;
-        let args_slice: &[u64] = if n <= 8 {
+        let args_slice: &[u64] = if n <= 16 {
             for i in 0..n { unsafe { inline_buf[i] = *args_ptr.add(i); } }
             &inline_buf[..n]
         } else {
@@ -14120,8 +14120,8 @@ pub extern "C" fn molt_call_func_dispatch(
         };
 
         // --- Step 1: Bound method unwrap ---
-        // Use a [u64; 9] inline buffer for bound methods (self + up to 8 args).
-        let mut bound_buf = [0u64; 9];
+        // Use a [u64; 17] inline buffer for bound methods (self + up to 16 args).
+        let mut bound_buf = [0u64; 17];
         let heap_bound: Vec<u64>;
         let (effective_func, effective_args): (u64, &[u64]) = unsafe {
             if let Some(ptr) = maybe_ptr_from_bits(func_bits) {
@@ -14129,7 +14129,7 @@ pub extern "C" fn molt_call_func_dispatch(
                     let inner = bound_method_func_bits(ptr);
                     let self_bits = bound_method_self_bits(ptr);
                     let combined_len = n + 1;
-                    if combined_len <= 9 {
+                    if combined_len <= 17 {
                         bound_buf[0] = self_bits;
                         for i in 0..n { bound_buf[i + 1] = args_slice[i]; }
                         (inner, &bound_buf[..combined_len])
@@ -14177,12 +14177,14 @@ pub extern "C" fn molt_call_func_dispatch(
         }
 
         // --- Step 5: Handle missing args with defaults ---
-        // Use an inline [u64; 11] buffer for padded args (9 effective + 2 defaults max).
+        // Use an inline [u64; 18] buffer for padded args (up to 16 effective + 2 defaults).
+        // This same buffer is reused for the generic __defaults__ fallback below,
+        // eliminating a second heap allocation.
         if eff_nargs < func_arity {
             let missing = func_arity - eff_nargs;
+            let mut padded_buf = [0u64; 18];
             if missing <= 2 {
                 let default_kind = molt_function_default_kind(effective_func);
-                let mut padded_buf = [0u64; 11];
                 padded_buf[..eff_nargs].copy_from_slice(effective_args);
                 let mut padded_len = eff_nargs;
 
@@ -14243,6 +14245,7 @@ pub extern "C" fn molt_call_func_dispatch(
             // This handles user-defined functions with keyword default
             // arguments (e.g. `def f(a, b, lo=0, hi=100)`) that the compact
             // default_kind encoding cannot represent.
+            // Reuses padded_buf from above to avoid a second heap allocation.
             unsafe {
                 let defaults_bits = function_attr_bits(
                     _py,
@@ -14260,15 +14263,29 @@ pub extern "C" fn molt_call_func_dispatch(
                                 let defaults = seq_vec_ref(def_ptr);
                                 let n_defaults = defaults.len();
                                 if missing <= n_defaults {
-                                    let mut padded = Vec::with_capacity(eff_nargs + missing);
-                                    padded.extend_from_slice(effective_args);
-                                    let start = n_defaults - missing;
-                                    for i in start..n_defaults {
-                                        padded.push(defaults[i]);
+                                    let total = eff_nargs + missing;
+                                    if total <= 18 {
+                                        // Reuse the stack-allocated padded_buf.
+                                        padded_buf[..eff_nargs].copy_from_slice(effective_args);
+                                        let start = n_defaults - missing;
+                                        for i in 0..missing {
+                                            padded_buf[eff_nargs + i] = defaults[start + i];
+                                        }
+                                        return molt_call_func_direct(
+                                            _py, fn_ptr_val, &padded_buf[..total], code_id, func_bits,
+                                        );
+                                    } else {
+                                        // >18 padded args: fall back to Vec (extremely rare).
+                                        let mut padded = Vec::with_capacity(total);
+                                        padded.extend_from_slice(effective_args);
+                                        let start = n_defaults - missing;
+                                        for i in start..n_defaults {
+                                            padded.push(defaults[i]);
+                                        }
+                                        return molt_call_func_direct(
+                                            _py, fn_ptr_val, &padded, code_id, func_bits,
+                                        );
                                     }
-                                    return molt_call_func_direct(
-                                        _py, fn_ptr_val, &padded, code_id, func_bits,
-                                    );
                                 }
                             }
                         }
