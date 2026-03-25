@@ -79,6 +79,8 @@ struct SsaContext<'a> {
     tir_blocks: Vec<TirBlock>,
     /// Value → type mapping.
     value_types: HashMap<ValueId, TirType>,
+    /// Inline constant ops generated during translate_op (drained after each call).
+    pending_inline_consts: Vec<super::ops::TirOp>,
 }
 
 impl<'a> SsaContext<'a> {
@@ -94,6 +96,7 @@ impl<'a> SsaContext<'a> {
             block_arg_vars: vec![Vec::new(); n],
             tir_blocks: Vec::new(),
             value_types: HashMap::new(),
+            pending_inline_consts: Vec::new(),
         }
     }
 
@@ -360,6 +363,11 @@ impl<'a> SsaContext<'a> {
                     }
                 }
 
+                // Push any inline constant ops generated for this op's args
+                // (e.g., "1" in "n <= 1" becomes a ConstInt op before the Le op)
+                for const_op in self.pending_inline_consts.drain(..) {
+                    tir_blocks[bid].ops.push(const_op);
+                }
                 tir_blocks[bid].ops.push(tir_op);
             }
 
@@ -405,16 +413,44 @@ impl<'a> SsaContext<'a> {
         var_stacks: &HashMap<String, Vec<ValueId>>,
     ) -> TirOp {
         // Resolve operands from args.
+        // SimpleIR args can be variable names OR inline constants (e.g., "1", "3.14").
+        // Variables resolve via var_stacks; constants get a fresh ConstInt/ConstFloat value.
         let mut operands = Vec::new();
         if let Some(args) = &op.args {
             for a in args {
-                if is_variable(a) {
-                    if let Some(vid) = Self::resolve_var(a, var_stacks) {
-                        operands.push(vid);
-                    }
-                    // If not found, variable is undefined — leave it out.
-                    // A later validation pass can catch this.
+                if let Some(vid) = Self::resolve_var(a, var_stacks) {
+                    // Resolved as a variable
+                    operands.push(vid);
+                } else if let Ok(int_val) = a.parse::<i64>() {
+                    // Inline integer constant — emit a ConstInt op before the current op
+                    let vid = self.fresh_value_typed();
+                    let mut attrs = super::ops::AttrDict::new();
+                    attrs.insert("value".into(), super::ops::AttrValue::Int(int_val));
+                    self.pending_inline_consts.push(super::ops::TirOp {
+                        dialect: super::ops::Dialect::Molt,
+                        opcode: super::ops::OpCode::ConstInt,
+                        operands: vec![],
+                        results: vec![vid],
+                        attrs,
+                        source_span: None,
+                    });
+                    operands.push(vid);
+                } else if let Ok(float_val) = a.parse::<f64>() {
+                    // Inline float constant
+                    let vid = self.fresh_value_typed();
+                    let mut attrs = super::ops::AttrDict::new();
+                    attrs.insert("f_value".into(), super::ops::AttrValue::Float(float_val));
+                    self.pending_inline_consts.push(super::ops::TirOp {
+                        dialect: super::ops::Dialect::Molt,
+                        opcode: super::ops::OpCode::ConstFloat,
+                        operands: vec![],
+                        results: vec![vid],
+                        attrs,
+                        source_span: None,
+                    });
+                    operands.push(vid);
                 }
+                // else: non-variable, non-numeric arg (e.g., "none") — skip
             }
         }
         // If `var` is an input (not store_var), resolve it too.
