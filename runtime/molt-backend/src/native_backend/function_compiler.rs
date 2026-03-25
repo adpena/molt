@@ -11948,17 +11948,40 @@ impl SimpleBackend {
                     let tracked_obj_snapshot = drain_cleanup_tracked(&mut carry_obj_lb, &last_use, op_idx, None);
                     let mut carry_ptr_lb = block_tracked_ptr.remove(&current_block).unwrap_or_default();
                     let tracked_ptr_snapshot = drain_cleanup_tracked(&mut carry_ptr_lb, &last_use, op_idx, None);
-                    let mut sig = self.module.make_signature();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let callee = self
-                        .module
-                        .declare_function("molt_is_truthy", Linkage::Import, &sig)
-                        .unwrap();
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*cond]);
-                    let truthy = builder.inst_results(call)[0];
-                    let cond_bool = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
+                    // Fast path: when the condition is a NaN-boxed bool from a
+                    // fast_int comparison (lt/le/gt/ge/eq/ne), extract the bool
+                    // payload directly instead of calling molt_is_truthy.  This
+                    // eliminates a runtime call per loop iteration AND avoids
+                    // inserting extra Cranelift blocks between the loop header
+                    // and body — keeping SSA variable propagation clean so the
+                    // loop induction variable is correctly threaded through the
+                    // back-edge.
+                    let prev_is_fast_bool = op_idx > 0 && {
+                        let prev = &func_ir.ops[op_idx - 1];
+                        prev.fast_int.unwrap_or(false)
+                            && matches!(
+                                prev.kind.as_str(),
+                                "lt" | "le" | "gt" | "ge" | "eq" | "ne"
+                            )
+                    };
+                    let cond_bool = if prev_is_fast_bool {
+                        // Condition is QNAN|TAG_BOOL|{0,1}: low bit is the bool.
+                        let one = builder.ins().iconst(types::I64, 1);
+                        let payload = builder.ins().band(*cond, one);
+                        builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
+                    } else {
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_is_truthy", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*cond]);
+                        let truthy = builder.inst_results(call)[0];
+                        builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0)
+                    };
                     let cleanup_block = builder.create_block();
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(cleanup_block, current_block);
@@ -11991,6 +12014,12 @@ impl SimpleBackend {
                     reachable_blocks.insert(frame.after_block);
                     jump_block(&mut builder, frame.after_block, &[]);
                     switch_to_block_tracking(&mut builder, frame.body_block, &mut is_block_filled);
+                    // Seal body_block now — its only predecessor is the brif
+                    // above.  Early sealing helps Cranelift resolve SSA variables
+                    // (especially the loop induction variable) immediately.
+                    if sealed_blocks.insert(frame.body_block) {
+                        builder.seal_block(frame.body_block);
+                    }
                     propagate_tracked_to_branches(&mut block_tracked_obj, &[frame.body_block, frame.after_block], carry_obj_lb);
                     propagate_tracked_to_branches(&mut block_tracked_ptr, &[frame.body_block, frame.after_block], carry_ptr_lb);
                     }

@@ -11857,12 +11857,77 @@ def _finalize_backend_ir(
     return ir
 
 
+def _normalize_ir_labels(ir: Mapping[str, Any]) -> dict[str, Any]:
+    """Remap label/state IDs in emitted IR to sequential values per function.
+
+    Different backends compile different sets of stdlib initialization functions
+    before user code, which shifts the global label counter.  Normalizing labels
+    makes the emitted IR deterministic regardless of backend, ensuring parity
+    tests compare semantic content rather than implementation-specific counters.
+    """
+    normalized: dict[str, Any] = dict(ir)
+    functions = normalized.get("functions")
+    if not isinstance(functions, list):
+        return normalized
+
+    # Keys in an op whose integer value is a label/state ID.
+    _LABEL_KEYS = frozenset({"value"})
+    # Op kinds that define or reference labels.
+    _LABEL_OPS = frozenset({
+        "label", "jump", "br_if", "check_exception", "for_iter_next",
+    })
+
+    new_functions = []
+    for func in functions:
+        if not isinstance(func, dict):
+            new_functions.append(func)
+            continue
+        ops = func.get("ops")
+        if not isinstance(ops, list):
+            new_functions.append(func)
+            continue
+
+        # First pass: collect all label IDs in order of appearance.
+        label_map: dict[int, int] = {}
+        next_id = 1
+        for op in ops:
+            if not isinstance(op, dict):
+                continue
+            kind = op.get("kind", "")
+            if kind not in _LABEL_OPS:
+                continue
+            val = op.get("value")
+            if isinstance(val, int) and val not in label_map:
+                label_map[val] = next_id
+                next_id += 1
+
+        # Second pass: rewrite label IDs.
+        new_ops = []
+        for op in ops:
+            if not isinstance(op, dict):
+                new_ops.append(op)
+                continue
+            kind = op.get("kind", "")
+            if kind in _LABEL_OPS and "value" in op:
+                val = op["value"]
+                if isinstance(val, int) and val in label_map:
+                    op = {**op, "value": label_map[val]}
+            new_ops.append(op)
+
+        new_func = {**func, "ops": new_ops}
+        new_functions.append(new_func)
+
+    normalized["functions"] = new_functions
+    return normalized
+
+
 def _write_emitted_ir(emit_ir_path: Path | None, ir: Mapping[str, Any]) -> str | None:
     if emit_ir_path is None:
         return None
     try:
+        normalized = _normalize_ir_labels(ir)
         emit_ir_path.write_text(
-            json.dumps(ir, indent=2, default=_json_ir_default) + "\n"
+            json.dumps(normalized, indent=2, default=_json_ir_default) + "\n"
         )
     except OSError as exc:
         return f"Failed to write IR: {exc}"
