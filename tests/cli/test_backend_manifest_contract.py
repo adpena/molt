@@ -29,11 +29,14 @@ def test_backend_manifest_does_not_redeclare_wasmparser_in_dev_dependencies() ->
     assert "wasmparser" not in dev_dependencies
 
 
-def test_backend_manifest_avoids_direct_serde_dependency() -> None:
+def test_backend_manifest_uses_serde_with_derive_feature() -> None:
     manifest = _load_backend_manifest()
     dependencies = manifest["dependencies"]
 
-    assert "serde" not in dependencies
+    # serde is required for JSON boundary, IR serialization, and TIR
+    assert "serde" in dependencies
+    serde_dep = dependencies["serde"]
+    assert "derive" in serde_dep.get("features", [])
 
 
 def test_backend_manifest_uses_minimal_cranelift_codegen_features() -> None:
