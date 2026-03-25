@@ -864,9 +864,12 @@ fn main() -> io::Result<()> {
                 rlim_max: max_bytes,
             };
             if libc::setrlimit(libc::RLIMIT_AS, &rlim) != 0 {
-                eprintln!(
-                    "WARNING: failed to set memory limit (RLIMIT_AS={max_gb}GB).                      OOM guard not active."
-                );
+                // Silently ignore on macOS (Apple Silicon). MOLT_DEBUG_RLIMIT=1 to warn.
+                if std::env::var("MOLT_DEBUG_RLIMIT").as_deref() == Ok("1") {
+                    eprintln!(
+                        "WARNING: failed to set memory limit (RLIMIT_AS={max_gb}GB). OOM guard not active."
+                    );
+                }
             }
         }
     }
