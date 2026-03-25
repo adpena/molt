@@ -9283,6 +9283,17 @@ def _backend_daemon_compile_request_bytes(
         payload["config_digest"] = config_digest
     if include_health:
         payload["include_health"] = True
+    # Pass through optimization-relevant env vars so the daemon applies
+    # them per-request (the daemon process inherits env from startup,
+    # not from the build request).
+    env_passthrough = {}
+    for key in ("MOLT_TIR_OPT", "MOLT_DISABLE_DEAD_FUNC_ELIM", "MOLT_BACKEND_BATCH_SIZE",
+                "MOLT_MAX_FUNCTION_OPS", "MOLT_DISABLE_RC_COALESCING", "TIR_DUMP", "TIR_OPT_STATS"):
+        val = os.environ.get(key)
+        if val is not None:
+            env_passthrough[key] = val
+    if env_passthrough:
+        payload["env"] = env_passthrough
     return _backend_daemon_request_payload_bytes(payload)
 
 
