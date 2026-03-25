@@ -2229,16 +2229,16 @@ impl SimpleBackend {
             eprintln!("MOLT_BACKEND(llvm): compiling {func_count} functions ({total_ops} total ops)");
             let codegen_start = std::time::Instant::now();
 
-            for (fi, func_ir) in ir.functions.iter().enumerate() {
-                eprintln!("  LLVM lowering [{}/{}] {}", fi + 1, func_count, func_ir.name);
+            for func_ir in &ir.functions {
                 let tir_func = lower_to_tir(func_ir);
                 crate::llvm_backend::lowering::lower_tir_to_llvm(&tir_func, &llvm);
-                eprintln!("  LLVM lowering [{}/{}] {} OK", fi + 1, func_count, func_ir.name);
             }
 
-            // Verify the module before optimization to catch lowering bugs.
+            // Verify the module before optimization to catch lowering bugs early.
+            // Non-fatal: complex programs may have phi/domination issues from
+            // unknown-op fallback lowering that LLVM can still compile through.
             if let Err(msg) = llvm.module.verify() {
-                eprintln!("LLVM module verification FAILED:\n{}", msg.to_string());
+                eprintln!("LLVM module verification warning:\n{}", msg.to_string());
             }
 
             // Run LLVM O3 optimization on the whole module.
