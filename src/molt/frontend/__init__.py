@@ -27165,9 +27165,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 value = op.args[0]
                 if isinstance(value, bool):
                     value = 1 if value else 0
-                json_ops.append(
-                    {"kind": "const", "value": value, "out": op.result.name}
-                )
+                # Integers outside 47-bit signed inline range -> const_bigint
+                if (
+                    isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and not (-(1 << 46) <= value <= (1 << 46) - 1)
+                ):
+                    json_ops.append(
+                        {
+                            "kind": "const_bigint",
+                            "s_value": str(value),
+                            "out": op.result.name,
+                        }
+                    )
+                else:
+                    json_ops.append(
+                        {"kind": "const", "value": value, "out": op.result.name}
+                    )
             elif op.kind == "CONST_BIGINT":
                 json_ops.append(
                     {

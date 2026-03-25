@@ -8968,7 +8968,15 @@ impl WasmBackend {
                         let out = locals[op.out.as_ref().unwrap()];
                         let func_idx = *func_indices
                             .get(target_name)
-                            .expect("call target not found");
+                            .unwrap_or_else(|| {
+                                let chunk_keys: Vec<_> = func_indices.keys()
+                                    .filter(|k| k.contains("chunk") || k.contains("module"))
+                                    .collect();
+                                panic!(
+                                    "call target not found: '{}' in func '{}' (chunk/module keys in func_indices: {:?})",
+                                    target_name, func_ir.name, chunk_keys
+                                )
+                            });
                         let bootstrap_call = func_idx == import_ids["runtime_init"];
                         if bootstrap_call {
                             for arg_name in args_names {
