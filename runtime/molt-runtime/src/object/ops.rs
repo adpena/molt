@@ -1071,10 +1071,7 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                                     std::ptr::copy_nonoverlapping(l_data, n_data, l_len);
                                     std::ptr::copy_nonoverlapping(r_data, n_data.add(l_len), r_len);
                                     *(new_ptr as *mut usize) = l_len + r_len;
-                                    // Dec-ref the old string — it was replaced by
-                                    // the new allocation.  Without this, the old
-                                    // string leaks (rc stays at 1 forever).
-                                    dec_ref_bits(_py, a);
+                                    // Caller dec-refs old LHS after storing result.
                                     return MoltObject::from_ptr(new_ptr).bits();
                                 }
                                 } // if let Some(content_len) — overflow falls through
