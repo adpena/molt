@@ -12554,7 +12554,13 @@ def _build_native_link_command(
     _link_inputs = [str(stub_path), str(output_obj)]
     if _stdlib_obj_path and Path(_stdlib_obj_path).exists():
         _link_inputs.append(_stdlib_obj_path)
-    _link_inputs.extend([str(runtime_lib), "-o", str(output_binary)])
+    # Use -force_load on macOS to ensure ALL objects from the static archive
+    # are included, resolving circular references between molt-runtime and
+    # molt-runtime-serial (e.g. serial bridge FFI symbols).
+    if sys.platform == "darwin":
+        _link_inputs.extend(["-Wl,-force_load," + str(runtime_lib), "-o", str(output_binary)])
+    else:
+        _link_inputs.extend(["-Wl,--whole-archive", str(runtime_lib), "-Wl,--no-whole-archive", "-o", str(output_binary)])
     link_cmd.extend(_link_inputs)
     if target_triple:
         if "apple" in target_triple or "darwin" in target_triple:

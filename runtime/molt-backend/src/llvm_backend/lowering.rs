@@ -134,11 +134,51 @@ pub fn lower_tir_to_llvm_with_pgo<'ctx>(
     };
 
     // 2. Create LLVM basic blocks for each TIR block.
+    //    The entry block MUST be created first so that LLVM treats it as the
+    //    function entry point. HashMap iteration order is non-deterministic,
+    //    so we explicitly create the entry block before all others.
+    {
+        let entry_bb = backend
+            .context
+            .append_basic_block(llvm_fn, &format!("bb{}", func.entry_block.0));
+        lowering.block_map.insert(func.entry_block, entry_bb);
+    }
     for block_id in func.blocks.keys() {
+        if *block_id == func.entry_block {
+            continue; // already created above
+        }
         let bb = backend
             .context
             .append_basic_block(llvm_fn, &format!("bb{}", block_id.0));
         lowering.block_map.insert(*block_id, bb);
+    }
+
+    // 2b. LLVM requires the entry block to have no predecessors.  If any TIR
+    //     block branches back to the entry, insert a trampoline block that
+    //     becomes the real LLVM entry and immediately jumps to the TIR entry.
+    {
+        let entry_id = func.entry_block;
+        let entry_has_predecessors = func.blocks.values().any(|blk| {
+            match &blk.terminator {
+                Terminator::Branch { target, .. } => *target == entry_id,
+                Terminator::CondBranch { then_block, else_block, .. } => {
+                    *then_block == entry_id || *else_block == entry_id
+                }
+                Terminator::Switch { cases, default, .. } => {
+                    *default == entry_id || cases.iter().any(|(_, t, _)| *t == entry_id)
+                }
+                _ => false,
+            }
+        });
+        if entry_has_predecessors {
+            let old_entry_bb = lowering.block_map[&entry_id];
+            let trampoline_bb = backend
+                .context
+                .prepend_basic_block(old_entry_bb, "entry_trampoline");
+            // The trampoline block jumps to the real entry.
+            backend.builder.position_at_end(trampoline_bb);
+            backend.builder.build_unconditional_branch(old_entry_bb).unwrap();
+        }
     }
 
     // 3. Compute RPO ordering (simple BFS from entry for now).
@@ -149,10 +189,24 @@ pub fn lower_tir_to_llvm_with_pgo<'ctx>(
         lowering.lower_block(*block_id);
     }
 
-    // 5. Wire up phi incoming values.
+    // 5. Emit `unreachable` terminators for any LLVM basic blocks that were
+    //    created for TIR blocks but not visited during RPO traversal (dead
+    //    blocks unreachable from the entry).  Without this, LLVM verification
+    //    fails because every basic block must have a terminator instruction.
+    {
+        let rpo_set: std::collections::HashSet<BlockId> = rpo.iter().copied().collect();
+        for (block_id, llvm_bb) in &lowering.block_map {
+            if !rpo_set.contains(block_id) {
+                backend.builder.position_at_end(*llvm_bb);
+                backend.builder.build_unreachable().unwrap();
+            }
+        }
+    }
+
+    // 6. Wire up phi incoming values.
     lowering.finalize_phis();
 
-    // 6. If any op in this function carries `fast_math = true`, annotate the
+    // 7. If any op in this function carries `fast_math = true`, annotate the
     //    function with `"unsafe-fp-math"="true"`.  This is the function-level
     //    fallback for LLVM passes that inspect function attributes rather than
     //    per-instruction fast-math flags.
@@ -2034,9 +2088,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     /// After all blocks are lowered, wire up phi node incoming values.
-    fn finalize_phis(&self) {
-        for (block_id, arg_index, phi) in &self.pending_phis {
-            let block = self.func.blocks.get(block_id).unwrap();
+    /// Values are coerced to match the phi node's type when needed (e.g., an
+    /// i1 bool flowing into an i64 phi is zero-extended).
+    fn finalize_phis(&mut self) {
+        // Collect phi info first to avoid borrow conflicts.
+        let phi_info: Vec<_> = self.pending_phis.iter().map(|(bid, idx, phi)| {
+            (*bid, *idx, phi.as_basic_value().get_type(), phi.clone())
+        }).collect();
+
+        for (block_id, arg_index, phi_ty, phi) in &phi_info {
+            let _block = self.func.blocks.get(block_id).unwrap();
             // Find all predecessors that branch to this block.
             for (pred_id, pred_block) in &self.func.blocks {
                 let branch_args = self.get_branch_args_to(&pred_block.terminator, *block_id);
@@ -2045,12 +2106,79 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         let val_id = args[*arg_index];
                         if let Some(val) = self.values.get(&val_id) {
                             let pred_bb = self.block_map[pred_id];
-                            phi.add_incoming(&[(val, pred_bb)]);
+                            // Coerce value to phi type if they differ (e.g. i1 -> i64).
+                            let coerced = self.coerce_to_type(*val, phi_ty.clone(), pred_bb);
+                            phi.add_incoming(&[(&coerced, pred_bb)]);
                         }
                     }
                 }
             }
         }
+    }
+
+    /// Coerce a value to a target LLVM type.  Inserts conversion instructions
+    /// at the end of `in_block` (before the terminator) when the types differ.
+    fn coerce_to_type(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        target_ty: inkwell::types::BasicTypeEnum<'ctx>,
+        in_block: BasicBlock<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        let val_ty = val.get_type();
+        if val_ty == target_ty {
+            return val;
+        }
+        // Save current position and switch to the predecessor block.
+        let saved_block = self.backend.builder.get_insert_block();
+        // Insert BEFORE the terminator of in_block.
+        if let Some(term) = in_block.get_terminator() {
+            self.backend.builder.position_before(&term);
+        } else {
+            self.backend.builder.position_at_end(in_block);
+        }
+        let result = match (val, target_ty) {
+            // i1 (bool) -> i64: zero-extend
+            (BasicValueEnum::IntValue(iv), inkwell::types::BasicTypeEnum::IntType(target_int))
+                if iv.get_type().get_bit_width() < target_int.get_bit_width() =>
+            {
+                self.backend
+                    .builder
+                    .build_int_z_extend(iv, target_int, "phi_zext")
+                    .unwrap()
+                    .into()
+            }
+            // i64 -> i1: truncate
+            (BasicValueEnum::IntValue(iv), inkwell::types::BasicTypeEnum::IntType(target_int))
+                if iv.get_type().get_bit_width() > target_int.get_bit_width() =>
+            {
+                self.backend
+                    .builder
+                    .build_int_truncate(iv, target_int, "phi_trunc")
+                    .unwrap()
+                    .into()
+            }
+            // f64 -> i64: bitcast
+            (BasicValueEnum::FloatValue(fv), inkwell::types::BasicTypeEnum::IntType(target_int)) => {
+                self.backend
+                    .builder
+                    .build_bit_cast(fv, target_int, "phi_f2i")
+                    .unwrap()
+            }
+            // i64 -> f64: bitcast
+            (BasicValueEnum::IntValue(iv), inkwell::types::BasicTypeEnum::FloatType(target_float)) => {
+                self.backend
+                    .builder
+                    .build_bit_cast(iv, target_float, "phi_i2f")
+                    .unwrap()
+            }
+            // Fallback: pass through (may cause verification warning)
+            _ => val,
+        };
+        // Restore builder position.
+        if let Some(bb) = saved_block {
+            self.backend.builder.position_at_end(bb);
+        }
+        result
     }
 
     /// If `term` branches to `target`, return the args it passes; otherwise None.
