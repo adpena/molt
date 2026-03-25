@@ -8663,7 +8663,7 @@ impl SimpleBackend {
                     func_sig.returns.push(AbiParam::new(types::I64));
                     let func_id = self
                         .module
-                        .declare_function(func_name, Linkage::Export, &func_sig)
+                        .declare_function(func_name, Linkage::Import, &func_sig)
                         .unwrap();
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
@@ -8700,7 +8700,7 @@ impl SimpleBackend {
                     func_sig.returns.push(AbiParam::new(types::I64));
                     let func_id = self
                         .module
-                        .declare_function(func_name, Linkage::Export, &func_sig)
+                        .declare_function(func_name, Linkage::Import, &func_sig)
                         .unwrap();
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
@@ -8740,7 +8740,7 @@ impl SimpleBackend {
                     func_sig.returns.push(AbiParam::new(types::I64));
                     let func_id = self
                         .module
-                        .declare_function(func_name, Linkage::Export, &func_sig)
+                        .declare_function(func_name, Linkage::Import, &func_sig)
                         .unwrap();
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
