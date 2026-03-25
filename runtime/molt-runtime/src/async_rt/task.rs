@@ -1,4 +1,4 @@
-use crate::{header_from_obj_ptr, obj_from_bits, resolve_ptr};
+use crate::{obj_from_bits, resolve_ptr};
 
 pub(crate) fn resolve_task_ptr(bits: u64) -> Option<*mut u8> {
     let obj = obj_from_bits(bits);

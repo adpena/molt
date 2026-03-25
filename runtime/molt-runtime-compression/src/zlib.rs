@@ -431,46 +431,46 @@ pub extern "C" fn molt_zlib_adler32(data_bits: u64, value_bits: u64) -> u64 {
 
 // ── Constants ────────────────────────────────────────────────────────────────
 pub extern "C" fn molt_zlib_max_wbits() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, 15) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 15))
 }
 pub extern "C" fn molt_zlib_def_mem_level() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, 8) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 8))
 }
 pub extern "C" fn molt_zlib_def_buf_size() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, 16384) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 16384))
 }
 pub extern "C" fn molt_zlib_z_default_compression() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, -1) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, -1))
 }
 pub extern "C" fn molt_zlib_z_best_speed() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, 1) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 1))
 }
 pub extern "C" fn molt_zlib_z_best_compression() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, 9) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 9))
 }
 pub extern "C" fn molt_zlib_z_no_compression() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, 0) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 0))
 }
 pub extern "C" fn molt_zlib_z_filtered() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, 1) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 1))
 }
 pub extern "C" fn molt_zlib_z_huffman_only() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, 2) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 2))
 }
 pub extern "C" fn molt_zlib_z_default_strategy() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, 0) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 0))
 }
 pub extern "C" fn molt_zlib_z_finish() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, 4) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 4))
 }
 pub extern "C" fn molt_zlib_z_no_flush() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, 0) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 0))
 }
 pub extern "C" fn molt_zlib_z_sync_flush() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, 2) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 2))
 }
 pub extern "C" fn molt_zlib_z_full_flush() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { int_bits_from_i64(_py, 3) })
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 3))
 }
 
 // ── Streaming compressobj ────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 pub(crate) mod cache;
 pub(crate) mod lifecycle;
 pub(crate) mod metrics;
+#[allow(dead_code)]
 pub(crate) mod recursion;
 pub(crate) mod runtime_state;
 pub(crate) mod tls;

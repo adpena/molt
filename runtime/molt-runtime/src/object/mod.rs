@@ -26,10 +26,15 @@ pub fn bump_type_version() -> u64 {
     GLOBAL_TYPE_VERSION.fetch_add(1, AtomicOrdering::Relaxed) + 1
 }
 
+#[allow(dead_code)]
 pub mod deopt;
+#[allow(dead_code)]
 pub mod dict_compact;
+#[allow(dead_code)]
 pub mod gil;
+#[allow(dead_code)]
 pub mod inline_cache;
+#[allow(dead_code)]
 pub mod nursery;
 pub(crate) mod accessors;
 pub(crate) mod buffer2d;
@@ -44,7 +49,9 @@ pub(crate) mod ops_iter;
 pub(crate) mod ops_set;
 pub(crate) mod ops_string;
 pub(crate) mod refcount;
+#[allow(dead_code)]
 pub mod string_intern;
+#[allow(dead_code)]
 pub mod string_repr;
 pub(crate) mod type_ids;
 pub(crate) mod utf8_cache;

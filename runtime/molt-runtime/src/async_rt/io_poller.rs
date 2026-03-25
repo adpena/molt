@@ -19,7 +19,7 @@ use super::sockets::{socket_ptr_from_bits_or_fd, socket_ref_inc, with_socket_mut
 use super::{await_waiters_take, wake_task_ptr};
 use crate::require_net_capability;
 use crate::{
-    GilGuard, GilReleaseGuard, MoltHeader, MoltObject, PtrSlot, PyToken, dec_ref_bits,
+    GilGuard, GilReleaseGuard, MoltObject, PtrSlot, PyToken, dec_ref_bits,
     header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr, molt_future_new, monotonic_now_secs,
     obj_from_bits, pending_bits_i64, ptr_from_bits, raise_exception, resolve_obj_ptr,
     runtime_state, to_f64, to_i64,
@@ -1005,7 +1005,7 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
             }
-            let header = header_from_obj_ptr(obj_ptr);
+            let _header = header_from_obj_ptr(obj_ptr);
             let payload_bytes = crate::object::object_payload_size(obj_ptr);
             let payload_len = payload_bytes / std::mem::size_of::<u64>();
             if payload_len < 2 {

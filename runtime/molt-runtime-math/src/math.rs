@@ -405,10 +405,9 @@ fn coerce_real(_py: &PyToken, val_bits: u64) -> Option<RealValue> {
         return Some(RealValue::IntExact(i));
     }
     if let Some(ptr) = bigint_ptr_from_bits(val_bits) {
-        return Some(RealValue::BigIntExact(unsafe { bigint_ref(ptr) }.clone()));
+        return Some(RealValue::BigIntExact(bigint_ref(ptr).clone()));
     }
     if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-        unsafe {
             let float_name_bits =
                 intern_static_name(_py, b"__float__");
             if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) {
@@ -462,7 +461,6 @@ fn coerce_real(_py: &PyToken, val_bits: u64) -> Option<RealValue> {
             if exception_pending(_py) {
                 return None;
             }
-        }
     }
     let type_label = type_name(_py, obj);
     let msg = format!("must be real number, not {type_label}");
@@ -478,10 +476,9 @@ fn coerce_real_named(_py: &PyToken, val_bits: u64, name: &str) -> Option<RealVal
         return Some(RealValue::IntExact(i));
     }
     if let Some(ptr) = bigint_ptr_from_bits(val_bits) {
-        return Some(RealValue::BigIntExact(unsafe { bigint_ref(ptr) }.clone()));
+        return Some(RealValue::BigIntExact(bigint_ref(ptr).clone()));
     }
     if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-        unsafe {
             let float_name_bits =
                 intern_static_name(_py, b"__float__");
             if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) {
@@ -535,7 +532,6 @@ fn coerce_real_named(_py: &PyToken, val_bits: u64, name: &str) -> Option<RealVal
             if exception_pending(_py) {
                 return None;
             }
-        }
     }
     let type_label = type_name(_py, obj);
     let msg = format!("{name}() argument must be a real number, not {type_label}");
@@ -1721,7 +1717,6 @@ pub extern "C" fn molt_math_floor(val_bits: u64) -> u64 {
             return bits;
         }
         if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-            unsafe {
                 let floor_name_bits =
                     intern_static_name(_py, b"__floor__");
                 if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, floor_name_bits) {
@@ -1733,7 +1728,6 @@ pub extern "C" fn molt_math_floor(val_bits: u64) -> u64 {
                     }
                     dec_ref_bits(_py, call_bits);
                 }
-            }
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -1768,7 +1762,6 @@ pub extern "C" fn molt_math_ceil(val_bits: u64) -> u64 {
             return bits;
         }
         if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-            unsafe {
                 let ceil_name_bits =
                     intern_static_name(_py, b"__ceil__");
                 if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, ceil_name_bits) {
@@ -1780,7 +1773,6 @@ pub extern "C" fn molt_math_ceil(val_bits: u64) -> u64 {
                     }
                     dec_ref_bits(_py, call_bits);
                 }
-            }
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -1815,7 +1807,6 @@ pub extern "C" fn molt_math_trunc(val_bits: u64) -> u64 {
             return bits;
         }
         if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-            unsafe {
                 let trunc_name_bits =
                     intern_static_name(_py, b"__trunc__");
                 if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, trunc_name_bits) {
@@ -1827,7 +1818,6 @@ pub extern "C" fn molt_math_trunc(val_bits: u64) -> u64 {
                     }
                     dec_ref_bits(_py, call_bits);
                 }
-            }
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -3326,7 +3316,7 @@ fn statistics_seed_bigint(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
         return Some(BigInt::from(i).abs());
     }
     if let Some(ptr) = bigint_ptr_from_bits(seed_bits) {
-        return Some(unsafe { bigint_ref(ptr).abs() });
+        return Some(bigint_ref(ptr).abs());
     }
     if seed_obj.as_float().is_some() {
         let hash_bits = molt_hash_builtin(seed_bits);
@@ -3337,7 +3327,7 @@ fn statistics_seed_bigint(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
         let hash_u64 = if let Some(i) = to_i64(hash_obj) {
             i as u64
         } else if let Some(ptr) = bigint_ptr_from_bits(hash_bits) {
-            let hash_big = unsafe { bigint_ref(ptr).clone() };
+            let hash_big = bigint_ref(ptr).clone();
             let modulus = BigInt::one() << 64;
             hash_big.mod_floor(&modulus).to_u64().unwrap_or(0)
         } else {
@@ -3488,9 +3478,8 @@ fn statistics_normal_dist_samples_value(
                 if let Some(rng) = seeded_rng.as_mut() {
                     rng.gauss(mu, sigma)
                 } else {
-                    let sample_bits = unsafe {
-                        call_callable2(_py, random_fn_bits, gauss_mu_bits, gauss_sigma_bits)
-                    };
+                    let sample_bits =
+                        call_callable2(_py, random_fn_bits, gauss_mu_bits, gauss_sigma_bits);
                     if exception_pending(_py) {
                         return None;
                     }
@@ -3517,7 +3506,7 @@ fn statistics_normal_dist_samples_value(
                 let probability = if let Some(rng) = seeded_rng.as_mut() {
                     rng.random()
                 } else {
-                    let p_bits = unsafe { call_callable0(_py, random_fn_bits) };
+                    let p_bits = call_callable0(_py, random_fn_bits);
                     if exception_pending(_py) {
                         return None;
                     }

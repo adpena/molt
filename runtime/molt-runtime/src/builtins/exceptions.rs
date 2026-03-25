@@ -5206,7 +5206,7 @@ pub extern "C" fn molt_exception_clear() -> u64 {
                 let task_ptr = current_task_ptr();
                 if !task_ptr.is_null() {
                     let (poll_fn, type_id, class_name) = unsafe {
-                        let header = header_from_obj_ptr(task_ptr);
+                        let _header = header_from_obj_ptr(task_ptr);
                         let poll_fn = crate::object::object_poll_fn(task_ptr);
                         let type_id = object_type_id(task_ptr);
                         let class_name = class_name_for_error(object_class_bits(task_ptr));
