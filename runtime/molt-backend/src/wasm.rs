@@ -3676,63 +3676,25 @@ impl WasmBackend {
         // After compilation, TrackedImportIds knows exactly which imports were
         // referenced during code emission.  Strip the unused ones from the
         // serialized module and remap all function indices.
-        // Only applies to non-relocatable output (relocatable modules are
-        // linked by wasm-ld which performs its own --gc-sections pass).
-        if !reloc_enabled {
+        // Only applies to Auto profile in non-relocatable mode.
+        // Full profile preserves all imports for maximum host compatibility;
+        // Pure profile's import set is already curated and expected stable.
+        // Relocatable modules are linked by wasm-ld --gc-sections instead.
+        let strip_enabled = !reloc_enabled
+            && self.options.wasm_profile == WasmProfile::Auto;
+        if strip_enabled {
             let unused: BTreeSet<String> = self.import_ids.unused_names().into_iter().collect();
-            if !unused.is_empty() {
-                let orig_valid = validate_wasm_sections(&bytes);
-                if !orig_valid {
+            if !unused.is_empty() && validate_wasm_sections(&bytes) {
+                let before_len = bytes.len();
+                let stripped = strip_unused_imports(bytes.clone(), &unused);
+                if validate_wasm_sections(&stripped) {
                     eprintln!(
-                        "[molt-wasm-strip] original module invalid ({} bytes), \
-                         skipping strip of {} unused imports",
-                        bytes.len(), unused.len(),
+                        "[molt-wasm-strip] eliminated {} unused imports, \
+                         {} -> {} bytes (saved {})",
+                        unused.len(), before_len, stripped.len(),
+                        before_len.saturating_sub(stripped.len()),
                     );
-                } else {
-                    let before_len = bytes.len();
-                    let stripped = strip_unused_imports(bytes.clone(), &unused);
-                    if validate_wasm_sections(&stripped) {
-                        eprintln!(
-                            "[molt-wasm-strip] eliminated {} unused imports, \
-                             {} -> {} bytes (saved {})",
-                            unused.len(), before_len, stripped.len(),
-                            before_len.saturating_sub(stripped.len()),
-                        );
-                        bytes = stripped;
-                    } else {
-                        // Diagnose which section is invalid.
-                        let mut diag_pos = 8usize;
-                        let mut diag_sections = Vec::new();
-                        while diag_pos < stripped.len() {
-                            let sid = stripped[diag_pos];
-                            diag_pos += 1;
-                            if diag_pos >= stripped.len() {
-                                diag_sections.push(format!("id={sid} (truncated)"));
-                                break;
-                            }
-                            let (sz, np) = read_u32_leb128(&stripped, diag_pos);
-                            diag_pos = np + sz as usize;
-                            if sid > 13 || diag_pos > stripped.len() {
-                                diag_sections.push(format!("id={sid} sz={sz} (INVALID @ {})", np));
-                                break;
-                            }
-                            diag_sections.push(format!("id={sid} sz={sz}"));
-                        }
-                        // Hex dump around the invalid section.
-                        let dump_start = 640usize.min(stripped.len());
-                        let dump_end = 670usize.min(stripped.len());
-                        let hex: Vec<String> = stripped[dump_start..dump_end]
-                            .iter()
-                            .map(|b| format!("{b:02x}"))
-                            .collect();
-                        eprintln!(
-                            "[molt-wasm-strip] WARNING: stripped output invalid ({} bytes), \
-                             keeping original ({} unused imports). Sections: [{}]. \
-                             Hex @{dump_start}: {}",
-                            stripped.len(), unused.len(), diag_sections.join(", "),
-                            hex.join(" "),
-                        );
-                    }
+                    bytes = stripped;
                 }
             }
         }
@@ -12047,6 +12009,7 @@ fn strip_unused_imports(bytes: Vec<u8>, unused_names: &BTreeSet<String>) -> Vec<
                         break;
                     }
                 }
+                out.push(2); // import section id
                 section.encode(&mut out);
             }
 
@@ -12074,6 +12037,7 @@ fn strip_unused_imports(bytes: Vec<u8>, unused_names: &BTreeSet<String>) -> Vec<
                         break;
                     }
                 }
+                out.push(7); // export section id
                 section.encode(&mut out);
             }
 
@@ -12132,6 +12096,7 @@ fn strip_unused_imports(bytes: Vec<u8>, unused_names: &BTreeSet<String>) -> Vec<
                         break;
                     }
                 }
+                out.push(9); // element section id
                 section.encode(&mut out);
             }
 
