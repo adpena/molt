@@ -33943,9 +33943,31 @@ pub extern "C" fn molt_guarded_class_def(
                         base, init_name, none,
                     );
                     if init_attr != none {
-                        let _ = crate::call::dispatch::call_callable1(
-                            _py, init_attr, class_bits,
-                        );
+                        // __init_subclass__(cls) or __init_subclass__(cls, **kwargs)
+                        // The compiled function may have arity 2 when **kwargs
+                        // is present; pass an empty dict to satisfy the extra
+                        // parameter.  This mirrors CPython's implicit classmethod
+                        // wrapping + empty kwargs for class statements without
+                        // keyword arguments.
+                        let init_obj = obj_from_bits(init_attr);
+                        let needs_kwargs = match init_obj.as_ptr() {
+                            Some(ptr) if object_type_id(ptr) == TYPE_ID_FUNCTION => {
+                                function_arity(ptr) > 1
+                            }
+                            _ => false,
+                        };
+                        if needs_kwargs {
+                            let empty_dict =
+                                crate::builtins::containers_alloc::molt_dict_new(0);
+                            let _ = crate::call::dispatch::call_callable2(
+                                _py, init_attr, class_bits, empty_dict,
+                            );
+                            crate::dec_ref_bits(_py, empty_dict);
+                        } else {
+                            let _ = crate::call::dispatch::call_callable1(
+                                _py, init_attr, class_bits,
+                            );
+                        }
                         crate::dec_ref_bits(_py, init_attr);
                     }
                 }
