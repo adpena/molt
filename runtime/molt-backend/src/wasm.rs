@@ -4820,8 +4820,7 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["add"]);
                             func.instruction(&Instruction::End);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "inplace_add" => {
                         let args = op.args.as_ref().unwrap();
@@ -4887,8 +4886,7 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["inplace_add"]);
                             func.instruction(&Instruction::End);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "vec_sum_int"
                     | "vec_sum_int_trusted"
@@ -4990,8 +4988,7 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["sub"]);
                             func.instruction(&Instruction::End);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "mul" => {
                         let args = op.args.as_ref().unwrap();
@@ -5057,8 +5054,7 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["mul"]);
                             func.instruction(&Instruction::End);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "inplace_sub" => {
                         let args = op.args.as_ref().unwrap();
@@ -5124,8 +5120,7 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["inplace_sub"]);
                             func.instruction(&Instruction::End);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "inplace_mul" => {
                         let args = op.args.as_ref().unwrap();
@@ -5191,8 +5186,7 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["inplace_mul"]);
                             func.instruction(&Instruction::End);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bit_or" => {
                         let args = op.args.as_ref().unwrap();
@@ -5231,8 +5225,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["bit_or"]);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bit_and" => {
                         let args = op.args.as_ref().unwrap();
@@ -5271,8 +5264,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["bit_and"]);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bit_xor" => {
                         let args = op.args.as_ref().unwrap();
@@ -5311,16 +5303,14 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["bit_xor"]);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "invert" => {
                         let args = op.args.as_ref().unwrap();
                         let val = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["invert"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "inplace_bit_or" => {
                         let args = op.args.as_ref().unwrap();
@@ -5359,8 +5349,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["inplace_bit_or"]);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "inplace_bit_and" => {
                         let args = op.args.as_ref().unwrap();
@@ -5399,8 +5388,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["inplace_bit_and"]);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "inplace_bit_xor" => {
                         let args = op.args.as_ref().unwrap();
@@ -5439,8 +5427,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["inplace_bit_xor"]);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "lshift" => {
                         let args = op.args.as_ref().unwrap();
@@ -5501,8 +5488,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["lshift"]);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "rshift" => {
                         let args = op.args.as_ref().unwrap();
@@ -5548,8 +5534,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["rshift"]);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "matmul" => {
                         let args = op.args.as_ref().unwrap();
@@ -5558,8 +5543,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(lhs));
                         func.instruction(&Instruction::LocalGet(rhs));
                         emit_call(func, reloc_enabled, import_ids["matmul"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "div" => {
                         let args = op.args.as_ref().unwrap();
@@ -5628,8 +5612,7 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["div"]);
                             func.instruction(&Instruction::End);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "floordiv" => {
                         let args = op.args.as_ref().unwrap();
@@ -5699,8 +5682,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["floordiv"]);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "mod" => {
                         let args = op.args.as_ref().unwrap();
@@ -5766,8 +5748,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["mod"]);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "pow" => {
                         let args = op.args.as_ref().unwrap();
@@ -5776,8 +5757,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(lhs));
                         func.instruction(&Instruction::LocalGet(rhs));
                         emit_call(func, reloc_enabled, import_ids["pow"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "pow_mod" => {
                         let args = op.args.as_ref().unwrap();
@@ -5788,8 +5768,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(rhs));
                         func.instruction(&Instruction::LocalGet(modulus));
                         emit_call(func, reloc_enabled, import_ids["pow_mod"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "round" => {
                         let args = op.args.as_ref().unwrap();
@@ -5800,16 +5779,14 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(ndigits));
                         func.instruction(&Instruction::LocalGet(has_ndigits));
                         emit_call(func, reloc_enabled, import_ids["round"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "trunc" => {
                         let args = op.args.as_ref().unwrap();
                         let val = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["trunc"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "lt" => {
                         let args = op.args.as_ref().unwrap();
@@ -5866,8 +5843,7 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["lt"]);
                             func.instruction(&Instruction::End);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "le" => {
                         let args = op.args.as_ref().unwrap();
@@ -5924,8 +5900,7 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["le"]);
                             func.instruction(&Instruction::End);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "gt" => {
                         let args = op.args.as_ref().unwrap();
@@ -5982,8 +5957,7 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["gt"]);
                             func.instruction(&Instruction::End);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "ge" => {
                         let args = op.args.as_ref().unwrap();
@@ -6040,8 +6014,7 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["ge"]);
                             func.instruction(&Instruction::End);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "eq" => {
                         let args = op.args.as_ref().unwrap();
@@ -6061,8 +6034,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["eq"]);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "ne" => {
                         let args = op.args.as_ref().unwrap();
@@ -6080,8 +6052,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(rhs));
                             emit_call(func, reloc_enabled, import_ids["ne"]);
                         }
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_eq" => {
                         let args = op.args.as_ref().unwrap();
@@ -6090,8 +6061,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(lhs));
                         func.instruction(&Instruction::LocalGet(rhs));
                         emit_call(func, reloc_enabled, import_ids["string_eq"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "is" => {
                         let args = op.args.as_ref().unwrap();
@@ -6100,24 +6070,21 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(lhs));
                         func.instruction(&Instruction::LocalGet(rhs));
                         emit_call(func, reloc_enabled, import_ids["is"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "not" => {
                         let args = op.args.as_ref().unwrap();
                         let val = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["not"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "abs" => {
                         let args = op.args.as_ref().unwrap();
                         let val = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["abs_builtin"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "and" => {
                         let args = op.args.as_ref().unwrap();
@@ -6132,8 +6099,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::Else);
                         func.instruction(&Instruction::LocalGet(lhs));
                         func.instruction(&Instruction::End);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "or" => {
                         let args = op.args.as_ref().unwrap();
@@ -6148,8 +6114,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::Else);
                         func.instruction(&Instruction::LocalGet(rhs));
                         func.instruction(&Instruction::End);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "contains" => {
                         let args = op.args.as_ref().unwrap();
@@ -6158,8 +6123,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(container));
                         func.instruction(&Instruction::LocalGet(item));
                         emit_call(func, reloc_enabled, import_ids["contains"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "guard_type" | "guard_tag" => {
                         let args = op.args.as_ref().unwrap();
@@ -6377,32 +6341,28 @@ impl WasmBackend {
                         let arg = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(arg));
                         emit_call(func, reloc_enabled, import_ids["len"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "id" => {
                         let args = op.args.as_ref().unwrap();
                         let arg = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(arg));
                         emit_call(func, reloc_enabled, import_ids["id"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "ord" => {
                         let args = op.args.as_ref().unwrap();
                         let arg = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(arg));
                         emit_call(func, reloc_enabled, import_ids["ord"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "chr" => {
                         let args = op.args.as_ref().unwrap();
                         let arg = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(arg));
                         emit_call(func, reloc_enabled, import_ids["chr"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "callargs_new" => {
                         let out = locals[op.out.as_ref().unwrap()];
@@ -6554,8 +6514,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(list));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["list_append"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "list_pop" => {
                         let args = op.args.as_ref().unwrap();
@@ -6564,8 +6523,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(list));
                         func.instruction(&Instruction::LocalGet(idx));
                         emit_call(func, reloc_enabled, import_ids["list_pop"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "list_extend" => {
                         let args = op.args.as_ref().unwrap();
@@ -6574,8 +6532,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(list));
                         func.instruction(&Instruction::LocalGet(other));
                         emit_call(func, reloc_enabled, import_ids["list_extend"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "list_insert" => {
                         let args = op.args.as_ref().unwrap();
@@ -6586,8 +6543,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(idx));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["list_insert"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "list_remove" => {
                         let args = op.args.as_ref().unwrap();
@@ -6596,32 +6552,28 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(list));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["list_remove"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "list_clear" => {
                         let args = op.args.as_ref().unwrap();
                         let list = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(list));
                         emit_call(func, reloc_enabled, import_ids["list_clear"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "list_copy" => {
                         let args = op.args.as_ref().unwrap();
                         let list = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(list));
                         emit_call(func, reloc_enabled, import_ids["list_copy"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "list_reverse" => {
                         let args = op.args.as_ref().unwrap();
                         let list = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(list));
                         emit_call(func, reloc_enabled, import_ids["list_reverse"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "list_count" => {
                         let args = op.args.as_ref().unwrap();
@@ -6630,8 +6582,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(list));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["list_count"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "list_index" => {
                         let args = op.args.as_ref().unwrap();
@@ -6640,8 +6591,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(list));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["list_index"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "list_index_range" => {
                         let args = op.args.as_ref().unwrap();
@@ -6654,16 +6604,14 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(start));
                         func.instruction(&Instruction::LocalGet(stop));
                         emit_call(func, reloc_enabled, import_ids["list_index_range"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "tuple_from_list" => {
                         let args = op.args.as_ref().unwrap();
                         let list = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(list));
                         emit_call(func, reloc_enabled, import_ids["tuple_from_list"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dict_new" => {
                         let empty_args_dn: Vec<String> = Vec::new();
@@ -6729,8 +6677,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(key));
                         func.instruction(&Instruction::LocalGet(default));
                         emit_call(func, reloc_enabled, import_ids["dict_get"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dict_inc" => {
                         let args = op.args.as_ref().unwrap();
@@ -6741,8 +6688,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(key));
                         func.instruction(&Instruction::LocalGet(delta));
                         emit_call(func, reloc_enabled, import_ids["dict_inc"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dict_str_int_inc" => {
                         let args = op.args.as_ref().unwrap();
@@ -6753,8 +6699,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(key));
                         func.instruction(&Instruction::LocalGet(delta));
                         emit_call(func, reloc_enabled, import_ids["dict_str_int_inc"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_split_ws_dict_inc" => {
                         let args = op.args.as_ref().unwrap();
@@ -6765,8 +6710,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(dict));
                         func.instruction(&Instruction::LocalGet(delta));
                         emit_call(func, reloc_enabled, import_ids["string_split_ws_dict_inc"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "taq_ingest_line" => {
                         let args = op.args.as_ref().unwrap();
@@ -6777,8 +6721,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(line));
                         func.instruction(&Instruction::LocalGet(bucket_size));
                         emit_call(func, reloc_enabled, import_ids["taq_ingest_line"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_split_sep_dict_inc" => {
                         let args = op.args.as_ref().unwrap();
@@ -6791,8 +6734,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(dict));
                         func.instruction(&Instruction::LocalGet(delta));
                         emit_call(func, reloc_enabled, import_ids["string_split_sep_dict_inc"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dict_pop" => {
                         let args = op.args.as_ref().unwrap();
@@ -6805,8 +6747,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(default));
                         func.instruction(&Instruction::LocalGet(has_default));
                         emit_call(func, reloc_enabled, import_ids["dict_pop"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dict_setdefault" => {
                         let args = op.args.as_ref().unwrap();
@@ -6817,8 +6758,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(key));
                         func.instruction(&Instruction::LocalGet(default));
                         emit_call(func, reloc_enabled, import_ids["dict_setdefault"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dict_setdefault_empty_list" => {
                         let args = op.args.as_ref().unwrap();
@@ -6831,8 +6771,7 @@ impl WasmBackend {
                             reloc_enabled,
                             import_ids["dict_setdefault_empty_list"],
                         );
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dict_update" => {
                         let args = op.args.as_ref().unwrap();
@@ -6841,32 +6780,28 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(dict));
                         func.instruction(&Instruction::LocalGet(other));
                         emit_call(func, reloc_enabled, import_ids["dict_update"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dict_clear" => {
                         let args = op.args.as_ref().unwrap();
                         let dict = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(dict));
                         emit_call(func, reloc_enabled, import_ids["dict_clear"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dict_copy" => {
                         let args = op.args.as_ref().unwrap();
                         let dict = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(dict));
                         emit_call(func, reloc_enabled, import_ids["dict_copy"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dict_popitem" => {
                         let args = op.args.as_ref().unwrap();
                         let dict = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(dict));
                         emit_call(func, reloc_enabled, import_ids["dict_popitem"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dict_update_kwstar" => {
                         let args = op.args.as_ref().unwrap();
@@ -6875,8 +6810,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(dict));
                         func.instruction(&Instruction::LocalGet(other));
                         emit_call(func, reloc_enabled, import_ids["dict_update_kwstar"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "set_add" => {
                         let args = op.args.as_ref().unwrap();
@@ -6885,8 +6819,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(set_bits));
                         func.instruction(&Instruction::LocalGet(key));
                         emit_call(func, reloc_enabled, import_ids["set_add"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "frozenset_add" => {
                         let args = op.args.as_ref().unwrap();
@@ -6895,8 +6828,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(set_bits));
                         func.instruction(&Instruction::LocalGet(key));
                         emit_call(func, reloc_enabled, import_ids["frozenset_add"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "set_discard" => {
                         let args = op.args.as_ref().unwrap();
@@ -6905,8 +6837,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(set_bits));
                         func.instruction(&Instruction::LocalGet(key));
                         emit_call(func, reloc_enabled, import_ids["set_discard"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "set_remove" => {
                         let args = op.args.as_ref().unwrap();
@@ -6915,16 +6846,14 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(set_bits));
                         func.instruction(&Instruction::LocalGet(key));
                         emit_call(func, reloc_enabled, import_ids["set_remove"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "set_pop" => {
                         let args = op.args.as_ref().unwrap();
                         let set_bits = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(set_bits));
                         emit_call(func, reloc_enabled, import_ids["set_pop"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "set_update" => {
                         let args = op.args.as_ref().unwrap();
@@ -6933,8 +6862,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(set_bits));
                         func.instruction(&Instruction::LocalGet(other));
                         emit_call(func, reloc_enabled, import_ids["set_update"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "set_intersection_update" => {
                         let args = op.args.as_ref().unwrap();
@@ -6943,8 +6871,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(set_bits));
                         func.instruction(&Instruction::LocalGet(other));
                         emit_call(func, reloc_enabled, import_ids["set_intersection_update"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "set_difference_update" => {
                         let args = op.args.as_ref().unwrap();
@@ -6953,8 +6880,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(set_bits));
                         func.instruction(&Instruction::LocalGet(other));
                         emit_call(func, reloc_enabled, import_ids["set_difference_update"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "set_symdiff_update" => {
                         let args = op.args.as_ref().unwrap();
@@ -6963,32 +6889,28 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(set_bits));
                         func.instruction(&Instruction::LocalGet(other));
                         emit_call(func, reloc_enabled, import_ids["set_symdiff_update"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dict_keys" => {
                         let args = op.args.as_ref().unwrap();
                         let dict = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(dict));
                         emit_call(func, reloc_enabled, import_ids["dict_keys"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dict_values" => {
                         let args = op.args.as_ref().unwrap();
                         let dict = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(dict));
                         emit_call(func, reloc_enabled, import_ids["dict_values"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dict_items" => {
                         let args = op.args.as_ref().unwrap();
                         let dict = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(dict));
                         emit_call(func, reloc_enabled, import_ids["dict_items"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "tuple_count" => {
                         let args = op.args.as_ref().unwrap();
@@ -6997,8 +6919,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(tuple));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["tuple_count"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "tuple_index" => {
                         let args = op.args.as_ref().unwrap();
@@ -7053,8 +6974,7 @@ impl WasmBackend {
                         let obj = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(obj));
                         emit_call(func, reloc_enabled, import_ids["iter"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "enumerate" => {
                         let args = op.args.as_ref().unwrap();
@@ -7065,45 +6985,39 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(start));
                         func.instruction(&Instruction::LocalGet(has_start));
                         emit_call(func, reloc_enabled, import_ids["enumerate"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "aiter" => {
                         let args = op.args.as_ref().unwrap();
                         let obj = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(obj));
                         emit_call(func, reloc_enabled, import_ids["aiter"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "iter_next" => {
                         let args = op.args.as_ref().unwrap();
                         let iter = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(iter));
                         emit_call(func, reloc_enabled, import_ids["iter_next"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "anext" => {
                         let args = op.args.as_ref().unwrap();
                         let iter = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(iter));
                         emit_call(func, reloc_enabled, import_ids["anext"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "asyncgen_new" => {
                         let args = op.args.as_ref().unwrap();
                         let gen_local = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(gen_local));
                         emit_call(func, reloc_enabled, import_ids["asyncgen_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "asyncgen_shutdown" => {
                         emit_call(func, reloc_enabled, import_ids["asyncgen_shutdown"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "gen_send" => {
                         let args = op.args.as_ref().unwrap();
@@ -7112,8 +7026,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(gen_local));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["generator_send"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "gen_throw" => {
                         let args = op.args.as_ref().unwrap();
@@ -7122,40 +7035,35 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(gen_local));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["generator_throw"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "gen_close" => {
                         let args = op.args.as_ref().unwrap();
                         let gen_local = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(gen_local));
                         emit_call(func, reloc_enabled, import_ids["generator_close"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "is_generator" => {
                         let args = op.args.as_ref().unwrap();
                         let obj = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(obj));
                         emit_call(func, reloc_enabled, import_ids["is_generator"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "is_bound_method" => {
                         let args = op.args.as_ref().unwrap();
                         let obj = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(obj));
                         emit_call(func, reloc_enabled, import_ids["is_bound_method"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "is_callable" => {
                         let args = op.args.as_ref().unwrap();
                         let obj = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(obj));
                         emit_call(func, reloc_enabled, import_ids["is_callable"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "index" => {
                         let args = op.args.as_ref().unwrap();
@@ -7164,8 +7072,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(obj));
                         func.instruction(&Instruction::LocalGet(idx));
                         emit_call(func, reloc_enabled, import_ids["index"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "store_index" => {
                         let args = op.args.as_ref().unwrap();
@@ -7206,8 +7113,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(start));
                         func.instruction(&Instruction::LocalGet(end));
                         emit_call(func, reloc_enabled, import_ids["slice"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "slice_new" => {
                         let args = op.args.as_ref().unwrap();
@@ -7218,8 +7124,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(stop));
                         func.instruction(&Instruction::LocalGet(step));
                         emit_call(func, reloc_enabled, import_ids["slice_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytes_find" => {
                         let args = op.args.as_ref().unwrap();
@@ -7228,8 +7133,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(needle));
                         emit_call(func, reloc_enabled, import_ids["bytes_find"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytes_find_slice" => {
                         let args = op.args.as_ref().unwrap();
@@ -7246,8 +7150,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(has_start));
                         func.instruction(&Instruction::LocalGet(has_end));
                         emit_call(func, reloc_enabled, import_ids["bytes_find_slice"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytearray_find" => {
                         let args = op.args.as_ref().unwrap();
@@ -7256,8 +7159,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(needle));
                         emit_call(func, reloc_enabled, import_ids["bytearray_find"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytearray_find_slice" => {
                         let args = op.args.as_ref().unwrap();
@@ -7274,8 +7176,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(has_start));
                         func.instruction(&Instruction::LocalGet(has_end));
                         emit_call(func, reloc_enabled, import_ids["bytearray_find_slice"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_find" => {
                         let args = op.args.as_ref().unwrap();
@@ -7284,8 +7185,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(needle));
                         emit_call(func, reloc_enabled, import_ids["string_find"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_find_slice" => {
                         let args = op.args.as_ref().unwrap();
@@ -7302,8 +7202,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(has_start));
                         func.instruction(&Instruction::LocalGet(has_end));
                         emit_call(func, reloc_enabled, import_ids["string_find_slice"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_format" => {
                         let args = op.args.as_ref().unwrap();
@@ -7312,8 +7211,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(val));
                         func.instruction(&Instruction::LocalGet(spec));
                         emit_call(func, reloc_enabled, import_ids["format_builtin"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_startswith" => {
                         let args = op.args.as_ref().unwrap();
@@ -7322,8 +7220,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(needle));
                         emit_call(func, reloc_enabled, import_ids["string_startswith"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_startswith_slice" => {
                         let args = op.args.as_ref().unwrap();
@@ -7340,8 +7237,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(has_start));
                         func.instruction(&Instruction::LocalGet(has_end));
                         emit_call(func, reloc_enabled, import_ids["string_startswith_slice"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytes_startswith" => {
                         let args = op.args.as_ref().unwrap();
@@ -7350,8 +7246,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(needle));
                         emit_call(func, reloc_enabled, import_ids["bytes_startswith"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytes_startswith_slice" => {
                         let args = op.args.as_ref().unwrap();
@@ -7368,8 +7263,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(has_start));
                         func.instruction(&Instruction::LocalGet(has_end));
                         emit_call(func, reloc_enabled, import_ids["bytes_startswith_slice"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytearray_startswith" => {
                         let args = op.args.as_ref().unwrap();
@@ -7378,8 +7272,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(needle));
                         emit_call(func, reloc_enabled, import_ids["bytearray_startswith"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytearray_startswith_slice" => {
                         let args = op.args.as_ref().unwrap();
@@ -7400,8 +7293,7 @@ impl WasmBackend {
                             reloc_enabled,
                             import_ids["bytearray_startswith_slice"],
                         );
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_endswith" => {
                         let args = op.args.as_ref().unwrap();
@@ -7410,8 +7302,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(needle));
                         emit_call(func, reloc_enabled, import_ids["string_endswith"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_endswith_slice" => {
                         let args = op.args.as_ref().unwrap();
@@ -7428,8 +7319,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(has_start));
                         func.instruction(&Instruction::LocalGet(has_end));
                         emit_call(func, reloc_enabled, import_ids["string_endswith_slice"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytes_endswith" => {
                         let args = op.args.as_ref().unwrap();
@@ -7438,8 +7328,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(needle));
                         emit_call(func, reloc_enabled, import_ids["bytes_endswith"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytes_endswith_slice" => {
                         let args = op.args.as_ref().unwrap();
@@ -7456,8 +7345,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(has_start));
                         func.instruction(&Instruction::LocalGet(has_end));
                         emit_call(func, reloc_enabled, import_ids["bytes_endswith_slice"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytearray_endswith" => {
                         let args = op.args.as_ref().unwrap();
@@ -7466,8 +7354,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(needle));
                         emit_call(func, reloc_enabled, import_ids["bytearray_endswith"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytearray_endswith_slice" => {
                         let args = op.args.as_ref().unwrap();
@@ -7484,8 +7371,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(has_start));
                         func.instruction(&Instruction::LocalGet(has_end));
                         emit_call(func, reloc_enabled, import_ids["bytearray_endswith_slice"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_count" => {
                         let args = op.args.as_ref().unwrap();
@@ -7494,8 +7380,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(needle));
                         emit_call(func, reloc_enabled, import_ids["string_count"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytes_count" => {
                         let args = op.args.as_ref().unwrap();
@@ -7504,8 +7389,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(needle));
                         emit_call(func, reloc_enabled, import_ids["bytes_count"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytearray_count" => {
                         let args = op.args.as_ref().unwrap();
@@ -7514,8 +7398,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(needle));
                         emit_call(func, reloc_enabled, import_ids["bytearray_count"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_count_slice" => {
                         let args = op.args.as_ref().unwrap();
@@ -7532,8 +7415,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(has_start));
                         func.instruction(&Instruction::LocalGet(has_end));
                         emit_call(func, reloc_enabled, import_ids["string_count_slice"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytes_count_slice" => {
                         let args = op.args.as_ref().unwrap();
@@ -7550,8 +7432,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(has_start));
                         func.instruction(&Instruction::LocalGet(has_end));
                         emit_call(func, reloc_enabled, import_ids["bytes_count_slice"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytearray_count_slice" => {
                         let args = op.args.as_ref().unwrap();
@@ -7568,8 +7449,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(has_start));
                         func.instruction(&Instruction::LocalGet(has_end));
                         emit_call(func, reloc_enabled, import_ids["bytearray_count_slice"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "env_get" => {
                         let args = op.args.as_ref().unwrap();
@@ -7578,13 +7458,11 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(key));
                         func.instruction(&Instruction::LocalGet(default));
                         emit_call(func, reloc_enabled, import_ids["env_get"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "errno_constants" => {
                         emit_call(func, reloc_enabled, import_ids["errno_constants"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_join" => {
                         let args = op.args.as_ref().unwrap();
@@ -7593,8 +7471,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(sep));
                         func.instruction(&Instruction::LocalGet(items));
                         emit_call(func, reloc_enabled, import_ids["string_join"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_split" => {
                         let args = op.args.as_ref().unwrap();
@@ -7603,8 +7480,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(needle));
                         emit_call(func, reloc_enabled, import_ids["string_split"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_split_max" => {
                         let args = op.args.as_ref().unwrap();
@@ -7615,8 +7491,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(needle));
                         func.instruction(&Instruction::LocalGet(maxsplit));
                         emit_call(func, reloc_enabled, import_ids["string_split_max"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "statistics_mean_slice" => {
                         let args = op.args.as_ref().unwrap();
@@ -7631,8 +7506,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(has_start));
                         func.instruction(&Instruction::LocalGet(has_end));
                         emit_call(func, reloc_enabled, import_ids["statistics_mean_slice"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "statistics_stdev_slice" => {
                         let args = op.args.as_ref().unwrap();
@@ -7647,32 +7521,28 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(has_start));
                         func.instruction(&Instruction::LocalGet(has_end));
                         emit_call(func, reloc_enabled, import_ids["statistics_stdev_slice"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_lower" => {
                         let args = op.args.as_ref().unwrap();
                         let hay = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(hay));
                         emit_call(func, reloc_enabled, import_ids["string_lower"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_upper" => {
                         let args = op.args.as_ref().unwrap();
                         let hay = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(hay));
                         emit_call(func, reloc_enabled, import_ids["string_upper"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_capitalize" => {
                         let args = op.args.as_ref().unwrap();
                         let hay = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(hay));
                         emit_call(func, reloc_enabled, import_ids["string_capitalize"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_strip" => {
                         let args = op.args.as_ref().unwrap();
@@ -7681,8 +7551,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(chars));
                         emit_call(func, reloc_enabled, import_ids["string_strip"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_lstrip" => {
                         let args = op.args.as_ref().unwrap();
@@ -7691,8 +7560,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(chars));
                         emit_call(func, reloc_enabled, import_ids["string_lstrip"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_rstrip" => {
                         let args = op.args.as_ref().unwrap();
@@ -7701,8 +7569,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(chars));
                         emit_call(func, reloc_enabled, import_ids["string_rstrip"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytes_split" => {
                         let args = op.args.as_ref().unwrap();
@@ -7711,8 +7578,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(needle));
                         emit_call(func, reloc_enabled, import_ids["bytes_split"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytes_split_max" => {
                         let args = op.args.as_ref().unwrap();
@@ -7723,8 +7589,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(needle));
                         func.instruction(&Instruction::LocalGet(maxsplit));
                         emit_call(func, reloc_enabled, import_ids["bytes_split_max"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytearray_split" => {
                         let args = op.args.as_ref().unwrap();
@@ -7733,8 +7598,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(hay));
                         func.instruction(&Instruction::LocalGet(needle));
                         emit_call(func, reloc_enabled, import_ids["bytearray_split"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytearray_split_max" => {
                         let args = op.args.as_ref().unwrap();
@@ -7745,8 +7609,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(needle));
                         func.instruction(&Instruction::LocalGet(maxsplit));
                         emit_call(func, reloc_enabled, import_ids["bytearray_split_max"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytes_replace" => {
                         let args = op.args.as_ref().unwrap();
@@ -7759,8 +7622,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(replacement));
                         func.instruction(&Instruction::LocalGet(count));
                         emit_call(func, reloc_enabled, import_ids["bytes_replace"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "string_replace" => {
                         let args = op.args.as_ref().unwrap();
@@ -7773,8 +7635,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(replacement));
                         func.instruction(&Instruction::LocalGet(count));
                         emit_call(func, reloc_enabled, import_ids["string_replace"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytearray_replace" => {
                         let args = op.args.as_ref().unwrap();
@@ -7787,16 +7648,14 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(replacement));
                         func.instruction(&Instruction::LocalGet(count));
                         emit_call(func, reloc_enabled, import_ids["bytearray_replace"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytes_from_obj" => {
                         let args = op.args.as_ref().unwrap();
                         let src = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(src));
                         emit_call(func, reloc_enabled, import_ids["bytes_from_obj"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytes_from_str" => {
                         let args = op.args.as_ref().unwrap();
@@ -7807,16 +7666,14 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(encoding));
                         func.instruction(&Instruction::LocalGet(errors));
                         emit_call(func, reloc_enabled, import_ids["bytes_from_str"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytearray_from_obj" => {
                         let args = op.args.as_ref().unwrap();
                         let src = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(src));
                         emit_call(func, reloc_enabled, import_ids["bytearray_from_obj"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "bytearray_from_str" => {
                         let args = op.args.as_ref().unwrap();
@@ -7827,16 +7684,14 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(encoding));
                         func.instruction(&Instruction::LocalGet(errors));
                         emit_call(func, reloc_enabled, import_ids["bytearray_from_str"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "float_from_obj" => {
                         let args = op.args.as_ref().unwrap();
                         let src = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(src));
                         emit_call(func, reloc_enabled, import_ids["float_from_obj"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "int_from_obj" => {
                         let args = op.args.as_ref().unwrap();
@@ -7847,8 +7702,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(base));
                         func.instruction(&Instruction::LocalGet(has_base));
                         emit_call(func, reloc_enabled, import_ids["int_from_obj"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "complex_from_obj" => {
                         let args = op.args.as_ref().unwrap();
@@ -7859,32 +7713,28 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(imag));
                         func.instruction(&Instruction::LocalGet(has_imag));
                         emit_call(func, reloc_enabled, import_ids["complex_from_obj"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "intarray_from_seq" => {
                         let args = op.args.as_ref().unwrap();
                         let src = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(src));
                         emit_call(func, reloc_enabled, import_ids["intarray_from_seq"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "memoryview_new" => {
                         let args = op.args.as_ref().unwrap();
                         let src = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(src));
                         emit_call(func, reloc_enabled, import_ids["memoryview_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "memoryview_tobytes" => {
                         let args = op.args.as_ref().unwrap();
                         let src = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(src));
                         emit_call(func, reloc_enabled, import_ids["memoryview_tobytes"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "memoryview_cast" => {
                         let args = op.args.as_ref().unwrap();
@@ -7897,8 +7747,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(shape));
                         func.instruction(&Instruction::LocalGet(has_shape));
                         emit_call(func, reloc_enabled, import_ids["memoryview_cast"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "buffer2d_new" => {
                         let args = op.args.as_ref().unwrap();
@@ -7909,8 +7758,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(cols));
                         func.instruction(&Instruction::LocalGet(init));
                         emit_call(func, reloc_enabled, import_ids["buffer2d_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "buffer2d_get" => {
                         let args = op.args.as_ref().unwrap();
@@ -7921,8 +7769,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(row));
                         func.instruction(&Instruction::LocalGet(col));
                         emit_call(func, reloc_enabled, import_ids["buffer2d_get"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "buffer2d_set" => {
                         let args = op.args.as_ref().unwrap();
@@ -7935,8 +7782,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(col));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["buffer2d_set"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "buffer2d_matmul" => {
                         let args = op.args.as_ref().unwrap();
@@ -7945,32 +7791,28 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(lhs));
                         func.instruction(&Instruction::LocalGet(rhs));
                         emit_call(func, reloc_enabled, import_ids["buffer2d_matmul"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "str_from_obj" => {
                         let args = op.args.as_ref().unwrap();
                         let src = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(src));
                         emit_call(func, reloc_enabled, import_ids["str_from_obj"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "repr_from_obj" => {
                         let args = op.args.as_ref().unwrap();
                         let src = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(src));
                         emit_call(func, reloc_enabled, import_ids["repr_from_obj"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "ascii_from_obj" => {
                         let args = op.args.as_ref().unwrap();
                         let src = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(src));
                         emit_call(func, reloc_enabled, import_ids["ascii_from_obj"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dataclass_new" => {
                         let args = op.args.as_ref().unwrap();
@@ -7983,8 +7825,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(values));
                         func.instruction(&Instruction::LocalGet(flags));
                         emit_call(func, reloc_enabled, import_ids["dataclass_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dataclass_get" => {
                         let args = op.args.as_ref().unwrap();
@@ -7993,8 +7834,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(obj));
                         func.instruction(&Instruction::LocalGet(idx));
                         emit_call(func, reloc_enabled, import_ids["dataclass_get"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dataclass_set" => {
                         let args = op.args.as_ref().unwrap();
@@ -8005,8 +7845,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(idx));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["dataclass_set"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "dataclass_set_class" => {
                         let args = op.args.as_ref().unwrap();
@@ -8015,16 +7854,14 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(obj));
                         func.instruction(&Instruction::LocalGet(class_obj));
                         emit_call(func, reloc_enabled, import_ids["dataclass_set_class"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "class_new" => {
                         let args = op.args.as_ref().unwrap();
                         let name = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(name));
                         emit_call(func, reloc_enabled, import_ids["class_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "class_set_base" => {
                         let args = op.args.as_ref().unwrap();
@@ -8033,16 +7870,14 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(class_bits));
                         func.instruction(&Instruction::LocalGet(base_bits));
                         emit_call(func, reloc_enabled, import_ids["class_set_base"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "class_apply_set_name" => {
                         let args = op.args.as_ref().unwrap();
                         let class_bits = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(class_bits));
                         emit_call(func, reloc_enabled, import_ids["class_apply_set_name"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "super_new" => {
                         let args = op.args.as_ref().unwrap();
@@ -8051,32 +7886,28 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(type_bits));
                         func.instruction(&Instruction::LocalGet(obj_bits));
                         emit_call(func, reloc_enabled, import_ids["super_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "builtin_type" => {
                         let args = op.args.as_ref().unwrap();
                         let tag = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(tag));
                         emit_call(func, reloc_enabled, import_ids["builtin_type"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "type_of" => {
                         let args = op.args.as_ref().unwrap();
                         let obj = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(obj));
                         emit_call(func, reloc_enabled, import_ids["type_of"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "class_layout_version" => {
                         let args = op.args.as_ref().unwrap();
                         let class_bits = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(class_bits));
                         emit_call(func, reloc_enabled, import_ids["class_layout_version"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "class_set_layout_version" => {
                         let args = op.args.as_ref().unwrap();
@@ -8103,8 +7934,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(obj));
                         func.instruction(&Instruction::LocalGet(cls));
                         emit_call(func, reloc_enabled, import_ids["isinstance"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "issubclass" => {
                         let args = op.args.as_ref().unwrap();
@@ -8113,29 +7943,25 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(sub));
                         func.instruction(&Instruction::LocalGet(cls));
                         emit_call(func, reloc_enabled, import_ids["issubclass"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "object_new" => {
                         emit_call(func, reloc_enabled, import_ids["object_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "classmethod_new" => {
                         let args = op.args.as_ref().unwrap();
                         let func_bits = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(func_bits));
                         emit_call(func, reloc_enabled, import_ids["classmethod_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "staticmethod_new" => {
                         let args = op.args.as_ref().unwrap();
                         let func_bits = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(func_bits));
                         emit_call(func, reloc_enabled, import_ids["staticmethod_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "property_new" => {
                         let args = op.args.as_ref().unwrap();
@@ -8146,8 +7972,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(setter));
                         func.instruction(&Instruction::LocalGet(deleter));
                         emit_call(func, reloc_enabled, import_ids["property_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "object_set_class" => {
                         let args = op.args.as_ref().unwrap();
@@ -8157,8 +7982,7 @@ impl WasmBackend {
                         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
                         func.instruction(&Instruction::LocalGet(class_obj));
                         emit_call(func, reloc_enabled, import_ids["object_set_class"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "get_attr_generic_ptr" => {
                         let args = op.args.as_ref().unwrap();
@@ -8172,8 +7996,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         emit_call(func, reloc_enabled, import_ids["get_attr_ptr"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "get_attr_generic_obj" => {
                         let args = op.args.as_ref().unwrap();
@@ -8192,8 +8015,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         func.instruction(&Instruction::I64Const(site_bits));
                         emit_call(func, reloc_enabled, import_ids["get_attr_object_ic"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "get_attr_special_obj" => {
                         let args = op.args.as_ref().unwrap();
@@ -8206,8 +8028,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         emit_call(func, reloc_enabled, import_ids["get_attr_special"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "set_attr_generic_ptr" => {
                         let args = op.args.as_ref().unwrap();
@@ -8223,8 +8044,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["set_attr_ptr"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "set_attr_generic_obj" => {
                         let args = op.args.as_ref().unwrap();
@@ -8249,8 +8069,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["set_attr_object"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "del_attr_generic_ptr" => {
                         let args = op.args.as_ref().unwrap();
@@ -8264,8 +8083,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         emit_call(func, reloc_enabled, import_ids["del_attr_ptr"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "del_attr_generic_obj" => {
                         let args = op.args.as_ref().unwrap();
@@ -8278,8 +8096,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         emit_call(func, reloc_enabled, import_ids["del_attr_object"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "get_attr_name" => {
                         let args = op.args.as_ref().unwrap();
@@ -8288,8 +8105,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(obj));
                         func.instruction(&Instruction::LocalGet(name));
                         emit_call(func, reloc_enabled, import_ids["get_attr_name"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "get_attr_name_default" => {
                         let args = op.args.as_ref().unwrap();
@@ -8300,8 +8116,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(name));
                         func.instruction(&Instruction::LocalGet(default_val));
                         emit_call(func, reloc_enabled, import_ids["get_attr_name_default"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "has_attr_name" => {
                         let args = op.args.as_ref().unwrap();
@@ -8310,8 +8125,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(obj));
                         func.instruction(&Instruction::LocalGet(name));
                         emit_call(func, reloc_enabled, import_ids["has_attr_name"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "set_attr_name" => {
                         let args = op.args.as_ref().unwrap();
@@ -8322,8 +8136,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(name));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["set_attr_name"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "del_attr_name" => {
                         let args = op.args.as_ref().unwrap();
@@ -8332,8 +8145,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(obj));
                         func.instruction(&Instruction::LocalGet(name));
                         emit_call(func, reloc_enabled, import_ids["del_attr_name"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "store" => {
                         let args = op.args.as_ref().unwrap();
@@ -8955,8 +8767,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const((payload_len * 8) as i64));
                         func.instruction(&Instruction::I64Const(TASK_KIND_FUTURE));
                         emit_call(func, reloc_enabled, import_ids["task_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        let res = if let Some(out) = op.out.as_ref() { let r = locals[out]; func.instruction(&Instruction::LocalSet(r)); r } else { func.instruction(&Instruction::Drop); 0 };
                         if let Some(args) = op.args.as_ref() {
                             for (idx, arg) in args.iter().enumerate() {
                                 let arg_val = locals[arg];
@@ -9280,8 +9091,7 @@ impl WasmBackend {
                         emit_table_index_i64(func, reloc_enabled, tramp_idx);
                         func.instruction(&Instruction::I64Const(arity));
                         emit_call(func, reloc_enabled, import_ids["func_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "func_new_closure" => {
                         let func_name = op.s_value.as_ref().unwrap();
@@ -9301,8 +9111,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(arity));
                         func.instruction(&Instruction::LocalGet(closure_bits));
                         emit_call(func, reloc_enabled, import_ids["func_new_closure"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "code_new" => {
                         let args = op.args.as_ref().unwrap();
@@ -9323,8 +9132,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(posonlyargcount_bits));
                         func.instruction(&Instruction::LocalGet(kwonlyargcount_bits));
                         emit_call(func, reloc_enabled, import_ids["code_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "code_slot_set" => {
                         let args = op.args.as_ref().unwrap();
@@ -9402,8 +9210,7 @@ impl WasmBackend {
                         emit_table_index_i64(func, reloc_enabled, tramp_idx);
                         func.instruction(&Instruction::I64Const(arity));
                         emit_call(func, reloc_enabled, import_ids["func_new_builtin"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "missing" => {
                         let out = locals[op.out.as_ref().unwrap()];
@@ -9427,8 +9234,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(func_bits));
                         func.instruction(&Instruction::LocalGet(self_bits));
                         emit_call(func, reloc_enabled, import_ids["bound_method_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "call_func" => {
                         // Outlined: spill args to linear memory, then delegate
@@ -9572,24 +9378,21 @@ impl WasmBackend {
                         let name = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(name));
                         emit_call(func, reloc_enabled, import_ids["module_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "module_cache_get" => {
                         let args = op.args.as_ref().unwrap();
                         let name = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(name));
                         emit_call(func, reloc_enabled, import_ids["module_cache_get"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "module_import" => {
                         let args = op.args.as_ref().unwrap();
                         let name = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(name));
                         emit_call(func, reloc_enabled, import_ids["module_import"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "module_cache_set" => {
                         let args = op.args.as_ref().unwrap();
@@ -9610,8 +9413,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(module));
                         func.instruction(&Instruction::LocalGet(name));
                         emit_call(func, reloc_enabled, import_ids["module_get_attr"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "module_get_global" => {
                         let args = op.args.as_ref().unwrap();
@@ -9620,8 +9422,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(module));
                         func.instruction(&Instruction::LocalGet(name));
                         emit_call(func, reloc_enabled, import_ids["module_get_global"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "module_del_global" => {
                         let args = op.args.as_ref().unwrap();
@@ -9648,8 +9449,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(module));
                         func.instruction(&Instruction::LocalGet(name));
                         emit_call(func, reloc_enabled, import_ids["module_get_name"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                     }
                     "module_set_attr" => {
                         let args = op.args.as_ref().unwrap();
@@ -9694,8 +9494,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(total));
                         func.instruction(&Instruction::I64Const(kind_bits));
                         emit_call(func, reloc_enabled, import_ids["task_new"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
                         // Resolve the task handle pointer once and cache in a
                         // local, mirroring the trampoline codepath pattern
                         // (WASM_OPTIMIZATION_PLAN Section 3.3).
