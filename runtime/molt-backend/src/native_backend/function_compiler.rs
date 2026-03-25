@@ -4,21 +4,21 @@ use super::*;
 static EMPTY_VEC_STRING: Vec<String> = Vec::new();
 
 #[cfg(feature = "native-backend")]
-struct FunctionPreanalysis {
-    has_ret: bool,
-    stateful: bool,
-    has_store: bool,
-    var_names: Vec<String>,
-    last_use: BTreeMap<String, usize>,
-    if_to_end_if: BTreeMap<usize, usize>,
-    if_to_else: BTreeMap<usize, usize>,
-    else_to_end_if: BTreeMap<usize, usize>,
-    state_ids: Vec<i64>,
-    resume_states: BTreeSet<i64>,
-    function_exception_label_id: Option<i64>,
+pub(crate) pub(crate) struct FunctionPreanalysis {
+    pub(crate) has_ret: bool,
+    pub(crate) stateful: bool,
+    pub(crate) has_store: bool,
+    pub(crate) var_names: Vec<String>,
+    pub(crate) last_use: BTreeMap<String, usize>,
+    pub(crate) if_to_end_if: BTreeMap<usize, usize>,
+    pub(crate) if_to_else: BTreeMap<usize, usize>,
+    pub(crate) else_to_end_if: BTreeMap<usize, usize>,
+    pub(crate) state_ids: Vec<i64>,
+    pub(crate) resume_states: BTreeSet<i64>,
+    pub(crate) function_exception_label_id: Option<i64>,
     /// Pre-built map from variable name -> constant integer value for O(1) lookups.
     /// Only the first definition of each name is stored (SSA correctness).
-    const_int_map: BTreeMap<String, i64>,
+    pub(crate) const_int_map: BTreeMap<String, i64>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -82,7 +82,7 @@ fn import_func_ref(
 }
 
 #[cfg(feature = "native-backend")]
-fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
+pub(crate) pub(crate) fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
     let mut has_ret = false;
     let mut stateful = false;
     let mut has_store = false;
@@ -212,6 +212,23 @@ impl SimpleBackend {
         closure_functions: &BTreeSet<String>,
         emit_traces: bool,
     ) {
+        let preanalysis = preanalyze_function_ir(&func_ir);
+        let rc_skips = crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &preanalysis.last_use);
+        self.compile_func_with_preanalysis(func_ir, task_kinds, task_closure_sizes, defined_functions, closure_functions, emit_traces, preanalysis, rc_skips);
+    }
+
+    /// Like compile_func, but accepts pre-computed analysis results.
+    pub(crate) fn compile_func_with_preanalysis(
+        &mut self,
+        func_ir: FunctionIR,
+        task_kinds: &BTreeMap<String, TrampolineKind>,
+        task_closure_sizes: &BTreeMap<String, i64>,
+        defined_functions: &BTreeSet<String>,
+        closure_functions: &BTreeSet<String>,
+        emit_traces: bool,
+        preanalysis: FunctionPreanalysis,
+        rc_skips: (std::collections::HashSet<usize>, std::collections::HashSet<usize>),
+    ) {
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
         let FunctionPreanalysis {
@@ -227,8 +244,8 @@ impl SimpleBackend {
             resume_states,
             function_exception_label_id,
             const_int_map: _const_int_map,
-        } = preanalyze_function_ir(&func_ir);
-        let (rc_skip_inc, rc_skip_dec) = crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use);
+        } = preanalysis;
+        let (rc_skip_inc, rc_skip_dec) = rc_skips;
 
         if has_ret {
             self.ctx

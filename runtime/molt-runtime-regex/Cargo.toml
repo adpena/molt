@@ -1,0 +1,11 @@
+[package]
+name = "molt-runtime-regex"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Regex/re module group for the Molt runtime (re intrinsics, pattern compilation, matching)"
+
+[dependencies]
+# Core runtime types used by the regex implementations
+molt-runtime-core = { path = "../molt-runtime-core" }
+molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
