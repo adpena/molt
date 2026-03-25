@@ -18055,8 +18055,8 @@ def _ensure_runtime_wasm(
             )
     else:
         flags = (
-            "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
-            " -C relocation-model=pic"
+            "-C link-arg=--import-memory -C link-arg=--import-table"
+            " -C link-arg=--growable-table"
             if reloc
             else ""
         )
