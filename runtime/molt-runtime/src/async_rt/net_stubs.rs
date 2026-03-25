@@ -85,8 +85,6 @@ macro_rules! net_error {
 #[unsafe(no_mangle)] pub extern "C" fn molt_socketpair(_: u64, _: u64, _: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_getnameinfo(_: u64, _: u64) -> u64 { net_error!() }
 
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_sendmsg_afalg(_: u64, _: u64, _: u64, _: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_sethostname(_: u64) -> u64 { net_error!() }
 
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_setsockopt(_: u64, _: u64, _: u64, _: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_detach(_: u64) -> u64 { net_error!() }

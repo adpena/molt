@@ -126,6 +126,14 @@ pub(crate) use crate::async_rt::net_stubs::io_wait_release_socket;
 pub use crate::async_rt::sockets::*;
 // Re-export non-networking socket utilities that sockets.rs defines unconditionally.
 // When sockets::* glob is active (networking enabled), these are already included.
+// Unconditional socket utilities: available on all platforms regardless of stdlib_net.
+pub use crate::async_rt::sockets::{
+    molt_socket_cmsg_len, molt_socket_cmsg_space,
+    molt_socket_if_indextoname, molt_socket_if_nameindex, molt_socket_if_nametoindex,
+    molt_socket_send_fds, molt_socket_recv_fds,
+    molt_socket_sendmsg_afalg, molt_socket_sethostname,
+};
+
 #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
 pub use crate::async_rt::sockets::{
     molt_socket_getfqdn,
@@ -142,7 +150,6 @@ pub use crate::async_rt::sockets::{
     molt_socket_reader_read,
     molt_socket_reader_readline,
     molt_socket_reader_readline_limit,
-    molt_socket_sendfile,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
