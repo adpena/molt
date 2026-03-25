@@ -498,6 +498,25 @@ pub(crate) fn object_set_state(data_ptr: *mut u8, state: i64) {
     entry.state = state;
 }
 
+// ---------------------------------------------------------------------------
+// C API wrappers for cold-header state access (used by the native JIT backend).
+// State was moved from the inline MoltHeader to MoltColdHeader, so the JIT can
+// no longer do inline loads/stores — it must call through these functions.
+// ---------------------------------------------------------------------------
+
+/// Read the generator/coroutine state for the object at `data_ptr`.
+/// Returns the state value (0 if no cold header exists).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_obj_get_state(data_ptr: *mut u8) -> i64 {
+    object_state(data_ptr)
+}
+
+/// Write the generator/coroutine state for the object at `data_ptr`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_obj_set_state(data_ptr: *mut u8, state: i64) {
+    object_set_state(data_ptr, state);
+}
+
 thread_local! {
     pub(crate) static OBJECT_POOL_TLS: RefCell<Vec<Vec<PtrSlot>>> =
         RefCell::new(vec![Vec::new(); OBJECT_POOL_BUCKETS]);
