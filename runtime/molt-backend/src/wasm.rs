@@ -6505,7 +6505,8 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(out));
                     }
                     "list_new" => {
-                        let args = op.args.as_ref().unwrap();
+                        let empty_args_ln: Vec<String> = Vec::new();
+                        let args = op.args.as_ref().unwrap_or(&empty_args_ln);
                         let out = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::I64Const(box_int(args.len() as i64)));
                         emit_call(func, reloc_enabled, import_ids["list_builder_new"]);
@@ -6545,7 +6546,8 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(out));
                     }
                     "tuple_new" => {
-                        let args = op.args.as_ref().unwrap();
+                        let empty_args: Vec<String> = Vec::new();
+                        let args = op.args.as_ref().unwrap_or(&empty_args);
                         let out_name = op.out.as_ref().unwrap();
                         let out = locals[out_name];
                         // Multi-value return (Section 3.1): store elements
@@ -6585,8 +6587,14 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(builder_ptr));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out_name) = op.out.as_ref() {
+                            let res = locals[out_name];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            // No output variable; the runtime call returns an i64
+                            // that must be consumed to keep the WASM stack balanced.
+                            func.instruction(&Instruction::Drop);
+                        }
                     }
                     "callargs_push_kw" => {
                         let args = op.args.as_ref().unwrap();
@@ -6597,8 +6605,12 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(name));
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["callargs_push_kw"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out_name) = op.out.as_ref() {
+                            let res = locals[out_name];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
                     }
                     "callargs_expand_star" => {
                         let args = op.args.as_ref().unwrap();
@@ -6607,8 +6619,12 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(builder_ptr));
                         func.instruction(&Instruction::LocalGet(iterable));
                         emit_call(func, reloc_enabled, import_ids["callargs_expand_star"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out_name) = op.out.as_ref() {
+                            let res = locals[out_name];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
                     }
                     "callargs_expand_kwstar" => {
                         let args = op.args.as_ref().unwrap();
@@ -6617,8 +6633,12 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(builder_ptr));
                         func.instruction(&Instruction::LocalGet(mapping));
                         emit_call(func, reloc_enabled, import_ids["callargs_expand_kwstar"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out_name) = op.out.as_ref() {
+                            let res = locals[out_name];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
                     }
                     "list_append" => {
                         let args = op.args.as_ref().unwrap();
@@ -6739,7 +6759,8 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(res));
                     }
                     "dict_new" => {
-                        let args = op.args.as_ref().unwrap();
+                        let empty_args_dn: Vec<String> = Vec::new();
+                        let args = op.args.as_ref().unwrap_or(&empty_args_dn);
                         let out = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::I64Const((args.len() / 2) as i64));
                         emit_call(func, reloc_enabled, import_ids["dict_new"]);
@@ -6763,7 +6784,8 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(out));
                     }
                     "set_new" => {
-                        let args = op.args.as_ref().unwrap();
+                        let empty_args_sn: Vec<String> = Vec::new();
+                        let args = op.args.as_ref().unwrap_or(&empty_args_sn);
                         let out = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::I64Const(args.len() as i64));
                         emit_call(func, reloc_enabled, import_ids["set_new"]);
@@ -6777,7 +6799,8 @@ impl WasmBackend {
                         }
                     }
                     "frozenset_new" => {
-                        let args = op.args.as_ref().unwrap();
+                        let empty_args_fn: Vec<String> = Vec::new();
+                        let args = op.args.as_ref().unwrap_or(&empty_args_fn);
                         let out = locals[op.out.as_ref().unwrap()];
                         func.instruction(&Instruction::I64Const(args.len() as i64));
                         emit_call(func, reloc_enabled, import_ids["frozenset_new"]);

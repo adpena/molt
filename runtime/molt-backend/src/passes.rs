@@ -2178,7 +2178,6 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
     if !is_stateful {
         return;
     }
-    eprintln!("[rewrite_stateful_loops] processing function: {}", func_ir.name);
 
     // Find the maximum state ID already in use so we can allocate fresh IDs.
     let mut max_state_id: i64 = 0;
@@ -2244,10 +2243,8 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
         .collect();
 
     if yield_loops.is_empty() {
-        eprintln!("[rewrite_stateful_loops]   no yield-containing loops found");
         return;
     }
-    eprintln!("[rewrite_stateful_loops]   found {} yield-containing loop(s)", yield_loops.len());
 
     // For each yield-containing loop, allocate a state label ID and record
     // the insertions + replacements needed.

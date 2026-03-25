@@ -341,17 +341,10 @@ class AsyncGenerator(AsyncIterator):
 
     async def aclose(self):
         """Raise GeneratorExit inside coroutine."""
-        try:
-            await self.athrow(GeneratorExit)
-        except (GeneratorExit, StopAsyncIteration):
-            pass
-        else:
-            raise RuntimeError("asynchronous generator ignored GeneratorExit")
+        raise StopAsyncIteration
 
     @classmethod
     def __subclasshook__(cls, C):
-        if cls is AsyncGenerator:
-            return _check_methods(C, "__aiter__", "__anext__", "asend", "athrow")
         return NotImplemented
 
 
