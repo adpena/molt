@@ -79,6 +79,6 @@ except Exception:  # noqa: BLE001
 quit = Quitter("quit")
 exit = Quitter("exit")
 
-# Module-level intrinsic references are intentionally kept alive.
-# They are captured as default-argument values in __call__ methods above,
-# so deleting them here would not reclaim memory and is not needed.
+# Clean up module-level intrinsic references.  They are captured as
+# default-argument values above, so the globals can be safely removed.
+del _MOLT_SITE_HELP0, _MOLT_SITE_HELP1, _MOLT_SITE_QUITTER_CALL
