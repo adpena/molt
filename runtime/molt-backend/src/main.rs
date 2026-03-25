@@ -167,6 +167,16 @@ impl DaemonRequest {
                 Some(out)
             }
         };
+        // Apply per-request env var overrides so callers can control
+        // MOLT_TIR_OPT, MOLT_DISABLE_DEAD_FUNC_ELIM, etc. without
+        // restarting the daemon.
+        if let Some(JsonValue::Object(env_map)) = obj.get("env") {
+            for (key, val) in env_map {
+                if let Some(s) = val.as_str() {
+                    unsafe { std::env::set_var(key, s); }
+                }
+            }
+        }
         Ok(Self {
             version,
             ping: optional_bool(obj, "ping", "request")?,

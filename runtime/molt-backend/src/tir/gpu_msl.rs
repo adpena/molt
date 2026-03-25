@@ -74,10 +74,14 @@ pub fn generate_msl(kernel: &GpuKernel) -> String {
 }
 
 /// Map a TIR type to its MSL equivalent.
+///
+/// Metal does not support 64-bit floating point (`double`).  All `F64` values
+/// are narrowed to 32-bit `float`.  Callers must be aware of the reduced
+/// precision when round-tripping data through the GPU pipeline.
 fn tir_type_to_msl(ty: &TirType) -> &'static str {
     match ty {
         TirType::I64 => "int64_t",
-        TirType::F64 => "double",
+        TirType::F64 => "float", // Metal has no f64 — narrow to f32
         TirType::Bool => "bool",
         _ => "uint64_t", // fallback for unsupported types
     }
@@ -201,7 +205,7 @@ impl<'a> MslGenContext<'a> {
                     Some(AttrValue::Float(v)) => *v,
                     _ => 0.0,
                 };
-                Some(format!("double {} = {};", result, val))
+                Some(format!("float {} = {};", result, val))
             }
             OpCode::ConstBool => {
                 if op.results.is_empty() {
@@ -341,10 +345,10 @@ mod tests {
         // Must have thread ID parameter
         assert!(msl.contains("uint tid [[thread_position_in_grid]]"));
 
-        // Must have buffer parameters
-        assert!(msl.contains("device const double* a [[buffer(0)]]"));
-        assert!(msl.contains("device const double* b [[buffer(1)]]"));
-        assert!(msl.contains("device double* out [[buffer(2)]]"));
+        // Must have buffer parameters (F64 narrows to float on Metal)
+        assert!(msl.contains("device const float* a [[buffer(0)]]"));
+        assert!(msl.contains("device const float* b [[buffer(1)]]"));
+        assert!(msl.contains("device float* out [[buffer(2)]]"));
     }
 
     #[test]
@@ -387,7 +391,7 @@ mod tests {
     #[test]
     fn type_mapping_i64_f64_bool() {
         assert_eq!(tir_type_to_msl(&TirType::I64), "int64_t");
-        assert_eq!(tir_type_to_msl(&TirType::F64), "double");
+        assert_eq!(tir_type_to_msl(&TirType::F64), "float");
         assert_eq!(tir_type_to_msl(&TirType::Bool), "bool");
         // Fallback
         assert_eq!(tir_type_to_msl(&TirType::Str), "uint64_t");

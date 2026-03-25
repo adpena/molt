@@ -79,6 +79,14 @@ pub extern "C" fn __molt_serial_alloc_string(data_ptr: *const u8, data_len: usiz
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_serial_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8 {
+    crate::with_gil_entry!(_py, {
+        let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
+        alloc_bytes(_py, data)
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Object inspection
 // ---------------------------------------------------------------------------
