@@ -451,11 +451,34 @@ pub extern "C" fn molt_runtime_ensure_gil() {
     hold_runtime_gil(GilGuard::new());
 }
 
+fn shutdown_trace_enabled() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_TRACE_SHUTDOWN").ok().as_deref(),
+            Some("1")
+        )
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_shutdown() -> u64 {
+    if shutdown_trace_enabled() {
+        eprintln!("molt shutdown: molt_runtime_shutdown ENTER");
+        unsafe {
+            let mut addrs = [std::ptr::null_mut(); 32];
+            let count = libc::backtrace(addrs.as_mut_ptr(), addrs.len() as i32);
+            if count > 0 {
+                libc::backtrace_symbols_fd(addrs.as_ptr(), count, 2);
+            }
+        }
+    }
     let _guard = runtime_state_lock().lock().unwrap();
     let ptr = RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst);
     if ptr.is_null() {
+        if shutdown_trace_enabled() {
+            eprintln!("molt shutdown: molt_runtime_shutdown ALREADY_NULL");
+        }
         return 0;
     }
     let state = unsafe { &*ptr };
