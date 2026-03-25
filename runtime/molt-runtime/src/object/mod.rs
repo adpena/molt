@@ -245,7 +245,7 @@ pub struct MoltHeader {
     pub ref_count: MoltRefCount,     // 4 bytes
     pub flags: u32,                  // 4 bytes (bits 0-16 used)
     pub size_class: u16,             // 2 bytes — index into SIZE_CLASS_TABLE
-    pub _pad: u16,                   // 2 bytes — alignment padding
+    pub cold_idx: u16,               // 2 bytes — index into COLD_HEADER_SLAB (0 = none)
 }
 // Total: 16 bytes (down from 40). poll_fn, state, extended_size live in MoltColdHeader.
 
@@ -421,50 +421,125 @@ pub(crate) struct MoltColdHeader {
     pub(crate) extended_size: usize,
 }
 
-/// Global cold-header pool. Keyed by the object's *data* pointer (i.e. the
-/// pointer returned by `alloc_object`, NOT the header pointer).
-///
-/// Uses `OnceLock<Mutex<HashMap>>` — no `lazy_static` dependency.
-static COLD_HEADER_POOL: OnceLock<Mutex<HashMap<usize, MoltColdHeader>>> = OnceLock::new();
-
-fn cold_header_pool() -> &'static Mutex<HashMap<usize, MoltColdHeader>> {
-    COLD_HEADER_POOL.get_or_init(|| Mutex::new(HashMap::new()))
+/// Slab allocator for cold headers.  Entries are stored in a contiguous `Vec`
+/// and referenced by a `u16` index stored in `MoltHeader::cold_idx`.
+/// Index 0 is reserved as "no cold header".  This gives O(1) alloc, access,
+/// and free — no hashing, no hash collisions, better cache locality.
+struct ColdHeaderSlab {
+    /// Slot 0 is unused (sentinel). Valid indices start at 1.
+    entries: Vec<MoltColdHeader>,
+    /// Free-list of previously freed indices (LIFO reuse).
+    free_list: Vec<u16>,
 }
 
-/// Allocate (or update) a cold header for the object at `data_ptr`.
-pub(crate) fn alloc_cold_header(data_ptr: *mut u8, cold: MoltColdHeader) {
-    let key = data_ptr as usize;
-    let mut pool = cold_header_pool().lock().unwrap();
-    pool.insert(key, cold);
+impl ColdHeaderSlab {
+    fn new() -> Self {
+        Self {
+            // Slot 0 is the sentinel — push a dummy entry.
+            entries: vec![MoltColdHeader::default()],
+            free_list: Vec::new(),
+        }
+    }
+
+    /// Allocate a slot, returning its u16 index (always >= 1).
+    /// Returns 0 if the slab is full (65535 live cold headers).
+    fn alloc(&mut self, cold: MoltColdHeader) -> u16 {
+        if let Some(idx) = self.free_list.pop() {
+            self.entries[idx as usize] = cold;
+            idx
+        } else {
+            let idx = self.entries.len();
+            if idx > u16::MAX as usize {
+                // Slab is full — extremely unlikely (65535 simultaneous
+                // oversized objects or generators).  Fall back gracefully.
+                return 0;
+            }
+            self.entries.push(cold);
+            idx as u16
+        }
+    }
+
+    /// Get a reference to the cold header at `idx`.
+    /// Returns `None` for index 0 (no cold header).
+    #[inline]
+    fn get(&self, idx: u16) -> Option<&MoltColdHeader> {
+        if idx == 0 {
+            None
+        } else {
+            self.entries.get(idx as usize)
+        }
+    }
+
+    /// Get a mutable reference to the cold header at `idx`.
+    /// Returns `None` for index 0 (no cold header).
+    #[inline]
+    fn get_mut(&mut self, idx: u16) -> Option<&mut MoltColdHeader> {
+        if idx == 0 {
+            None
+        } else {
+            self.entries.get_mut(idx as usize)
+        }
+    }
+
+    /// Free the slot at `idx`, returning it to the free list.
+    /// No-op for index 0.
+    fn free(&mut self, idx: u16) {
+        if idx == 0 {
+            return;
+        }
+        // Zero out the entry to avoid stale data, then recycle.
+        if let Some(entry) = self.entries.get_mut(idx as usize) {
+            *entry = MoltColdHeader::default();
+        }
+        self.free_list.push(idx);
+    }
 }
 
-/// Retrieve a **copy** of the cold header for the object at `data_ptr`.
-/// Returns `None` if no cold header was allocated for this pointer.
-pub(crate) fn get_cold_header(data_ptr: *mut u8) -> Option<MoltColdHeader> {
-    let key = data_ptr as usize;
-    let pool = cold_header_pool().lock().unwrap();
-    pool.get(&key).copied()
+static COLD_HEADER_SLAB: OnceLock<Mutex<ColdHeaderSlab>> = OnceLock::new();
+
+fn cold_header_slab() -> &'static Mutex<ColdHeaderSlab> {
+    COLD_HEADER_SLAB.get_or_init(|| Mutex::new(ColdHeaderSlab::new()))
 }
 
-/// Free the cold header for the object at `data_ptr`.
-/// No-op if no cold header exists.
-pub(crate) fn free_cold_header(data_ptr: *mut u8) {
-    let key = data_ptr as usize;
-    let mut pool = cold_header_pool().lock().unwrap();
-    pool.remove(&key);
+/// Allocate a cold header, returning its slab index.
+/// The caller must store this index in `MoltHeader::cold_idx`.
+pub(crate) fn alloc_cold_header(cold: MoltColdHeader) -> u16 {
+    let mut slab = cold_header_slab().lock().unwrap();
+    slab.alloc(cold)
+}
+
+/// Retrieve a **copy** of the cold header at `idx`.
+/// Returns `None` if idx == 0.
+#[inline]
+pub(crate) fn get_cold_header(idx: u16) -> Option<MoltColdHeader> {
+    if idx == 0 {
+        return None;
+    }
+    let slab = cold_header_slab().lock().unwrap();
+    slab.get(idx).copied()
+}
+
+/// Free the cold header at `idx`, returning the slot to the free list.
+/// No-op if idx == 0.
+pub(crate) fn free_cold_header(idx: u16) {
+    if idx == 0 {
+        return;
+    }
+    let mut slab = cold_header_slab().lock().unwrap();
+    slab.free(idx);
 }
 
 /// Derive the total allocation size from a header's `size_class`.
 /// For oversized objects (size_class == 0) the exact size is stored in
 /// the cold header's `extended_size`.
 #[inline]
-pub(crate) fn total_size_from_header(header: &MoltHeader, data_ptr: *mut u8) -> usize {
+pub(crate) fn total_size_from_header(header: &MoltHeader, _data_ptr: *mut u8) -> usize {
     let sc = header.size_class as usize;
     if sc != 0 && sc < SIZE_CLASS_TABLE.len() {
         SIZE_CLASS_TABLE[sc]
     } else {
-        // Oversized: look up cold header
-        get_cold_header(data_ptr)
+        // Oversized: look up cold header by slab index
+        get_cold_header(header.cold_idx)
             .map(|c| c.extended_size)
             .unwrap_or(0)
     }
@@ -473,29 +548,57 @@ pub(crate) fn total_size_from_header(header: &MoltHeader, data_ptr: *mut u8) -> 
 /// Get the poll_fn for an object. Returns 0 if no cold header exists.
 #[inline]
 pub(crate) fn object_poll_fn(data_ptr: *mut u8) -> u64 {
-    get_cold_header(data_ptr).map(|c| c.poll_fn).unwrap_or(0)
+    let idx = unsafe { (*header_from_obj_ptr(data_ptr)).cold_idx };
+    get_cold_header(idx).map(|c| c.poll_fn).unwrap_or(0)
 }
 
 /// Set the poll_fn for an object, creating a cold header if needed.
 pub(crate) fn object_set_poll_fn(data_ptr: *mut u8, poll_fn: u64) {
-    let key = data_ptr as usize;
-    let mut pool = cold_header_pool().lock().unwrap();
-    let entry = pool.entry(key).or_insert_with(MoltColdHeader::default);
-    entry.poll_fn = poll_fn;
+    unsafe {
+        let header = header_from_obj_ptr(data_ptr);
+        let idx = (*header).cold_idx;
+        if idx != 0 {
+            let mut slab = cold_header_slab().lock().unwrap();
+            if let Some(entry) = slab.get_mut(idx) {
+                entry.poll_fn = poll_fn;
+            }
+        } else {
+            // Lazily allocate a cold header.
+            let new_idx = alloc_cold_header(MoltColdHeader {
+                poll_fn,
+                ..MoltColdHeader::default()
+            });
+            (*header).cold_idx = new_idx;
+        }
+    }
 }
 
 /// Get the state for an object. Returns 0 if no cold header exists.
 #[inline]
 pub(crate) fn object_state(data_ptr: *mut u8) -> i64 {
-    get_cold_header(data_ptr).map(|c| c.state).unwrap_or(0)
+    let idx = unsafe { (*header_from_obj_ptr(data_ptr)).cold_idx };
+    get_cold_header(idx).map(|c| c.state).unwrap_or(0)
 }
 
 /// Set the state for an object, creating a cold header if needed.
 pub(crate) fn object_set_state(data_ptr: *mut u8, state: i64) {
-    let key = data_ptr as usize;
-    let mut pool = cold_header_pool().lock().unwrap();
-    let entry = pool.entry(key).or_insert_with(MoltColdHeader::default);
-    entry.state = state;
+    unsafe {
+        let header = header_from_obj_ptr(data_ptr);
+        let idx = (*header).cold_idx;
+        if idx != 0 {
+            let mut slab = cold_header_slab().lock().unwrap();
+            if let Some(entry) = slab.get_mut(idx) {
+                entry.state = state;
+            }
+        } else {
+            // Lazily allocate a cold header.
+            let new_idx = alloc_cold_header(MoltColdHeader {
+                state,
+                ..MoltColdHeader::default()
+            });
+            (*header).cold_idx = new_idx;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -701,16 +804,16 @@ pub(crate) fn alloc_object_zeroed_with_pool(
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
         (*header).flags = 0;
         (*header).size_class = sc;
-        (*header)._pad = 0;
-        if sc == 0 {
+        (*header).cold_idx = if sc == 0 {
             // Oversized: store exact size in cold header
-            let data_ptr = header_ptr.add(std::mem::size_of::<MoltHeader>());
-            alloc_cold_header(data_ptr, MoltColdHeader {
+            alloc_cold_header(MoltColdHeader {
                 poll_fn: 0,
                 state: 0,
                 extended_size: total_size,
-            });
-        }
+            })
+        } else {
+            0
+        };
         header_ptr.add(std::mem::size_of::<MoltHeader>())
     }
 }
@@ -739,15 +842,15 @@ pub(crate) fn alloc_object_zeroed(_py: &PyToken<'_>, total_size: usize, type_id:
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
         (*header).flags = 0;
         (*header).size_class = sc;
-        (*header)._pad = 0;
-        if sc == 0 {
-            let data_ptr = ptr.add(std::mem::size_of::<MoltHeader>());
-            alloc_cold_header(data_ptr, MoltColdHeader {
+        (*header).cold_idx = if sc == 0 {
+            alloc_cold_header(MoltColdHeader {
                 poll_fn: 0,
                 state: 0,
                 extended_size: total_size,
-            });
-        }
+            })
+        } else {
+            0
+        };
         ptr.add(std::mem::size_of::<MoltHeader>())
     }
 }
@@ -825,14 +928,13 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
         let sc = size_class_for(total_size);
         (*header).type_id = type_id;
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
-        // flags, size_class, _pad are already 0 from write_bytes
+        // flags, size_class, cold_idx are already 0 from write_bytes
         (*header).size_class = sc;
         if from_nursery {
             (*header).flags |= HEADER_FLAG_NURSERY;
         }
         if sc == 0 {
-            let data_ptr = header_ptr.add(std::mem::size_of::<MoltHeader>());
-            alloc_cold_header(data_ptr, MoltColdHeader {
+            (*header).cold_idx = alloc_cold_header(MoltColdHeader {
                 poll_fn: 0,
                 state: 0,
                 extended_size: total_size,
@@ -1914,7 +2016,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             }
             release_ptr(ptr);
             let total_size = total_size_from_header(header, ptr);
-            free_cold_header(ptr);
+            free_cold_header(header.cold_idx);
             let should_pool = matches!(
                 header.type_id,
                 TYPE_ID_OBJECT | TYPE_ID_BOUND_METHOD | TYPE_ID_ITER

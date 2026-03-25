@@ -2047,6 +2047,7 @@ unsafe fn exception_group_copy_metadata(
     copy_context: bool,
     copy_trace: bool,
     suppress: bool,
+    copy_notes: bool,
 ) {
     unsafe {
         if copy_context {
@@ -2061,6 +2062,74 @@ unsafe fn exception_group_copy_metadata(
         }
         let suppress_bits = MoltObject::from_bool(suppress).bits();
         exception_group_set_slot_bits(_py, dest_ptr, 4, suppress_bits);
+
+        // Propagate __notes__ (PEP 678): shallow-copy the notes list from
+        // the source exception's dict into the destination exception's dict.
+        if copy_notes {
+            let src_dict_bits = exception_dict_bits(src_ptr);
+            if let Some(src_dict_ptr) = obj_from_bits(src_dict_bits).as_ptr() {
+                if object_type_id(src_dict_ptr) == TYPE_ID_DICT {
+                    let notes_name = intern_static_name(
+                        _py,
+                        &runtime_state(_py).interned.notes_name,
+                        b"__notes__",
+                    );
+                    if let Some(src_notes_bits) =
+                        dict_get_in_place(_py, src_dict_ptr, notes_name)
+                    {
+                        // Shallow-copy the notes list to avoid aliasing
+                        if let Some(src_notes_ptr) = obj_from_bits(src_notes_bits).as_ptr() {
+                            if object_type_id(src_notes_ptr) == TYPE_ID_LIST {
+                                let notes_elems = seq_vec_ref(src_notes_ptr);
+                                let new_list_ptr = alloc_list(_py, notes_elems);
+                                if !new_list_ptr.is_null() {
+                                    let new_list_bits =
+                                        MoltObject::from_ptr(new_list_ptr).bits();
+                                    // Ensure dest has a dict
+                                    let dest_dict_bits = exception_dict_bits(dest_ptr);
+                                    let dest_dict_ptr = if let Some(dd) =
+                                        obj_from_bits(dest_dict_bits).as_ptr()
+                                    {
+                                        if object_type_id(dd) == TYPE_ID_DICT {
+                                            dd
+                                        } else {
+                                            let dp = alloc_dict_with_pairs(_py, &[]);
+                                            if dp.is_null() {
+                                                dec_ref_bits(_py, new_list_bits);
+                                                return;
+                                            }
+                                            let dp_bits = MoltObject::from_ptr(dp).bits();
+                                            exception_group_set_slot_bits(
+                                                _py, dest_ptr, 9, dp_bits,
+                                            );
+                                            dp
+                                        }
+                                    } else {
+                                        let dp = alloc_dict_with_pairs(_py, &[]);
+                                        if dp.is_null() {
+                                            dec_ref_bits(_py, new_list_bits);
+                                            return;
+                                        }
+                                        let dp_bits = MoltObject::from_ptr(dp).bits();
+                                        exception_group_set_slot_bits(
+                                            _py, dest_ptr, 9, dp_bits,
+                                        );
+                                        dp
+                                    };
+                                    dict_set_in_place(
+                                        _py,
+                                        dest_dict_ptr,
+                                        notes_name,
+                                        new_list_bits,
+                                    );
+                                    dec_ref_bits(_py, new_list_bits);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

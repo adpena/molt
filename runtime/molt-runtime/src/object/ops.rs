@@ -1679,7 +1679,7 @@ pub extern "C" fn molt_floordiv(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+        if !lhs.is_float() && !rhs.is_float() && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
             if ri == 0 {
                 return raise_exception::<_>(
                     _py,
@@ -2730,7 +2730,8 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // Int fast path first — much more common than string % formatting.
-        if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+        // Skip if either operand is a float so that e.g. 7 % 2.0 returns 1.0 (float).
+        if !lhs.is_float() && !rhs.is_float() && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
             if ri == 0 {
                 return raise_exception::<_>(_py, "ZeroDivisionError", "integer division or modulo by zero");
             }
@@ -3178,7 +3179,7 @@ pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits:
                 }
             }
         }
-        if let Some(i) = to_i64(val) {
+        if !val.is_float() && let Some(i) = to_i64(val) {
             if !has_ndigits {
                 return MoltObject::from_int(i).bits();
             }
