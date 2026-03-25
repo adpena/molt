@@ -239,8 +239,9 @@ class TestWasmPipelineE2E:
         size = stages["standalone"]["size_bytes"]
         # Standalone output should be under 20MB
         assert size < 20 * 1024 * 1024, f"Standalone size {size:,} exceeds 20MB"
-        # Should be at least 1MB (sanity check)
-        assert size > 1 * 1024 * 1024, f"Standalone size {size:,} suspiciously small"
+        # Standalone modules contain only user code + imports (no bundled
+        # runtime).  For hello.py this is typically 5-50KB.
+        assert size > 1024, f"Standalone size {size:,} suspiciously small"
 
     def test_wasm_ld_detected(self, pipeline_results: dict) -> None:
         wasm_ld = _find_wasm_ld()
