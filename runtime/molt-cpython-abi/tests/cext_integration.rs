@@ -47,7 +47,7 @@ fn build_extension() -> PathBuf {
         .unwrap_or_else(|_| repo_root().join("target").display().to_string());
 
     let status = Command::new("bash")
-        .arg(root.join("scripts/build-cext.sh"))
+        .arg(root.join("tools/scripts/build-cext.sh"))
         .arg(&src)
         .arg(&out_dir)
         .env("CARGO_TARGET_DIR", &cargo_target)

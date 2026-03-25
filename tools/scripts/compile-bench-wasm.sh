@@ -3,9 +3,9 @@
 # for use with wasm/bench_pyodide.html.
 #
 # Usage:
-#   ./scripts/compile-bench-wasm.sh [bench_name]
-#   ./scripts/compile-bench-wasm.sh fib          # compile only bench_fib.py
-#   ./scripts/compile-bench-wasm.sh              # compile all benchmarks
+#   ./tools/scripts/compile-bench-wasm.sh [bench_name]
+#   ./tools/scripts/compile-bench-wasm.sh fib          # compile only bench_fib.py
+#   ./tools/scripts/compile-bench-wasm.sh              # compile all benchmarks
 #
 # Output:
 #   wasm/bench/<name>_linked.wasm   — browser-ready WASM
@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BENCH_DIR="$REPO_ROOT/tests/benchmarks"
 OUT_DIR="$REPO_ROOT/wasm/bench"
 RUNTIME_WASM="$REPO_ROOT/wasm/molt_runtime.wasm"

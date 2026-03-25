@@ -40,7 +40,7 @@ def _run_node_profile(
     ]
     if interval_us is not None:
         cmd.append(f"--cpu-prof-interval={interval_us}")
-    cmd.append("run_wasm.js")
+    cmd.append("wasm/run_wasm.js")
     env = env.copy()
     env.setdefault("NODE_NO_WARNINGS", "1")
     try:
