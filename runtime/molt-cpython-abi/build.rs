@@ -7,14 +7,22 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     // Compile the C variadic shim into a static library.
-    cc::Build::new()
+    let mut build = cc::Build::new();
+    build
         .file(&shim)
         .opt_level(3)
         // Auto-vectorisation hints for clang/gcc.
         .flag_if_supported("-fvectorize")
-        .flag_if_supported("-fslp-vectorize")
-        .flag_if_supported("-fno-semantic-interposition")
-        .compile("molt_pyarg_shims");
+        .flag_if_supported("-fslp-vectorize");
+
+    // -fno-semantic-interposition is useful on GCC/Linux but triggers a
+    // warning on Apple clang; skip it on macOS.
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os != "macos" {
+        build.flag_if_supported("-fno-semantic-interposition");
+    }
+
+    build.compile("molt_pyarg_shims");
 
     // Force the static shim's symbols into the cdylib output so that
     // PyArg_ParseTuple / PyArg_ParseTupleAndKeywords are exported even
@@ -23,7 +31,6 @@ fn main() {
     // macOS: -force_load <path> includes every object file in the archive.
     // Linux: --whole-archive / --no-whole-archive does the same.
     let lib_path = out_dir.join("libmolt_pyarg_shims.a");
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     match target_os.as_str() {
         "macos" => {
             println!(
