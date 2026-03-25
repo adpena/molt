@@ -2261,7 +2261,7 @@ impl SimpleBackend {
                 poll_sig.params.push(AbiParam::new(types::I64));
                 poll_sig.returns.push(AbiParam::new(types::I64));
                 let poll_id = module
-                    .declare_function(&poll_target, linkage, &poll_sig)
+                    .declare_function(&poll_target, Linkage::Import, &poll_sig)
                     .unwrap();
                 let poll_ref = module.declare_func_in_func(poll_id, builder.func);
                 let poll_addr = builder.ins().func_addr(types::I64, poll_ref);
@@ -2318,7 +2318,7 @@ impl SimpleBackend {
                 poll_sig.params.push(AbiParam::new(types::I64));
                 poll_sig.returns.push(AbiParam::new(types::I64));
                 let poll_id = module
-                    .declare_function(&poll_target, linkage, &poll_sig)
+                    .declare_function(&poll_target, Linkage::Import, &poll_sig)
                     .unwrap();
                 let poll_ref = module.declare_func_in_func(poll_id, builder.func);
                 let poll_addr = builder.ins().func_addr(types::I64, poll_ref);
@@ -2417,7 +2417,7 @@ impl SimpleBackend {
                 poll_sig.params.push(AbiParam::new(types::I64));
                 poll_sig.returns.push(AbiParam::new(types::I64));
                 let poll_id = module
-                    .declare_function(&poll_target, linkage, &poll_sig)
+                    .declare_function(&poll_target, Linkage::Import, &poll_sig)
                     .unwrap();
                 let poll_ref = module.declare_func_in_func(poll_id, builder.func);
                 let poll_addr = builder.ins().func_addr(types::I64, poll_ref);
@@ -2492,8 +2492,12 @@ impl SimpleBackend {
                     target_sig.params.push(AbiParam::new(types::I64));
                 }
                 target_sig.returns.push(AbiParam::new(types::I64));
+                // Always use Import for the target function inside
+                // trampolines: the target is defined by its own
+                // compile_func call (Export), and in batched compilation
+                // the target may be in a different batch .o file.
                 let target_id = module
-                    .declare_function(func_name, linkage, &target_sig)
+                    .declare_function(func_name, Linkage::Import, &target_sig)
                     .unwrap();
                 let target_ref = module.declare_func_in_func(target_id, builder.func);
                 let call = builder.ins().call(target_ref, &call_args);
