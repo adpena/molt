@@ -25,6 +25,8 @@ def test_semantic_assertions_pass_on_repo_sources() -> None:
     frontend_text = module.FRONTEND_PATH.read_text(encoding="utf-8")
     native_text = module.NATIVE_BACKEND_PATH.read_text(encoding="utf-8")
     wasm_text = module.WASM_BACKEND_PATH.read_text(encoding="utf-8")
+    if hasattr(module, "WASM_IMPORTS_PATH") and module.WASM_IMPORTS_PATH.exists():
+        wasm_text += "\n" + module.WASM_IMPORTS_PATH.read_text(encoding="utf-8")
 
     failures = module.check_semantic_assertions(
         frontend_text=frontend_text,
@@ -39,6 +41,8 @@ def test_semantic_assertions_detect_regression_signal() -> None:
     frontend_text = module.FRONTEND_PATH.read_text(encoding="utf-8")
     native_text = module.NATIVE_BACKEND_PATH.read_text(encoding="utf-8")
     wasm_text = module.WASM_BACKEND_PATH.read_text(encoding="utf-8")
+    if hasattr(module, "WASM_IMPORTS_PATH") and module.WASM_IMPORTS_PATH.exists():
+        wasm_text += "\n" + module.WASM_IMPORTS_PATH.read_text(encoding="utf-8")
 
     regressed_frontend = frontend_text.replace(
         '"kind": "call_indirect"',
