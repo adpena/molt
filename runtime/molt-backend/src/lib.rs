@@ -1879,32 +1879,39 @@ impl SimpleBackend {
         }
 
         // ── TIR optimization pipeline (default ON; set MOLT_TIR_OPT=0 to disable) ──
+        // For modules with many functions, this uses rayon to run the expensive
+        // lower → refine → optimize → lower-back pipeline in parallel across
+        // all uncached functions.  The cache is consulted sequentially first,
+        // then uncached functions are optimized in parallel, and finally results
+        // are written back to the cache sequentially.
         if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
+            use rayon::prelude::*;
+
             let tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
             let tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
             let mut tir_cache = crate::tir::cache::CompilationCache::open(
                 std::path::PathBuf::from(".molt-cache"),
             );
-            for func_ir in &mut ir.functions {
-                // GPU kernel functions are handled by the GPU pipeline — skip
-                // normal TIR optimization to avoid lowering GPU intrinsic ops
-                // that the standard passes do not understand.
+
+            // Phase 1 (sequential): check cache for every function. For cache
+            // hits, apply immediately. For misses, collect the function index,
+            // content hash, and a clone of the original ops (for fallback).
+            struct TirWorkItem {
+                index: usize,
+                content_hash: String,
+            }
+            let mut work_items: Vec<TirWorkItem> = Vec::new();
+
+            for (i, func_ir) in ir.functions.iter_mut().enumerate() {
                 if gpu_kernel_names.contains(&func_ir.name) {
                     continue;
                 }
-                let func_name = func_ir.name.clone();
-                let original_ops = func_ir.ops.clone(); // backup for fallback
-
-                // Compute a stable content hash from the function name + a
-                // serialization of its input ops. This is the cache key.
                 let body_bytes = crate::tir::serialize::serialize_ops(&func_ir.ops);
                 let content_hash = crate::tir::cache::CompilationCache::compute_hash(
                     &func_ir.name,
                     &body_bytes,
                 );
-
-                // Cache hit: if we already have optimized ops for this function,
-                // restore them directly and skip the TIR pipeline entirely.
+                // Cache hit — apply directly and skip.
                 if let Some(cached_bytes) = tir_cache.get(&content_hash) {
                     if let Some(cached_ops) =
                         crate::tir::serialize::deserialize_ops(&cached_bytes)
@@ -1913,70 +1920,151 @@ impl SimpleBackend {
                         continue;
                     }
                 }
-
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
-                    crate::tir::type_refine::refine_types(&mut tir_func);
-                    let type_map = crate::tir::type_refine::extract_type_map(&tir_func);
-                    let stats = crate::tir::passes::run_pipeline(&mut tir_func);
-                    // Empty stats = verification failed; skip lowering to
-                    // avoid corrupted IR that crashes codegen under panic=abort.
-                    if stats.is_empty() {
-                        return None;
-                    }
-                    if tir_dump {
-                        eprintln!("{}", crate::tir::printer::print_function(&tir_func));
-                    }
-                    if tir_stats {
-                        for s in &stats {
-                            eprintln!(
-                                "[TIR] {}: {} changed, {} removed, {} added",
-                                s.name, s.values_changed, s.ops_removed, s.ops_added
-                            );
-                        }
-                    }
-                    Some(crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func, &type_map))
-                }));
-
-                match result {
-                    Ok(Some(optimized_ops)) => {
-                        // Validate: every label referenced by jump/br_if/check_exception
-                        // must exist as a label op.  If not, fall back to original ops.
-                        let valid = crate::tir::lower_to_simple::validate_labels(&optimized_ops);
-                        if valid {
-                            let serialized =
-                                crate::tir::serialize::serialize_ops(&optimized_ops);
-                            tir_cache.put(&content_hash, &serialized, vec![]);
-                            func_ir.ops = optimized_ops;
-                        } else {
-                            eprintln!(
-                                "[TIR] WARNING: label validation failed on function \'{}\' — falling back to unoptimized.",
-                                func_name
-                            );
-                            func_ir.ops = original_ops;
-                        }
-                    }
-                    Ok(None) => {
-                        // TIR verification failed — fall back to unoptimized.
-                        eprintln!(
-                            "[TIR] WARNING: verification failed on function '{}' — falling back to unoptimized.",
-                            func_name
-                        );
-                        func_ir.ops = original_ops;
-                    }
-                    Err(_panic) => {
-                        // TIR failed on this function — fall back to unoptimized ops.
-                        eprintln!(
-                            "[TIR] WARNING: optimization panicked on function '{}' — falling back to unoptimized. \
-                             Set MOLT_TIR_OPT=0 to disable TIR, or report this bug.",
-                            func_name
-                        );
-                        func_ir.ops = original_ops;
-                    }
-                }
+                work_items.push(TirWorkItem {
+                    index: i,
+                    content_hash,
+                });
             }
-            // Persist the updated cache index so future runs benefit from
-            // the newly stored entries.
+
+            let uncached_count = work_items.len();
+            if uncached_count > 0 {
+                eprintln!(
+                    "MOLT_BACKEND: TIR optimizing {uncached_count} uncached functions in parallel"
+                );
+                let tir_start = std::time::Instant::now();
+
+                // Phase 2 (parallel): run the TIR pipeline on every uncached
+                // function.  Each work item borrows only its own FunctionIR
+                // (via index) and produces an independent result.
+                //
+                // We cannot borrow &mut ir.functions[i] in parallel because
+                // Rust's borrow checker does not allow multiple mutable refs
+                // into the same Vec, even at disjoint indices, through closures.
+                // Instead we extract the ops, optimize them in parallel, and
+                // write them back.
+                struct TirInput {
+                    index: usize,
+                    content_hash: String,
+                    name: String,
+                    params: Vec<String>,
+                    ops: Vec<OpIR>,
+                    param_types: Option<Vec<String>>,
+                }
+                let inputs: Vec<TirInput> = work_items
+                    .into_iter()
+                    .map(|wi| {
+                        let func_ir = &ir.functions[wi.index];
+                        TirInput {
+                            index: wi.index,
+                            content_hash: wi.content_hash,
+                            name: func_ir.name.clone(),
+                            params: func_ir.params.clone(),
+                            ops: func_ir.ops.clone(),
+                            param_types: func_ir.param_types.clone(),
+                        }
+                    })
+                    .collect();
+
+                // Each element: (index, content_hash, Option<optimized_ops>)
+                let results: Vec<(usize, String, Option<Vec<OpIR>>)> = inputs
+                    .into_par_iter()
+                    .map(|input| {
+                        let idx = input.index;
+                        let content_hash = input.content_hash;
+                        // Build a temporary FunctionIR for the TIR pipeline.
+                        let tmp_func = FunctionIR {
+                            name: input.name,
+                            params: input.params,
+                            ops: input.ops,
+                            param_types: input.param_types,
+                        };
+                        let func_name = tmp_func.name.clone();
+                        let result =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                let mut tir_func =
+                                    crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
+                                crate::tir::type_refine::refine_types(&mut tir_func);
+                                let type_map =
+                                    crate::tir::type_refine::extract_type_map(&tir_func);
+                                let stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                                if stats.is_empty() {
+                                    return None;
+                                }
+                                if tir_dump {
+                                    eprintln!(
+                                        "{}",
+                                        crate::tir::printer::print_function(&tir_func)
+                                    );
+                                }
+                                if tir_stats {
+                                    for s in &stats {
+                                        eprintln!(
+                                            "[TIR] {}: {} changed, {} removed, {} added",
+                                            s.name,
+                                            s.values_changed,
+                                            s.ops_removed,
+                                            s.ops_added
+                                        );
+                                    }
+                                }
+                                Some(crate::tir::lower_to_simple::lower_to_simple_ir(
+                                    &tir_func, &type_map,
+                                ))
+                            }));
+
+                        match result {
+                            Ok(Some(optimized_ops)) => {
+                                let valid = crate::tir::lower_to_simple::validate_labels(
+                                    &optimized_ops,
+                                );
+                                if valid {
+                                    (idx, content_hash, Some(optimized_ops))
+                                } else {
+                                    eprintln!(
+                                        "[TIR] WARNING: label validation failed on function '{}' — falling back to unoptimized.",
+                                        func_name
+                                    );
+                                    (idx, content_hash, None)
+                                }
+                            }
+                            Ok(None) => {
+                                eprintln!(
+                                    "[TIR] WARNING: verification failed on function '{}' — falling back to unoptimized.",
+                                    func_name
+                                );
+                                (idx, content_hash, None)
+                            }
+                            Err(_panic) => {
+                                eprintln!(
+                                    "[TIR] WARNING: optimization panicked on function '{}' — falling back to unoptimized. \
+                                     Set MOLT_TIR_OPT=0 to disable TIR, or report this bug.",
+                                    func_name
+                                );
+                                (idx, content_hash, None)
+                            }
+                        }
+                    })
+                    .collect();
+
+                // Phase 3 (sequential): write optimized ops back into ir.functions
+                // and update the cache.
+                for (idx, content_hash, opt_ops) in results {
+                    if let Some(optimized_ops) = opt_ops {
+                        let serialized =
+                            crate::tir::serialize::serialize_ops(&optimized_ops);
+                        tir_cache.put(&content_hash, &serialized, vec![]);
+                        ir.functions[idx].ops = optimized_ops;
+                    }
+                    // None → fallback: original_ops are already in ir.functions[idx]
+                    // since we only cloned them for the parallel pipeline.
+                }
+
+                let tir_elapsed = tir_start.elapsed();
+                eprintln!(
+                    "MOLT_BACKEND: TIR parallel optimization took {tir_elapsed:.2?} for {uncached_count} functions"
+                );
+            }
+
             tir_cache.save_index();
         }
         // Post-TIR: analysis + inlining (from main)
@@ -2010,6 +2098,54 @@ impl SimpleBackend {
         if timing {
             let passes_elapsed = compile_start.elapsed();
             eprintln!("MOLT_BACKEND_TIMING: IR passes took {passes_elapsed:.2?}");
+        }
+        // ── LLVM backend dispatch ──
+        // When MOLT_BACKEND=llvm and the llvm feature is compiled in, route
+        // through the LLVM backend instead of Cranelift.  Each function is
+        // lifted to TIR, lowered to LLVM IR, then the whole module is
+        // optimized and emitted as a native object file.
+        #[cfg(feature = "llvm")]
+        if _use_llvm {
+            use crate::llvm_backend::{LlvmBackend, MoltOptLevel};
+            use crate::tir::lower_from_simple::lower_to_tir;
+
+            let context = inkwell::context::Context::create();
+            let llvm = LlvmBackend::new(&context, "molt_module");
+
+            let func_count = ir.functions.len();
+            let total_ops: usize = ir.functions.iter().map(|f| f.ops.len()).sum();
+            eprintln!("MOLT_BACKEND(llvm): compiling {func_count} functions ({total_ops} total ops)");
+            let codegen_start = std::time::Instant::now();
+
+            for func_ir in &ir.functions {
+                let tir_func = lower_to_tir(func_ir);
+                crate::llvm_backend::lowering::lower_tir_to_llvm(&tir_func, &llvm);
+            }
+
+            // Run LLVM O3 optimization on the whole module.
+            llvm.optimize(MoltOptLevel::Aggressive);
+
+            if timing {
+                let codegen_elapsed = codegen_start.elapsed();
+                eprintln!("MOLT_BACKEND_TIMING: LLVM codegen + optimization took {codegen_elapsed:.2?}");
+            }
+
+            // Emit object bytes to a temporary file, then read them back.
+            let tmp_obj = std::env::temp_dir().join("molt_llvm_output.o");
+            llvm.emit_object(&tmp_obj, MoltOptLevel::Aggressive)
+                .expect("LLVM object emission failed");
+            let bytes = std::fs::read(&tmp_obj).expect("failed to read LLVM object file");
+            let _ = std::fs::remove_file(&tmp_obj);
+
+            if timing {
+                let total_elapsed = compile_start.elapsed();
+                eprintln!(
+                    "MOLT_BACKEND_TIMING: total LLVM backend compile: {total_elapsed:.2?}                      ({func_count} functions, {total_ops} ops, {} bytes)",
+                    bytes.len()
+                );
+            }
+
+            return bytes;
         }
         // Re-analyze after dead function elimination and megafunction
         // splitting so defined_functions/closure_functions reflect only the

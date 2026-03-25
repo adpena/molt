@@ -14,5 +14,14 @@ rustflags = []
 rustflags = []
 
 # WASM targets use a fixed feature set — do NOT set target-cpu=native.
-# The wasm32-unknown-unknown and wasm32-wasi targets use Cranelift's
-# default feature baseline.
+# Disable reference-types so LLVM 19+ (Rust 1.94+) does NOT emit GC-proposal
+# rec groups or `exact` heap types.  These features are rejected by Cloudflare
+# Workers' V8 runtime and by wasm-opt without --all-features.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=-reference-types"]
+
+[target.wasm32-wasip1]
+rustflags = ["-C", "target-feature=-reference-types"]
+
+[target.wasm32-wasi]
+rustflags = ["-C", "target-feature=-reference-types"]

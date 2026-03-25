@@ -93,6 +93,10 @@ JSON_SCHEMA_VERSION = "1.0"
 REMOTE_REGISTRY_SCHEMES = {"http", "https"}
 _ARTIFACT_SYNC_STATE_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]] = {}
 _PERSISTED_JSON_OBJECT_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]] = {}
+# Session-level cache: once we have verified (and possibly built) the release
+# runtime for a given (path, profile, triple) key, skip the check for the rest
+# of this process lifetime.
+_RUNTIME_LIB_VERIFIED: set[tuple[str, str, str | None]] = set()
 _LOCK_CHECK_CACHE_VERSION = 1
 _HASH_SEED_SENTINEL_ENV = "MOLT_HASH_SEED_APPLIED"
 _HASH_SEED_OVERRIDE_ENV = "MOLT_HASH_SEED"
@@ -14120,6 +14124,10 @@ def _prepare_backend_dispatch(
         backend_features = ("wasm-backend",)
     else:
         backend_features = ("native-backend",)
+    # When the LLVM backend is requested, add the 'llvm' feature so the
+    # backend binary is compiled with inkwell/LLVM support.
+    if os.environ.get("MOLT_BACKEND") == "llvm":
+        backend_features = (*backend_features, "llvm")
     if deterministic or profile == "release":
         os.environ.setdefault("SOURCE_DATE_EPOCH", "315532800")
     reloc_requested = is_wasm and (linked or os.environ.get("MOLT_WASM_LINK") == "1")
@@ -17783,6 +17791,12 @@ def _ensure_backend_binary(
             cmd.append("--no-default-features")
             cmd.extend(["--features", ",".join(backend_features)])
         build_env = os.environ.copy()
+        # When building with the LLVM feature, ensure LLVM_SYS_191_PREFIX
+        # points to the LLVM 19 installation so inkwell/llvm-sys can link.
+        if "llvm" in backend_features and "LLVM_SYS_191_PREFIX" not in build_env:
+            _llvm_prefix = "/opt/homebrew/opt/llvm@19"
+            if os.path.isdir(_llvm_prefix):
+                build_env["LLVM_SYS_191_PREFIX"] = _llvm_prefix
         _maybe_enable_sccache(build_env)
         _maybe_enable_native_cpu(build_env)
         try:
@@ -17904,6 +17918,11 @@ def _ensure_runtime_lib(
     stdlib_profile: str | None = None,
     resolved_modules: set[str] | None = None,
 ) -> bool:
+    # Session-level short-circuit: once we have verified (and possibly built)
+    # the runtime for this key, don't repeat the fingerprint/stat dance.
+    session_key = (os.fspath(project_root), cargo_profile, target_triple)
+    if session_key in _RUNTIME_LIB_VERIFIED:
+        return True
     rustflags = os.environ.get("RUSTFLAGS", "")
     runtime_features = _runtime_cargo_features(target_triple)
     builtin_features = _builtin_features_from_import_graph(resolved_modules, stdlib_profile)
@@ -17932,6 +17951,7 @@ def _ensure_runtime_lib(
         if stored_fingerprint is None:
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
         if not _artifact_needs_rebuild(runtime_lib, fingerprint, stored_fingerprint):
+            _RUNTIME_LIB_VERIFIED.add(session_key)
             return True
         canonical_target_root = _canonical_target_root(project_root)
         profile_dir = _cargo_profile_dir(cargo_profile)
@@ -17959,9 +17979,17 @@ def _ensure_runtime_lib(
             candidate_artifact=canonical_runtime_lib,
             candidate_fingerprint_path=canonical_fingerprint_path,
         ):
+            _RUNTIME_LIB_VERIFIED.add(session_key)
             return True
+        first_build = not runtime_lib.exists()
         if not json_output:
-            print("Runtime sources changed; rebuilding runtime...", file=sys.stderr)
+            if first_build:
+                print(
+                    "Building optimized runtime (first time only)...",
+                    file=sys.stderr,
+                )
+            else:
+                print("Runtime sources changed; rebuilding runtime...", file=sys.stderr)
         cmd = ["cargo", "build", "-p", "molt-runtime", "--profile", cargo_profile]
         if stdlib_profile == "micro":
             cmd.append("--no-default-features")
@@ -18022,6 +18050,7 @@ def _ensure_runtime_lib(
                         "Warning: failed to write runtime fingerprint metadata.",
                         file=sys.stderr,
                     )
+        _RUNTIME_LIB_VERIFIED.add(session_key)
     return True
 
 
@@ -21616,13 +21645,30 @@ def doctor(
                 )
 
     runtime_lib = _runtime_lib_path(root, "release", None)
+    runtime_exists = runtime_lib.exists()
+    if runtime_exists:
+        runtime_detail = str(runtime_lib)
+        # Check if the runtime is stale relative to Cargo.toml or runtime sources.
+        try:
+            lib_mtime = runtime_lib.stat().st_mtime
+            runtime_cargo = root / "runtime" / "molt-runtime" / "Cargo.toml"
+            if runtime_cargo.exists() and runtime_cargo.stat().st_mtime > lib_mtime:
+                runtime_detail += " (stale — runtime Cargo.toml is newer)"
+                runtime_exists = False
+        except OSError:
+            pass
+    else:
+        runtime_detail = f"not found: {runtime_lib}"
     record(
         "molt-runtime",
-        runtime_lib.exists(),
-        str(runtime_lib),
+        runtime_exists,
+        runtime_detail,
         level="warning",
-        advice=["cargo build --release --package molt-runtime"]
-        if not runtime_lib.exists()
+        advice=[
+            "Run: cargo build --release -p molt-runtime",
+            "Or: molt run will auto-build it on first use",
+        ]
+        if not runtime_exists
         else None,
     )
 
@@ -24849,6 +24895,7 @@ def _ensure_cli_hash_seed() -> None:
 _BUILD_ESSENTIAL_FLAGS = frozenset({
     "file", "module", "target", "release", "output", "out_dir",
     "verbose", "json", "rebuild", "profile", "platform", "help",
+    "backend",
 })
 
 
@@ -25485,6 +25532,12 @@ def main() -> int:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Disable capability checks for trusted deployments.",
+    )
+    run_parser.add_argument(
+        "--backend",
+        choices=["cranelift", "llvm", "auto"],
+        default=None,
+        help="Compilation backend passed to `molt build` (auto=cranelift for dev, llvm for release).",
     )
     run_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
@@ -26587,6 +26640,10 @@ def main() -> int:
         build_args = _strip_leading_double_dash(args.build_arg)
         if args.rebuild and not _build_args_has_cache_flag(build_args):
             build_args.append("--no-cache")
+        # Forward --backend to the build subprocess when specified.
+        run_backend = getattr(args, "backend", None)
+        if run_backend and not any(a.startswith("--backend") for a in build_args):
+            build_args.extend(["--backend", run_backend])
         run_target = getattr(args, "target", None) or run_cfg.get("target") or "native"
         run_profile = (
             ("release" if getattr(args, "release", False) else None)
