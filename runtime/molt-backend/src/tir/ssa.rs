@@ -414,8 +414,58 @@ impl<'a> SsaContext<'a> {
             }
         }
 
-        // Fill any unreachable blocks (not visited during dom-tree walk).
-        // They keep their Unreachable terminator.
+        // Fill unreachable blocks (not visited during dom-tree walk) by
+        // translating their ops without SSA renaming.  These are typically
+        // exception handler blocks only reachable via implicit edges (e.g.
+        // state_label blocks containing state_block_start/end).  Without
+        // this, their ops would be silently dropped, causing the native
+        // backend to crash on missing state_block_start / check_exception.
+        {
+            let visited: HashSet<usize> = pushed.iter().enumerate()
+                .filter(|(_, p)| !p.is_empty() || dom_children.get(self.cfg.entry).map_or(false, |_| true))
+                .map(|(bid, _)| bid)
+                .collect();
+            // Actually, track visited more reliably: any block that was the
+            // target of a dom-tree walk had its terminator set to non-Unreachable
+            // (unless it truly is unreachable).  The simplest check: the entry
+            // block is always visited, and any block whose terminator was set is
+            // visited.
+            for bid in 0..n {
+                // Skip if the block was already processed (has ops or a non-Unreachable
+                // terminator, or is the entry block which may legitimately be empty).
+                if bid == self.cfg.entry {
+                    continue;
+                }
+                if !matches!(tir_blocks[bid].terminator, Terminator::Unreachable) {
+                    continue;
+                }
+                if !tir_blocks[bid].ops.is_empty() {
+                    continue;
+                }
+                // This block was not visited.  Translate its ops with empty var_stacks.
+                let empty_stacks: HashMap<String, Vec<ValueId>> = HashMap::new();
+                let op_indices = self.block_info[bid].op_indices.clone();
+                for &op_idx in &op_indices {
+                    let op = &self.ops[op_idx];
+                    let tir_op = self.translate_op(op, &empty_stacks);
+
+                    // If this op defines a variable, create a ValueId for it.
+                    if let Some(_) = self.get_def_var(op) {
+                        if tir_op.results.first().is_none() {
+                            self.fresh_value_typed();
+                        }
+                    }
+
+                    for const_op in self.pending_inline_consts.drain(..) {
+                        tir_blocks[bid].ops.push(const_op);
+                    }
+                    tir_blocks[bid].ops.push(tir_op);
+                }
+                // Build terminator for this unreachable block.
+                let terminator = self.build_terminator(bid, &empty_stacks);
+                tir_blocks[bid].terminator = terminator;
+            }
+        }
 
         self.tir_blocks = tir_blocks;
     }
