@@ -333,13 +333,39 @@ pub(crate) fn issubclass_bits(sub_bits: u64, class_bits: u64) -> bool {
                 return true;
             }
             // The stored MRO tuple may be stale or incomplete (e.g. when a
-            // user-defined class inherits from a builtin exception and the MRO
-            // was built before all base classes were fully registered).  Fall
-            // through to the dynamic base-walking check instead of returning
-            // false immediately.
+            // user-defined class inherits from a builtin exception and the
+            // class dict was modified after MRO construction — such as when a
+            // user-defined __init__ is added).  Walk the bases directly as a
+            // fallback instead of trusting the cached tuple.
+            return issubclass_walk_bases(ptr, class_bits);
         }
     }
     class_mro_vec(sub_bits).contains(&class_bits)
+}
+
+/// Walk the base classes recursively to check subclass relationship.
+/// This bypasses the stored MRO tuple and directly inspects the `__bases__`
+/// slot on each class, providing a reliable fallback when the MRO tuple is
+/// stale or incomplete.
+unsafe fn issubclass_walk_bases(sub_ptr: *mut u8, class_bits: u64) -> bool {
+    unsafe {
+        let bases_bits = class_bases_bits(sub_ptr);
+        let bases = class_bases_vec(bases_bits);
+        for base_bits in bases {
+            if base_bits == class_bits {
+                return true;
+            }
+            let base_obj = obj_from_bits(base_bits);
+            if let Some(base_ptr) = base_obj.as_ptr() {
+                if object_type_id(base_ptr) == TYPE_ID_TYPE
+                    && issubclass_walk_bases(base_ptr, class_bits)
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 pub(crate) fn issubclass_runtime(_py: &PyToken<'_>, sub_bits: u64, class_bits: u64) -> bool {

@@ -250,10 +250,10 @@ _MOLT_SYS_ARGV_NEW = _load_intrinsic("molt_sys_argv")
 _MOLT_SYS_MODULES_NEW = _load_intrinsic("molt_sys_modules")
 _MOLT_SYS_PATH_NEW = _load_intrinsic("molt_sys_path")
 
-# Use direct imports so the compiler generates direct WASM calls
-# (bypassing the broken call_indirect registry path on WASM).
-from builtins import _molt_getargv  # type: ignore[import]
-raw_argv = _molt_getargv()
+# Use the safe intrinsic resolved above — _safe_intrinsic never raises,
+# so this works on both native and WASM without needing a direct builtins
+# import (which fails when sys is imported transitively at runtime).
+raw_argv = _MOLT_GETARGV()
 if isinstance(raw_argv, (list, tuple)):
     argv = list(raw_argv)
 else:
@@ -608,8 +608,7 @@ class thread_info(tuple):
         return f"sys.thread_info({items})"
 
 
-from builtins import _molt_sys_platform  # type: ignore[import]
-_platform_val = _molt_sys_platform()
+_platform_val = _MOLT_SYS_PLATFORM()
 platform = _platform_val if isinstance(_platform_val, str) else "wasm32"
 
 
@@ -811,13 +810,11 @@ def _resolve_stdio_handle(intrinsic: object, name: str) -> object:
     return handle
 
 
-# Import intrinsic functions that the compiler can lower to direct WASM calls.
-# These names MUST match BUILTIN_FUNC_SPECS so the compiler generates
-# direct `call` instructions instead of going through call_indirect.
-from builtins import _molt_sys_stdin, _molt_sys_stdout, _molt_sys_stderr  # type: ignore[import]
-stdin = _molt_sys_stdin()
-stdout = _molt_sys_stdout()
-stderr = _molt_sys_stderr()
+# Use the safe intrinsics resolved earlier — avoids direct builtins imports
+# which fail when sys is imported transitively at runtime.
+stdin = _MOLT_SYS_STDIN()
+stdout = _MOLT_SYS_STDOUT()
+stderr = _MOLT_SYS_STDERR()
 __stdin__ = stdin
 __stdout__ = stdout
 __stderr__ = stderr
