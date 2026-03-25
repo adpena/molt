@@ -807,3 +807,77 @@ pub extern "C" fn __molt_serial_dict_order_clone(
     }
     1
 }
+
+// ---------------------------------------------------------------------------
+// RuntimeVtable — single-dispatch replacement for 58 individual FFI shims
+// ---------------------------------------------------------------------------
+
+use molt_runtime_core::RuntimeVtable;
+
+/// The global vtable populated with pointers to the shim functions above.
+/// The serial crate fetches this once at init time.
+static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
+    raise_exception: __molt_serial_raise_exception,
+    exception_pending: __molt_serial_exception_pending,
+    alloc_tuple: __molt_serial_alloc_tuple,
+    alloc_list: __molt_serial_alloc_list,
+    alloc_string: __molt_serial_alloc_string,
+    alloc_bytes: __molt_serial_alloc_bytes,
+    alloc_dict_with_pairs: __molt_serial_alloc_dict_with_pairs,
+    object_type_id: __molt_serial_object_type_id,
+    string_obj_to_owned: __molt_serial_string_obj_to_owned,
+    type_name: __molt_serial_type_name,
+    is_truthy: __molt_serial_is_truthy,
+    bytes_like_slice: __molt_serial_bytes_like_slice,
+    string_bytes: __molt_serial_string_bytes,
+    string_len: __molt_serial_string_len,
+    bytes_like_slice_raw: __molt_serial_bytes_like_slice_raw,
+    format_obj: __molt_serial_format_obj,
+    format_obj_str: __molt_serial_format_obj_str,
+    class_name_for_error: __molt_serial_class_name_for_error,
+    type_of_bits: __molt_serial_type_of_bits,
+    maybe_ptr_from_bits: __molt_serial_maybe_ptr_from_bits,
+    molt_is_callable: __molt_serial_molt_is_callable,
+    memoryview_is_c_contiguous_view: __molt_serial_memoryview_is_c_contiguous_view,
+    memoryview_readonly: __molt_serial_memoryview_readonly,
+    memoryview_nbytes: __molt_serial_memoryview_nbytes,
+    memoryview_offset: __molt_serial_memoryview_offset,
+    memoryview_owner_bits: __molt_serial_memoryview_owner_bits,
+    release_ptr: __molt_serial_release_ptr,
+    dec_ref_bits: __molt_serial_dec_ref_bits,
+    inc_ref_bits: __molt_serial_inc_ref_bits,
+    to_i64: __molt_serial_to_i64,
+    to_f64: __molt_serial_to_f64,
+    to_bigint: __molt_serial_to_bigint,
+    int_bits_from_i64: __molt_serial_int_bits_from_i64,
+    int_bits_from_i128: __molt_serial_int_bits_from_i128,
+    int_bits_from_bigint: __molt_serial_int_bits_from_bigint,
+    bigint_ptr_from_bits: __molt_serial_bigint_ptr_from_bits,
+    bigint_ref: __molt_serial_bigint_ref,
+    bigint_from_f64_trunc: __molt_serial_bigint_from_f64_trunc,
+    bigint_bits: __molt_serial_bigint_bits,
+    bigint_to_inline: __molt_serial_bigint_to_inline,
+    index_i64_from_obj: __molt_serial_index_i64_from_obj,
+    index_bigint_from_obj: __molt_serial_index_bigint_from_obj,
+    call_callable0: __molt_serial_call_callable0,
+    call_callable2: __molt_serial_call_callable2,
+    attr_lookup_ptr_allow_missing: __molt_serial_attr_lookup_ptr_allow_missing,
+    intern_static_name: __molt_serial_intern_static_name,
+    bytearray_vec: __molt_serial_bytearray_vec,
+    dict_get_in_place: __molt_serial_dict_get_in_place,
+    dict_set_in_place: __molt_serial_dict_set_in_place,
+    list_len: __molt_serial_list_len,
+    seq_vec_ptr: __molt_serial_seq_vec_ptr,
+    dict_order_clone: __molt_serial_dict_order_clone,
+    molt_iter: __molt_serial_molt_iter,
+    molt_iter_next: __molt_serial_molt_iter_next,
+    raise_not_iterable: __molt_serial_raise_not_iterable,
+    molt_sorted_builtin: __molt_serial_molt_sorted_builtin,
+    molt_mul: __molt_serial_molt_mul,
+    fill_os_random: __molt_serial_fill_os_random,
+};
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_serial_get_vtable() -> *const RuntimeVtable {
+    &RUNTIME_VTABLE as *const RuntimeVtable
+}
