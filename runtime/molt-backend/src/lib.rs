@@ -1672,8 +1672,6 @@ impl SimpleBackend {
         }
 
         // ── TIR optimization pipeline (set MOLT_TIR_OPT=1 to enable) ──
-        // Round-trip preserves label IDs + exception blocks. Default OFF pending
-        // TIR cache atomicity fix (concurrent builds can read partial cache files).
         if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
             let tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
             let tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
