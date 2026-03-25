@@ -13894,6 +13894,10 @@ impl SimpleBackend {
                                 "  -> trap stub failed for {}: {}",
                                 func_ir.name, stub_err
                             );
+                        } else {
+                            // Mark as defined so the post-compilation trap
+                            // stub loop does not attempt a duplicate stub.
+                            self.defined_func_names.insert(func_ir.name.clone());
                         }
                     }
                     self.module.clear_context(&mut self.ctx);
@@ -14028,7 +14032,11 @@ impl SimpleBackend {
                             &self.ctx.func.signature,
                             &func_ir.name,
                         ) {
-                            Ok(()) => {}
+                            Ok(()) => {
+                                // Mark as defined so the post-compilation
+                                // trap stub loop does not attempt a duplicate.
+                                self.defined_func_names.insert(func_ir.name.clone());
+                            }
                             Err(stub_err) => {
                                 eprintln!(
                                     "  -> trap stub also failed for {}: {}",
