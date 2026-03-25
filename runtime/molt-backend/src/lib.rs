@@ -513,7 +513,6 @@ fn int_value_fits_inline(builder: &mut FunctionBuilder, val: Value) -> Value {
     // Inline ints are 47-bit signed payloads: range [-(1<<46), (1<<46)-1].
     // Use direct range comparison instead of box/unbox round-trip, which
     // Cranelift's optimizer can fold away through the band/bor/ishl/sshr chain.
-    { let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/_molt_fits.log").map(|mut f| { use std::io::Write; let _ = writeln!(f, "fits_inline CALLED"); }); }
     let min_val = builder.ins().iconst(types::I64, -(1_i64 << 46));
     let max_val = builder.ins().iconst(types::I64, (1_i64 << 46) - 1);
     let ge_min = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, val, min_val);
@@ -1898,6 +1897,7 @@ impl SimpleBackend {
         let mut last_progress = std::time::Instant::now();
         for func_ir in ir.functions {
             let func_name = func_ir.name.clone();
+            { let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/_molt_compile.log").map(|mut f| { use std::io::Write; let _ = writeln!(f, "compile_func: {}", func_name); }); }
             let func_start = std::time::Instant::now();
             self.compile_func(
                 func_ir,
