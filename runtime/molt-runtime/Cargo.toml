@@ -40,7 +40,7 @@ stdlib_crypto = [
     "dep:hmac", "dep:pbkdf2", "dep:scrypt", "dep:subtle",
 ]
 stdlib_compression = ["dep:bzip2", "dep:flate2", "dep:xz2", "dep:molt-runtime-compression"]
-stdlib_serialization = ["dep:rmpv", "dep:serde_cbor", "molt-runtime-serial?/stdlib_serialization"]
+stdlib_serialization = ["dep:rmpv", "dep:serde_cbor"]
 stdlib_archive = ["dep:zip"]
 stdlib_ast = ["dep:rustpython-parser"]
 stdlib_fs_extra = ["dep:glob", "dep:tempfile"]

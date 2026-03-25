@@ -10,4 +10,4 @@ pub(crate) struct TrampolineKey {
     pub(crate) closure_size: i64,
 }
 
-pub(crate) mod function_compiler;
+mod function_compiler;
