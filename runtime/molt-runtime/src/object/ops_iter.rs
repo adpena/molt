@@ -678,7 +678,12 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
                 }
             }
         }
-        eprintln!("MOLT_DEBUG: molt_iter returning None for bits=0x{iter_bits:x} type={}", type_name(_py, obj_from_bits(iter_bits)));
+        let tn = type_name(_py, obj_from_bits(iter_bits));
+        eprintln!("MOLT_DEBUG: molt_iter returning None for bits=0x{iter_bits:x} type={tn}");
+        if tn.contains("GenericAlias") {
+            let bt = std::backtrace::Backtrace::force_capture();
+            eprintln!("MOLT_DEBUG: GenericAlias backtrace:\n{bt}");
+        }
         MoltObject::none().bits()
     })
 }
