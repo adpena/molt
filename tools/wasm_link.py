@@ -1791,13 +1791,6 @@ def _neutralize_dead_element_entries(data: bytes) -> bytes | None:
     except ValueError:
         return None
 
-    # When the module uses call_indirect, element entries may be targets
-    # of runtime-computed table indices that we cannot statically resolve.
-    # Neutralising those entries causes "null function or function signature
-    # mismatch" traps.  Skip the pass entirely in that case.
-    if _code_section_has_call_indirect(sections):
-        return None
-
     code_called = _collect_code_referenced_funcs(sections)
     elem_indices = _collect_element_func_indices(sections)
     # Functions only in the element table, never directly called from code
