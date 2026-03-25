@@ -448,6 +448,29 @@ impl<'a> SsaContext<'a> {
                     });
                     local_stacks.entry(var.clone()).or_default().push(vid);
                 }
+                // Insert a ConstNone "undef" value at the top of this
+                // unreachable block.  Any variable reference that cannot be
+                // resolved from `local_stacks` will fall back to this value
+                // instead of ValueId(0) from ^bb0 (which would violate SSA
+                // dominance since ^bb0 does not dominate unreachable blocks).
+                let undef_vid = self.fresh_value_typed();
+                tir_blocks[bid].ops.push(TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstNone,
+                    operands: vec![],
+                    results: vec![undef_vid],
+                    attrs: AttrDict::new(),
+                    source_span: None,
+                });
+
+                // Seed local_stacks with the undef value for every known
+                // variable that doesn't already have a definition (from block
+                // args).  This ensures resolve_var never fails and falls back
+                // to ValueId(0).
+                for var in &self.all_vars.clone() {
+                    local_stacks.entry(var.clone()).or_insert_with(|| vec![undef_vid]);
+                }
+
                 let op_indices = self.block_info[bid].op_indices.clone();
                 for &op_idx in &op_indices {
                     let op = &self.ops[op_idx];
