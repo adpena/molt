@@ -606,6 +606,28 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
                     inc_ref_bits(_py, iter_bits);
                     return iter_bits;
                 }
+                // GenericAlias (e.g. list[int]): iterate over __args__ tuple,
+                // matching CPython's types.GenericAlias.__iter__ semantics.
+                if type_id == TYPE_ID_GENERIC_ALIAS {
+                    let args_bits = generic_alias_args_bits(ptr);
+                    if let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() {
+                        if object_type_id(args_ptr) == TYPE_ID_TUPLE {
+                            let total = std::mem::size_of::<MoltHeader>()
+                                + std::mem::size_of::<u64>()
+                                + std::mem::size_of::<usize>()
+                                + std::mem::size_of::<*mut u8>();
+                            let iter_ptr = alloc_object(_py, total, TYPE_ID_ITER);
+                            if iter_ptr.is_null() {
+                                return MoltObject::none().bits();
+                            }
+                            inc_ref_bits(_py, args_bits);
+                            *(iter_ptr as *mut u64) = args_bits;
+                            iter_set_index(iter_ptr, 0);
+                            iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
+                            return MoltObject::from_ptr(iter_ptr).bits();
+                        }
+                    }
+                }
                 if type_id == TYPE_ID_LIST
                     || type_id == TYPE_ID_TUPLE
                     || type_id == TYPE_ID_STRING

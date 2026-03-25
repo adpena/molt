@@ -611,12 +611,22 @@ impl<'a> SsaContext<'a> {
                 let mut values = Vec::new();
                 if kind == "ret" || kind == "return" {
                     if let Some(op) = last_op {
-                        if let Some(args) = &op.args {
+                        // The frontend emits `ret` with the return value in
+                        // `op.var` (not `op.args`).  Check both locations so
+                        // the return value is never silently dropped.
+                        let mut candidates: Vec<&String> = Vec::new();
+                        if let Some(ref v) = op.var {
+                            candidates.push(v);
+                        }
+                        if let Some(ref args) = op.args {
                             for a in args {
-                                if is_variable(a) {
-                                    if let Some(vid) = Self::resolve_var(a, var_stacks) {
-                                        values.push(vid);
-                                    }
+                                candidates.push(a);
+                            }
+                        }
+                        for a in candidates {
+                            if is_variable(a) {
+                                if let Some(vid) = Self::resolve_var(a, var_stacks) {
+                                    values.push(vid);
                                 }
                             }
                         }
