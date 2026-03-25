@@ -1,11 +1,7 @@
 //! FFI bridge to molt-runtime internal functions.
 //!
-//! Two dispatch paths:
-//! 1. **Vtable** (preferred): Single `RuntimeVtable` fetched once at init.
-//! 2. **Direct extern "C"** (fallback): Individual symbol resolution at link time.
-//!
-//! Both paths coexist. The vtable is populated by calling `init_vtable()` from
-//! the runtime. If not initialized, functions fall back to direct extern "C" calls.
+//! All dispatch goes through a single `RuntimeVtable` fetched once at init.
+//! The only extern "C" symbol is `__molt_serial_get_vtable`.
 
 use molt_runtime_core::prelude::*;
 use molt_runtime_core::RuntimeVtable;
@@ -13,7 +9,6 @@ use std::borrow::Cow;
 use std::sync::OnceLock;
 
 /// Global vtable reference, populated once at init time.
-/// Falls back to individual extern "C" calls if not initialized.
 static VTABLE: OnceLock<&'static RuntimeVtable> = OnceLock::new();
 
 /// Initialize the vtable. Called once by the runtime at startup.
@@ -29,31 +24,22 @@ pub fn init_vtable() {
     }
 }
 
-/// Get the vtable reference, if initialized.
+/// Get the vtable reference. Panics if not initialized.
 #[inline(always)]
-#[allow(dead_code)]
-fn vt() -> Option<&'static RuntimeVtable> {
-    VTABLE.get().copied()
+fn vt() -> &'static RuntimeVtable {
+    VTABLE
+        .get()
+        .copied()
+        .expect("molt-runtime-serial: vtable not initialized — call bridge::init_vtable() first")
 }
 
 // ---------------------------------------------------------------------------
 // Exception / error handling
 // ---------------------------------------------------------------------------
 
-unsafe extern "C" {
-    fn __molt_serial_raise_exception(
-        type_ptr: *const u8,
-        type_len: usize,
-        msg_ptr: *const u8,
-        msg_len: usize,
-    ) -> u64;
-
-    fn __molt_serial_exception_pending() -> i32;
-}
-
 pub fn raise_exception<T: ExceptionSentinel>(_py: &PyToken, type_name: &str, msg: &str) -> T {
     let bits = unsafe {
-        __molt_serial_raise_exception(
+        (vt().raise_exception)(
             type_name.as_ptr(),
             type_name.len(),
             msg.as_ptr(),
@@ -64,7 +50,7 @@ pub fn raise_exception<T: ExceptionSentinel>(_py: &PyToken, type_name: &str, msg
 }
 
 pub fn exception_pending(_py: &PyToken) -> bool {
-    unsafe { __molt_serial_exception_pending() != 0 }
+    unsafe { (vt().exception_pending)() != 0 }
 }
 
 /// Trait for exception return sentinels.
@@ -95,67 +81,34 @@ impl ExceptionSentinel for () {
 // Object allocation
 // ---------------------------------------------------------------------------
 
-unsafe extern "C" {
-    fn __molt_serial_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
-    fn __molt_serial_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
-    fn __molt_serial_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8;
-    fn __molt_serial_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8;
-}
-
 pub fn alloc_tuple(_py: &PyToken, elems: &[u64]) -> *mut u8 {
-    unsafe { __molt_serial_alloc_tuple(elems.as_ptr(), elems.len()) }
+    unsafe { (vt().alloc_tuple)(elems.as_ptr(), elems.len()) }
 }
 
 pub fn alloc_list(_py: &PyToken, elems: &[u64]) -> *mut u8 {
-    unsafe { __molt_serial_alloc_list(elems.as_ptr(), elems.len()) }
+    unsafe { (vt().alloc_list)(elems.as_ptr(), elems.len()) }
 }
 
 pub fn alloc_string(_py: &PyToken, data: &[u8]) -> *mut u8 {
-    unsafe { __molt_serial_alloc_string(data.as_ptr(), data.len()) }
+    unsafe { (vt().alloc_string)(data.as_ptr(), data.len()) }
 }
 
 pub fn alloc_bytes(_py: &PyToken, data: &[u8]) -> *mut u8 {
-    unsafe { __molt_serial_alloc_bytes(data.as_ptr(), data.len()) }
+    unsafe { (vt().alloc_bytes)(data.as_ptr(), data.len()) }
 }
 
 // ---------------------------------------------------------------------------
 // Object inspection
 // ---------------------------------------------------------------------------
 
-unsafe extern "C" {
-    fn __molt_serial_object_type_id(ptr: *mut u8) -> u32;
-    fn __molt_serial_string_obj_to_owned(
-        bits: u64,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
-    fn __molt_serial_type_name(
-        bits: u64,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
-    fn __molt_serial_is_truthy(bits: u64) -> i32;
-    fn __molt_serial_bytes_like_slice(
-        ptr: *mut u8,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
-    fn __molt_serial_string_bytes(
-        ptr: *mut u8,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
-    fn __molt_serial_string_len(ptr: *mut u8) -> usize;
-}
-
 pub unsafe fn object_type_id(ptr: *mut u8) -> u32 {
-    unsafe { __molt_serial_object_type_id(ptr) }
+    unsafe { (vt().object_type_id)(ptr) }
 }
 
 pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_serial_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
+    let ok = unsafe { (vt().string_obj_to_owned)(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
         let boxed =
             unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
@@ -168,7 +121,7 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
 pub fn type_name(_py: &PyToken, obj: MoltObject) -> Cow<'static, str> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_serial_type_name(obj.bits(), &mut out_ptr, &mut out_len) };
+    let ok = unsafe { (vt().type_name)(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
         let boxed =
             unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
@@ -179,14 +132,14 @@ pub fn type_name(_py: &PyToken, obj: MoltObject) -> Cow<'static, str> {
 }
 
 pub fn is_truthy(_py: &PyToken, obj: MoltObject) -> bool {
-    unsafe { __molt_serial_is_truthy(obj.bits()) != 0 }
+    unsafe { (vt().is_truthy)(obj.bits()) != 0 }
 }
 
 pub unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
     unsafe {
-        if __molt_serial_bytes_like_slice(ptr, &mut out_ptr, &mut out_len) != 0 {
+        if (vt().bytes_like_slice)(ptr, &mut out_ptr, &mut out_len) != 0 {
             Some(std::slice::from_raw_parts(out_ptr, out_len))
         } else {
             None
@@ -198,37 +151,24 @@ pub unsafe fn string_bytes(ptr: *mut u8) -> &'static [u8] {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
     unsafe {
-        __molt_serial_string_bytes(ptr, &mut out_ptr, &mut out_len);
+        (vt().string_bytes)(ptr, &mut out_ptr, &mut out_len);
         std::slice::from_raw_parts(out_ptr, out_len)
     }
 }
 
 pub fn string_len(ptr: *mut u8) -> usize {
-    unsafe { __molt_serial_string_len(ptr) }
+    unsafe { (vt().string_len)(ptr) }
 }
 
 // ---------------------------------------------------------------------------
 // Memoryview / bytes-like helpers
 // ---------------------------------------------------------------------------
 
-unsafe extern "C" {
-    fn __molt_serial_bytes_like_slice_raw(
-        ptr: *mut u8,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
-    fn __molt_serial_memoryview_is_c_contiguous_view(ptr: *mut u8) -> i32;
-    fn __molt_serial_memoryview_readonly(ptr: *mut u8) -> i32;
-    fn __molt_serial_memoryview_nbytes(ptr: *mut u8) -> usize;
-    fn __molt_serial_memoryview_offset(ptr: *mut u8) -> isize;
-    fn __molt_serial_memoryview_owner_bits(ptr: *mut u8) -> u64;
-}
-
 pub unsafe fn bytes_like_slice_raw(ptr: *mut u8) -> Option<&'static [u8]> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
     unsafe {
-        if __molt_serial_bytes_like_slice_raw(ptr, &mut out_ptr, &mut out_len) != 0 {
+        if (vt().bytes_like_slice_raw)(ptr, &mut out_ptr, &mut out_len) != 0 {
             Some(std::slice::from_raw_parts(out_ptr, out_len))
         } else {
             None
@@ -237,95 +177,54 @@ pub unsafe fn bytes_like_slice_raw(ptr: *mut u8) -> Option<&'static [u8]> {
 }
 
 pub unsafe fn memoryview_is_c_contiguous_view(ptr: *mut u8) -> bool {
-    unsafe { __molt_serial_memoryview_is_c_contiguous_view(ptr) != 0 }
+    unsafe { (vt().memoryview_is_c_contiguous_view)(ptr) != 0 }
 }
 
 pub unsafe fn memoryview_readonly(ptr: *mut u8) -> bool {
-    unsafe { __molt_serial_memoryview_readonly(ptr) != 0 }
+    unsafe { (vt().memoryview_readonly)(ptr) != 0 }
 }
 
 pub unsafe fn memoryview_nbytes(ptr: *mut u8) -> usize {
-    unsafe { __molt_serial_memoryview_nbytes(ptr) }
+    unsafe { (vt().memoryview_nbytes)(ptr) }
 }
 
 pub unsafe fn memoryview_offset(ptr: *mut u8) -> isize {
-    unsafe { __molt_serial_memoryview_offset(ptr) }
+    unsafe { (vt().memoryview_offset)(ptr) }
 }
 
 pub unsafe fn memoryview_owner_bits(ptr: *mut u8) -> u64 {
-    unsafe { __molt_serial_memoryview_owner_bits(ptr) }
+    unsafe { (vt().memoryview_owner_bits)(ptr) }
 }
 
 // ---------------------------------------------------------------------------
 // Reference counting / pointer management
 // ---------------------------------------------------------------------------
 
-unsafe extern "C" {
-    fn __molt_serial_release_ptr(ptr: *mut u8);
-    fn __molt_serial_dec_ref_bits(bits: u64);
-    fn __molt_serial_inc_ref_bits(bits: u64);
-}
-
 pub fn release_ptr(ptr: *mut u8) {
-    unsafe { __molt_serial_release_ptr(ptr) }
+    unsafe { (vt().release_ptr)(ptr) }
 }
 
 pub fn dec_ref_bits(_py: &PyToken, bits: u64) {
-    unsafe { __molt_serial_dec_ref_bits(bits) }
+    unsafe { (vt().dec_ref_bits)(bits) }
 }
 
 pub fn inc_ref_bits(_py: &PyToken, bits: u64) {
-    unsafe { __molt_serial_inc_ref_bits(bits) }
+    unsafe { (vt().inc_ref_bits)(bits) }
 }
 
 // ---------------------------------------------------------------------------
 // Numeric helpers
 // ---------------------------------------------------------------------------
 
-unsafe extern "C" {
-    fn __molt_serial_to_i64(bits: u64, out: *mut i64) -> i32;
-    fn __molt_serial_to_f64(bits: u64, out: *mut f64) -> i32;
-    fn __molt_serial_to_bigint(
-        bits: u64,
-        out_sign: *mut i32,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
-    fn __molt_serial_int_bits_from_i64(val: i64) -> u64;
-    fn __molt_serial_int_bits_from_bigint(
-        sign: i32,
-        data_ptr: *const u8,
-        data_len: usize,
-    ) -> u64;
-    fn __molt_serial_bigint_ptr_from_bits(bits: u64) -> *mut u8;
-    fn __molt_serial_bigint_ref(ptr: *mut u8, out_sign: *mut i32, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
-    fn __molt_serial_bigint_from_f64_trunc(val: f64, out_sign: *mut i32, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
-    fn __molt_serial_bigint_bits(sign: i32, data_ptr: *const u8, data_len: usize) -> u64;
-    fn __molt_serial_bigint_to_inline(sign: i32, data_ptr: *const u8, data_len: usize) -> u64;
-    fn __molt_serial_index_i64_from_obj(
-        obj_bits: u64,
-        err_ptr: *const u8,
-        err_len: usize,
-    ) -> i64;
-    fn __molt_serial_index_bigint_from_obj(
-        obj_bits: u64,
-        err_ptr: *const u8,
-        err_len: usize,
-        out_sign: *mut i32,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
-}
-
 pub fn to_i64(obj: MoltObject) -> Option<i64> {
     let mut out: i64 = 0;
-    let ok = unsafe { __molt_serial_to_i64(obj.bits(), &mut out) };
+    let ok = unsafe { (vt().to_i64)(obj.bits(), &mut out) };
     if ok != 0 { Some(out) } else { None }
 }
 
 pub fn to_f64(obj: MoltObject) -> Option<f64> {
     let mut out: f64 = 0.0;
-    let ok = unsafe { __molt_serial_to_f64(obj.bits(), &mut out) };
+    let ok = unsafe { (vt().to_f64)(obj.bits(), &mut out) };
     if ok != 0 { Some(out) } else { None }
 }
 
@@ -334,7 +233,8 @@ pub fn to_bigint(obj: MoltObject) -> Option<num_bigint::BigInt> {
     let mut out_sign: i32 = 0;
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_serial_to_bigint(obj.bits(), &mut out_sign, &mut out_ptr, &mut out_len) };
+    let ok =
+        unsafe { (vt().to_bigint)(obj.bits(), &mut out_sign, &mut out_ptr, &mut out_len) };
     if ok == 0 {
         return None;
     }
@@ -346,22 +246,19 @@ pub fn to_bigint(obj: MoltObject) -> Option<num_bigint::BigInt> {
     if out_len == 0 {
         return Some(BigInt::from(0));
     }
-    let bytes = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+    let bytes =
+        unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
     Some(BigInt::from_bytes_be(sign, &bytes))
 }
 
 pub fn int_bits_from_i64(_py: &PyToken, val: i64) -> u64 {
-    unsafe { __molt_serial_int_bits_from_i64(val) }
-}
-
-unsafe extern "C" {
-    fn __molt_serial_int_bits_from_i128(val_lo: u64, val_hi: u64) -> u64;
+    unsafe { (vt().int_bits_from_i64)(val) }
 }
 
 pub fn int_bits_from_i128(_py: &PyToken, val: i128) -> u64 {
     let lo = val as u64;
     let hi = (val >> 64) as u64;
-    unsafe { __molt_serial_int_bits_from_i128(lo, hi) }
+    unsafe { (vt().int_bits_from_i128)(lo, hi) }
 }
 
 pub fn int_bits_from_bigint(_py: &PyToken, value: num_bigint::BigInt) -> u64 {
@@ -372,11 +269,11 @@ pub fn int_bits_from_bigint(_py: &PyToken, value: num_bigint::BigInt) -> u64 {
         Sign::NoSign => 0i32,
         Sign::Plus => 1i32,
     };
-    unsafe { __molt_serial_int_bits_from_bigint(sign_i32, bytes.as_ptr(), bytes.len()) }
+    unsafe { (vt().int_bits_from_bigint)(sign_i32, bytes.as_ptr(), bytes.len()) }
 }
 
 pub fn bigint_ptr_from_bits(bits: u64) -> Option<*mut u8> {
-    let ptr = unsafe { __molt_serial_bigint_ptr_from_bits(bits) };
+    let ptr = unsafe { (vt().bigint_ptr_from_bits)(bits) };
     if ptr.is_null() { None } else { Some(ptr) }
 }
 
@@ -386,7 +283,8 @@ pub fn bigint_ref(ptr: *mut u8) -> num_bigint::BigInt {
     let mut out_sign: i32 = 0;
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_serial_bigint_ref(ptr, &mut out_sign, &mut out_ptr, &mut out_len) };
+    let ok =
+        unsafe { (vt().bigint_ref)(ptr, &mut out_sign, &mut out_ptr, &mut out_len) };
     if ok == 0 || out_len == 0 {
         return BigInt::from(0);
     }
@@ -395,7 +293,8 @@ pub fn bigint_ref(ptr: *mut u8) -> num_bigint::BigInt {
         0 => Sign::NoSign,
         _ => Sign::Plus,
     };
-    let bytes = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+    let bytes =
+        unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
     BigInt::from_bytes_be(sign, &bytes)
 }
 
@@ -404,7 +303,9 @@ pub fn bigint_from_f64_trunc(val: f64) -> num_bigint::BigInt {
     let mut out_sign: i32 = 0;
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_serial_bigint_from_f64_trunc(val, &mut out_sign, &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        (vt().bigint_from_f64_trunc)(val, &mut out_sign, &mut out_ptr, &mut out_len)
+    };
     if ok == 0 || out_len == 0 {
         return BigInt::from(0);
     }
@@ -413,7 +314,8 @@ pub fn bigint_from_f64_trunc(val: f64) -> num_bigint::BigInt {
         0 => Sign::NoSign,
         _ => Sign::Plus,
     };
-    let bytes = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+    let bytes =
+        unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
     BigInt::from_bytes_be(sign, &bytes)
 }
 
@@ -425,7 +327,7 @@ pub fn bigint_bits(_py: &PyToken, value: &num_bigint::BigInt) -> u64 {
         Sign::NoSign => 0i32,
         Sign::Plus => 1i32,
     };
-    unsafe { __molt_serial_bigint_bits(sign_i32, bytes.as_ptr(), bytes.len()) }
+    unsafe { (vt().bigint_bits)(sign_i32, bytes.as_ptr(), bytes.len()) }
 }
 
 pub fn bigint_to_inline(_py: &PyToken, value: &num_bigint::BigInt) -> u64 {
@@ -436,11 +338,11 @@ pub fn bigint_to_inline(_py: &PyToken, value: &num_bigint::BigInt) -> u64 {
         Sign::NoSign => 0i32,
         Sign::Plus => 1i32,
     };
-    unsafe { __molt_serial_bigint_to_inline(sign_i32, bytes.as_ptr(), bytes.len()) }
+    unsafe { (vt().bigint_to_inline)(sign_i32, bytes.as_ptr(), bytes.len()) }
 }
 
 pub fn index_i64_from_obj(_py: &PyToken, obj_bits: u64, err: &str) -> i64 {
-    unsafe { __molt_serial_index_i64_from_obj(obj_bits, err.as_ptr(), err.len()) }
+    unsafe { (vt().index_i64_from_obj)(obj_bits, err.as_ptr(), err.len()) }
 }
 
 pub fn index_bigint_from_obj(
@@ -453,7 +355,7 @@ pub fn index_bigint_from_obj(
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
     let ok = unsafe {
-        __molt_serial_index_bigint_from_obj(
+        (vt().index_bigint_from_obj)(
             obj_bits,
             err.as_ptr(),
             err.len(),
@@ -482,42 +384,31 @@ pub fn index_bigint_from_obj(
 // Callable / protocol helpers
 // ---------------------------------------------------------------------------
 
-unsafe extern "C" {
-    fn __molt_serial_call_callable0(call_bits: u64) -> u64;
-    fn __molt_serial_call_callable2(call_bits: u64, arg0: u64, arg1: u64) -> u64;
-    fn __molt_serial_attr_lookup_ptr_allow_missing(ptr: *mut u8, name_bits: u64) -> u64;
-    fn __molt_serial_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64;
-    fn __molt_serial_class_name_for_error(type_bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
-    fn __molt_serial_type_of_bits(val_bits: u64) -> u64;
-    fn __molt_serial_maybe_ptr_from_bits(bits: u64) -> *mut u8;
-    fn __molt_serial_molt_is_callable(bits: u64) -> i32;
-    fn __molt_serial_format_obj(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
-    fn __molt_serial_format_obj_str(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
-}
-
 pub fn call_callable0(_py: &PyToken, call_bits: u64) -> u64 {
-    unsafe { __molt_serial_call_callable0(call_bits) }
+    unsafe { (vt().call_callable0)(call_bits) }
 }
 
 pub fn call_callable2(_py: &PyToken, call_bits: u64, arg0: u64, arg1: u64) -> u64 {
-    unsafe { __molt_serial_call_callable2(call_bits, arg0, arg1) }
+    unsafe { (vt().call_callable2)(call_bits, arg0, arg1) }
 }
 
 pub fn attr_lookup_ptr_allow_missing(_py: &PyToken, ptr: *mut u8, name_bits: u64) -> Option<u64> {
-    let result = unsafe { __molt_serial_attr_lookup_ptr_allow_missing(ptr, name_bits) };
+    let result = unsafe { (vt().attr_lookup_ptr_allow_missing)(ptr, name_bits) };
     if result == 0 { None } else { Some(result) }
 }
 
 pub fn intern_static_name(_py: &PyToken, key: &[u8]) -> u64 {
-    unsafe { __molt_serial_intern_static_name(key.as_ptr(), key.len()) }
+    unsafe { (vt().intern_static_name)(key.as_ptr(), key.len()) }
 }
 
 pub fn class_name_for_error(type_bits: u64) -> String {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_serial_class_name_for_error(type_bits, &mut out_ptr, &mut out_len) };
+    let ok =
+        unsafe { (vt().class_name_for_error)(type_bits, &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
-        let boxed = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed =
+            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
         String::from_utf8_lossy(&boxed).into_owned()
     } else {
         "<unknown>".to_string()
@@ -525,24 +416,25 @@ pub fn class_name_for_error(type_bits: u64) -> String {
 }
 
 pub fn type_of_bits(_py: &PyToken, val_bits: u64) -> u64 {
-    unsafe { __molt_serial_type_of_bits(val_bits) }
+    unsafe { (vt().type_of_bits)(val_bits) }
 }
 
 pub fn maybe_ptr_from_bits(bits: u64) -> Option<*mut u8> {
-    let ptr = unsafe { __molt_serial_maybe_ptr_from_bits(bits) };
+    let ptr = unsafe { (vt().maybe_ptr_from_bits)(bits) };
     if ptr.is_null() { None } else { Some(ptr) }
 }
 
 pub fn molt_is_callable(_py: &PyToken, bits: u64) -> bool {
-    unsafe { __molt_serial_molt_is_callable(bits) != 0 }
+    unsafe { (vt().molt_is_callable)(bits) != 0 }
 }
 
 pub fn format_obj(_py: &PyToken, obj: MoltObject) -> String {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_serial_format_obj(obj.bits(), &mut out_ptr, &mut out_len) };
+    let ok = unsafe { (vt().format_obj)(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
-        let boxed = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed =
+            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
         String::from_utf8_lossy(&boxed).into_owned()
     } else {
         "<?>".to_string()
@@ -552,9 +444,10 @@ pub fn format_obj(_py: &PyToken, obj: MoltObject) -> String {
 pub fn format_obj_str(_py: &PyToken, obj: MoltObject) -> String {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_serial_format_obj_str(obj.bits(), &mut out_ptr, &mut out_len) };
+    let ok = unsafe { (vt().format_obj_str)(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
-        let boxed = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed =
+            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
         String::from_utf8_lossy(&boxed).into_owned()
     } else {
         "<?>".to_string()
@@ -565,89 +458,73 @@ pub fn format_obj_str(_py: &PyToken, obj: MoltObject) -> String {
 // Bytearray helpers
 // ---------------------------------------------------------------------------
 
-#[allow(improper_ctypes)]
-unsafe extern "C" {
-    fn __molt_serial_bytearray_vec(ptr: *mut u8) -> *mut Vec<u8>;
-}
-
 pub unsafe fn bytearray_vec(ptr: *mut u8) -> &'static mut Vec<u8> {
-    unsafe { &mut *__molt_serial_bytearray_vec(ptr) }
+    unsafe { &mut *(vt().bytearray_vec)(ptr) }
 }
 
 // ---------------------------------------------------------------------------
 // Container helpers
 // ---------------------------------------------------------------------------
 
-#[allow(improper_ctypes)]
-unsafe extern "C" {
-    fn __molt_serial_dict_get_in_place(dict_ptr: *mut u8, key_bits: u64, out: *mut u64) -> i32;
-    fn __molt_serial_dict_set_in_place(dict_ptr: *mut u8, key_bits: u64, val_bits: u64) -> i32;
-    fn __molt_serial_list_len(ptr: *mut u8) -> usize;
-    fn __molt_serial_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64>;
-}
-
-pub unsafe fn dict_get_in_place(_py: &PyToken, dict_ptr: *mut u8, key_bits: u64) -> Option<u64> {
+pub unsafe fn dict_get_in_place(
+    _py: &PyToken,
+    dict_ptr: *mut u8,
+    key_bits: u64,
+) -> Option<u64> {
     let mut out: u64 = 0;
-    let ok = unsafe { __molt_serial_dict_get_in_place(dict_ptr, key_bits, &mut out) };
+    let ok = unsafe { (vt().dict_get_in_place)(dict_ptr, key_bits, &mut out) };
     if ok != 0 { Some(out) } else { None }
 }
 
-pub unsafe fn dict_set_in_place(_py: &PyToken, dict_ptr: *mut u8, key_bits: u64, val_bits: u64) -> bool {
-    unsafe { __molt_serial_dict_set_in_place(dict_ptr, key_bits, val_bits) != 0 }
+pub unsafe fn dict_set_in_place(
+    _py: &PyToken,
+    dict_ptr: *mut u8,
+    key_bits: u64,
+    val_bits: u64,
+) -> bool {
+    unsafe { (vt().dict_set_in_place)(dict_ptr, key_bits, val_bits) != 0 }
 }
 
 pub unsafe fn list_len(ptr: *mut u8) -> usize {
-    unsafe { __molt_serial_list_len(ptr) }
+    unsafe { (vt().list_len)(ptr) }
 }
 
 pub unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
-    unsafe { &*__molt_serial_seq_vec_ptr(ptr) }
+    unsafe { &*(vt().seq_vec_ptr)(ptr) }
 }
 
 // ---------------------------------------------------------------------------
 // Iteration helpers
 // ---------------------------------------------------------------------------
 
-unsafe extern "C" {
-    fn __molt_serial_molt_iter(bits: u64) -> u64;
-    fn __molt_serial_molt_iter_next(iter_bits: u64, out: *mut u64) -> i32;
-    fn __molt_serial_raise_not_iterable(bits: u64) -> u64;
-    fn __molt_serial_molt_sorted_builtin(bits: u64) -> u64;
-    fn __molt_serial_molt_mul(a: u64, b: u64) -> u64;
-}
-
 pub fn molt_iter(_py: &PyToken, bits: u64) -> u64 {
-    unsafe { __molt_serial_molt_iter(bits) }
+    unsafe { (vt().molt_iter)(bits) }
 }
 
 pub fn molt_iter_next(_py: &PyToken, iter_bits: u64) -> Option<u64> {
     let mut out: u64 = 0;
-    let ok = unsafe { __molt_serial_molt_iter_next(iter_bits, &mut out) };
+    let ok = unsafe { (vt().molt_iter_next)(iter_bits, &mut out) };
     if ok != 0 { Some(out) } else { None }
 }
 
 pub fn raise_not_iterable(_py: &PyToken, bits: u64) -> u64 {
-    unsafe { __molt_serial_raise_not_iterable(bits) }
+    unsafe { (vt().raise_not_iterable)(bits) }
 }
 
 pub fn molt_sorted_builtin(_py: &PyToken, bits: u64) -> u64 {
-    unsafe { __molt_serial_molt_sorted_builtin(bits) }
+    unsafe { (vt().molt_sorted_builtin)(bits) }
 }
 
 pub fn molt_mul(_py: &PyToken, a: u64, b: u64) -> u64 {
-    unsafe { __molt_serial_molt_mul(a, b) }
+    unsafe { (vt().molt_mul)(a, b) }
 }
 
 // ---------------------------------------------------------------------------
 // OS randomness
 // ---------------------------------------------------------------------------
 
-unsafe extern "C" {
-    fn __molt_serial_fill_os_random(buf_ptr: *mut u8, buf_len: usize) -> i32;
-}
-
 pub fn fill_os_random(buf: &mut [u8]) -> Result<(), ()> {
-    let ok = unsafe { __molt_serial_fill_os_random(buf.as_mut_ptr(), buf.len()) };
+    let ok = unsafe { (vt().fill_os_random)(buf.as_mut_ptr(), buf.len()) };
     if ok != 0 { Ok(()) } else { Err(()) }
 }
 
@@ -655,23 +532,19 @@ pub fn fill_os_random(buf: &mut [u8]) -> Result<(), ()> {
 // Dict helpers (configparser-specific)
 // ---------------------------------------------------------------------------
 
-unsafe extern "C" {
-    fn __molt_serial_alloc_dict_with_pairs(pairs_ptr: *const u64, pairs_len: usize) -> *mut u8;
-    fn __molt_serial_dict_order_clone(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize) -> i32;
-}
-
 pub fn alloc_dict_with_pairs(_py: &PyToken, pairs: &[u64]) -> *mut u8 {
-    unsafe { __molt_serial_alloc_dict_with_pairs(pairs.as_ptr(), pairs.len()) }
+    unsafe { (vt().alloc_dict_with_pairs)(pairs.as_ptr(), pairs.len()) }
 }
 
 /// Returns a cloned copy of the dict's insertion order as a Vec of [k0, v0, k1, v1, ...].
 pub fn dict_order_clone(_py: &PyToken, ptr: *mut u8) -> Vec<u64> {
     let mut out_ptr: *const u64 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_serial_dict_order_clone(ptr, &mut out_ptr, &mut out_len) };
+    let ok = unsafe { (vt().dict_order_clone)(ptr, &mut out_ptr, &mut out_len) };
     if ok == 0 || out_len == 0 {
         return Vec::new();
     }
-    let boxed = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u64, out_len)) };
+    let boxed =
+        unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u64, out_len)) };
     boxed.into_vec()
 }
