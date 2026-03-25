@@ -11008,11 +11008,11 @@ impl SimpleBackend {
                         reachable_blocks.insert(validate_block);
                         brif_block(&mut builder, is_pending, validate_block, &[], fallthrough, &[]);
                         switch_to_block_tracking(&mut builder, validate_block, &mut is_block_filled);
-                        builder.seal_block(validate_block);
                         let call = builder.ins().call(local_exc_pending_fast, &[]);
                         let confirmed = builder.inst_results(call)[0];
                         let cond2 = builder.ins().icmp_imm(IntCC::NotEqual, confirmed, 0);
                         brif_block(&mut builder, cond2, target_block, &[], fallthrough, &[]);
+                        builder.seal_block(validate_block);
                     } else {
                         // Fallback: direct function call (no flag pointer available)
                         let call = builder.ins().call(local_exc_pending_fast, &[]);
