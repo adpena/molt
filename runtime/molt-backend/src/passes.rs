@@ -2151,3 +2151,153 @@ pub fn split_megafunctions(ir: &mut SimpleIR) {
     ir.functions = new_functions;
 }
 
+/// Rewrite loops that contain `state_yield` in stateful (generator/async)
+/// functions so the native backend can resume inside the loop body.
+///
+/// Problem: the native Cranelift backend tracks loop context on a runtime
+/// `loop_stack`.  When a generator yields inside a loop and later resumes,
+/// the `loop_start` that pushed the frame is skipped (the state machine
+/// jumps directly to the resume block).  Any subsequent `loop_continue`
+/// finds an empty `loop_stack` and falls through, ending the generator
+/// after a single yield.
+///
+/// Fix: for every loop that encloses a `state_yield`, insert a
+/// `state_label` at the loop body start and rewrite `loop_continue` ops
+/// to `jump` ops targeting that label.  The native backend treats
+/// `state_label` as a resume-eligible block and `jump` as an
+/// unconditional branch — both work correctly across state-machine
+/// boundaries.
+pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
+    // Only transform stateful functions (generators / async).
+    let is_stateful = func_ir.ops.iter().any(|op| {
+        matches!(
+            op.kind.as_str(),
+            "state_switch" | "state_transition" | "state_yield" | "chan_send_yield" | "chan_recv_yield"
+        )
+    });
+    if !is_stateful {
+        return;
+    }
+    eprintln!("[rewrite_stateful_loops] processing function: {}", func_ir.name);
+
+    // Find the maximum state ID already in use so we can allocate fresh IDs.
+    let mut max_state_id: i64 = 0;
+    for op in &func_ir.ops {
+        if let Some(id) = op.value {
+            if matches!(
+                op.kind.as_str(),
+                "state_yield"
+                    | "state_transition"
+                    | "state_label"
+                    | "label"
+                    | "chan_send_yield"
+                    | "chan_recv_yield"
+            ) {
+                max_state_id = max_state_id.max(id);
+            }
+        }
+    }
+    let mut next_state_id = max_state_id + 100; // leave headroom
+
+    // Build a stack of loop start indices and find which loops contain yields.
+    struct LoopInfo {
+        start_idx: usize,
+        has_yield: bool,
+        continues: Vec<usize>,
+    }
+    let mut loop_stack: Vec<LoopInfo> = Vec::new();
+    let mut finished_loops: Vec<LoopInfo> = Vec::new();
+
+    for (idx, op) in func_ir.ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "loop_start" | "loop_index_start" => {
+                loop_stack.push(LoopInfo {
+                    start_idx: idx,
+                    has_yield: false,
+                    continues: Vec::new(),
+                });
+            }
+            "state_yield" | "chan_send_yield" | "chan_recv_yield" => {
+                // Mark all enclosing loops as containing a yield.
+                for frame in loop_stack.iter_mut() {
+                    frame.has_yield = true;
+                }
+            }
+            "loop_continue" => {
+                if let Some(frame) = loop_stack.last_mut() {
+                    frame.continues.push(idx);
+                }
+            }
+            "loop_end" => {
+                if let Some(frame) = loop_stack.pop() {
+                    finished_loops.push(frame);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Only process loops that contain yields.
+    let yield_loops: Vec<LoopInfo> = finished_loops
+        .into_iter()
+        .filter(|l| l.has_yield)
+        .collect();
+
+    if yield_loops.is_empty() {
+        return;
+    }
+
+    // For each yield-containing loop, allocate a state label ID and record
+    // the insertions + replacements needed.
+    //
+    // We insert a `state_label` right after the loop_start op and replace
+    // each `loop_continue` with a `jump`.
+    struct Patch {
+        /// Insert a state_label after this op index.
+        insert_after: usize,
+        state_id: i64,
+        /// Op indices of loop_continue to replace with jump.
+        continue_indices: Vec<usize>,
+    }
+    let mut patches: Vec<Patch> = Vec::new();
+    for info in &yield_loops {
+        let state_id = next_state_id;
+        next_state_id += 1;
+        patches.push(Patch {
+            insert_after: info.start_idx,
+            state_id,
+            continue_indices: info.continues.clone(),
+        });
+    }
+
+    // Apply replacements: loop_continue -> jump.
+    let mut continue_to_state: BTreeMap<usize, i64> = BTreeMap::new();
+    for patch in &patches {
+        for &ci in &patch.continue_indices {
+            continue_to_state.insert(ci, patch.state_id);
+        }
+    }
+    for (&idx, &state_id) in &continue_to_state {
+        func_ir.ops[idx] = OpIR {
+            kind: "jump".to_string(),
+            value: Some(state_id),
+            ..OpIR::default()
+        };
+    }
+
+    // Insert state_label ops (process from last to first to preserve indices).
+    let mut inserts: Vec<(usize, i64)> = patches
+        .iter()
+        .map(|p| (p.insert_after, p.state_id))
+        .collect();
+    inserts.sort_by(|a, b| b.0.cmp(&a.0)); // reverse order
+    for (after_idx, state_id) in inserts {
+        let label_op = OpIR {
+            kind: "state_label".to_string(),
+            value: Some(state_id),
+            ..OpIR::default()
+        };
+        func_ir.ops.insert(after_idx + 1, label_op);
+    }
+}
+

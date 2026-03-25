@@ -1412,6 +1412,9 @@ impl WasmBackend {
         let mut ir = ir;
         crate::apply_profile_order(&mut ir);
         for func_ir in &mut ir.functions {
+            crate::rewrite_stateful_loops(func_ir);
+        }
+        for func_ir in &mut ir.functions {
             crate::elide_dead_struct_allocs(func_ir);
         }
         for func_ir in &mut ir.functions {
