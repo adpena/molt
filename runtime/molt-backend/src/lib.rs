@@ -190,7 +190,7 @@ struct NativeBackendIrAnalysis {
     /// return is int, and all internal calls are to self or other typed-int
     /// functions.  For these functions, a `{name}__fast_int` twin is compiled
     /// that operates on raw i64 values without NaN-boxing overhead.
-    typed_int_functions: BTreeSet<String>,
+    _typed_int_functions: BTreeSet<String>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -428,7 +428,7 @@ fn analyze_native_backend_ir(ir: &SimpleIR) -> NativeBackendIrAnalysis {
         task_kinds,
         task_closure_sizes,
         needs_inlining,
-        typed_int_functions,
+        _typed_int_functions: typed_int_functions,
     }
 }
 

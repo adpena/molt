@@ -260,7 +260,7 @@ fn format_obj_to_owned(_py: &PyToken, format_obj: MoltObject) -> Result<String, 
     if (type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY)
         && let Some(bytes) = unsafe { bytes_like_slice_raw(ptr) }
     {
-        let out: String = bytes.iter().map(|b| *b as char).collect();
+        let out = bytes.iter().map(|b| *b as char).collect::<String>();
         return Ok(out);
     }
     let type_label = type_name(_py, format_obj);

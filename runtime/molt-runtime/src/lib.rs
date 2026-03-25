@@ -220,10 +220,7 @@ pub use molt_runtime_math::colorsys::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::compression_common::*;
 pub use crate::builtins::concurrent::*;
-#[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::configparser::*;
-#[cfg(feature = "stdlib_serial")]
-pub use molt_runtime_serial::configparser::*;
 pub(crate) use crate::builtins::containers::{
     dict_len, dict_method_bits, dict_order, dict_order_ptr, dict_table, dict_table_ptr,
     dict_view_as_set_bits, dict_view_dict_bits, dict_view_entry, dict_view_len,
@@ -250,10 +247,7 @@ pub use crate::builtins::copy_mod::*;
 pub use crate::builtins::csv::*;
 #[cfg(feature = "stdlib_csv")]
 pub use molt_runtime_serial::csv::*;
-#[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::datetime::*;
-#[cfg(feature = "stdlib_serial")]
-pub use molt_runtime_serial::datetime::*;
 pub use crate::builtins::dbm_dumb::*;
 pub use crate::builtins::decimal::*;
 pub use crate::builtins::difflib::*;
