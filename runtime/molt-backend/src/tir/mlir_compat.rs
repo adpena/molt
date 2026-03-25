@@ -191,7 +191,6 @@ mod tests {
     use super::*;
     use crate::tir::blocks::TirBlock;
     use crate::tir::ops::{AttrDict, TirOp};
-    use crate::tir::values::TirValue;
 
     fn make_add_func() -> TirFunction {
         let mut func = TirFunction::new("add".into(), vec![TirType::I64, TirType::I64], TirType::I64);
