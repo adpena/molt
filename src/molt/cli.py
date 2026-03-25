@@ -8786,6 +8786,48 @@ def _remove_backend_daemon_pid(pid_path: Path) -> None:
         pass
 
 
+def _kill_stale_backend_daemon() -> None:
+    """Kill any running backend daemon process.
+
+    Called before rebuilding the backend binary so the daemon doesn't
+    continue serving stale compiled code. Uses both PID file lookup and
+    process name matching for robustness.
+    """
+    import signal
+
+    # Try PID file first (all known daemon socket dirs)
+    for cache_dir in [
+        Path.home() / ".molt" / "daemon",
+        Path.home() / "Library" / "Caches" / "molt" / "daemon",
+    ]:
+        for pid_file in cache_dir.glob("*.pid"):
+            pid = _read_backend_daemon_pid(pid_file)
+            if pid is not None:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except OSError:
+                    pass
+                _remove_backend_daemon_pid(pid_file)
+
+    # Also check the project-local daemon socket directory
+    project_root = Path.cwd()
+    for socket_dir in [
+        project_root / ".molt" / "daemon",
+        _backend_daemon_socket_dir(project_root),
+    ]:
+        try:
+            for pid_file in socket_dir.glob("*.pid"):
+                pid = _read_backend_daemon_pid(pid_file)
+                if pid is not None:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except OSError:
+                        pass
+                    _remove_backend_daemon_pid(pid_file)
+        except OSError:
+            pass
+
+
 def _backend_daemon_binary_is_newer(backend_bin: Path, pid_path: Path) -> bool:
     try:
         return backend_bin.stat().st_mtime > (pid_path.stat().st_mtime + 1e-6)
@@ -17647,6 +17689,9 @@ def _ensure_backend_binary(
             return True
         if not json_output:
             print("Backend sources changed; rebuilding backend...", file=sys.stderr)
+        # Kill any running backend daemon so it doesn't serve stale code
+        # after the binary is rebuilt.
+        _kill_stale_backend_daemon()
         cmd = [
             "cargo",
             "build",
