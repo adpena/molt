@@ -516,3 +516,149 @@ pub unsafe extern "C" fn molt_getattr_ic(
         })
     }
 }
+
+// ---------------------------------------------------------------------------
+// GIL-free inline-cache probe for the native backend's split-phase IC.
+//
+// The native backend emits:
+//   fast_result = molt_ic_probe_fast(obj_ptr, ic_index)
+//   if fast_result != 0:
+//       result = fast_result   // IC hit — no function-call overhead for getattr
+//   else:
+//       result = molt_getattr_ic_slow(obj_ptr, attr_name_ptr, attr_len, ic_index)
+//
+// This function performs *only* the IC probe and the slot read.  It does NOT
+// acquire the GIL because:
+//   - The IC fields are atomics with relaxed ordering (safe without GIL).
+//   - The object header and payload are immutable during single-threaded
+//     execution (the GIL is held by the caller at the compiled-code level).
+//   - The refcount bump is a relaxed atomic add.
+//
+// Returns the NaN-boxed slot value on hit (with refcount incremented), or 0
+// on any miss.
+// ---------------------------------------------------------------------------
+
+/// # Safety
+/// `obj_ptr` must point to a valid molt object (or be null, which returns 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_ic_probe_fast(
+    obj_ptr: *mut u8,
+    ic_index: u64,
+) -> i64 {
+    unsafe {
+        if obj_ptr.is_null() {
+            return 0;
+        }
+
+        let type_id = (*header_from_obj_ptr(obj_ptr)).type_id;
+
+        // IC is only applicable to OBJECT and DATACLASS types.
+        if type_id != TYPE_ID_OBJECT && type_id != TYPE_ID_DATACLASS {
+            return 0;
+        }
+
+        let idx = ic_index as usize;
+        if idx >= IC_TABLE_CAPACITY {
+            return 0;
+        }
+
+        let version = global_type_version();
+        let ic = global_ic_table().get(idx);
+
+        if let Some(cached_offset) = ic.probe(type_id, version) {
+            let offset = cached_offset as usize;
+            let payload = object_payload_size(obj_ptr);
+            if offset.saturating_add(std::mem::size_of::<u64>()) <= payload {
+                let slot = obj_ptr.add(offset) as *const u64;
+                let bits = *slot;
+                // Skip uninitialised / missing sentinel slots.
+                if bits != 0 {
+                    // Check for the "missing" sentinel — canonical NaN-boxed None.
+                    let none_bits = molt_obj_model::MoltObject::none().bits();
+                    if bits != none_bits {
+                        // Bump refcount — safe as a relaxed atomic even without GIL.
+                        let ptr = obj_from_bits(bits).as_ptr();
+                        if let Some(p) = ptr {
+                            let header =
+                                p.sub(std::mem::size_of::<super::MoltHeader>())
+                                    as *mut super::MoltHeader;
+                            if ((*header).flags & super::HEADER_FLAG_IMMORTAL) == 0 {
+                                (*header)
+                                    .ref_count
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                        return bits as i64;
+                    }
+                }
+            }
+        }
+
+        0 // miss
+    }
+}
+
+/// IC slow path: full attribute resolution with GIL, populates the IC on success.
+///
+/// This is the complement to `molt_ic_probe_fast`.  The caller already did the
+/// IC probe and got a miss, so this function skips the probe and goes straight
+/// to full attribute resolution.  On a successful lookup it populates the IC
+/// entry so subsequent calls hit the fast path.
+///
+/// # Safety
+/// Same preconditions as `molt_getattr_ic`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_getattr_ic_slow(
+    obj_ptr: *mut u8,
+    attr_name_ptr: *const u8,
+    attr_name_len_bits: u64,
+    ic_index: u64,
+) -> i64 {
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            if obj_ptr.is_null() {
+                return crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits);
+            }
+
+            let type_id = object_type_id(obj_ptr);
+            let idx = ic_index as usize;
+
+            // Full resolution.
+            let result =
+                crate::molt_get_attr_generic(obj_ptr, attr_name_ptr, attr_name_len_bits);
+
+            // Populate the IC on success.
+            if idx < IC_TABLE_CAPACITY
+                && (type_id == TYPE_ID_OBJECT || type_id == TYPE_ID_DATACLASS)
+                && result != 0
+                && !obj_from_bits(result as u64).is_none()
+                && !exception_pending(_py)
+            {
+                let class_bits = object_class_bits(obj_ptr);
+                if class_bits != 0 {
+                    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+                        if object_type_id(class_ptr) == TYPE_ID_TYPE {
+                            let attr_len = usize_from_bits(attr_name_len_bits);
+                            let slice =
+                                std::slice::from_raw_parts(attr_name_ptr, attr_len);
+                            if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
+                                if let Some(offset) =
+                                    class_field_offset(_py, class_ptr, attr_bits)
+                                {
+                                    if offset <= u32::MAX as usize {
+                                        let version = global_type_version();
+                                        let ic = global_ic_table().get(idx);
+                                        ic.update(type_id, offset as u32, version);
+                                    }
+                                }
+                                dec_ref_bits(_py, attr_bits);
+                            }
+                        }
+                    }
+                }
+            }
+
+            result
+        })
+    }
+}
