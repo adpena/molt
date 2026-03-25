@@ -55,7 +55,7 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
         eprintln!(
             "[TIR] WARNING: verification failed after optimization pipeline ({} errors) for '{}' -- falling back to unoptimized.",
             errors.len(),
-            func.name(),
+            func.name,
         );
     }
 

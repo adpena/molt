@@ -12142,9 +12142,14 @@ impl SimpleBackend {
                     poll_sig.params.push(AbiParam::new(types::I64));
                     poll_sig.returns.push(AbiParam::new(types::I64));
 
+                    let poll_linkage = if defined_functions.contains(poll_func_name.as_str()) {
+                        Linkage::Export
+                    } else {
+                        Linkage::Import
+                    };
                     let poll_func_id = self
                         .module
-                        .declare_function(poll_func_name, Linkage::Export, &poll_sig)
+                        .declare_function(poll_func_name, poll_linkage, &poll_sig)
                         .unwrap();
                     let poll_func_ref =
                         self.module.declare_func_in_func(poll_func_id, builder.func);
