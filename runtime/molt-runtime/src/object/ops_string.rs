@@ -3014,8 +3014,7 @@ pub extern "C" fn molt_string_capitalize(hay_bits: u64) -> u64 {
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             // SIMD fast path: pure-ASCII capitalize uses bytes_ascii_capitalize
             if hay_bytes.is_ascii() {
-                let buf = hay_bytes.to_vec();
-                bytes_ascii_capitalize(&buf);
+                let buf = bytes_ascii_capitalize(hay_bytes);
                 let ptr = alloc_string(_py, &buf);
                 if ptr.is_null() {
                     return MoltObject::none().bits();
@@ -3784,6 +3783,28 @@ pub extern "C" fn molt_string_translate(hay_bits: u64, table_bits: u64) -> u64 {
                 };
                 let mapped_obj = obj_from_bits(mapped_bits);
                 if mapped_obj.is_none() {
+                    if mapped_owned {
+                        dec_ref_bits(_py, mapped_bits);
+                    }
+                    continue;
+                }
+                // Handle inline integers (codepoints) directly — they have
+                // no heap pointer, so check before the as_ptr() gate.
+                if mapped_obj.is_int() {
+                    let code = mapped_obj.as_int_unchecked();
+                    if code < 0 || code > 0x10FFFF {
+                        if mapped_owned {
+                            dec_ref_bits(_py, mapped_bits);
+                        }
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "character mapping must be in range(0x110000)",
+                        );
+                    }
+                    if let Some(c) = char::from_u32(code as u32) {
+                        out.push(c);
+                    }
                     if mapped_owned {
                         dec_ref_bits(_py, mapped_bits);
                     }
