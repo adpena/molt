@@ -103,6 +103,65 @@ mod native_backend_consts {
 #[cfg(feature = "native-backend")]
 use native_backend_consts::*;
 
+/// Pre-computed NaN-box tag mask constants hoisted to the function entry block.
+///
+/// Cranelift can only CSE `iconst` within a single basic block.  By emitting
+/// the five most-repeated tag-mask constants once in the entry block and
+/// storing them in Cranelift `Variable`s, every subsequent helper call
+/// (`is_int_tag`, `unbox_int`, `box_int_value`, `emit_inline_inc_ref_obj`, etc.)
+/// reuses the same SSA value instead of materialising a fresh `iconst`.
+#[cfg(feature = "native-backend")]
+#[derive(Clone, Copy)]
+struct NanBoxConsts {
+    /// `(QNAN | TAG_MASK) as i64`
+    qnan_tag_mask: Variable,
+    /// `(QNAN | TAG_INT) as i64`
+    qnan_tag_int: Variable,
+    /// `(QNAN | TAG_PTR) as i64`
+    qnan_tag_ptr: Variable,
+    /// `INT_SHIFT` (17)
+    int_shift: Variable,
+    /// `POINTER_MASK as i64`
+    pointer_mask: Variable,
+}
+
+#[cfg(feature = "native-backend")]
+impl NanBoxConsts {
+    /// Declare and define the five tag-mask variables in the current (entry) block.
+    /// Must be called while the entry block is the active block and **before** it
+    /// is sealed.
+    fn new(builder: &mut FunctionBuilder) -> Self {
+        let qnan_tag_mask_var = builder.declare_var(types::I64);
+        let qnan_tag_int_var = builder.declare_var(types::I64);
+        let qnan_tag_ptr_var = builder.declare_var(types::I64);
+        let int_shift_var = builder.declare_var(types::I64);
+        let pointer_mask_var = builder.declare_var(types::I64);
+
+        let v = builder.ins().iconst(types::I64, (QNAN | TAG_MASK) as i64);
+        builder.def_var(qnan_tag_mask_var, v);
+
+        let v = builder.ins().iconst(types::I64, (QNAN | TAG_INT) as i64);
+        builder.def_var(qnan_tag_int_var, v);
+
+        let v = builder.ins().iconst(types::I64, (QNAN | TAG_PTR) as i64);
+        builder.def_var(qnan_tag_ptr_var, v);
+
+        let v = builder.ins().iconst(types::I64, INT_SHIFT);
+        builder.def_var(int_shift_var, v);
+
+        let v = builder.ins().iconst(types::I64, POINTER_MASK as i64);
+        builder.def_var(pointer_mask_var, v);
+
+        Self {
+            qnan_tag_mask: qnan_tag_mask_var,
+            qnan_tag_int: qnan_tag_int_var,
+            qnan_tag_ptr: qnan_tag_ptr_var,
+            int_shift: int_shift_var,
+            pointer_mask: pointer_mask_var,
+        }
+    }
+}
+
 #[cfg(feature = "native-backend")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ImportSignatureShape {
@@ -389,14 +448,14 @@ fn stable_ic_site_id(func_name: &str, op_idx: usize, lane: &str) -> i64 {
 }
 
 #[cfg(feature = "native-backend")]
-fn unbox_int(builder: &mut FunctionBuilder, val: Value) -> Value {
+fn unbox_int(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
     // Debug-mode guard: verify the value actually carries the int tag before
     // unboxing.  In release builds this is a no-op; in debug builds an illegal
     // trap fires immediately if a non-int value reaches this path.
     #[cfg(debug_assertions)]
     {
-        let mask = builder.ins().iconst(types::I64, (QNAN | TAG_MASK) as i64);
-        let expected = builder.ins().iconst(types::I64, (QNAN | TAG_INT) as i64);
+        let mask = builder.use_var(nbc.qnan_tag_mask);
+        let expected = builder.use_var(nbc.qnan_tag_int);
         let masked = builder.ins().band(val, mask);
         let is_int = builder
             .ins()
@@ -409,16 +468,16 @@ fn unbox_int(builder: &mut FunctionBuilder, val: Value) -> Value {
     // The ishl by INT_SHIFT (17) shifts out the upper 17 tag bits (QNAN+TAG),
     // then sshr sign-extends the 47-bit payload. No separate band with INT_MASK
     // is needed — the shift pair implicitly strips the tag.
-    let shift = builder.ins().iconst(types::I64, INT_SHIFT);
+    let shift = builder.use_var(nbc.int_shift);
     let shifted = builder.ins().ishl(val, shift);
     builder.ins().sshr(shifted, shift)
 }
 
 #[allow(dead_code)]
 #[cfg(feature = "native-backend")]
-fn is_int_tag(builder: &mut FunctionBuilder, val: Value) -> Value {
-    let mask = builder.ins().iconst(types::I64, (QNAN | TAG_MASK) as i64);
-    let tag = builder.ins().iconst(types::I64, (QNAN | TAG_INT) as i64);
+fn is_int_tag(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
+    let mask = builder.use_var(nbc.qnan_tag_mask);
+    let tag = builder.use_var(nbc.qnan_tag_int);
     let masked = builder.ins().band(val, mask);
     builder.ins().icmp(IntCC::Equal, masked, tag)
 }
@@ -435,10 +494,10 @@ fn is_int_tag(builder: &mut FunctionBuilder, val: Value) -> Value {
 ///   - `unboxed` is the sign-extended 47-bit integer payload (valid only when
 ///     the tag check passes).
 #[cfg(feature = "native-backend")]
-fn fused_tag_check_and_unbox_int(builder: &mut FunctionBuilder, val: Value) -> (Value, Value) {
-    let expected_tag = builder.ins().iconst(types::I64, (QNAN | TAG_INT) as i64);
+fn fused_tag_check_and_unbox_int(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> (Value, Value) {
+    let expected_tag = builder.use_var(nbc.qnan_tag_int);
     let xored = builder.ins().bxor(val, expected_tag);
-    let shift = builder.ins().iconst(types::I64, INT_SHIFT);
+    let shift = builder.use_var(nbc.int_shift);
     let shifted = builder.ins().ishl(xored, shift);
     let unboxed = builder.ins().sshr(shifted, shift);
     (xored, unboxed)
@@ -491,10 +550,10 @@ fn both_float_check(builder: &mut FunctionBuilder, lhs: Value, rhs: Value) -> Va
 }
 
 #[cfg(feature = "native-backend")]
-fn box_int_value(builder: &mut FunctionBuilder, val: Value) -> Value {
+fn box_int_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
     let mask = builder.ins().iconst(types::I64, INT_MASK as i64);
     let masked = builder.ins().band(val, mask);
-    let tag = builder.ins().iconst(types::I64, (QNAN | TAG_INT) as i64);
+    let tag = builder.use_var(nbc.qnan_tag_int);
     builder.ins().bor(tag, masked)
 }
 
@@ -561,8 +620,8 @@ fn box_bool_value(builder: &mut FunctionBuilder, val: Value) -> Value {
 }
 
 #[cfg(feature = "native-backend")]
-fn unbox_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
-    let mask = builder.ins().iconst(types::I64, POINTER_MASK as i64);
+fn unbox_ptr_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
+    let mask = builder.use_var(nbc.pointer_mask);
     let masked = builder.ins().band(val, mask);
     let shift = builder.ins().iconst(types::I64, 16);
     let shifted = builder.ins().ishl(masked, shift);
@@ -570,10 +629,10 @@ fn unbox_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
 }
 
 #[cfg(feature = "native-backend")]
-fn box_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
-    let mask = builder.ins().iconst(types::I64, POINTER_MASK as i64);
+fn box_ptr_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
+    let mask = builder.use_var(nbc.pointer_mask);
     let masked = builder.ins().band(val, mask);
-    let tag = builder.ins().iconst(types::I64, (QNAN | TAG_PTR) as i64);
+    let tag = builder.use_var(nbc.qnan_tag_ptr);
     builder.ins().bor(tag, masked)
 }
 
@@ -623,7 +682,7 @@ fn inline_rc_enabled() -> bool {
 ///         *(ptr - 36) = rc + 1
 /// ```
 #[cfg(feature = "native-backend")]
-fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value) {
+fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) {
     let current_block = builder.current_block().expect("no current block");
 
     // --- Block layout: current → check_immortal → do_inc → merge ---
@@ -632,9 +691,9 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value) {
     let merge_block = builder.create_block();
 
     // 1. Check if val is a heap pointer: (val & (QNAN | TAG_MASK)) == (QNAN | TAG_PTR)
-    let tag_check_mask = builder.ins().iconst(types::I64, (QNAN | TAG_MASK) as i64);
+    let tag_check_mask = builder.use_var(nbc.qnan_tag_mask);
     let tag_bits = builder.ins().band(val, tag_check_mask);
-    let ptr_tag = builder.ins().iconst(types::I64, (QNAN | TAG_PTR) as i64);
+    let ptr_tag = builder.use_var(nbc.qnan_tag_ptr);
     let is_ptr = builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
     builder
         .ins()
@@ -642,7 +701,7 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value) {
 
     // 2. Extract raw data pointer and check immortal flag
     builder.switch_to_block(check_immortal_block);
-    let raw_ptr = unbox_ptr_value(builder, val);
+    let raw_ptr = unbox_ptr_value(builder, val, nbc);
 
     // Load flags (u64 at ptr + HEADER_FLAGS_OFFSET)
     let flags = builder.ins().load(
@@ -689,9 +748,9 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value) {
 /// Emit an inc_ref_obj — either inlined or as a function call depending on
 /// the `MOLT_INLINE_RC` flag.
 #[cfg(feature = "native-backend")]
-fn emit_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef) {
+fn emit_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef, nbc: &NanBoxConsts) {
     if inline_rc_enabled() {
-        emit_inline_inc_ref_obj(builder, val);
+        emit_inline_inc_ref_obj(builder, val, nbc);
     } else {
         builder.ins().call(call_ref, &[val]);
     }
@@ -700,9 +759,9 @@ fn emit_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef
 /// Emit a ref-adjust (inc_ref_obj) — either inlined or as a function call
 /// depending on the `MOLT_INLINE_RC` flag.
 #[cfg(feature = "native-backend")]
-fn emit_maybe_ref_adjust_v2(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef) {
+fn emit_maybe_ref_adjust_v2(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef, nbc: &NanBoxConsts) {
     if inline_rc_enabled() {
-        emit_inline_inc_ref_obj(builder, val);
+        emit_inline_inc_ref_obj(builder, val, nbc);
     } else {
         let _ = builder.ins().call(call_ref, &[val]);
     }
@@ -714,7 +773,7 @@ fn emit_maybe_ref_adjust_v2(builder: &mut FunctionBuilder, val: Value, call_ref:
 /// where cleanup values are immediate integers.
 #[cfg(feature = "native-backend")]
 #[allow(dead_code)]
-fn emit_dec_ref_obj(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef) {
+fn emit_dec_ref_obj(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef, nbc: &NanBoxConsts) {
     if !inline_rc_enabled() {
         builder.ins().call(call_ref, &[val]);
         return;
@@ -723,9 +782,9 @@ fn emit_dec_ref_obj(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef
     let call_block = builder.create_block();
     let merge_block = builder.create_block();
 
-    let tag_check_mask = builder.ins().iconst(types::I64, (QNAN | TAG_MASK) as i64);
+    let tag_check_mask = builder.use_var(nbc.qnan_tag_mask);
     let tag_bits = builder.ins().band(val, tag_check_mask);
-    let ptr_tag = builder.ins().iconst(types::I64, (QNAN | TAG_PTR) as i64);
+    let ptr_tag = builder.use_var(nbc.qnan_tag_ptr);
     let is_ptr = builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
     brif_block(builder, is_ptr, call_block, &[], merge_block, &[]);
 
@@ -2064,6 +2123,7 @@ impl SimpleBackend {
         builder.append_block_params_for_function_params(entry_block);
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
+        let nbc = NanBoxConsts::new(&mut builder);
 
         let closure_bits = builder.block_params(entry_block)[0];
         let args_ptr = builder.block_params(entry_block)[1];
@@ -2125,7 +2185,7 @@ impl SimpleBackend {
                     .ins()
                     .call(task_local, &[poll_addr, size_val, kind_val]);
                 let obj = builder.inst_results(call)[0];
-                let obj_ptr = unbox_ptr_value(&mut builder, obj);
+                let obj_ptr = unbox_ptr_value(&mut builder, obj, &nbc);
 
                 let mut offset = GENERATOR_CONTROL_BYTES;
                 if has_closure {
@@ -2190,7 +2250,7 @@ impl SimpleBackend {
                         .unwrap();
                     let local_inc_ref_obj =
                         module.declare_func_in_func(inc_ref_obj_callee, builder.func);
-                    let obj_ptr = unbox_ptr_value(&mut builder, obj);
+                    let obj_ptr = unbox_ptr_value(&mut builder, obj, &nbc);
 
                     let mut offset = 0i32;
                     if has_closure {
@@ -2281,7 +2341,7 @@ impl SimpleBackend {
                     .ins()
                     .call(task_local, &[poll_addr, size_val, kind_val]);
                 let obj = builder.inst_results(call)[0];
-                let obj_ptr = unbox_ptr_value(&mut builder, obj);
+                let obj_ptr = unbox_ptr_value(&mut builder, obj, &nbc);
 
                 let mut offset = GENERATOR_CONTROL_BYTES;
                 if has_closure {
