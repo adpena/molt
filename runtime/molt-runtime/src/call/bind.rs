@@ -565,7 +565,16 @@ unsafe fn call_type_with_builder(
             return call_class_init_with_args(_py, call_ptr, &[]);
         }
         let mut default_new = false;
-        let inst_bits = if issubclass_bits(class_bits, builtins.base_exception) {
+        let is_exc_subclass = issubclass_bits(class_bits, builtins.base_exception);
+        if std::env::var("MOLT_DEBUG_EXC_NEW").ok().as_deref() == Some("1") {
+            let cn = class_name_for_error(class_bits);
+            let has_kw = if !builder_ptr.is_null() {
+                let ap = callargs_ptr(builder_ptr);
+                if !ap.is_null() { (*ap).kw_names.len() } else { 0 }
+            } else { 0 };
+            eprintln!("molt call_type_with_builder: class={cn} bits=0x{class_bits:x} is_exc={is_exc_subclass} kw_count={has_kw}");
+        }
+        let inst_bits = if is_exc_subclass {
             let new_name_bits =
                 intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
             if let Some(new_bits) = class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits) {
@@ -574,41 +583,66 @@ unsafe fn call_type_with_builder(
                 // accepts positional args (cls, *args); keyword args must be
                 // forwarded exclusively to __init__.  A user-defined __new__
                 // may accept keyword args, so forward everything in that case.
-                let default_new = if let Some(new_ptr) = obj_from_bits(new_bits).as_ptr()
-                    && object_type_id(new_ptr) == TYPE_ID_FUNCTION
-                    && function_fn_ptr(new_ptr) == fn_addr!(crate::builtins::exceptions::molt_exception_new_bound)
-                {
-                    true
+                let default_new = if let Some(new_ptr) = obj_from_bits(new_bits).as_ptr() {
+                    let func_ptr = match object_type_id(new_ptr) {
+                        TYPE_ID_FUNCTION => Some(new_ptr),
+                        TYPE_ID_BOUND_METHOD => {
+                            let inner = bound_method_func_bits(new_ptr);
+                            obj_from_bits(inner).as_ptr().filter(|p| object_type_id(*p) == TYPE_ID_FUNCTION)
+                        }
+                        _ => None,
+                    };
+                    func_ptr.is_some_and(|fp| function_fn_ptr(fp) == fn_addr!(crate::builtins::exceptions::molt_exception_new_bound))
                 } else {
                     false
                 };
-                let (pos_len, kw_len) = if builder_ptr.is_null() {
-                    (1usize, 0usize)
+                // When __new__ is the default Exception.__new__, bypass
+                // call_bind dispatch and use alloc_exception_from_class_bits
+                // directly.  The default __new__ expects (cls, args_tuple),
+                // not a callargs builder, and does not accept keyword args.
+                // Keywords will be forwarded to __init__ later.
+                let inst_bits = if default_new {
+                    let args_bits = if builder_ptr.is_null() {
+                        let tp = alloc_tuple(_py, &[]);
+                        if tp.is_null() { return MoltObject::none().bits(); }
+                        MoltObject::from_ptr(tp).bits()
+                    } else {
+                        let ap = callargs_ptr(builder_ptr);
+                        let tp = if ap.is_null() {
+                            alloc_tuple(_py, &[])
+                        } else {
+                            alloc_tuple(_py, &(*ap).pos)
+                        };
+                        if tp.is_null() { return MoltObject::none().bits(); }
+                        MoltObject::from_ptr(tp).bits()
+                    };
+                    let exc_ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
+                    dec_ref_bits(_py, args_bits);
+                    if exc_ptr.is_null() { return MoltObject::none().bits(); }
+                    MoltObject::from_ptr(exc_ptr).bits()
                 } else {
-                    let args_ptr = callargs_ptr(builder_ptr);
-                    if args_ptr.is_null() {
+                    // Custom __new__: forward all args including keywords.
+                    let (pos_len, kw_len) = if builder_ptr.is_null() {
                         (1usize, 0usize)
                     } else {
-                        let kw = if default_new { 0 } else { (*args_ptr).kw_names.len() };
-                        (1 + (*args_ptr).pos.len(), kw)
-                    }
-                };
-                let new_builder_bits = molt_callargs_new(pos_len as u64, kw_len as u64);
-                if new_builder_bits == 0 {
-                    return MoltObject::none().bits();
-                }
-                let _ = molt_callargs_push_pos(new_builder_bits, class_bits);
-                if !builder_ptr.is_null() {
-                    let args_ptr = callargs_ptr(builder_ptr);
-                    if !args_ptr.is_null() {
-                        for &arg in (*args_ptr).pos.iter() {
-                            let _ = molt_callargs_push_pos(new_builder_bits, arg);
+                        let args_ptr = callargs_ptr(builder_ptr);
+                        if args_ptr.is_null() {
+                            (1usize, 0usize)
+                        } else {
+                            (1 + (*args_ptr).pos.len(), (*args_ptr).kw_names.len())
                         }
-                        // Only forward keyword args to __new__ if it is NOT
-                        // the default Exception.__new__ — that function only
-                        // understands positional args.  Keywords are always
-                        // forwarded to __init__ later.
-                        if !default_new {
+                    };
+                    let new_builder_bits = molt_callargs_new(pos_len as u64, kw_len as u64);
+                    if new_builder_bits == 0 {
+                        return MoltObject::none().bits();
+                    }
+                    let _ = molt_callargs_push_pos(new_builder_bits, class_bits);
+                    if !builder_ptr.is_null() {
+                        let args_ptr = callargs_ptr(builder_ptr);
+                        if !args_ptr.is_null() {
+                            for &arg in (*args_ptr).pos.iter() {
+                                let _ = molt_callargs_push_pos(new_builder_bits, arg);
+                            }
                             for (&name_bits, &val_bits) in (*args_ptr)
                                 .kw_names
                                 .iter()
@@ -618,8 +652,8 @@ unsafe fn call_type_with_builder(
                             }
                         }
                     }
-                }
-                let inst_bits = molt_call_bind(new_bits, new_builder_bits);
+                    molt_call_bind(new_bits, new_builder_bits)
+                };
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
@@ -1673,7 +1707,11 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             };
             let mut func_bits = call_bits;
             let mut self_bits = None;
-            match object_type_id(call_ptr) {
+            let _tid = object_type_id(call_ptr);
+            if std::env::var("MOLT_DEBUG_EXC_NEW").ok().as_deref() == Some("1") {
+                eprintln!("molt call_bind: type_id={_tid} call_bits=0x{call_bits:x}");
+            }
+            match _tid {
                 TYPE_ID_FUNCTION => {}
                 TYPE_ID_BOUND_METHOD => {
                     func_bits = bound_method_func_bits(call_ptr);
