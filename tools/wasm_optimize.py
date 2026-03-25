@@ -101,7 +101,8 @@ def optimize(
 
     input_bytes = input_path.stat().st_size
 
-    cmd = [wasm_opt, f"-{level}", *_DEFAULT_FEATURE_FLAGS]
+    cmd = [wasm_opt, f"-{level}", *_DEFAULT_FEATURE_FLAGS,
+           "--strip-producers"]
     if extra_passes:
         cmd.extend(extra_passes)
     cmd.extend([str(input_path), "-o", str(output_path)])
