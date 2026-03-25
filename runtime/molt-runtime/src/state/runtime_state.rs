@@ -413,9 +413,23 @@ pub(crate) fn runtime_state(_py: &PyToken<'_>) -> &'static RuntimeState {
         unsafe { &*ptr }
     } else {
         let _ = molt_runtime_init();
-        let ptr = runtime_state_ptr().expect("runtime state should be initialized");
-        unsafe { &*ptr }
+        // After `molt_runtime_shutdown`, `molt_runtime_init` refuses to
+        // re-allocate (returns 0) so the pointer stays null.  Return a
+        // leaked sentinel to avoid panicking during process-exit teardown.
+        if let Some(ptr) = runtime_state_ptr() {
+            unsafe { &*ptr }
+        } else {
+            post_shutdown_sentinel()
+        }
     }
+}
+
+/// Returns a leaked, empty `RuntimeState` for use by straggler code that
+/// calls `runtime_state()` after `molt_runtime_shutdown` has completed.
+/// Allocated once and never freed (the OS reclaims it at process exit).
+fn post_shutdown_sentinel() -> &'static RuntimeState {
+    static SENTINEL: OnceLock<&'static RuntimeState> = OnceLock::new();
+    SENTINEL.get_or_init(|| Box::leak(Box::new(RuntimeState::new())))
 }
 
 #[unsafe(no_mangle)]
@@ -429,15 +443,16 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     if !RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst).is_null() {
         return 1;
     }
-    if shutdown_trace_enabled() {
-        eprintln!("molt shutdown: molt_runtime_init ALLOCATING NEW STATE");
-        unsafe {
-            let mut addrs = [std::ptr::null_mut(); 32];
-            let count = libc::backtrace(addrs.as_mut_ptr(), addrs.len() as i32);
-            if count > 0 {
-                libc::backtrace_symbols_fd(addrs.as_ptr(), count, 2);
-            }
-        }
+    // After `molt_runtime_shutdown` has run, the process is exiting.
+    // During exit, Rust static/TLS destructors or C `atexit` handlers may
+    // indirectly call `runtime_state()` which auto-calls `molt_runtime_init`.
+    // Re-allocating a RuntimeState at this point is futile (the new state is
+    // immediately torn down again) and dangerous: the second teardown's
+    // `drop(Box::from_raw)` frees memory while mimalloc's global allocator
+    // may already be partially destroyed, causing a use-after-free segfault
+    // (exit code 245 on macOS / SIGSEGV on Linux).
+    if RUNTIME_SHUTDOWN_COMPLETE.load(AtomicOrdering::SeqCst) {
+        return 0;
     }
     let state = Box::new(RuntimeState::new());
     let ptr = Box::into_raw(state);
@@ -461,34 +476,11 @@ pub extern "C" fn molt_runtime_ensure_gil() {
     hold_runtime_gil(GilGuard::new());
 }
 
-fn shutdown_trace_enabled() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_SHUTDOWN").ok().as_deref(),
-            Some("1")
-        )
-    })
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_shutdown() -> u64 {
-    if shutdown_trace_enabled() {
-        eprintln!("molt shutdown: molt_runtime_shutdown ENTER");
-        unsafe {
-            let mut addrs = [std::ptr::null_mut(); 32];
-            let count = libc::backtrace(addrs.as_mut_ptr(), addrs.len() as i32);
-            if count > 0 {
-                libc::backtrace_symbols_fd(addrs.as_ptr(), count, 2);
-            }
-        }
-    }
     let _guard = runtime_state_lock().lock().unwrap();
     let ptr = RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst);
     if ptr.is_null() {
-        if shutdown_trace_enabled() {
-            eprintln!("molt shutdown: molt_runtime_shutdown ALREADY_NULL");
-        }
         return 0;
     }
     let state = unsafe { &*ptr };
@@ -506,6 +498,11 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
     // causing a use-after-free crash (exit code 245 on macOS).
     clear_thread_runtime_state();
     RUNTIME_STATE_PTR.store(std::ptr::null_mut(), AtomicOrdering::SeqCst);
+    // Mark shutdown as complete BEFORE freeing the state.  This prevents
+    // `molt_runtime_init` from re-allocating a RuntimeState during process
+    // exit (triggered by atexit handlers / TLS destructors calling
+    // `runtime_state()` which has auto-init logic).
+    RUNTIME_SHUTDOWN_COMPLETE.store(true, AtomicOrdering::SeqCst);
     unsafe {
         drop(Box::from_raw(ptr));
     }
@@ -514,6 +511,9 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
 
 static RUNTIME_STATE_PTR: AtomicPtr<RuntimeState> = AtomicPtr::new(std::ptr::null_mut());
 static RUNTIME_STATE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+/// Set to `true` after `molt_runtime_shutdown` completes.  Prevents
+/// `molt_runtime_init` from re-allocating state during process exit.
+static RUNTIME_SHUTDOWN_COMPLETE: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static TLS_RUNTIME_STATE: Cell<*mut RuntimeState> = const { Cell::new(std::ptr::null_mut()) };

@@ -186,6 +186,11 @@ struct NativeBackendIrAnalysis {
     task_kinds: BTreeMap<String, TrampolineKind>,
     task_closure_sizes: BTreeMap<String, i64>,
     needs_inlining: bool,
+    /// Functions eligible for typed-int calling convention: all params are int,
+    /// return is int, and all internal calls are to self or other typed-int
+    /// functions.  For these functions, a `{name}__fast_int` twin is compiled
+    /// that operates on raw i64 values without NaN-boxing overhead.
+    typed_int_functions: BTreeSet<String>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -317,12 +322,113 @@ fn analyze_native_backend_ir(ir: &SimpleIR) -> NativeBackendIrAnalysis {
         }
     }
 
+    // Detect functions eligible for typed-int calling convention.
+    // A function qualifies when:
+    //   1. It is defined in this compilation unit (not imported).
+    //   2. It is NOT a closure.
+    //   3. ALL of its ops that produce values consumed by call/return have
+    //      fast_int=true (all arithmetic, consts, params carry int).
+    //   4. All call_internal targets within it are self-calls or calls to
+    //      other typed-int candidates.
+    //
+    // For the first pass we use a conservative heuristic: a function is
+    // typed-int eligible when it has param_types = ["int", ...] and every
+    // call_internal inside it targets the same function (self-recursive)
+    // or another function that also has all-int param_types.
+    let mut typed_int_candidates: BTreeSet<String> = BTreeSet::new();
+    let mut func_param_types_map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for func_ir in &ir.functions {
+        if closure_functions.contains(&func_ir.name) {
+            continue;
+        }
+        if !defined_functions.contains(&func_ir.name) {
+            continue;
+        }
+        // Check: all fast_int arithmetic ops, all call_internal targets
+        // are self or candidates, and the function has typed params.
+        let has_all_int_params = func_ir.param_types.as_ref().map_or(false, |pts| {
+            !pts.is_empty() && pts.iter().all(|t| t == "int")
+        });
+        if !has_all_int_params {
+            // Also detect functions where ALL const/add/sub/mul/lt/gt/le/ge/eq/ne
+            // ops have fast_int, all params are used only in fast_int contexts,
+            // and all call_internal targets are self.
+            let mut all_ops_typed = true;
+            let mut all_calls_self = true;
+            let mut has_any_arithmetic = false;
+            for op in &func_ir.ops {
+                match op.kind.as_str() {
+                    "add" | "sub" | "mul" | "floordiv" | "mod" | "lt" | "gt" | "le" | "ge"
+                    | "eq" | "ne" | "neg" | "bit_and" | "bit_or" | "bit_xor" | "lshift"
+                    | "rshift" => {
+                        has_any_arithmetic = true;
+                        if !op.fast_int.unwrap_or(false) && op.type_hint.as_deref() != Some("int") {
+                            all_ops_typed = false;
+                            break;
+                        }
+                    }
+                    "call_internal" => {
+                        if let Some(target) = op.s_value.as_ref() {
+                            if target != &func_ir.name {
+                                all_calls_self = false;
+                            }
+                        }
+                    }
+                    "call_func" | "call_method" | "call_guarded" => {
+                        all_ops_typed = false;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if all_ops_typed && all_calls_self && has_any_arithmetic && !func_ir.params.is_empty() {
+                typed_int_candidates.insert(func_ir.name.clone());
+                func_param_types_map.insert(
+                    func_ir.name.clone(),
+                    func_ir.params.iter().map(|_| "int".to_string()).collect(),
+                );
+            }
+            continue;
+        }
+        if let Some(ref pts) = func_ir.param_types {
+            func_param_types_map.insert(func_ir.name.clone(), pts.clone());
+        }
+        typed_int_candidates.insert(func_ir.name.clone());
+    }
+    // Second pass: validate that all call_internal targets within each
+    // candidate are either self or another candidate.
+    let mut typed_int_functions: BTreeSet<String> = BTreeSet::new();
+    for name in &typed_int_candidates {
+        let func_ir = ir.functions.iter().find(|f| &f.name == name).unwrap();
+        let mut valid = true;
+        for op in &func_ir.ops {
+            if op.kind == "call_internal" {
+                if let Some(target) = op.s_value.as_ref() {
+                    if !typed_int_candidates.contains(target) {
+                        valid = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if valid {
+            typed_int_functions.insert(name.clone());
+        }
+    }
+    if !typed_int_functions.is_empty() {
+        eprintln!(
+            "MOLT_BACKEND: typed-int functions detected: {:?}",
+            typed_int_functions
+        );
+    }
+
     NativeBackendIrAnalysis {
         defined_functions,
         closure_functions,
         task_kinds,
         task_closure_sizes,
         needs_inlining,
+        typed_int_functions,
     }
 }
 

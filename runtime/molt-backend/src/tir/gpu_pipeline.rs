@@ -39,19 +39,35 @@ pub fn execute_gpu_kernel(
     // 3. Create device
     let device = create_device(platform)?;
 
-    // 4. Compile kernel
-    let compiled = device.compile_kernel(&kernel.name, &source)?;
+    // 4. Compile kernel — catch panics from Metal's null pointer returns on
+    //    invalid MSL (foreign-types-shared asserts non-null internally).
+    let compile_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        device.compile_kernel(&kernel.name, &source)
+    }));
+    let compiled = match compile_result {
+        Ok(Ok(k)) => k,
+        Ok(Err(e)) => return Err(e),
+        Err(_) => {
+            return Err(GpuError::CompilationFailed(
+                "Metal library compilation returned null (invalid MSL source)".into(),
+            ));
+        }
+    };
 
-    // 5. Allocate and fill input buffers
+    // 5. Allocate and fill input buffers (minimum 1 byte to avoid null pointers)
     let mut gpu_buffers = Vec::with_capacity(inputs.len() + 1);
     for input in inputs {
-        let buf = device.alloc_buffer(input.len())?;
-        device.copy_to_device(&buf, input)?;
+        let alloc_size = if input.is_empty() { 1 } else { input.len() };
+        let buf = device.alloc_buffer(alloc_size)?;
+        if !input.is_empty() {
+            device.copy_to_device(&buf, input)?;
+        }
         gpu_buffers.push(buf);
     }
 
-    // 6. Allocate output buffer
-    let output_buf = device.alloc_buffer(output_size)?;
+    // 6. Allocate output buffer — use at least 1 byte to avoid null Metal buffers
+    let alloc_output_size = if output_size == 0 { 1 } else { output_size };
+    let output_buf = device.alloc_buffer(alloc_output_size)?;
     gpu_buffers.push(output_buf);
 
     // 7. Launch kernel
@@ -63,8 +79,10 @@ pub fn execute_gpu_kernel(
 
     // 9. Read back output
     let mut output = vec![0u8; output_size];
-    let output_buf_ref = gpu_buffers.last().unwrap();
-    device.copy_from_device(output_buf_ref, &mut output)?;
+    if output_size > 0 {
+        let output_buf_ref = gpu_buffers.last().unwrap();
+        device.copy_from_device(output_buf_ref, &mut output)?;
+    }
 
     // 10. Cleanup — free in reverse order (output first, then inputs)
     for buf in gpu_buffers {
@@ -250,21 +268,25 @@ mod tests {
     ///
     /// Only runs when `gpu-metal` feature is enabled — otherwise the stub
     /// returns `DeviceNotAvailable`.
+    ///
+    /// Note: TIR `F64` is narrowed to `float` (f32) on Metal because Metal
+    /// does not support 64-bit floats.  Host data must be f32 to match.
     #[test]
     #[cfg(all(target_os = "macos", feature = "gpu-metal"))]
     fn execute_vector_add_on_metal() {
         let kernel = make_vector_add_kernel();
         let n = 4usize;
-        let a: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0];
-        let b: Vec<f64> = vec![10.0, 20.0, 30.0, 40.0];
+        // Metal narrows F64 -> float (f32), so host data must be f32.
+        let a: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+        let b: Vec<f32> = vec![10.0, 20.0, 30.0, 40.0];
 
         let a_bytes = unsafe {
-            std::slice::from_raw_parts(a.as_ptr() as *const u8, n * std::mem::size_of::<f64>())
+            std::slice::from_raw_parts(a.as_ptr() as *const u8, n * std::mem::size_of::<f32>())
         };
         let b_bytes = unsafe {
-            std::slice::from_raw_parts(b.as_ptr() as *const u8, n * std::mem::size_of::<f64>())
+            std::slice::from_raw_parts(b.as_ptr() as *const u8, n * std::mem::size_of::<f32>())
         };
-        let output_size = n * std::mem::size_of::<f64>();
+        let output_size = n * std::mem::size_of::<f32>();
 
         let result = execute_gpu_kernel(
             &kernel,
@@ -275,10 +297,10 @@ mod tests {
         )
         .expect("execute_gpu_kernel should succeed on Metal");
 
-        // Interpret output bytes as f64
+        // Interpret output bytes as f32
         assert_eq!(result.len(), output_size);
-        let out: &[f64] = unsafe {
-            std::slice::from_raw_parts(result.as_ptr() as *const f64, n)
+        let out: &[f32] = unsafe {
+            std::slice::from_raw_parts(result.as_ptr() as *const f32, n)
         };
         assert_eq!(out, &[11.0, 22.0, 33.0, 44.0]);
     }

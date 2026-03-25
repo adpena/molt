@@ -71,6 +71,7 @@ unsafe extern "C" {
     fn __molt_serial_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
     fn __molt_serial_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
     fn __molt_serial_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8;
+    fn __molt_serial_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8;
 }
 
 pub fn alloc_tuple(_py: &PyToken, elems: &[u64]) -> *mut u8 {
@@ -83,6 +84,10 @@ pub fn alloc_list(_py: &PyToken, elems: &[u64]) -> *mut u8 {
 
 pub fn alloc_string(_py: &PyToken, data: &[u8]) -> *mut u8 {
     unsafe { __molt_serial_alloc_string(data.as_ptr(), data.len()) }
+}
+
+pub fn alloc_bytes(_py: &PyToken, data: &[u8]) -> *mut u8 {
+    unsafe { __molt_serial_alloc_bytes(data.as_ptr(), data.len()) }
 }
 
 // ---------------------------------------------------------------------------
