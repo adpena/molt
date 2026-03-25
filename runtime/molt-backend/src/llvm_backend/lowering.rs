@@ -1280,6 +1280,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     self.value_types.insert(result_id, TirType::DynBox);
                 }
             }
+
+            // Structural ops that don't produce values — ignored by the LLVM lowering
+            // because they are handled at the block/terminator level.
+            OpCode::TryStart | OpCode::TryEnd
+            | OpCode::StateBlockStart | OpCode::StateBlockEnd => {}
         }
     }
 
