@@ -1561,8 +1561,11 @@ const HOISTABLE_OPS: &[&str] = &[
 
 fn is_hoistable(op: &OpIR) -> bool {
     let kind = op.kind.as_str();
-    if matches!(kind, "list_new" | "tuple_new") {
-        return op.args.as_ref().map_or(true, |a| a.is_empty());
+    // list_new/tuple_new/dict_new allocate fresh heap objects.
+    // Hoisting them out of loops causes ONE allocation to be shared across
+    // all iterations, leading to aliasing corruption if the object is mutated.
+    if matches!(kind, "list_new" | "tuple_new" | "dict_new" | "set_new") {
+        return false;
     }
     HOISTABLE_OPS.contains(&kind)
 }
@@ -2201,8 +2204,12 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
     // Build a stack of loop start indices and find which loops contain yields.
     struct LoopInfo {
         start_idx: usize,
+        end_idx: usize,
         has_yield: bool,
         continues: Vec<usize>,
+        breaks: Vec<usize>,
+        break_if_trues: Vec<usize>,
+        break_if_falses: Vec<usize>,
     }
     let mut loop_stack: Vec<LoopInfo> = Vec::new();
     let mut finished_loops: Vec<LoopInfo> = Vec::new();
@@ -2212,12 +2219,15 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
             "loop_start" | "loop_index_start" => {
                 loop_stack.push(LoopInfo {
                     start_idx: idx,
+                    end_idx: 0,
                     has_yield: false,
                     continues: Vec::new(),
+                    breaks: Vec::new(),
+                    break_if_trues: Vec::new(),
+                    break_if_falses: Vec::new(),
                 });
             }
             "state_yield" | "chan_send_yield" | "chan_recv_yield" => {
-                // Mark all enclosing loops as containing a yield.
                 for frame in loop_stack.iter_mut() {
                     frame.has_yield = true;
                 }
@@ -2227,8 +2237,24 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
                     frame.continues.push(idx);
                 }
             }
+            "loop_break" => {
+                if let Some(frame) = loop_stack.last_mut() {
+                    frame.breaks.push(idx);
+                }
+            }
+            "loop_break_if_true" => {
+                if let Some(frame) = loop_stack.last_mut() {
+                    frame.break_if_trues.push(idx);
+                }
+            }
+            "loop_break_if_false" => {
+                if let Some(frame) = loop_stack.last_mut() {
+                    frame.break_if_falses.push(idx);
+                }
+            }
             "loop_end" => {
-                if let Some(frame) = loop_stack.pop() {
+                if let Some(mut frame) = loop_stack.pop() {
+                    frame.end_idx = idx;
                     finished_loops.push(frame);
                 }
             }
@@ -2236,7 +2262,6 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
         }
     }
 
-    // Only process loops that contain yields.
     let yield_loops: Vec<LoopInfo> = finished_loops
         .into_iter()
         .filter(|l| l.has_yield)
@@ -2246,57 +2271,124 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
         return;
     }
 
-    // For each yield-containing loop, allocate a state label ID and record
-    // the insertions + replacements needed.
-    //
-    // We insert a `state_label` right after the loop_start op and replace
-    // each `loop_continue` with a `jump`.
-    struct Patch {
-        /// Insert a state_label after this op index.
-        insert_after: usize,
-        state_id: i64,
-        /// Op indices of loop_continue to replace with jump.
-        continue_indices: Vec<usize>,
-    }
-    let mut patches: Vec<Patch> = Vec::new();
-    for info in &yield_loops {
-        let state_id = next_state_id;
-        next_state_id += 1;
-        patches.push(Patch {
-            insert_after: info.start_idx,
-            state_id,
-            continue_indices: info.continues.clone(),
-        });
-    }
+    // For each yield-containing loop, allocate TWO state labels:
+    //   body_label  — at loop body start (continue / back-edge target)
+    //   after_label — after loop_end (break target)
+    // Replace ALL structured loop ops with labels and jumps so the
+    // state machine works correctly on resume.
+    let mut body_label_for_start: BTreeMap<usize, i64> = BTreeMap::new();
+    let mut after_label_for_end: BTreeMap<usize, i64> = BTreeMap::new();
+    let mut continue_target: BTreeMap<usize, i64> = BTreeMap::new();
+    let mut break_target: BTreeMap<usize, i64> = BTreeMap::new();
 
-    // Apply replacements: loop_continue -> jump.
-    let mut continue_to_state: BTreeMap<usize, i64> = BTreeMap::new();
-    for patch in &patches {
-        for &ci in &patch.continue_indices {
-            continue_to_state.insert(ci, patch.state_id);
+    for info in &yield_loops {
+        let body_label = next_state_id;
+        next_state_id += 1;
+        let after_label = next_state_id;
+        next_state_id += 1;
+
+        body_label_for_start.insert(info.start_idx, body_label);
+        after_label_for_end.insert(info.end_idx, after_label);
+
+        for &ci in &info.continues {
+            continue_target.insert(ci, body_label);
+        }
+        for &bi in &info.breaks {
+            break_target.insert(bi, after_label);
+        }
+        for &bi in &info.break_if_trues {
+            break_target.insert(bi, after_label);
+        }
+        for &bi in &info.break_if_falses {
+            break_target.insert(bi, after_label);
         }
     }
-    for (&idx, &state_id) in &continue_to_state {
-        func_ir.ops[idx] = OpIR {
-            kind: "jump".to_string(),
-            value: Some(state_id),
-            ..OpIR::default()
-        };
+
+    // Rebuild the ops list, replacing structured loop ops with labels/jumps.
+    let old_ops = std::mem::take(&mut func_ir.ops);
+    let mut new_ops: Vec<OpIR> = Vec::with_capacity(old_ops.len() + yield_loops.len() * 4);
+
+    for (idx, op) in old_ops.into_iter().enumerate() {
+        if let Some(&body_label) = body_label_for_start.get(&idx) {
+            // Replace loop_start with state_label (loop body entry).
+            new_ops.push(OpIR {
+                kind: "state_label".to_string(),
+                value: Some(body_label),
+                ..OpIR::default()
+            });
+        } else if let Some(&after_label) = after_label_for_end.get(&idx) {
+            // Replace loop_end with state_label (break target).
+            new_ops.push(OpIR {
+                kind: "state_label".to_string(),
+                value: Some(after_label),
+                ..OpIR::default()
+            });
+        } else if let Some(&target) = continue_target.get(&idx) {
+            // Replace loop_continue with jump to body label.
+            new_ops.push(OpIR {
+                kind: "jump".to_string(),
+                value: Some(target),
+                ..OpIR::default()
+            });
+        } else if let Some(&target) = break_target.get(&idx) {
+            match op.kind.as_str() {
+                "loop_break" => {
+                    new_ops.push(OpIR {
+                        kind: "jump".to_string(),
+                        value: Some(target),
+                        ..OpIR::default()
+                    });
+                }
+                "loop_break_if_true" => {
+                    // Expand: if(cond) { jump(after_label) } end_if
+                    new_ops.push(OpIR {
+                        kind: "if".to_string(),
+                        args: op.args.clone(),
+                        ..OpIR::default()
+                    });
+                    new_ops.push(OpIR {
+                        kind: "jump".to_string(),
+                        value: Some(target),
+                        ..OpIR::default()
+                    });
+                    new_ops.push(OpIR {
+                        kind: "end_if".to_string(),
+                        ..OpIR::default()
+                    });
+                }
+                "loop_break_if_false" => {
+                    let cond = op.args.as_ref()
+                        .and_then(|a| a.first().cloned())
+                        .unwrap_or_default();
+                    let not_var = format!("__slr_not_{idx}");
+                    new_ops.push(OpIR {
+                        kind: "not".to_string(),
+                        args: Some(vec![cond]),
+                        out: Some(not_var.clone()),
+                        ..OpIR::default()
+                    });
+                    new_ops.push(OpIR {
+                        kind: "if".to_string(),
+                        args: Some(vec![not_var]),
+                        ..OpIR::default()
+                    });
+                    new_ops.push(OpIR {
+                        kind: "jump".to_string(),
+                        value: Some(target),
+                        ..OpIR::default()
+                    });
+                    new_ops.push(OpIR {
+                        kind: "end_if".to_string(),
+                        ..OpIR::default()
+                    });
+                }
+                _ => new_ops.push(op),
+            }
+        } else {
+            new_ops.push(op);
+        }
     }
 
-    // Insert state_label ops (process from last to first to preserve indices).
-    let mut inserts: Vec<(usize, i64)> = patches
-        .iter()
-        .map(|p| (p.insert_after, p.state_id))
-        .collect();
-    inserts.sort_by(|a, b| b.0.cmp(&a.0)); // reverse order
-    for (after_idx, state_id) in inserts {
-        let label_op = OpIR {
-            kind: "state_label".to_string(),
-            value: Some(state_id),
-            ..OpIR::default()
-        };
-        func_ir.ops.insert(after_idx + 1, label_op);
-    }
+    func_ir.ops = new_ops;
 }
 
