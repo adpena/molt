@@ -374,6 +374,31 @@ def _vendor_roots(project_root: Path) -> list[Path]:
     return roots
 
 
+MOLT_VENV_DIR = ".molt-venv"
+
+
+def _molt_venv_path(project_root: Path) -> Path:
+    """Return the path to the Molt-managed virtual environment."""
+    return project_root / MOLT_VENV_DIR
+
+
+def _molt_venv_site_packages(project_root: Path) -> list[Path]:
+    """Discover site-packages directories inside .molt-venv/."""
+    venv = _molt_venv_path(project_root)
+    if not venv.exists():
+        return []
+    results: list[Path] = []
+    # Unix: lib/pythonX.Y/site-packages
+    for sp in sorted(venv.glob("lib/python*/site-packages")):
+        if sp.is_dir():
+            results.append(sp)
+    # Windows: Lib/site-packages
+    win_sp = venv / "Lib" / "site-packages"
+    if win_sp.is_dir() and win_sp not in results:
+        results.append(win_sp)
+    return results
+
+
 def _base_env(
     root: Path,
     script_path: Path | None = None,
@@ -391,6 +416,8 @@ def _base_env(
     for base in roots:
         paths.extend([str(base / "src"), str(base)])
         paths.extend(str(path) for path in _vendor_roots(base))
+        # Include .molt-venv site-packages so `molt run` can find UV-installed deps
+        paths.extend(str(sp) for sp in _molt_venv_site_packages(base))
     env["PYTHONPATH"] = os.pathsep.join(p for p in paths if p)
     env.setdefault("PYTHONHASHSEED", "0")
     if molt_root is not None:
@@ -3239,6 +3266,9 @@ def _resolve_module_roots(
             for sp in sorted(venv_path.glob("lib/python*/site-packages")):
                 if sp.is_dir():
                     module_roots.append(sp)
+    # Auto-detect .molt-venv site-packages (UV-managed venv)
+    for sp in _molt_venv_site_packages(project_root):
+        module_roots.append(sp)
     return list(dict.fromkeys(root.resolve() for root in module_roots))
 
 
@@ -23915,6 +23945,250 @@ def deps(include_dev: bool, json_output: bool = False, verbose: bool = False) ->
     return 0
 
 
+# ---------------------------------------------------------------------------
+# molt install — UV-based package management
+# ---------------------------------------------------------------------------
+
+
+def _ensure_uv() -> str | None:
+    """Return the path to the ``uv`` binary, or *None* if unavailable."""
+    uv = shutil.which("uv")
+    if uv:
+        return uv
+    return None
+
+
+def _ensure_molt_venv(
+    project_root: Path,
+    *,
+    json_output: bool = False,
+    verbose: bool = False,
+) -> tuple[Path, bool]:
+    """Create ``.molt-venv/`` under *project_root* using ``uv venv`` if absent.
+
+    Returns ``(venv_path, created)`` where *created* is ``True`` when the venv
+    was freshly created.
+    """
+    venv = _molt_venv_path(project_root)
+    if venv.exists():
+        return venv, False
+    uv = _ensure_uv()
+    if uv is None:
+        raise RuntimeError(
+            "uv is not installed. Install it with: curl -LsSf "
+            "https://astral.sh/uv/install.sh | sh"
+        )
+    cmd = [
+        uv, "venv", str(venv),
+        "--python",
+        f"{sys.version_info.major}.{sys.version_info.minor}",
+    ]
+    if verbose:
+        print(f"[molt install] creating venv: {' '.join(cmd)}")
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=project_root)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"uv venv creation failed (exit {result.returncode}):\n{result.stderr}"
+        )
+    return venv, True
+
+
+def _read_requirements_txt(path: Path) -> list[str]:
+    """Read non-comment, non-empty lines from a requirements.txt file."""
+    if not path.exists():
+        return []
+    reqs: list[str] = []
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#") and not line.startswith("-"):
+            reqs.append(line)
+    return reqs
+
+
+def _read_pyproject_deps(project_root: Path) -> list[str]:
+    """Read ``[project.dependencies]`` from pyproject.toml."""
+    pyproject_path = project_root / "pyproject.toml"
+    if not pyproject_path.exists():
+        return []
+    data = _load_toml(pyproject_path)
+    return list(data.get("project", {}).get("dependencies", []))
+
+
+def install(
+    packages: list[str] | None = None,
+    *,
+    requirements: str | None = None,
+    json_output: bool = False,
+    verbose: bool = False,
+    sync: bool = False,
+) -> int:
+    """Install packages into ``.molt-venv/`` using UV.
+
+    If *packages* are given on the CLI they are installed directly.
+    If *requirements* points to a file (``requirements.txt``), its contents are
+    used.  If *sync* is ``True`` (or no explicit packages / requirements file),
+    dependencies are read from ``pyproject.toml`` and ``requirements.txt`` (if
+    present) and the venv is synced to match.
+    """
+    uv = _ensure_uv()
+    if uv is None:
+        return _fail(
+            "uv is not installed. Install it with: "
+            "curl -LsSf https://astral.sh/uv/install.sh | sh",
+            json_output,
+            command="install",
+        )
+
+    project_root = _find_molt_root(Path.cwd())
+
+    # Ensure the venv exists.
+    try:
+        venv, created = _ensure_molt_venv(
+            project_root, json_output=json_output, verbose=verbose
+        )
+    except RuntimeError as exc:
+        return _fail(str(exc), json_output, command="install")
+
+    if created and not json_output:
+        print(f"Created {MOLT_VENV_DIR}/ in {project_root}")
+
+    # Decide what to install.
+    specs: list[str] = []
+    if packages:
+        specs.extend(packages)
+    elif requirements:
+        req_path = Path(requirements).expanduser()
+        if not req_path.exists():
+            return _fail(
+                f"Requirements file not found: {req_path}",
+                json_output,
+                command="install",
+            )
+        specs.extend(_read_requirements_txt(req_path))
+    else:
+        # Sync mode: gather from pyproject.toml + requirements.txt
+        sync = True
+        specs.extend(_read_pyproject_deps(project_root))
+        specs.extend(_read_requirements_txt(project_root / "requirements.txt"))
+
+    if not specs:
+        if not json_output:
+            print("Nothing to install (no dependencies found).")
+        if json_output:
+            payload = _json_payload(
+                "install", "ok", data={"installed": [], "venv": str(venv)}
+            )
+            _emit_json(payload, json_output)
+        return 0
+
+    # Run uv pip install into the .molt-venv.
+    cmd = [uv, "pip", "install", "--python", str(venv / "bin" / "python")]
+    cmd.extend(specs)
+
+    if verbose and not json_output:
+        print(f"[molt install] {' '.join(cmd)}")
+
+    result = subprocess.run(
+        cmd, capture_output=json_output, text=True, cwd=project_root
+    )
+    if result.returncode != 0:
+        msg = f"uv pip install failed (exit {result.returncode})"
+        if json_output and result.stderr:
+            msg += f":\n{result.stderr}"
+        return _fail(msg, json_output, command="install")
+
+    if json_output:
+        payload = _json_payload(
+            "install",
+            "ok",
+            data={"installed": specs, "venv": str(venv)},
+        )
+        _emit_json(payload, json_output)
+    elif not verbose:
+        print(f"Installed {len(specs)} package(s) into {MOLT_VENV_DIR}/")
+
+    return 0
+
+
+def install_add(
+    packages: list[str],
+    *,
+    json_output: bool = False,
+    verbose: bool = False,
+) -> int:
+    """Add one or more packages: install into .molt-venv and append to
+    ``[project.dependencies]`` in pyproject.toml via ``uv add``."""
+    uv = _ensure_uv()
+    if uv is None:
+        return _fail(
+            "uv is not installed. Install it with: "
+            "curl -LsSf https://astral.sh/uv/install.sh | sh",
+            json_output,
+            command="install",
+        )
+
+    if not packages:
+        return _fail("No packages specified.", json_output, command="install")
+
+    project_root = _find_molt_root(Path.cwd())
+
+    # Ensure venv exists.
+    try:
+        venv, created = _ensure_molt_venv(
+            project_root, json_output=json_output, verbose=verbose
+        )
+    except RuntimeError as exc:
+        return _fail(str(exc), json_output, command="install")
+
+    if created and not json_output:
+        print(f"Created {MOLT_VENV_DIR}/ in {project_root}")
+
+    # Use `uv pip install` into the molt venv.
+    pip_cmd = [
+        uv, "pip", "install",
+        "--python", str(venv / "bin" / "python"),
+        *packages,
+    ]
+    if verbose and not json_output:
+        print(f"[molt install add] {' '.join(pip_cmd)}")
+
+    result = subprocess.run(
+        pip_cmd, capture_output=json_output, text=True, cwd=project_root
+    )
+    if result.returncode != 0:
+        msg = f"uv pip install failed (exit {result.returncode})"
+        if json_output and result.stderr:
+            msg += f":\n{result.stderr}"
+        return _fail(msg, json_output, command="install")
+
+    # Also run `uv add` to persist the dependency in pyproject.toml.
+    pyproject_path = project_root / "pyproject.toml"
+    if pyproject_path.exists():
+        add_cmd = [uv, "add", *packages]
+        if verbose and not json_output:
+            print(f"[molt install add] {' '.join(add_cmd)}")
+        add_result = subprocess.run(
+            add_cmd, capture_output=json_output, text=True, cwd=project_root
+        )
+        if add_result.returncode != 0 and verbose and not json_output:
+            print(
+                f"Warning: uv add failed (dependencies installed but not "
+                f"persisted to pyproject.toml): {add_result.stderr}"
+            )
+
+    if json_output:
+        payload = _json_payload(
+            "install",
+            "ok",
+            data={"added": packages, "venv": str(venv)},
+        )
+        _emit_json(payload, json_output)
+    else:
+        print(f"Added {', '.join(packages)} to {MOLT_VENV_DIR}/")
+
+    return 0
+
+
 def vendor(
     include_dev: bool,
     json_output: bool = False,
@@ -24252,7 +24526,7 @@ def clean(
 
     def _is_virtualenv_path(path: Path) -> bool:
         for part in path.parts:
-            if part in {"venv", ".env", "env"}:
+            if part in {"venv", ".env", "env", MOLT_VENV_DIR}:
                 return True
             if part.startswith(".venv"):
                 return True
@@ -24656,6 +24930,14 @@ def _completion_script(shell: str) -> str:
             "--verbose",
         ],
         "deps": ["--include-dev", "--json", "--verbose"],
+        "install": [
+            "-r",
+            "--requirements",
+            "--sync",
+            "--json",
+            "--verbose",
+            "add",
+        ],
         "vendor": [
             "--include-dev",
             "--output",
@@ -24942,7 +25224,7 @@ class _MoltHelpFormatter(argparse.RawDescriptionHelpFormatter):
         if isinstance(action, argparse._SubParsersAction):
             parts: list[str] = []
             _core = ["build", "run", "test", "bench", "check", "deploy"]
-            _package = ["package", "publish", "deps", "vendor"]
+            _package = ["package", "publish", "deps", "vendor", "install"]
             _toolchain = ["clean", "doctor", "config", "completion"]
             _dev = [
                 "compare", "diff", "parity-run", "profile",
@@ -26138,6 +26420,53 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
+    install_parser = subparsers.add_parser(
+        "install",
+        help="Install packages into .molt-venv/ using UV",
+        description=(
+            "Manage third-party Python packages with UV.\n\n"
+            "Without arguments, syncs dependencies from pyproject.toml and\n"
+            "requirements.txt into the .molt-venv/ virtual environment.\n"
+            "Installed packages are automatically available to `molt build`\n"
+            "and `molt run`.\n\n"
+            "Use `molt install add <pkg>` to install a package AND persist it\n"
+            "to pyproject.toml."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt install                        Sync deps from pyproject.toml\n"
+            "  molt install requests flask          Install specific packages\n"
+            "  molt install -r requirements.txt     Install from requirements file\n"
+            "  molt install add requests            Add and persist a dependency\n"
+        ),
+    )
+    install_parser.add_argument(
+        "packages",
+        nargs="*",
+        default=[],
+        help=(
+            "Package(s) to install (e.g. requests, 'flask>=2.0'), "
+            "or 'add <pkg>...' to add and persist to pyproject.toml."
+        ),
+    )
+    install_parser.add_argument(
+        "-r",
+        "--requirements",
+        help="Path to a requirements.txt file.",
+    )
+    install_parser.add_argument(
+        "--sync",
+        action="store_true",
+        help="Sync venv to match pyproject.toml + requirements.txt.",
+    )
+    install_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+    install_parser.add_argument(
+        "--verbose", action="store_true", help="Emit verbose diagnostics."
+    )
+
     clean_parser = subparsers.add_parser(
         "clean", help="Remove build artifacts and caches"
     )
@@ -26979,6 +27308,28 @@ def main() -> int:
         )
     if args.command == "deps":
         return deps(args.include_dev, args.json, args.verbose)
+    if args.command == "install":
+        pkgs = args.packages or []
+        if pkgs and pkgs[0] == "add":
+            add_pkgs = pkgs[1:]
+            if not add_pkgs:
+                return _fail(
+                    "molt install add requires at least one package name.",
+                    args.json,
+                    command="install",
+                )
+            return install_add(
+                add_pkgs,
+                json_output=args.json,
+                verbose=args.verbose,
+            )
+        return install(
+            packages=pkgs or None,
+            requirements=args.requirements,
+            json_output=args.json,
+            verbose=args.verbose,
+            sync=args.sync,
+        )
     if args.command == "vendor":
         deterministic = args.deterministic
         if deterministic is None:
