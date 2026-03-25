@@ -1277,6 +1277,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.try_suppress_depth: int | None = None
         self.try_handler_scopes: list[TryScope] = []
         self.function_exception_label: int | None = self.next_label()
+        self._needs_exception_stack: bool = True
         self.exception_stack_depth_baseline: MoltValue | None = None
         self.exception_stack_prev_baseline: MoltValue | None = None
         self.return_unwind_depth = 0
@@ -1662,6 +1663,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.try_scopes = []
         self.try_suppress_depth = None
         self.try_handler_scopes = []
+        self._needs_exception_stack = True
         self.exception_stack_depth_baseline = None
         self.exception_stack_prev_baseline = None
         self.return_unwind_depth = 0
@@ -1936,6 +1938,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "TRACE_ENTER_SLOT",
             "TRACE_EXIT",
             "ret",
+            "CONST",
+            "CONST_NONE",
+            "CONST_BOOL",
+            "CONST_STR",
+            "CONST_FLOAT",
+            "CONST_BYTES",
         }:
             return
         self.current_ops.append(
@@ -2294,6 +2302,31 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             stack.extend(ast.iter_child_nodes(current))
         return False
 
+    @staticmethod
+    def _function_needs_exception_stack(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> bool:
+        """Return True if the function body contains try/except/with statements.
+
+        Functions without these constructs do not need exception stack
+        enter/exit/depth bookkeeping -- check_exception alone suffices for
+        propagating exceptions raised by child calls.
+        """
+        stack: list[ast.AST] = list(node.body)
+        while stack:
+            current = stack.pop()
+            if isinstance(current, (ast.Try, ast.With, ast.AsyncWith)):
+                return True
+            if hasattr(ast, "TryStar") and isinstance(current, ast.TryStar):
+                return True
+            if isinstance(
+                current,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+            ):
+                continue
+            stack.extend(ast.iter_child_nodes(current))
+        return False
+
     def _signature_contains_yield(
         self,
         *,
@@ -2450,6 +2483,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         params: list[str] | None = None,
         type_facts_name: str | None = None,
         needs_return_slot: bool = False,
+        needs_exception_stack: bool = True,
     ) -> None:
         if name not in self.funcs_map:
             self.funcs_map[name] = FuncInfo(
@@ -2502,24 +2536,29 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.try_suppress_depth = None
         self.try_handler_scopes = []
         self.function_exception_label = self.next_label()
-        self.exception_stack_prev_baseline = MoltValue(self.next_var(), type_hint="int")
-        self.emit(
-            MoltOp(
-                kind="EXCEPTION_STACK_ENTER",
-                args=[],
-                result=self.exception_stack_prev_baseline,
+        self._needs_exception_stack = needs_exception_stack
+        if needs_exception_stack:
+            self.exception_stack_prev_baseline = MoltValue(self.next_var(), type_hint="int")
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_STACK_ENTER",
+                    args=[],
+                    result=self.exception_stack_prev_baseline,
+                )
             )
-        )
-        self.exception_stack_depth_baseline = MoltValue(
-            self.next_var(), type_hint="int"
-        )
-        self.emit(
-            MoltOp(
-                kind="EXCEPTION_STACK_DEPTH",
-                args=[],
-                result=self.exception_stack_depth_baseline,
+            self.exception_stack_depth_baseline = MoltValue(
+                self.next_var(), type_hint="int"
             )
-        )
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_STACK_DEPTH",
+                    args=[],
+                    result=self.exception_stack_depth_baseline,
+                )
+            )
+        else:
+            self.exception_stack_prev_baseline = None
+            self.exception_stack_depth_baseline = None
         self.return_unwind_depth = 0
         self.return_unwind_popped_scopes = []
         self.active_exceptions = []
@@ -3086,6 +3125,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "try_suppress_depth": self.try_suppress_depth,
             "try_handler_scopes": self.try_handler_scopes,
             "function_exception_label": self.function_exception_label,
+            "_needs_exception_stack": self._needs_exception_stack,
             "exception_stack_depth_baseline": self.exception_stack_depth_baseline,
             "exception_stack_prev_baseline": self.exception_stack_prev_baseline,
             "return_unwind_depth": self.return_unwind_depth,
@@ -3141,6 +3181,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.try_suppress_depth = state["try_suppress_depth"]
         self.try_handler_scopes = state["try_handler_scopes"]
         self.function_exception_label = state["function_exception_label"]
+        self._needs_exception_stack = state["_needs_exception_stack"]
         self.exception_stack_depth_baseline = state["exception_stack_depth_baseline"]
         self.exception_stack_prev_baseline = state["exception_stack_prev_baseline"]
         self.return_unwind_depth = state["return_unwind_depth"]
@@ -3544,6 +3585,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             result=MoltValue("none"),
                         )
                     )
+        if not self._needs_exception_stack:
+            # Fast path: no try/except/with in this function.  The exception
+            # flag is already set by the child call; just return None and
+            # let the caller's check_exception handle it.
+            none_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+            self.emit(MoltOp(kind="ret", args=[none_val], result=MoltValue("none")))
+            self.function_exception_label = prev_label
+            return
         self._emit_restore_exception_stack_depth()
         self._emit_raise_if_pending(emit_exit=True, clear_handlers=clear_handlers)
         self.function_exception_label = prev_label
@@ -24473,7 +24523,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if val is None:
             val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
-        if self.return_unwind_depth == 0:
+        if self.return_unwind_depth == 0 and self._needs_exception_stack:
             self._emit_raise_if_pending(emit_exit=True)
         if self.return_unwind_depth > 0:
             self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
@@ -24523,8 +24573,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         self.active_exceptions = prior_active
         # Return-time context cleanup is handled by per-scope CONTEXT_UNWIND_TO
         # above. A full CONTEXT_UNWIND here can incorrectly unwind caller frames.
-        self._emit_restore_exception_stack_depth(exit_baseline=False)
-        self._emit_raise_if_pending()
+        if self._needs_exception_stack:
+            self._emit_restore_exception_stack_depth(exit_baseline=False)
+            self._emit_raise_if_pending()
         self._emit_return_value(val)
         return None
 
@@ -25547,11 +25598,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         prev_state = self._capture_function_state()
         self.current_class = None
         prev_first_param = self.current_method_first_param
+        needs_exc_stack = self._function_needs_exception_stack(node)
         self.start_function(
             func_symbol,
             params=func_params,
             type_facts_name=func_name,
-            needs_return_slot=has_return,
+            needs_return_slot=has_return and needs_exc_stack,
+            needs_exception_stack=needs_exc_stack,
         )
         self.current_method_first_param = params[0] if params else None
         if has_closure:

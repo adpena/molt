@@ -3700,10 +3700,37 @@ impl WasmBackend {
                         );
                         bytes = stripped;
                     } else {
+                        // Diagnose which section is invalid.
+                        let mut diag_pos = 8usize;
+                        let mut diag_sections = Vec::new();
+                        while diag_pos < stripped.len() {
+                            let sid = stripped[diag_pos];
+                            diag_pos += 1;
+                            if diag_pos >= stripped.len() {
+                                diag_sections.push(format!("id={sid} (truncated)"));
+                                break;
+                            }
+                            let (sz, np) = read_u32_leb128(&stripped, diag_pos);
+                            diag_pos = np + sz as usize;
+                            if sid > 13 || diag_pos > stripped.len() {
+                                diag_sections.push(format!("id={sid} sz={sz} (INVALID @ {})", np));
+                                break;
+                            }
+                            diag_sections.push(format!("id={sid} sz={sz}"));
+                        }
+                        // Hex dump around the invalid section.
+                        let dump_start = 640usize.min(stripped.len());
+                        let dump_end = 670usize.min(stripped.len());
+                        let hex: Vec<String> = stripped[dump_start..dump_end]
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect();
                         eprintln!(
-                            "[molt-wasm-strip] WARNING: stripped output invalid, \
-                             keeping original ({} unused imports)",
-                            unused.len(),
+                            "[molt-wasm-strip] WARNING: stripped output invalid ({} bytes), \
+                             keeping original ({} unused imports). Sections: [{}]. \
+                             Hex @{dump_start}: {}",
+                            stripped.len(), unused.len(), diag_sections.join(", "),
+                            hex.join(" "),
                         );
                     }
                 }
@@ -12164,7 +12191,8 @@ fn validate_wasm_sections(bytes: &[u8]) -> bool {
     let mut pos = 8usize;
     while pos < bytes.len() {
         let section_id = bytes[pos];
-        if section_id > 12 {
+        // Valid: 0 (custom), 1-12 (standard), 13 (tag from exception handling).
+        if section_id > 13 {
             return false;
         }
         pos += 1;
