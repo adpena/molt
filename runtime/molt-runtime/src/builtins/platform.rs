@@ -6918,6 +6918,45 @@ fn importlib_import_with_fallback(
     util_bits: u64,
     machinery_bits: u64,
 ) -> Result<u64, u64> {
+    let result = importlib_import_with_fallback_inner(
+        _py,
+        resolved,
+        resolved_bits,
+        modules_ptr,
+        util_bits,
+        machinery_bits,
+    );
+
+    // If every import mechanism failed with ModuleNotFoundError, try loading a
+    // native C extension (.so / .dylib) from sys.path before giving up.
+    #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
+    if let Err(_) = &result {
+        if importlib_exception_should_fallback(_py) {
+            if let Some(module_bits) =
+                importlib_try_cext_on_sys_path(_py, resolved, modules_ptr)
+            {
+                return Ok(module_bits);
+            }
+            // Extension search failed too – restore the original error.
+            return Err(raise_exception::<_>(
+                _py,
+                "ModuleNotFoundError",
+                &format!("No module named '{resolved}'"),
+            ));
+        }
+    }
+
+    result
+}
+
+fn importlib_import_with_fallback_inner(
+    _py: &PyToken<'_>,
+    resolved: &str,
+    resolved_bits: u64,
+    modules_ptr: *mut u8,
+    util_bits: u64,
+    machinery_bits: u64,
+) -> Result<u64, u64> {
     if IMPORTLIB_SPEC_FIRST_IMPORTS.contains(&resolved) {
         return importlib_import_via_spec(
             _py,
@@ -6970,35 +7009,14 @@ fn importlib_import_with_fallback(
     }
 
     clear_exception(_py);
-    let spec_result = importlib_import_via_spec(
+    importlib_import_via_spec(
         _py,
         resolved,
         resolved_bits,
         modules_ptr,
         util_bits,
         machinery_bits,
-    );
-
-    // If spec-based import failed with ModuleNotFoundError, try loading a
-    // native C extension (.so / .dylib) from sys.path before giving up.
-    #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
-    if let Err(_) = &spec_result {
-        if importlib_exception_should_fallback(_py) {
-            if let Some(module_bits) =
-                importlib_try_cext_on_sys_path(_py, resolved, modules_ptr)
-            {
-                return Ok(module_bits);
-            }
-            // Extension search failed too – restore the original error.
-            return Err(raise_exception::<_>(
-                _py,
-                "ModuleNotFoundError",
-                &format!("No module named '{resolved}'"),
-            ));
-        }
-    }
-
-    spec_result
+    )
 }
 
 /// Scan `sys.path` directories for a native C extension matching `module_name`,
