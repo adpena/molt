@@ -8968,7 +8968,7 @@ impl WasmBackend {
                         let out = locals[op.out.as_ref().unwrap()];
                         let func_idx = *func_indices
                             .get(target_name)
-                            .expect("call target not found");
+                            .unwrap_or_else(|| panic!("call target not found: '{}'", target_name));
                         let bootstrap_call = func_idx == import_ids["runtime_init"];
                         if bootstrap_call {
                             for arg_name in args_names {
