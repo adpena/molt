@@ -2415,7 +2415,7 @@ fn exception_group_split_node(
             if let Some(bits) = match_bits
                 && let Some(new_ptr) = obj_from_bits(bits).as_ptr()
             {
-                exception_group_copy_metadata(_py, new_ptr, exc_ptr, true, true, true);
+                exception_group_copy_metadata(_py, new_ptr, exc_ptr, true, true, true, true);
             }
             for item in match_items.into_iter() {
                 if item.owned {
@@ -2436,7 +2436,7 @@ fn exception_group_split_node(
             if let Some(bits) = rest_bits
                 && let Some(new_ptr) = obj_from_bits(bits).as_ptr()
             {
-                exception_group_copy_metadata(_py, new_ptr, exc_ptr, true, true, true);
+                exception_group_copy_metadata(_py, new_ptr, exc_ptr, true, true, true, true);
             }
             for item in rest_items.into_iter() {
                 if item.owned {
@@ -4891,7 +4891,7 @@ pub extern "C" fn molt_exceptiongroup_match(exc_bits: u64, matcher_bits: u64) ->
         };
         if let Some(group_ptr) = obj_from_bits(bits).as_ptr() {
             unsafe {
-                exception_group_copy_metadata(_py, group_ptr, exc_ptr, false, true, false);
+                exception_group_copy_metadata(_py, group_ptr, exc_ptr, false, true, false, false);
             }
         }
         exception_group_make_pair_tuple(_py, Some(ExceptionGroupItem { bits, owned: true }), None)
