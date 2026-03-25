@@ -344,6 +344,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                     f_value: attr_float(&op.attrs, "f_value"),
                     s_value: attr_str(&op.attrs, "s_value"),
                     bytes: attr_bytes(&op.attrs, "bytes"),
+                    var: attr_str(&op.attrs, "_var"),
                     task_kind: attr_str(&op.attrs, "task_kind"),
                     container_type: attr_str(&op.attrs, "container_type"),
                     ic_index: attr_int(&op.attrs, "ic_index"),

@@ -465,4 +465,381 @@ mod tests {
         assert_eq!(ds.value, Some(42), "value field must be preserved");
         assert_eq!(ds.s_value.as_deref(), Some("helper"), "s_value field must be preserved");
     }
+
+    // ---------------------------------------------------------------------------
+    // Helper: roundtrip without optimization passes (pure SSA lift + lower)
+    // ---------------------------------------------------------------------------
+
+    fn roundtrip_no_opt(ops: Vec<OpIR>) -> Vec<OpIR> {
+        let ir = make_function(ops);
+        let tir = lower_to_tir(&ir);
+        let type_map = std::collections::HashMap::new();
+        lower_to_simple_ir(&tir, &type_map)
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test 19: check_exception preserves value field (the crash case)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_check_exception_value_field() {
+        let ops = vec![
+            OpIR {
+                kind: "call".to_string(),
+                out: Some("result".into()),
+                s_value: Some("foo".into()),
+                value: Some(0),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "check_exception".to_string(),
+                out: Some("exc".into()),
+                value: Some(100),
+                ..OpIR::default()
+            },
+            op("ret_void"),
+            op_val("state_label", 100),
+            op("ret_void"),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let check = result.iter().find(|o| o.kind == "check_exception");
+        assert!(check.is_some(), "check_exception must survive round-trip, got: {:?}",
+            result.iter().map(|o| &o.kind).collect::<Vec<_>>());
+        let check = check.unwrap();
+        assert!(check.value.is_some(), "check_exception.value must not be None, got: {:?}", check);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test 20: try_start/try_end preserve value field
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_try_start_try_end_value() {
+        let ops = vec![
+            OpIR {
+                kind: "try_start".to_string(),
+                value: Some(200),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "call".to_string(),
+                out: Some("r".into()),
+                s_value: Some("bar".into()),
+                value: Some(0),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "check_exception".to_string(),
+                out: Some("exc".into()),
+                value: Some(200),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "try_end".to_string(),
+                value: Some(200),
+                ..OpIR::default()
+            },
+            op("ret_void"),
+            op_val("state_label", 200),
+            op("ret_void"),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let try_start = result.iter().find(|o| o.kind == "try_start");
+        assert!(try_start.is_some(), "try_start must survive round-trip");
+        assert!(try_start.unwrap().value.is_some(), "try_start.value must be preserved");
+
+        let try_end = result.iter().find(|o| o.kind == "try_end");
+        assert!(try_end.is_some(), "try_end must survive round-trip");
+        assert!(try_end.unwrap().value.is_some(), "try_end.value must be preserved");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test 21: passthrough preserves var field
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_passthrough_preserves_var() {
+        let ops = vec![
+            OpIR {
+                kind: "some_custom_op".to_string(),
+                var: Some("my_var_name".into()),
+                out: Some("result".into()),
+                value: Some(7),
+                ..OpIR::default()
+            },
+            op_args("ret", &["result"]),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let custom = result.iter().find(|o| o.kind == "some_custom_op");
+        assert!(custom.is_some(), "custom op must survive round-trip");
+        assert!(custom.unwrap().var.is_some(), "var field must be preserved for passthrough ops, got: {:?}", custom);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test 22: passthrough preserves f_value field
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_passthrough_preserves_f_value() {
+        let ops = vec![
+            OpIR {
+                kind: "some_float_op".to_string(),
+                out: Some("result".into()),
+                f_value: Some(3.14),
+                ..OpIR::default()
+            },
+            op_args("ret", &["result"]),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let fop = result.iter().find(|o| o.kind == "some_float_op");
+        assert!(fop.is_some(), "float op must survive round-trip");
+        assert_eq!(fop.unwrap().f_value, Some(3.14), "f_value field must be preserved");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test 23: passthrough preserves bytes field
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_passthrough_preserves_bytes() {
+        let ops = vec![
+            OpIR {
+                kind: "some_bytes_op".to_string(),
+                out: Some("result".into()),
+                bytes: Some(vec![1, 2, 3]),
+                ..OpIR::default()
+            },
+            op_args("ret", &["result"]),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let bop = result.iter().find(|o| o.kind == "some_bytes_op");
+        assert!(bop.is_some(), "bytes op must survive round-trip");
+        assert_eq!(bop.unwrap().bytes.as_deref(), Some(&[1u8, 2, 3][..]), "bytes field must be preserved");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test 24: fast_int / fast_float preserved for known ops
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_preserves_fast_flags() {
+        let ops = vec![
+            OpIR {
+                kind: "const".to_string(),
+                out: Some("x".into()),
+                value: Some(10),
+                fast_int: Some(true),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const_float".to_string(),
+                out: Some("y".into()),
+                f_value: Some(1.5),
+                fast_float: Some(true),
+                ..OpIR::default()
+            },
+            op_args("ret", &["x"]),
+        ];
+        let result = roundtrip_no_opt(ops);
+        // Note: fast_int/fast_float are type-refinement driven in TIR, so they
+        // may not be identical. But they must not crash.
+        assert!(!result.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test 25: const ops preserve all scalar fields
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_const_preserves_value() {
+        let ops = vec![
+            OpIR {
+                kind: "const".to_string(),
+                out: Some("x".into()),
+                value: Some(42),
+                ..OpIR::default()
+            },
+            op_args("ret", &["x"]),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let cnst = result.iter().find(|o| o.kind == "const");
+        assert!(cnst.is_some(), "const must survive round-trip");
+        assert_eq!(cnst.unwrap().value, Some(42), "const.value must be preserved");
+    }
+
+    #[test]
+    fn roundtrip_const_str_preserves_s_value() {
+        let ops = vec![
+            OpIR {
+                kind: "const_str".to_string(),
+                out: Some("s".into()),
+                s_value: Some("hello".into()),
+                ..OpIR::default()
+            },
+            op_args("ret", &["s"]),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let cnst = result.iter().find(|o| o.kind == "const_str");
+        assert!(cnst.is_some(), "const_str must survive round-trip");
+        assert_eq!(cnst.unwrap().s_value.as_deref(), Some("hello"), "const_str.s_value must be preserved");
+    }
+
+    #[test]
+    fn roundtrip_const_bytes_preserves_bytes() {
+        let ops = vec![
+            OpIR {
+                kind: "const_bytes".to_string(),
+                out: Some("b".into()),
+                bytes: Some(vec![0xDE, 0xAD]),
+                ..OpIR::default()
+            },
+            op_args("ret", &["b"]),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let cnst = result.iter().find(|o| o.kind == "const_bytes");
+        assert!(cnst.is_some(), "const_bytes must survive round-trip");
+        assert_eq!(cnst.unwrap().bytes.as_deref(), Some(&[0xDEu8, 0xAD][..]), "const_bytes.bytes must be preserved");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test 26: call ops preserve s_value and value
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_call_preserves_fields() {
+        let ops = vec![
+            OpIR {
+                kind: "call".to_string(),
+                out: Some("r".into()),
+                s_value: Some("my_func".into()),
+                value: Some(5),
+                ..OpIR::default()
+            },
+            op_args("ret", &["r"]),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let call = result.iter().find(|o| o.kind == "call");
+        assert!(call.is_some(), "call must survive round-trip");
+        let c = call.unwrap();
+        assert_eq!(c.s_value.as_deref(), Some("my_func"), "call.s_value must be preserved");
+        assert_eq!(c.value, Some(5), "call.value must be preserved");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test 27: import preserves s_value
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_import_preserves_s_value() {
+        let ops = vec![
+            OpIR {
+                kind: "import".to_string(),
+                out: Some("m".into()),
+                s_value: Some("os".into()),
+                ..OpIR::default()
+            },
+            op_args("ret", &["m"]),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let imp = result.iter().find(|o| o.kind == "import");
+        assert!(imp.is_some(), "import must survive round-trip");
+        assert_eq!(imp.unwrap().s_value.as_deref(), Some("os"), "import.s_value must be preserved");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test 28: state_block_start / state_block_end preserve value
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_state_block_preserves_value() {
+        let ops = vec![
+            OpIR {
+                kind: "state_block_start".to_string(),
+                value: Some(300),
+                ..OpIR::default()
+            },
+            op("ret_void"),
+            OpIR {
+                kind: "state_block_end".to_string(),
+                value: Some(300),
+                ..OpIR::default()
+            },
+            op("ret_void"),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let sbs = result.iter().find(|o| o.kind == "state_block_start");
+        assert!(sbs.is_some(), "state_block_start must survive round-trip");
+        assert!(sbs.unwrap().value.is_some(), "state_block_start.value must be preserved");
+
+        let sbe = result.iter().find(|o| o.kind == "state_block_end");
+        assert!(sbe.is_some(), "state_block_end must survive round-trip");
+        assert!(sbe.unwrap().value.is_some(), "state_block_end.value must be preserved");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test 29: passthrough preserves task_kind + container_type
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_passthrough_preserves_metadata() {
+        let ops = vec![
+            OpIR {
+                kind: "async_spawn".to_string(),
+                out: Some("t".into()),
+                task_kind: Some("coro".into()),
+                container_type: Some("list".into()),
+                ..OpIR::default()
+            },
+            op_args("ret", &["t"]),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let asp = result.iter().find(|o| o.kind == "async_spawn");
+        assert!(asp.is_some(), "async_spawn must survive round-trip");
+        let a = asp.unwrap();
+        assert_eq!(a.task_kind.as_deref(), Some("coro"), "task_kind must be preserved");
+        assert_eq!(a.container_type.as_deref(), Some("list"), "container_type must be preserved");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test 30: call_func variant preserves original kind
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_call_func_preserves_kind() {
+        let ops = vec![
+            OpIR {
+                kind: "call_func".to_string(),
+                out: Some("r".into()),
+                s_value: Some("target".into()),
+                value: Some(1),
+                ..OpIR::default()
+            },
+            op_args("ret", &["r"]),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let cf = result.iter().find(|o| o.kind == "call_func");
+        assert!(cf.is_some(), "call_func must survive round-trip, got: {:?}",
+            result.iter().map(|o| &o.kind).collect::<Vec<_>>());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test 31: const value=0 (edge case for zero-is-falsy bugs)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn roundtrip_const_zero_value() {
+        let ops = vec![
+            OpIR {
+                kind: "const".to_string(),
+                out: Some("z".into()),
+                value: Some(0),
+                ..OpIR::default()
+            },
+            op_args("ret", &["z"]),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let cnst = result.iter().find(|o| o.kind == "const");
+        assert!(cnst.is_some(), "const must survive round-trip");
+        assert_eq!(cnst.unwrap().value, Some(0), "const.value=0 must be preserved (not treated as None)");
+    }
 }

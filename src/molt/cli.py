@@ -12046,6 +12046,17 @@ def _prepare_backend_ir(
         pgo_profile_summary=pgo_profile_summary,
         runtime_feedback_summary=runtime_feedback_summary,
     )
+    # DEBUG: dump IR function names and module_cache ops
+    if os.environ.get("MOLT_DEBUG_IR_DUMP"):
+        import json as _json_debug
+        for func in ir["functions"]:
+            name = func["name"]
+            if "init" in name or "main" in name or "exception" in name or "keyword" in name.lower():
+                print(f"DEBUG_IR FUNC: {name} ({len(func.get('ops', []))} ops)", file=sys.stderr)
+                for op in func.get("ops", []):
+                    s = _json_debug.dumps(op, default=str)
+                    if "module_cache" in s or "KeywordError" in s:
+                        print(f"  {s}", file=sys.stderr)
     emit_ir_error = _write_emitted_ir(emit_ir_path, ir)
     if emit_ir_error is not None:
         return None, _fail(emit_ir_error, json_output, command="build")
