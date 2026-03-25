@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::OpCode;
+use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
 use super::PassStats;
@@ -17,6 +17,31 @@ use super::PassStats;
 // ---------------------------------------------------------------------------
 // Side-effect classification
 // ---------------------------------------------------------------------------
+
+/// Returns `true` if an op must be preserved even when all of its results
+/// are dead.  Checks both the opcode and, for `Copy` ops that originated
+/// from an unknown SimpleIR kind, the `_original_kind` attribute so that
+/// unmapped call variants are never silently dropped.
+#[inline]
+fn op_is_side_effecting(op: &TirOp) -> bool {
+    if is_side_effecting(op.opcode) {
+        return true;
+    }
+    // Safety net: if this Copy was originally a call-like op that wasn't
+    // mapped in kind_to_opcode, keep it alive.
+    if op.opcode == OpCode::Copy {
+        if let Some(AttrValue::Str(kind)) = op.attrs.get("_original_kind") {
+            if kind.starts_with("call")
+                || kind.starts_with("invoke")
+                || kind == "print"
+                || kind == "builtin_print"
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
 
 /// Returns `true` if an op with this opcode must be preserved even when all
 /// of its results are dead.
@@ -296,7 +321,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
             for i in (0..block.ops.len()).rev() {
                 let op = &block.ops[i];
-                if is_side_effecting(op.opcode) {
+                if op_is_side_effecting(op) {
                     continue;
                 }
 
