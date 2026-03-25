@@ -30189,6 +30189,10 @@ pub(crate) fn format_with_spec(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inc_ref_obj(bits: u64) {
+    // Fast path: skip GIL for non-pointer values (ints, floats, bools, none).
+    if !obj_from_bits(bits).is_ptr() {
+        return;
+    }
     crate::with_gil_entry!(_py, {
         if let Some(ptr) = obj_from_bits(bits).as_ptr() {
             unsafe { molt_inc_ref(ptr) };
@@ -30198,8 +30202,13 @@ pub extern "C" fn molt_inc_ref_obj(bits: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dec_ref_obj(bits: u64) {
+    // Fast path: skip GIL for non-pointer values (ints, floats, bools, none).
+    let obj = obj_from_bits(bits);
+    if !obj.is_ptr() {
+        return;
+    }
     crate::with_gil_entry!(_py, {
-        if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+        if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 // Validate type_id before dec_ref to prevent use-after-free
                 // from codegen double-free bugs. A freed object's header is
