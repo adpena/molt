@@ -279,6 +279,18 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
         );
     }
 
+    // ── String construction ──
+    // molt_string_from_bytes(ptr: *const u8, len: u64, out: *mut u64) -> i32
+    {
+        let ptr_ty = ctx.ptr_type(inkwell::AddressSpace::default());
+        let fn_ty = i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false);
+        module.add_function(
+            "molt_string_from_bytes",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
+
     // molt_call_0(callable: u64) -> u64
     // Invoke a callable with zero arguments. Used by SCF desugaring.
     {
