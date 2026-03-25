@@ -45,9 +45,16 @@ impl Drop for ThreadLocalGuard {
         //       just to tear it down again.
         // Both are incorrect.  The shutdown path already called
         // `clear_thread_local_state` + `clear_object_pool`, so there is
-        // nothing left to clean up — skip the work and let the OS reclaim
-        // the process memory.
+        // nothing left to clean up.
+        //
+        // HOWEVER: we must still release any heap-backed TLS memory (nursery,
+        // object pool) NOW, while the global allocator (mimalloc) is still
+        // alive.  If we leave these allocations for Rust's TLS destructor
+        // phase, the dealloc calls may race with mimalloc's own thread-local
+        // cleanup (registered via pthread_key_create), causing a
+        // use-after-free crash (exit code 245 on macOS).
         if crate::state::runtime_state::runtime_state_for_gil().is_none() {
+            drain_heap_tls();
             return;
         }
         crate::with_gil_entry!(_py, {
@@ -557,6 +564,30 @@ fn clear_object_pool_tls() {
             }
         }
         *pool = Vec::new();
+    });
+    clear_nursery_tls();
+}
+
+/// Release the nursery's heap-backed buffer so that Rust's TLS destructor
+/// for `NURSERY_TLS` has nothing left to deallocate.  This prevents a
+/// use-after-free when mimalloc's thread-local state is torn down before
+/// Rust's TLS destructors run during process exit.
+fn clear_nursery_tls() {
+    crate::object::nursery_drain();
+}
+
+/// Drain all heap-backed thread-local storage.  Called from
+/// `ThreadLocalGuard::drop` after `molt_runtime_shutdown` has already
+/// completed, so we cannot acquire the GIL or touch `RuntimeState`.
+/// The only goal is to release heap memory while the global allocator
+/// is still alive, preventing a crash during Rust's TLS destructor phase.
+fn drain_heap_tls() {
+    clear_object_pool_tls();
+    // Replace the parse arena with an empty state whose outer Vec has zero
+    // capacity, so the TLS destructor has nothing to deallocate.
+    let _ = PARSE_ARENA.try_with(|arena| {
+        let mut arena = arena.borrow_mut();
+        arena.drain();
     });
 }
 

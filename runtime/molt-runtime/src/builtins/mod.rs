@@ -10,9 +10,7 @@ pub(crate) mod asyncio_queue;
 pub(crate) mod atexit;
 pub(crate) mod attr;
 pub(crate) mod attributes;
-#[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod base64_mod;
-#[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod binascii;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod bz2;
@@ -30,7 +28,6 @@ pub(crate) mod colorsys;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod compression_common;
 pub(crate) mod concurrent;
-#[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod configparser;
 pub(crate) mod containers;
 pub(crate) mod containers_alloc;
@@ -40,7 +37,6 @@ pub(crate) mod contextvars;
 pub(crate) mod copy_mod;
 #[cfg(not(feature = "stdlib_csv"))]
 pub(crate) mod csv;
-#[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod datetime;
 pub(crate) mod dbm_dumb;
 pub(crate) mod decimal;
@@ -102,7 +98,6 @@ pub(crate) mod ssl;
 pub(crate) mod string_ext;
 pub(crate) mod stringprep;
 pub(crate) mod strings;
-#[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod structs;
 pub(crate) mod subprocess_ext;
 pub(crate) mod sys_ext;
