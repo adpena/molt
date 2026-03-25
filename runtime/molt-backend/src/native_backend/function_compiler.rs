@@ -9676,11 +9676,18 @@ impl SimpleBackend {
                     if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "call_func" => {
-                    // Fast-path: for 0–3 positional args with no tracing (code_id == 0),
-                    // call molt_call_func_fast{0,1,2,3} which passes args in registers
-                    // and does a streamlined type-check + direct fn_ptr call.
-                    // This eliminates: stack spill/reload, GIL re-acquisition,
-                    // inline_buf copy, and match-on-arity dispatch.
+                    // Inline probe fast-path: for 0–3 positional args with no tracing,
+                    // emit Cranelift IR that checks the callable's type/arity/closure
+                    // inline and calls through fn_ptr via call_indirect.  This avoids
+                    // ALL function-call overhead for the common case (non-closure,
+                    // exact arity, TYPE_ID_FUNCTION).  On the fast path, the generated
+                    // code does: tag check -> load type_id -> load closure_bits ->
+                    // load arity -> load fn_ptr -> recursion guard -> call_indirect.
+                    // All loads hit the same cache line, so this is very cheap.
+                    //
+                    // Slow path: falls back to molt_call_func_fast{N} for closures,
+                    // bound methods, arity mismatches; or molt_call_func_dispatch
+                    // for >3 args or tracing.
                     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let func_bits =
                         var_get(&mut builder, &vars, &args_names[0]).expect("Func not found");
@@ -9691,10 +9698,114 @@ impl SimpleBackend {
                     let code_id = op.value.unwrap_or(0);
                     let nargs = args.len();
 
-                    let use_fast_path = nargs <= 3 && code_id == 0;
+                    let use_inline_probe = nargs <= 3 && code_id == 0;
 
-                    let res = if use_fast_path {
-                        // Register-passed fast path — no stack spill needed.
+                    let res = if use_inline_probe {
+                        // --- Inline probe: check tag, type_id, closure, arity ---
+                        let tag_mask = builder.use_var(nbc.qnan_tag_mask);
+                        let expected_ptr_tag = builder.use_var(nbc.qnan_tag_ptr);
+                        let ptr_mask_val = builder.use_var(nbc.pointer_mask);
+
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        let slow_block = builder.create_block();
+
+                        // Step 1: Check TAG_PTR
+                        let tag = builder.ins().band(*func_bits, tag_mask);
+                        let is_ptr = builder.ins().icmp(IntCC::Equal, tag, expected_ptr_tag);
+                        let probe_block = builder.create_block();
+                        brif_block(&mut builder, is_ptr, probe_block, &[], slow_block, &[]);
+
+                        // Step 2: Extract pointer, check TYPE_ID_FUNCTION (221)
+                        builder.switch_to_block(probe_block);
+                        builder.seal_block(probe_block);
+                        let raw_ptr = builder.ins().band(*func_bits, ptr_mask_val);
+                        let shift16 = builder.ins().iconst(types::I64, 16);
+                        let shifted = builder.ins().ishl(raw_ptr, shift16);
+                        let ptr_val = builder.ins().sshr(shifted, shift16);
+                        let type_id = builder.ins().load(
+                            types::I32, MemFlags::trusted(), ptr_val, -16i32,
+                        );
+                        let expected_type = builder.ins().iconst(types::I32, 221);
+                        let type_ok = builder.ins().icmp(IntCC::Equal, type_id, expected_type);
+                        let closure_check_block = builder.create_block();
+                        brif_block(&mut builder, type_ok, closure_check_block, &[], slow_block, &[]);
+
+                        // Step 3: Check closure_bits == 0 (at ptr+24)
+                        builder.switch_to_block(closure_check_block);
+                        builder.seal_block(closure_check_block);
+                        let closure_bits_v = builder.ins().load(
+                            types::I64, MemFlags::trusted(), ptr_val, 24i32,
+                        );
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let no_closure = builder.ins().icmp(IntCC::Equal, closure_bits_v, zero);
+                        let arity_check_block = builder.create_block();
+                        brif_block(&mut builder, no_closure, arity_check_block, &[], slow_block, &[]);
+
+                        // Step 4: Check arity (at ptr+8)
+                        builder.switch_to_block(arity_check_block);
+                        builder.seal_block(arity_check_block);
+                        let arity = builder.ins().load(
+                            types::I64, MemFlags::trusted(), ptr_val, 8i32,
+                        );
+                        let expected_arity = builder.ins().iconst(types::I64, nargs as i64);
+                        let arity_ok = builder.ins().icmp(IntCC::Equal, arity, expected_arity);
+                        let direct_call_block = builder.create_block();
+                        brif_block(&mut builder, arity_ok, direct_call_block, &[], slow_block, &[]);
+
+                        // Step 5: Load fn_ptr (at ptr+0), recursion guard, call_indirect
+                        builder.switch_to_block(direct_call_block);
+                        builder.seal_block(direct_call_block);
+                        let fn_ptr_v = builder.ins().load(
+                            types::I64, MemFlags::trusted(), ptr_val, 0i32,
+                        );
+                        let guard_enter = import_func_ref(
+                            &mut self.module, &mut self.import_ids, &mut builder,
+                            &mut import_refs, "molt_recursion_enter_fast",
+                            &[], &[types::I64],
+                        );
+                        let enter_call = builder.ins().call(guard_enter, &[]);
+                        let guard_ok = builder.inst_results(enter_call)[0];
+                        let guard_zero = builder.ins().iconst(types::I64, 0);
+                        let is_guard_ok = builder.ins().icmp(IntCC::NotEqual, guard_ok, guard_zero);
+                        let call_block = builder.create_block();
+                        let guard_fail_block = builder.create_block();
+                        brif_block(&mut builder, is_guard_ok, call_block, &[], guard_fail_block, &[]);
+
+                        // Guard fail: raise RecursionError (cold)
+                        builder.switch_to_block(guard_fail_block);
+                        builder.seal_block(guard_fail_block);
+                        let raise_ref = import_func_ref(
+                            &mut self.module, &mut self.import_ids, &mut builder,
+                            &mut import_refs, "molt_raise_recursion_error",
+                            &[], &[types::I64],
+                        );
+                        let raise_call = builder.ins().call(raise_ref, &[]);
+                        let err_val = builder.inst_results(raise_call)[0];
+                        jump_block(&mut builder, merge_block, &[err_val]);
+
+                        // Direct call via call_indirect
+                        builder.switch_to_block(call_block);
+                        builder.seal_block(call_block);
+                        let mut call_sig = self.module.make_signature();
+                        for _ in 0..nargs {
+                            call_sig.params.push(AbiParam::new(types::I64));
+                        }
+                        call_sig.returns.push(AbiParam::new(types::I64));
+                        let sig_ref = builder.import_signature(call_sig);
+                        let indirect_call = builder.ins().call_indirect(sig_ref, fn_ptr_v, &args);
+                        let direct_res = builder.inst_results(indirect_call)[0];
+                        let guard_exit = import_func_ref(
+                            &mut self.module, &mut self.import_ids, &mut builder,
+                            &mut import_refs, "molt_recursion_exit_fast",
+                            &[], &[],
+                        );
+                        builder.ins().call(guard_exit, &[]);
+                        jump_block(&mut builder, merge_block, &[direct_res]);
+
+                        // Slow path: call molt_call_func_fast{N}
+                        builder.switch_to_block(slow_block);
+                        builder.seal_block(slow_block);
                         let fast_name: &'static str = match nargs {
                             0 => "molt_call_func_fast0",
                             1 => "molt_call_func_fast1",
@@ -9702,25 +9813,24 @@ impl SimpleBackend {
                             3 => "molt_call_func_fast3",
                             _ => unreachable!(),
                         };
-                        // Build params: func_bits + args (all i64)
                         let mut param_types = Vec::with_capacity(nargs + 1);
                         for _ in 0..=nargs {
                             param_types.push(types::I64);
                         }
                         let fast_ref = import_func_ref(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            &mut builder,
-                            &mut import_refs,
-                            fast_name,
-                            &param_types,
-                            &[types::I64],
+                            &mut self.module, &mut self.import_ids, &mut builder,
+                            &mut import_refs, fast_name, &param_types, &[types::I64],
                         );
-                        let mut call_args = Vec::with_capacity(nargs + 1);
-                        call_args.push(*func_bits);
-                        call_args.extend_from_slice(&args);
-                        let call = builder.ins().call(fast_ref, &call_args);
-                        builder.inst_results(call)[0]
+                        let mut slow_call_args = Vec::with_capacity(nargs + 1);
+                        slow_call_args.push(*func_bits);
+                        slow_call_args.extend_from_slice(&args);
+                        let slow_call = builder.ins().call(fast_ref, &slow_call_args);
+                        let slow_res = builder.inst_results(slow_call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
                     } else {
                         // Fallback: spill to stack + call molt_call_func_dispatch.
                         let slot_size = std::cmp::max(nargs, 1) * 8;
