@@ -255,7 +255,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - Inspect binaries: `wasm-tools print <file.wasm>` for imports/exports/sections.
 - Size analysis: `twiggy top <file.wasm>` for WASM size attribution.
 - Size optimization: `wasm-opt -Oz -o output.opt.wasm output.wasm` (Binaryen).
-- Runtime harness: `run_wasm.js` (Node/WASI; prefers `*_linked.wasm` when present, set `MOLT_WASM_PREFER_LINKED=0` to opt out).
+- Runtime harness: `wasm/run_wasm.js` (Node/WASI; prefers `*_linked.wasm` when present, set `MOLT_WASM_PREFER_LINKED=0` to opt out).
 - Runner prefers linked wasm when `*_linked.wasm` exists next to the input (disable with `MOLT_WASM_PREFER_LINKED=0`).
 - Linked builds require `wasm-ld` and `wasm-tools` (install via Homebrew `llvm` + `wasm-tools` or Cargo).
 - Override relocatable table base with `MOLT_WASM_TABLE_BASE=<u32>` (defaults to runtime table size when available).

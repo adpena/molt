@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# scripts/build-cext.sh — Compile a Python C extension against the Molt CPython ABI.
+# tools/scripts/build-cext.sh — Compile a Python C extension against the Molt CPython ABI.
 #
 # Usage:
-#   ./scripts/build-cext.sh <source.c> [output_dir]
-#   ./scripts/build-cext.sh runtime/molt-cpython-abi/tests/c_extensions/_testmolt.c
+#   ./tools/scripts/build-cext.sh <source.c> [output_dir]
+#   ./tools/scripts/build-cext.sh runtime/molt-cpython-abi/tests/c_extensions/_testmolt.c
 #
 # Requirements:
 #   - cargo build --release -p molt-lang-cpython-abi must have been run first
@@ -18,7 +18,7 @@ set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SOURCE="${1:-}"
 OUTPUT_DIR="${2:-$(pwd)}"
 CARGO_TARGET="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
