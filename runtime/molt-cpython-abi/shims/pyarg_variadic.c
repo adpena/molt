@@ -113,6 +113,7 @@ int PyArg_UnpackTuple(
     ...)
 {
     (void)name;
+    (void)min;
     /* Build a synthetic "OOO..." format with up to `max` entries. */
     char fmt[MOLT_PYARG_MAX_OUTS + 4];
     int take = (int)(max < MOLT_PYARG_MAX_OUTS ? max : MOLT_PYARG_MAX_OUTS);
