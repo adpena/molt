@@ -8985,36 +8985,21 @@ impl SimpleBackend {
                     }
 
                     let res = if use_direct_call {
-                        // Inline recursion guard: load depth/limit from global
-                        // data symbols, compare, increment — zero function call
-                        // overhead. The data symbols are resolved by the linker.
-                        let depth_data_id = self.module
-                            .declare_data("molt_fast_recursion_depth", Linkage::Import, false, false)
-                            .unwrap();
-                        let limit_data_id = self.module
-                            .declare_data("molt_fast_recursion_limit", Linkage::Import, false, false)
-                            .unwrap();
-                        let depth_gv = self.module.declare_data_in_func(depth_data_id, builder.func);
-                        let limit_gv = self.module.declare_data_in_func(limit_data_id, builder.func);
-                        let depth_ptr = builder.ins().global_value(types::I64, depth_gv);
-                        let limit_ptr = builder.ins().global_value(types::I64, limit_gv);
-
-                        // Load current depth and limit inline.
-                        let current_depth = builder.ins().load(
-                            types::I64,
-                            MemFlags::trusted(),
-                            depth_ptr,
-                            0,
+                        // Lightweight recursion guard using global atomics
+                        // (no TLS on the hot path). The data-symbol inline
+                        // approach was reverted because Cranelift global_value
+                        // addresses caused segfaults on some programs.
+                        let enter_ref = import_func_ref(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            "molt_recursion_enter_fast",
+                            &[],
+                            &[types::I64],
                         );
-                        let limit_val = builder.ins().load(
-                            types::I64,
-                            MemFlags::trusted(),
-                            limit_ptr,
-                            0,
-                        );
-
-                        // Check: current_depth < limit
-                        let is_ok = builder.ins().icmp(IntCC::UnsignedLessThan, current_depth, limit_val);
+                        let enter_call = builder.ins().call(enter_ref, &[]);
+                        let guard_ok = builder.inst_results(enter_call)[0];
 
                         // Branch on recursion guard result.
                         let call_block = builder.create_block();
@@ -9022,6 +9007,8 @@ impl SimpleBackend {
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
 
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let is_ok = builder.ins().icmp(IntCC::NotEqual, guard_ok, zero);
                         brif_block(&mut builder, is_ok, call_block, &[], error_block, &[]);
 
                         // Error block: recursion limit exceeded (cold path).
@@ -9039,25 +9026,22 @@ impl SimpleBackend {
                         let err_val = builder.inst_results(raise_call)[0];
                         jump_block(&mut builder, merge_block, &[err_val]);
 
-                        // Call block: increment depth, call, decrement depth.
+                        // Call block: direct call to the target function.
                         builder.switch_to_block(call_block);
-                        let one = builder.ins().iconst(types::I64, 1);
-                        let new_depth = builder.ins().iadd(current_depth, one);
-                        builder.ins().store(MemFlags::trusted(), new_depth, depth_ptr, 0);
-
                         let direct_call = builder.ins().call(local_callee, &args);
                         let call_res = builder.inst_results(direct_call)[0];
 
-                        // Decrement depth (reload in case callee modified it).
-                        let post_depth = builder.ins().load(
-                            types::I64,
-                            MemFlags::trusted(),
-                            depth_ptr,
-                            0,
+                        // Exit recursion guard.
+                        let exit_ref = import_func_ref(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            "molt_recursion_exit_fast",
+                            &[],
+                            &[],
                         );
-                        let dec_depth = builder.ins().isub(post_depth, one);
-                        builder.ins().store(MemFlags::trusted(), dec_depth, depth_ptr, 0);
-
+                        builder.ins().call(exit_ref, &[]);
                         jump_block(&mut builder, merge_block, &[call_res]);
 
                         builder.switch_to_block(merge_block);
