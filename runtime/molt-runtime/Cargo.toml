@@ -24,6 +24,7 @@ stdlib_full = [
     "stdlib_signal", "stdlib_select",
     "builtin_set", "builtin_complex", "builtin_memoryview",
     "builtin_contextvars", "builtin_fcntl",
+    "cext_loader",
 ]
 stdlib_unicode_names = ["dep:unicode_names2"]
 
@@ -70,6 +71,8 @@ builtin_fcntl = []
 
 molt_debug_gil = []
 molt_tk_native = ["dep:libloading"]
+# Enable dlopen-based C extension loading via the CPython ABI shim
+cext_loader = ["dep:molt-cpython-abi"]
 # Reserved for the freestanding wasm target. Keep this feature independent
 # from getrandom Cargo features: getrandom 0.4 selects custom backends via
 # cfg(getrandom_backend = "..."), not via a Cargo feature named "custom".
@@ -88,6 +91,7 @@ molt-runtime-net = { path = "../molt-runtime-net", optional = true }
 molt-runtime-asyncio = { path = "../molt-runtime-asyncio", optional = true }
 molt-runtime-math = { path = "../molt-runtime-math", optional = true }
 molt-runtime-serial = { path = "../molt-runtime-serial", optional = true }
+molt-cpython-abi = { package = "molt-lang-cpython-abi", path = "../molt-cpython-abi", optional = true, features = ["extension-loader"] }
 serde_json = "1.0"
 crossbeam-deque = "0.8"
 crossbeam-channel = "0.5"

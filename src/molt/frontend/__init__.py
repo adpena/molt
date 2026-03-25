@@ -6107,7 +6107,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         if node.id in self.stable_module_funcs:
                             return self._emit_module_attr_get(node.id)
                         return self._emit_global_get(node.id)
-                if node.id in {"globals", "locals", "__import__"}:
+                if node.id == "globals":
+                    return self._emit_globals_builtin_obj()
+                if node.id in {"locals", "__import__"}:
                     return self._emit_module_attr_get_on("builtins", node.id)
                 builtin_tag = BUILTIN_TYPE_TAGS.get(node.id)
                 if builtin_tag is not None:
@@ -16213,10 +16215,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     count = len(node.args) + len(node.keywords)
                     msg = f"globals() takes no arguments ({count} given)"
                     return self._emit_type_error_value(msg, "dict")
-                callee = self._emit_module_attr_get_on("builtins", "globals")
-                res = MoltValue(self.next_var(), type_hint="dict")
-                self.emit(MoltOp(kind="CALL_FUNC", args=[callee], result=res))
-                return res
+                return self._emit_globals_dict()
             if func_id == "locals":
                 if node.args or node.keywords:
                     count = len(node.args) + len(node.keywords)
