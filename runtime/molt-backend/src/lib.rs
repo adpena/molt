@@ -1955,6 +1955,18 @@ impl SimpleBackend {
         func_id
     }
 
+    /// Convenience wrapper around `import_func_id_split` for use when
+    /// `&mut self` is not split-borrowed (e.g. in tests).
+    #[cfg(test)]
+    fn import_func_id(
+        &mut self,
+        name: &'static str,
+        params: &[types::Type],
+        returns: &[types::Type],
+    ) -> cranelift_module::FuncId {
+        Self::import_func_id_split(&mut self.module, &mut self.import_ids, name, params, returns)
+    }
+
     pub fn compile(mut self, ir: SimpleIR) -> Vec<u8> {
         let timing = env_setting("MOLT_BACKEND_TIMING")
             .as_deref()
