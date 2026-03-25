@@ -5581,7 +5581,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return res
         if isinstance(value, int):
             res = MoltValue(self.next_var(), type_hint="int")
-            if inline_min <= value <= inline_max:
+            if _INLINE_INT_MIN <= value <= _INLINE_INT_MAX:
                 self.emit(MoltOp(kind="CONST", args=[value], result=res))
             else:
                 self.emit(MoltOp(kind="CONST_BIGINT", args=[str(value)], result=res))
