@@ -276,7 +276,7 @@ def test_submodule_nn():
     from molt.gpu.tensor import Tensor, randn
     linear = Linear(4, 2)
     x = randn(1, 4, seed=1)
-    out = linear.forward(x)
+    out = linear(x)
     assert out.shape == (1, 2)
 
 

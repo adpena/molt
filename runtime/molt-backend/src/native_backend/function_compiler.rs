@@ -212,6 +212,33 @@ impl SimpleBackend {
         closure_functions: &BTreeSet<String>,
         emit_traces: bool,
     ) {
+        self.compile_func_inner(
+            func_ir,
+            task_kinds,
+            task_closure_sizes,
+            defined_functions,
+            closure_functions,
+            emit_traces,
+            false,
+            &BTreeSet::new(),
+        );
+    }
+
+    /// Inner compilation with optional `raw_int_mode` for typed-int twin
+    /// functions.  When `raw_int_mode` is true, function parameters and
+    /// return values use raw i64 instead of NaN-boxed representations,
+    /// and all fast_int arithmetic ops skip boxing/unboxing.
+    pub(crate) fn compile_func_inner(
+        &mut self,
+        func_ir: FunctionIR,
+        task_kinds: &BTreeMap<String, TrampolineKind>,
+        task_closure_sizes: &BTreeMap<String, i64>,
+        defined_functions: &BTreeSet<String>,
+        closure_functions: &BTreeSet<String>,
+        emit_traces: bool,
+        raw_int_mode: bool,
+        typed_int_functions: &BTreeSet<String>,
+    ) {
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
         let FunctionPreanalysis {
