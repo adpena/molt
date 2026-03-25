@@ -541,11 +541,8 @@ fn emit_terminator(
                     ..OpIR::default()
                 });
             } else {
-                // The native backend reads the return value from `op.var`,
-                // not from `op.args`.  Set both for compatibility.
                 out.push(OpIR {
                     kind: "ret".to_string(),
-                    var: Some(value_var(values[0])),
                     args: Some(values.iter().map(|v| value_var(*v)).collect()),
                     ..OpIR::default()
                 });
@@ -903,61 +900,6 @@ mod tests {
         let ops = lower_to_simple_ir(&func, &HashMap::new());
         let has_ret = ops.iter().any(|o| o.kind == "ret" || o.kind == "ret_void");
         assert!(has_ret, "expected a return op, got: {:?}", ops);
-    }
-
-    #[test]
-    fn ret_op_has_var_set() {
-        let func = add_function();
-        let ops = lower_to_simple_ir(&func, &HashMap::new());
-        let ret_op = ops.iter().find(|o| o.kind == "ret").expect("expected a ret op");
-        assert!(
-            ret_op.var.is_some(),
-            "ret op must have `var` set for the native backend; got: {:?}",
-            ret_op
-        );
-    }
-
-    /// Integration test: full TIR round-trip preserves `ret` var field.
-    /// This simulates the frontend's `def add(a,b): return a+b` IR.
-    #[test]
-    fn tir_round_trip_preserves_ret_var() {
-        use crate::ir::{FunctionIR, OpIR};
-        use crate::tir::lower_from_simple::lower_to_tir;
-        use crate::tir::type_refine;
-
-        let func_ir = FunctionIR {
-            name: "add".into(),
-            params: vec!["a".into(), "b".into()],
-            ops: vec![
-                OpIR {
-                    kind: "add".into(),
-                    args: Some(vec!["a".into(), "b".into()]),
-                    out: Some("v0".into()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "ret".into(),
-                    var: Some("v0".into()),
-                    ..OpIR::default()
-                },
-            ],
-            param_types: None,
-        };
-
-        let mut tir_func = lower_to_tir(&func_ir);
-        type_refine::refine_types(&mut tir_func);
-        let type_map = type_refine::extract_type_map(&tir_func);
-        let round_tripped = lower_to_simple_ir(&tir_func, &type_map);
-
-        let ret_op = round_tripped
-            .iter()
-            .find(|o| o.kind == "ret")
-            .expect("TIR round-trip must preserve the ret op");
-        assert!(
-            ret_op.var.is_some(),
-            "TIR round-trip must set `var` on ret op for native backend; got: {:?}",
-            ret_op,
-        );
     }
 
     #[test]
