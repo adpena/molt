@@ -329,7 +329,14 @@ pub(crate) fn issubclass_bits(sub_bits: u64, class_bits: u64) -> bool {
             return false;
         }
         if let Some(mro) = class_mro_ref(ptr) {
-            return mro.contains(&class_bits);
+            if mro.contains(&class_bits) {
+                return true;
+            }
+            // The stored MRO tuple may be stale or incomplete (e.g. when a
+            // user-defined class inherits from a builtin exception and the MRO
+            // was built before all base classes were fully registered).  Fall
+            // through to the dynamic base-walking check instead of returning
+            // false immediately.
         }
     }
     class_mro_vec(sub_bits).contains(&class_bits)
