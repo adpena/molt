@@ -105,7 +105,7 @@ def _compile_and_run_rust(python_source: str, *, expect_fail: bool = False) -> s
             result = subprocess.run(
                 [
                     py_exec, "-m", "molt.cli", "build",
-                    py_path, "--target", "rust", "--profile", "dev", "--output", rs_path,
+                    py_path, "--target", "rust", "--output", rs_path,
                 ],
                 capture_output=True,
                 text=True,
