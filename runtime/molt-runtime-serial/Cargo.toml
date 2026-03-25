@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
+libc = "0.2"
 num-bigint = "0.4"
 serde_json = { version = "1.0", optional = true }
 

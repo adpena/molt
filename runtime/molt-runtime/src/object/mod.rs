@@ -395,6 +395,13 @@ pub(crate) const HEADER_FLAG_FINALIZER_RAN: u32 = 1 << 16;
 // String content is an ASCII identifier stored in the global intern pool.
 // Objects with this flag are also immortal (never freed).
 pub(crate) const HEADER_FLAG_INTERNED: u32 = 1 << 17;
+// Object was bump-allocated in the thread-local nursery.
+// Deallocation skips `std::alloc::dealloc` — the nursery reclaims memory in bulk via `reset()`.
+pub(crate) const HEADER_FLAG_NURSERY: u32 = 1 << 18;
+
+/// Maximum total_size (header + payload) eligible for nursery allocation.
+/// Objects larger than this always go through the global allocator.
+const NURSERY_ALLOC_MAX: usize = 256;
 
 // ---------------------------------------------------------------------------
 // Cold header pool — stores rarely-used per-object metadata (poll_fn, state,
@@ -494,6 +501,27 @@ pub(crate) fn object_set_state(data_ptr: *mut u8, state: i64) {
 thread_local! {
     pub(crate) static OBJECT_POOL_TLS: RefCell<Vec<Vec<PtrSlot>>> =
         RefCell::new(vec![Vec::new(); OBJECT_POOL_BUCKETS]);
+
+    /// Per-thread nursery for short-lived small objects.  Bump-allocates in ~2
+    /// instructions; the nursery is reset in bulk at safe points (e.g. function
+    /// exit) rather than freeing objects individually.
+    pub(crate) static NURSERY_TLS: RefCell<nursery::Nursery> =
+        RefCell::new(nursery::Nursery::new());
+}
+
+/// Reset the thread-local nursery, reclaiming all bump-allocated memory.
+/// Call at function exit once all nursery-allocated objects in the frame are dead.
+#[inline(always)]
+#[allow(dead_code)]
+pub(crate) fn nursery_reset() {
+    NURSERY_TLS.with(|cell| cell.borrow_mut().reset());
+}
+
+/// Return current nursery usage in bytes (useful for diagnostics).
+#[inline(always)]
+#[allow(dead_code)]
+pub(crate) fn nursery_used() -> usize {
+    NURSERY_TLS.with(|cell| cell.borrow().used())
 }
 
 #[inline(always)]
@@ -717,15 +745,31 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
     // Try the object pool for fixed-size high-churn types (bound methods,
     // iterators). These are allocated/freed once per call or loop iteration.
     let pool_eligible = matches!(type_id, TYPE_ID_BOUND_METHOD | TYPE_ID_ITER);
+    let mut from_nursery = false;
     let header_ptr = if pool_eligible {
         object_pool_take(_py, total_size)
     } else {
         None
     };
-    let header_ptr = header_ptr.unwrap_or_else(|| {
-        let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
-        unsafe { std::alloc::alloc(layout) }
-    });
+    // For small, non-pool objects try the thread-local nursery (bump alloc:
+    // ~2 instructions) before falling back to the global allocator.
+    let header_ptr = header_ptr
+        .or_else(|| {
+            if total_size <= NURSERY_ALLOC_MAX && !pool_eligible {
+                NURSERY_TLS.with(|cell| {
+                    cell.borrow_mut().alloc(total_size, 8).map(|ptr| {
+                        from_nursery = true;
+                        ptr
+                    })
+                })
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
+            unsafe { std::alloc::alloc(layout) }
+        });
     if header_ptr.is_null() {
         if debug_oom() {
             eprintln!(
@@ -752,6 +796,9 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
         // flags, size_class, _pad are already 0 from write_bytes
         (*header).size_class = sc;
+        if from_nursery {
+            (*header).flags |= HEADER_FLAG_NURSERY;
+        }
         if sc == 0 {
             let data_ptr = header_ptr.add(std::mem::size_of::<MoltHeader>());
             alloc_cold_header(data_ptr, MoltColdHeader {
@@ -1845,6 +1892,12 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 return;
             }
             if total_size == 0 {
+                return;
+            }
+            // Nursery-allocated objects live inside the bump region and must
+            // NOT be passed to the global allocator.  The nursery reclaims
+            // all its memory in one shot via `reset()`.
+            if (header.flags & HEADER_FLAG_NURSERY) != 0 {
                 return;
             }
             let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
