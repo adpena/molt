@@ -68,6 +68,7 @@ runtime/molt-runtime/fuzz/corpus/
 runtime/molt-runtime/fuzz/artifacts/
 packaging/out/
 .claude/worktrees/
+.claude/projects/
 
 # Agent worktrees — Claude Code, Codex, Gemini
 .claude/worktrees/
