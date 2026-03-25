@@ -272,6 +272,7 @@ static inline void PyGILState_Release(PyGILState_STATE state);
 #define METH_COEXIST 0x0040
 #define _MOLT_METH_CALL_MASK (METH_VARARGS | METH_KEYWORDS | METH_NOARGS | METH_O)
 #define _MOLT_METH_MODIFIER_MASK (METH_CLASS | METH_STATIC | METH_COEXIST)
+#define PY_METHODDEF_SENTINEL   { NULL, NULL, 0, NULL }
 #define _MOLT_TYPE_MODULE_ATTR "__molt_type_module__"
 
 /* Type slot IDs (CPython Include/typeslots.h) */
@@ -6417,6 +6418,9 @@ static inline int PyArg_VaParseTupleAndKeywords(
         "PyArg_VaParseTupleAndKeywords is not yet implemented in Molt");
     return 0;
 }
+
+/* Forward declaration -- defined later in this header (dict helpers section). */
+static inline PyObject *PyDict_Keys(PyObject *p);
 
 static inline int PyArg_ValidateKeywordArguments(PyObject *kwargs) {
     /* Validates that all keys in kwargs are strings.
