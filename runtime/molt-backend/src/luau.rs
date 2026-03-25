@@ -52,6 +52,11 @@ pub struct LuauBackend {
     in_spill_do_block: bool,
     /// True when the current function needs local spilling (>190 ops with output).
     needs_local_spill: bool,
+    /// Variables that have already been declared with `local` in the current
+    /// function scope (either via hoisting pre-declarations or inline `local x = ...`).
+    /// When a variable is already in this set, subsequent assignments must omit
+    /// the `local` keyword to avoid Luau duplicate-declaration syntax errors.
+    declared_locals: BTreeSet<String>,
 }
 
 impl LuauBackend {
@@ -71,6 +76,7 @@ impl LuauBackend {
             func_body_indent: 1,
             in_spill_do_block: false,
             needs_local_spill: false,
+            declared_locals: BTreeSet::new(),
         }
     }
 
@@ -674,6 +680,7 @@ impl LuauBackend {
         self.pcall_counter = 0;
         self.inside_pcall_body = false;
         self.nonneg_consts.clear();
+        self.declared_locals.clear();
         self.scope_local_count = 0;
         self.func_body_indent = self.indent as u32;
         self.in_spill_do_block = false;
@@ -683,6 +690,12 @@ impl LuauBackend {
             op.out.is_some() && op.out.as_deref() != Some("none")
         }).count();
         self.needs_local_spill = local_producing_ops > 190;
+
+        // Seed declared_locals with function parameters — they are implicitly
+        // declared by the function signature and must not get `local` again.
+        for p in &func.params {
+            self.declared_locals.insert(sanitize_ident(p));
+        }
 
         // Seed var_type_hints from param_types so that parameters annotated
         // as list/dict/str carry their type hints into codegen.  Without this,
@@ -713,6 +726,7 @@ impl LuauBackend {
         if !loop_idx_vars.is_empty() {
             for var in &loop_idx_vars {
                 self.emit_line(&format!("local {var}"));
+                self.declared_locals.insert(var.clone());
             }
         }
 
@@ -735,6 +749,7 @@ impl LuauBackend {
             }
             for var in &closure_slots {
                 self.emit_line(&format!("local {var}"));
+                self.declared_locals.insert(var.clone());
             }
         }
 
@@ -868,6 +883,7 @@ impl LuauBackend {
             }
             for var in &sorted {
                 self.emit_line(&format!("local {var}"));
+                self.declared_locals.insert(var.clone());
             }
         }
 
@@ -1015,32 +1031,52 @@ impl LuauBackend {
         self.pop_indent();
         self.emit_line("end");
 
-        // Post-process: for hoisted variables, replace `local var = ...`
-        // with `var = ...` inside the function body (the pre-declaration
-        // already emitted `local var` at the top).
-        if !self.hoisted_vars.is_empty() {
+        // Post-process: (1) for hoisted variables, replace `local var = ...`
+        // with `var = ...` (the pre-declaration already emitted `local var`),
+        // and (2) deduplicate any remaining `local` declarations — if a
+        // variable was already declared with `local` earlier in the function,
+        // subsequent `local var = ...` lines become plain `var = ...`.
+        {
             let func_output = &self.output[func_start..];
             let mut patched = String::with_capacity(func_output.len());
+            let mut seen_locals: BTreeSet<String> = BTreeSet::new();
+            // Seed with function parameters — they are implicitly declared.
+            for p in &func.params {
+                seen_locals.insert(sanitize_ident(p));
+            }
             for line in func_output.lines() {
                 let trimmed = line.trim_start();
                 let mut replaced = false;
                 if trimmed.starts_with("local ") {
-                    // Extract the variable name: "local vXXX = ..." or "local vXXX;"
+                    // Extract the variable name: "local vXXX = ..." or "local vXXX"
                     let after_local = &trimmed[6..];
-                    let var_end = after_local
-                        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                        .unwrap_or(after_local.len());
-                    let var_name = &after_local[..var_end];
-                    if self.hoisted_vars.contains(var_name) {
-                        // Check this isn't the pre-declaration line itself (no "=")
-                        let rest = after_local[var_end..].trim_start();
-                        if rest.starts_with('=') {
-                            // Replace "local var = ..." with "var = ..."
-                            let indent = &line[..line.len() - trimmed.len()];
-                            patched.push_str(indent);
-                            patched.push_str(after_local);
-                            patched.push('\n');
-                            replaced = true;
+                    // Skip "local function ..." lines — those are function defs.
+                    if !after_local.starts_with("function ") {
+                        let var_end = after_local
+                            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                            .unwrap_or(after_local.len());
+                        let var_name = &after_local[..var_end];
+                        if !var_name.is_empty() {
+                            let rest = after_local[var_end..].trim_start();
+                            if rest.starts_with('=') {
+                                // This is `local var = ...` — check for hoisted or duplicate.
+                                if self.hoisted_vars.contains(var_name)
+                                    || !seen_locals.insert(var_name.to_string())
+                                {
+                                    // Already declared — strip `local `.
+                                    let indent = &line[..line.len() - trimmed.len()];
+                                    patched.push_str(indent);
+                                    patched.push_str(after_local);
+                                    patched.push('\n');
+                                    replaced = true;
+                                } else {
+                                    // First declaration — keep `local`.
+                                    // (already inserted into seen_locals above)
+                                }
+                            } else if rest.is_empty() || rest.starts_with("--") {
+                                // Bare `local var` pre-declaration.
+                                seen_locals.insert(var_name.to_string());
+                            }
                         }
                     }
                 }
@@ -1055,6 +1091,7 @@ impl LuauBackend {
 
         self.hoisted_vars.clear();
         self.tuple_vars.clear();
+        self.declared_locals.clear();
     }
 
     fn emit_op(&mut self, op: &OpIR) {
@@ -3998,6 +4035,18 @@ impl LuauBackend {
             .as_deref()
             .map(sanitize_ident)
             .unwrap_or_else(|| "_".to_string())
+    }
+
+    /// Return `"local {var}"` if this is the first declaration of `var` in the
+    /// current function scope, or just `"{var}"` if it was already declared.
+    /// Tracks the variable in `declared_locals` so subsequent calls omit `local`.
+    fn decl(&mut self, var: &str) -> String {
+        if self.hoisted_vars.contains(var) || !self.declared_locals.insert(var.to_string()) {
+            // Already declared (hoisted or previously emitted) — plain assignment.
+            var.to_string()
+        } else {
+            format!("local {var}")
+        }
     }
 
     fn var_ref(&self, op: &OpIR) -> String {
