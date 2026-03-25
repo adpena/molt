@@ -29,14 +29,21 @@ def _parse_caps(raw: str) -> set[str]:
     return caps
 
 
-def _load_intrinsic(name: str) -> Callable[..., Any]:
-    return _intrinsics.require(name, globals())
+def _load_intrinsic(name: str) -> Callable[..., Any] | None:
+    try:
+        return _intrinsics.require(name, globals())
+    except RuntimeError:
+        return None
 
 
 def _env_get(key: str, default: str = "") -> str:
-    getter = _load_intrinsic("molt_env_get")
-    value = getter(key, default)
-    return str(value)
+    import os
+
+    fn = _load_intrinsic("molt_env_get")
+    if fn is not None:
+        value = fn(key, default)
+        return str(value)
+    return os.environ.get(key, default)
 
 
 def capabilities() -> set[str]:
@@ -46,17 +53,32 @@ def capabilities() -> set[str]:
 
 def trusted() -> bool:
     fn = _load_intrinsic("molt_capabilities_trusted")
-    return bool(fn())
+    if fn is not None:
+        return bool(fn())
+    raw = _env_get("MOLT_TRUSTED", "")
+    return raw.strip() not in ("", "0", "false", "no")
 
 
 def has(capability: str) -> bool:
     fn = _load_intrinsic("molt_capabilities_has")
-    return bool(fn(capability))
+    if fn is not None:
+        return bool(fn(capability))
+    if trusted():
+        return True
+    return capability in capabilities()
 
 
 def require(capability: str) -> None:
     fn = _load_intrinsic("molt_capabilities_require")
-    fn(capability)
+    if fn is not None:
+        fn(capability)
+        return None
+    if trusted():
+        return None
+    if capability not in capabilities():
+        raise PermissionError(
+            f"capability '{capability}' is not granted (MOLT_CAPABILITIES={_env_get('MOLT_CAPABILITIES', '')})"
+        )
     return None
 
 

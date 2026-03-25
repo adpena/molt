@@ -15,8 +15,8 @@ be documented in specs and tests.
 
 ## 2. Scope
 - Applies to Tier 0 builds with fallback policy `error`.
-- Excludes any feature that requires bridge fallback, dynamic imports, or
-  capability-gated I/O unless explicitly listed in the manifest.
+- Excludes any feature that requires bridge fallback, dynamic imports,
+  runtime monkeypatching, or capability-gated I/O unless explicitly listed in the manifest.
 - The canonical capability status remains in `docs/spec/STATUS.md`.
 
 ## 3. Guarantees
