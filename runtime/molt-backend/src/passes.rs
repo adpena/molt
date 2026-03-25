@@ -2116,6 +2116,30 @@ pub fn split_large_function(func: FunctionIR, max_ops: usize) -> Result<(Functio
             true
         });
 
+        // Validate that if/end_if are balanced in this chunk.
+        let mut if_depth: i32 = 0;
+        for op in &chunk_ops {
+            match op.kind.as_str() {
+                "if" => if_depth += 1,
+                "end_if" => if_depth -= 1,
+                _ => {}
+            }
+        }
+        if if_depth != 0 {
+            // Unbalanced if/end_if — abort the split entirely.
+            // Reconstruct the original function.
+            let mut reconstructed_ops = Vec::with_capacity(all_ops.len());
+            // We've already consumed some chunks; reconstruct from all_ops.
+            // Since all_ops is the full original, just return it.
+            let original = FunctionIR {
+                name: func.name,
+                params: func.params,
+                ops: all_ops,
+                param_types: func.param_types,
+            };
+            return Err(original);
+        }
+
         let chunk_name = format!("__molt_chunk_{sanitized_name}_{i}");
         chunks.push(FunctionIR {
             name: chunk_name,
