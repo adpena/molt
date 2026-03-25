@@ -72,11 +72,24 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
     }
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
+            let tid = object_type_id(ptr);
+            // Exception objects store their class at a type-specific offset,
+            // not in the generic cold-header `state` slot used by
+            // object_class_bits.  Check the exception-specific field first so
+            // user-defined exception subclasses (e.g. `class Foo(Exception)`)
+            // report the correct type even when the cold header is stale.
+            if tid == TYPE_ID_EXCEPTION {
+                let exc_class = exception_class_bits(ptr);
+                if !obj_from_bits(exc_class).is_none() && exc_class != 0 {
+                    return exc_class;
+                }
+                return exception_type_bits(_py, exception_kind_bits(ptr));
+            }
             let class_bits = object_class_bits(ptr);
             if class_bits != 0 {
                 return class_bits;
             }
-            return match object_type_id(ptr) {
+            return match tid {
                 TYPE_ID_DATACLASS => {
                     let desc_ptr = dataclass_desc_ptr(ptr);
                     if !desc_ptr.is_null() {
