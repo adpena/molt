@@ -29,7 +29,6 @@ const INT_SHIFT: i64 = 17;
 const INT_MIN_INLINE: i64 = -(1 << 46);
 const INT_MAX_INLINE: i64 = (1 << 46) - 1;
 const HEADER_SIZE_BYTES: i32 = 16;
-const HEADER_STATE_OFFSET: i32 = -(HEADER_SIZE_BYTES - 16);
 const GEN_CONTROL_SIZE: i32 = 48;
 const TASK_KIND_FUTURE: i64 = 0;
 const TASK_KIND_GENERATOR: i64 = 1;
@@ -1922,6 +1921,9 @@ impl WasmBackend {
             std::iter::repeat_n(ValType::I64, 12),
             std::iter::once(ValType::I64),
         );
+        // Type 39: (i32, i64) -> () (obj_set_state)
+        self.types
+            .function([ValType::I32, ValType::I64], std::iter::empty::<ValType>());
 
         // Build the set of import name prefixes to skip in "pure" profile mode.
         // In pure mode, IO/ASYNC/TIME imports are omitted entirely. Any code path
@@ -8746,14 +8748,8 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalSet(self_ptr));
                         func.instruction(&Instruction::LocalGet(self_ptr));
                         func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                        func.instruction(&Instruction::I32Add);
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
-                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
+                        emit_call(func, reloc_enabled, import_ids["obj_set_state"]);
                         func.instruction(&Instruction::LocalGet(future));
                         emit_call(func, reloc_enabled, import_ids["future_poll"]);
                         func.instruction(&Instruction::LocalSet(out));
@@ -9563,14 +9559,8 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         func.instruction(&Instruction::LocalGet(0));
                         func.instruction(&Instruction::I32WrapI64);
-                        func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                        func.instruction(&Instruction::I32Add);
                         func.instruction(&Instruction::I64Const(op.value.unwrap()));
-                        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                            align: 3,
-                            offset: 0,
-                            memory_index: 0,
-                        }));
+                        emit_call(func, reloc_enabled, import_ids["obj_set_state"]);
                         let pair = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(pair));
                         emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
@@ -10320,13 +10310,7 @@ impl WasmBackend {
 
             func.instruction(&Instruction::LocalGet(self_ptr_local));
             func.instruction(&Instruction::I32WrapI64);
-            func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                align: 3,
-                offset: 0,
-                memory_index: 0,
-            }));
+            emit_call(func, reloc_enabled, import_ids["obj_get_state"]);
             func.instruction(&Instruction::LocalSet(state_local));
             func.instruction(&Instruction::LocalGet(state_local));
             func.instruction(&Instruction::I64Const(0));
@@ -10467,8 +10451,6 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalSet(state_local));
                             func.instruction(&Instruction::LocalGet(self_ptr_local));
                             func.instruction(&Instruction::I32WrapI64);
-                            func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                            func.instruction(&Instruction::I32Add);
                             if let Some(pending_encoded) = pending_target_idx {
                                 func.instruction(&Instruction::I64Const(pending_encoded));
                             } else {
@@ -10476,11 +10458,7 @@ impl WasmBackend {
                                 func.instruction(&Instruction::I64Const(INT_MASK as i64));
                                 func.instruction(&Instruction::I64And);
                             }
-                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                                align: 3,
-                                offset: 0,
-                                memory_index: 0,
-                            }));
+                            emit_call(func, reloc_enabled, import_ids["obj_set_state"]);
                             func.instruction(&Instruction::LocalGet(future));
                             emit_call(func, reloc_enabled, import_ids["future_poll"]);
                             func.instruction(&Instruction::LocalSet(out));
@@ -10513,14 +10491,8 @@ impl WasmBackend {
                             }
                             func.instruction(&Instruction::LocalGet(self_ptr_local));
                             func.instruction(&Instruction::I32WrapI64);
-                            func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                            func.instruction(&Instruction::I32Add);
                             func.instruction(&Instruction::I64Const(next_state_id));
-                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                                align: 3,
-                                offset: 0,
-                                memory_index: 0,
-                            }));
+                            emit_call(func, reloc_enabled, import_ids["obj_set_state"]);
                             func.instruction(&Instruction::Br(depth));
                             block_terminated = true;
                         }
@@ -10537,18 +10509,12 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalSet(state_local));
                             func.instruction(&Instruction::LocalGet(self_ptr_local));
                             func.instruction(&Instruction::I32WrapI64);
-                            func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                            func.instruction(&Instruction::I32Add);
                             if let Some(encoded) = resume_encoded {
                                 func.instruction(&Instruction::I64Const(encoded));
                             } else {
                                 func.instruction(&Instruction::I64Const(resume_state_id));
                             }
-                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                                align: 3,
-                                offset: 0,
-                                memory_index: 0,
-                            }));
+                            emit_call(func, reloc_enabled, import_ids["obj_set_state"]);
                             func.instruction(&Instruction::LocalGet(pair));
                             emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
                             func.instruction(&Instruction::LocalGet(pair));
@@ -10571,8 +10537,6 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalSet(state_local));
                             func.instruction(&Instruction::LocalGet(self_ptr_local));
                             func.instruction(&Instruction::I32WrapI64);
-                            func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                            func.instruction(&Instruction::I32Add);
                             if let Some(pending_encoded) = pending_target_idx {
                                 func.instruction(&Instruction::I64Const(pending_encoded));
                             } else {
@@ -10580,11 +10544,7 @@ impl WasmBackend {
                                 func.instruction(&Instruction::I64Const(INT_MASK as i64));
                                 func.instruction(&Instruction::I64And);
                             }
-                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                                align: 3,
-                                offset: 0,
-                                memory_index: 0,
-                            }));
+                            emit_call(func, reloc_enabled, import_ids["obj_set_state"]);
                             func.instruction(&Instruction::LocalGet(chan));
                             func.instruction(&Instruction::LocalGet(val));
                             emit_call(func, reloc_enabled, import_ids["chan_send"]);
@@ -10599,14 +10559,8 @@ impl WasmBackend {
                             func.instruction(&Instruction::End);
                             func.instruction(&Instruction::LocalGet(self_ptr_local));
                             func.instruction(&Instruction::I32WrapI64);
-                            func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                            func.instruction(&Instruction::I32Add);
                             func.instruction(&Instruction::I64Const(next_state_id));
-                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                                align: 3,
-                                offset: 0,
-                                memory_index: 0,
-                            }));
+                            emit_call(func, reloc_enabled, import_ids["obj_set_state"]);
                             func.instruction(&Instruction::Br(depth));
                             block_terminated = true;
                         }
@@ -10625,8 +10579,6 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalSet(state_local));
                             func.instruction(&Instruction::LocalGet(self_ptr_local));
                             func.instruction(&Instruction::I32WrapI64);
-                            func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                            func.instruction(&Instruction::I32Add);
                             if let Some(pending_encoded) = pending_target_idx {
                                 func.instruction(&Instruction::I64Const(pending_encoded));
                             } else {
@@ -10634,11 +10586,7 @@ impl WasmBackend {
                                 func.instruction(&Instruction::I64Const(INT_MASK as i64));
                                 func.instruction(&Instruction::I64And);
                             }
-                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                                align: 3,
-                                offset: 0,
-                                memory_index: 0,
-                            }));
+                            emit_call(func, reloc_enabled, import_ids["obj_set_state"]);
                             func.instruction(&Instruction::LocalGet(chan));
                             emit_call(func, reloc_enabled, import_ids["chan_recv"]);
                             let out = locals[op.out.as_ref().unwrap()];
@@ -10652,14 +10600,8 @@ impl WasmBackend {
                             func.instruction(&Instruction::End);
                             func.instruction(&Instruction::LocalGet(self_ptr_local));
                             func.instruction(&Instruction::I32WrapI64);
-                            func.instruction(&Instruction::I32Const(HEADER_STATE_OFFSET));
-                            func.instruction(&Instruction::I32Add);
                             func.instruction(&Instruction::I64Const(next_state_id));
-                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                                align: 3,
-                                offset: 0,
-                                memory_index: 0,
-                            }));
+                            emit_call(func, reloc_enabled, import_ids["obj_set_state"]);
                             func.instruction(&Instruction::Br(depth));
                             block_terminated = true;
                         }
