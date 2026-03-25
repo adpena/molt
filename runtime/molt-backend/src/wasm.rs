@@ -1,7 +1,7 @@
 use crate::{FunctionIR, OpIR, SimpleIR, TrampolineKind, TrampolineSpec};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::iter::ExactSizeIterator;
 use std::rc::Rc;
 use wasm_encoder::{
@@ -1084,8 +1084,9 @@ pub struct WasmBackend {
     data_offset: u32,
     data_segments: Vec<DataSegmentInfo>,
     data_relocs: Vec<DataRelocSite>,
-    // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
-    data_segment_cache: BTreeMap<Vec<u8>, DataSegmentRef>,
+    // Dedup cache: maps byte content to existing segment ref.
+    // HashMap is fine here — this map is only used for point lookups, never iterated.
+    data_segment_cache: HashMap<Vec<u8>, DataSegmentRef>,
     molt_main_index: Option<u32>,
     options: WasmCompileOptions,
     /// Number of tail calls emitted via `return_call` (WASM tail calls proposal).
@@ -1119,7 +1120,7 @@ impl WasmBackend {
             data_offset: options.data_base,
             data_segments: Vec::new(),
             data_relocs: Vec::new(),
-            data_segment_cache: BTreeMap::new(),
+            data_segment_cache: HashMap::new(),
             molt_main_index: None,
             options,
             tail_calls_emitted: 0,

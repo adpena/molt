@@ -2927,8 +2927,7 @@ pub extern "C" fn molt_string_swapcase(hay_bits: u64) -> u64 {
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             // SIMD fast path: pure-ASCII strings use bulk XOR bit-5 swapcase
             if hay_bytes.is_ascii() {
-                let buf = hay_bytes.to_vec();
-                bytes_ascii_swapcase(&buf);
+                let buf = bytes_ascii_swapcase(hay_bytes);
                 let ptr = alloc_string(_py, &buf);
                 if ptr.is_null() {
                     return MoltObject::none().bits();
