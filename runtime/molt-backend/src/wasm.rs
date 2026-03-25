@@ -35,6 +35,45 @@ const TASK_KIND_FUTURE: i64 = 0;
 const TASK_KIND_GENERATOR: i64 = 1;
 const TASK_KIND_COROUTINE: i64 = 2;
 const RELOC_TABLE_BASE_DEFAULT: u32 = 4096;
+
+/// Poll/async function names that occupy the prefix slots of the indirect
+/// function table (right after the sentinel slot at index 0).  Defined once
+/// so the wrapper-generation loop, the index-lookup block, and the table
+/// element initialisation all stay in sync automatically.
+const POLL_TABLE_FUNCS: &[&str] = &[
+    "async_sleep",
+    "anext_default_poll",
+    "asyncgen_poll",
+    "promise_poll",
+    "io_wait",
+    "thread_poll",
+    "process_poll",
+    "ws_wait",
+    "asyncio_wait_for_poll",
+    "asyncio_wait_poll",
+    "asyncio_gather_poll",
+    "asyncio_socket_reader_read_poll",
+    "asyncio_socket_reader_readline_poll",
+    "asyncio_stream_reader_read_poll",
+    "asyncio_stream_reader_readline_poll",
+    "asyncio_stream_send_all_poll",
+    "asyncio_sock_recv_poll",
+    "asyncio_sock_connect_poll",
+    "asyncio_sock_accept_poll",
+    "asyncio_sock_recv_into_poll",
+    "asyncio_sock_sendall_poll",
+    "asyncio_sock_recvfrom_poll",
+    "asyncio_sock_recvfrom_into_poll",
+    "asyncio_sock_sendto_poll",
+    "asyncio_timer_handle_poll",
+    "asyncio_fd_watcher_poll",
+    "asyncio_server_accept_loop_poll",
+    "asyncio_ready_runner_poll",
+    "contextlib_asyncgen_enter_poll",
+    "contextlib_asyncgen_exit_poll",
+    "contextlib_async_exitstack_exit_poll",
+    "contextlib_async_exitstack_enter_context_poll",
+];
 const STATE_REMAP_TABLE_MAX_ENTRIES: usize = 4096;
 const STATE_REMAP_TABLE_MAX_SPARSITY: usize = 8;
 /// Minimum number of sparse remap entries before we attempt `br_table` dispatch.
@@ -3018,7 +3057,9 @@ impl WasmBackend {
             .filter(|rn| builtin_trampoline_specs.contains_key(rn.as_str()))
             .count();
         let table_base: u32 = self.options.table_base;
-        let poll_table_prefix = 33u32;
+        // 1 sentinel slot + one slot per POLL_TABLE_FUNCS entry.
+        // Derived dynamically so adding/removing poll functions cannot desync.
+        let poll_table_prefix = (1 + POLL_TABLE_FUNCS.len()) as u32;
         let table_len = (poll_table_prefix as usize
             + builtin_table_len
             + builtin_trampoline_funcs.len()
@@ -3071,40 +3112,8 @@ impl WasmBackend {
 
         let mut table_import_wrappers = BTreeMap::new();
         if reloc_enabled {
-            for (import_name, arity) in [
-                ("async_sleep", 1usize),
-                ("anext_default_poll", 1usize),
-                ("asyncgen_poll", 1usize),
-                ("promise_poll", 1usize),
-                ("io_wait", 1usize),
-                ("thread_poll", 1usize),
-                ("process_poll", 1usize),
-                ("ws_wait", 1usize),
-                ("asyncio_wait_for_poll", 1usize),
-                ("asyncio_wait_poll", 1usize),
-                ("asyncio_gather_poll", 1usize),
-                ("asyncio_socket_reader_read_poll", 1usize),
-                ("asyncio_socket_reader_readline_poll", 1usize),
-                ("asyncio_stream_reader_read_poll", 1usize),
-                ("asyncio_stream_reader_readline_poll", 1usize),
-                ("asyncio_stream_send_all_poll", 1usize),
-                ("asyncio_sock_recv_poll", 1usize),
-                ("asyncio_sock_connect_poll", 1usize),
-                ("asyncio_sock_accept_poll", 1usize),
-                ("asyncio_sock_recv_into_poll", 1usize),
-                ("asyncio_sock_sendall_poll", 1usize),
-                ("asyncio_sock_recvfrom_poll", 1usize),
-                ("asyncio_sock_recvfrom_into_poll", 1usize),
-                ("asyncio_sock_sendto_poll", 1usize),
-                ("asyncio_timer_handle_poll", 1usize),
-                ("asyncio_fd_watcher_poll", 1usize),
-                ("asyncio_server_accept_loop_poll", 1usize),
-                ("asyncio_ready_runner_poll", 1usize),
-                ("contextlib_asyncgen_enter_poll", 1usize),
-                ("contextlib_asyncgen_exit_poll", 1usize),
-                ("contextlib_async_exitstack_exit_poll", 1usize),
-                ("contextlib_async_exitstack_enter_context_poll", 1usize),
-            ] {
+            for import_name in POLL_TABLE_FUNCS {
+                let arity = 1usize; // all poll functions take 1 arg
                 let type_idx = *user_type_map
                     .get(&arity)
                     .unwrap_or_else(|| panic!("missing wrapper signature for arity {arity}"));
@@ -3126,143 +3135,20 @@ impl WasmBackend {
             }
         }
 
-        // Function indices for table
-        let async_sleep_idx = *table_import_wrappers
-            .get("async_sleep")
-            .unwrap_or(&self.import_ids["async_sleep"]);
-        let anext_default_poll_idx = *table_import_wrappers
-            .get("anext_default_poll")
-            .unwrap_or(&self.import_ids["anext_default_poll"]);
-        let asyncgen_poll_idx = *table_import_wrappers
-            .get("asyncgen_poll")
-            .unwrap_or(&self.import_ids["asyncgen_poll"]);
-        let promise_poll_idx = *table_import_wrappers
-            .get("promise_poll")
-            .unwrap_or(&self.import_ids["promise_poll"]);
-        let io_wait_idx = *table_import_wrappers
-            .get("io_wait")
-            .unwrap_or(&self.import_ids["io_wait"]);
-        let thread_poll_idx = *table_import_wrappers
-            .get("thread_poll")
-            .unwrap_or(&self.import_ids["thread_poll"]);
-        let process_poll_idx = *table_import_wrappers
-            .get("process_poll")
-            .unwrap_or(&self.import_ids["process_poll"]);
-        let ws_wait_idx = *table_import_wrappers
-            .get("ws_wait")
-            .unwrap_or(&self.import_ids["ws_wait"]);
-        let asyncio_wait_for_poll_idx = *table_import_wrappers
-            .get("asyncio_wait_for_poll")
-            .unwrap_or(&self.import_ids["asyncio_wait_for_poll"]);
-        let asyncio_wait_poll_idx = *table_import_wrappers
-            .get("asyncio_wait_poll")
-            .unwrap_or(&self.import_ids["asyncio_wait_poll"]);
-        let asyncio_gather_poll_idx = *table_import_wrappers
-            .get("asyncio_gather_poll")
-            .unwrap_or(&self.import_ids["asyncio_gather_poll"]);
-        let asyncio_socket_reader_read_poll_idx = *table_import_wrappers
-            .get("asyncio_socket_reader_read_poll")
-            .unwrap_or(&self.import_ids["asyncio_socket_reader_read_poll"]);
-        let asyncio_socket_reader_readline_poll_idx = *table_import_wrappers
-            .get("asyncio_socket_reader_readline_poll")
-            .unwrap_or(&self.import_ids["asyncio_socket_reader_readline_poll"]);
-        let asyncio_stream_reader_read_poll_idx = *table_import_wrappers
-            .get("asyncio_stream_reader_read_poll")
-            .unwrap_or(&self.import_ids["asyncio_stream_reader_read_poll"]);
-        let asyncio_stream_reader_readline_poll_idx = *table_import_wrappers
-            .get("asyncio_stream_reader_readline_poll")
-            .unwrap_or(&self.import_ids["asyncio_stream_reader_readline_poll"]);
-        let asyncio_stream_send_all_poll_idx = *table_import_wrappers
-            .get("asyncio_stream_send_all_poll")
-            .unwrap_or(&self.import_ids["asyncio_stream_send_all_poll"]);
-        let asyncio_sock_recv_poll_idx = *table_import_wrappers
-            .get("asyncio_sock_recv_poll")
-            .unwrap_or(&self.import_ids["asyncio_sock_recv_poll"]);
-        let asyncio_sock_connect_poll_idx = *table_import_wrappers
-            .get("asyncio_sock_connect_poll")
-            .unwrap_or(&self.import_ids["asyncio_sock_connect_poll"]);
-        let asyncio_sock_accept_poll_idx = *table_import_wrappers
-            .get("asyncio_sock_accept_poll")
-            .unwrap_or(&self.import_ids["asyncio_sock_accept_poll"]);
-        let asyncio_sock_recv_into_poll_idx = *table_import_wrappers
-            .get("asyncio_sock_recv_into_poll")
-            .unwrap_or(&self.import_ids["asyncio_sock_recv_into_poll"]);
-        let asyncio_sock_sendall_poll_idx = *table_import_wrappers
-            .get("asyncio_sock_sendall_poll")
-            .unwrap_or(&self.import_ids["asyncio_sock_sendall_poll"]);
-        let asyncio_sock_recvfrom_poll_idx = *table_import_wrappers
-            .get("asyncio_sock_recvfrom_poll")
-            .unwrap_or(&self.import_ids["asyncio_sock_recvfrom_poll"]);
-        let asyncio_sock_recvfrom_into_poll_idx = *table_import_wrappers
-            .get("asyncio_sock_recvfrom_into_poll")
-            .unwrap_or(&self.import_ids["asyncio_sock_recvfrom_into_poll"]);
-        let asyncio_sock_sendto_poll_idx = *table_import_wrappers
-            .get("asyncio_sock_sendto_poll")
-            .unwrap_or(&self.import_ids["asyncio_sock_sendto_poll"]);
-        let asyncio_timer_handle_poll_idx = *table_import_wrappers
-            .get("asyncio_timer_handle_poll")
-            .unwrap_or(&self.import_ids["asyncio_timer_handle_poll"]);
-        let asyncio_fd_watcher_poll_idx = *table_import_wrappers
-            .get("asyncio_fd_watcher_poll")
-            .unwrap_or(&self.import_ids["asyncio_fd_watcher_poll"]);
-        let asyncio_server_accept_loop_poll_idx = *table_import_wrappers
-            .get("asyncio_server_accept_loop_poll")
-            .unwrap_or(&self.import_ids["asyncio_server_accept_loop_poll"]);
-        let asyncio_ready_runner_poll_idx = *table_import_wrappers
-            .get("asyncio_ready_runner_poll")
-            .unwrap_or(&self.import_ids["asyncio_ready_runner_poll"]);
-        let contextlib_asyncgen_enter_poll_idx = *table_import_wrappers
-            .get("contextlib_asyncgen_enter_poll")
-            .unwrap_or(&self.import_ids["contextlib_asyncgen_enter_poll"]);
-        let contextlib_asyncgen_exit_poll_idx = *table_import_wrappers
-            .get("contextlib_asyncgen_exit_poll")
-            .unwrap_or(&self.import_ids["contextlib_asyncgen_exit_poll"]);
-        let contextlib_async_exitstack_exit_poll_idx = *table_import_wrappers
-            .get("contextlib_async_exitstack_exit_poll")
-            .unwrap_or(&self.import_ids["contextlib_async_exitstack_exit_poll"]);
-        let contextlib_async_exitstack_enter_context_poll_idx = *table_import_wrappers
-            .get("contextlib_async_exitstack_enter_context_poll")
-            .unwrap_or(&self.import_ids["contextlib_async_exitstack_enter_context_poll"]);
+        // Build poll-function table prefix from POLL_TABLE_FUNCS.
         // Replace sentinel u32::MAX indices with sentinel_func_idx so the
         // element section only contains valid function indices.
         let safe_idx = |idx: u32| -> u32 {
             if idx == u32::MAX { sentinel_func_idx } else { idx }
         };
-        let mut table_indices = vec![
-            sentinel_func_idx,
-            safe_idx(async_sleep_idx),
-            safe_idx(anext_default_poll_idx),
-            safe_idx(asyncgen_poll_idx),
-            safe_idx(promise_poll_idx),
-            safe_idx(io_wait_idx),
-            safe_idx(thread_poll_idx),
-            safe_idx(process_poll_idx),
-            safe_idx(ws_wait_idx),
-            safe_idx(asyncio_wait_for_poll_idx),
-            safe_idx(asyncio_wait_poll_idx),
-            safe_idx(asyncio_gather_poll_idx),
-            safe_idx(asyncio_socket_reader_read_poll_idx),
-            safe_idx(asyncio_socket_reader_readline_poll_idx),
-            safe_idx(asyncio_stream_reader_read_poll_idx),
-            safe_idx(asyncio_stream_reader_readline_poll_idx),
-            safe_idx(asyncio_stream_send_all_poll_idx),
-            safe_idx(asyncio_sock_recv_poll_idx),
-            safe_idx(asyncio_sock_connect_poll_idx),
-            safe_idx(asyncio_sock_accept_poll_idx),
-            safe_idx(asyncio_sock_recv_into_poll_idx),
-            safe_idx(asyncio_sock_sendall_poll_idx),
-            safe_idx(asyncio_sock_recvfrom_poll_idx),
-            safe_idx(asyncio_sock_recvfrom_into_poll_idx),
-            safe_idx(asyncio_sock_sendto_poll_idx),
-            safe_idx(asyncio_timer_handle_poll_idx),
-            safe_idx(asyncio_fd_watcher_poll_idx),
-            safe_idx(asyncio_server_accept_loop_poll_idx),
-            safe_idx(asyncio_ready_runner_poll_idx),
-            safe_idx(contextlib_asyncgen_enter_poll_idx),
-            safe_idx(contextlib_asyncgen_exit_poll_idx),
-            safe_idx(contextlib_async_exitstack_exit_poll_idx),
-            safe_idx(contextlib_async_exitstack_enter_context_poll_idx),
-        ];
+        let mut table_indices = vec![sentinel_func_idx]; // slot 0 = sentinel
+        for &name in POLL_TABLE_FUNCS {
+            let idx = *table_import_wrappers
+                .get(name)
+                .unwrap_or(&self.import_ids[name]);
+            table_indices.push(safe_idx(idx));
+        }
+        debug_assert_eq!(table_indices.len(), poll_table_prefix as usize);
         let mut func_to_table_idx = BTreeMap::new();
         let mut func_to_index = BTreeMap::new();
         func_to_index.insert(
@@ -3682,7 +3568,9 @@ impl WasmBackend {
         // --- Dead import elimination ---
         // After compilation, TrackedImportIds knows exactly which imports were
         // referenced during code emission.  Strip the unused ones from the
-        // serialized module and remap all function indices.
+        // serialized module and remap all function indices.  Stripping is
+        // attempted unconditionally; only the *result* is validated before
+        // replacing the original binary.
         // Only applies to Auto profile in non-relocatable mode.
         // Full profile preserves all imports for maximum host compatibility;
         // Pure profile's import set is already curated and expected stable.
@@ -3691,7 +3579,7 @@ impl WasmBackend {
             && self.options.wasm_profile == WasmProfile::Auto;
         if strip_enabled {
             let unused: BTreeSet<String> = self.import_ids.unused_names().into_iter().collect();
-            if !unused.is_empty() && validate_wasm_sections(&bytes) {
+            if !unused.is_empty() {
                 let before_len = bytes.len();
                 let stripped = strip_unused_imports(bytes.clone(), &unused);
                 if validate_wasm_sections(&stripped) {
@@ -3702,6 +3590,12 @@ impl WasmBackend {
                         before_len.saturating_sub(stripped.len()),
                     );
                     bytes = stripped;
+                } else {
+                    eprintln!(
+                        "[molt-wasm-strip] stripping {} unused imports produced \
+                         invalid WASM; keeping original ({} bytes)",
+                        unused.len(), before_len,
+                    );
                 }
             }
         }
