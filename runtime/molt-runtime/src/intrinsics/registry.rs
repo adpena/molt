@@ -235,6 +235,12 @@ pub extern "C" fn molt_intrinsic_resolve(name_bits: u64) -> u64 {
     })
 }
 
+/// Python builtin name -> intrinsic name mapping for builtins that have
+/// non-standard intrinsic names (e.g. `globals` -> `molt_globals_builtin`).
+static PYTHON_BUILTIN_ALIASES: &[(&str, &str)] = &[
+    ("globals", "molt_globals_builtin"),
+];
+
 /// Find an `IntrinsicSpec` by primary name or `_molt_` alias.
 fn find_spec(name: &str) -> Option<&'static crate::intrinsics::generated::IntrinsicSpec> {
     // Try primary name first.
@@ -254,6 +260,16 @@ fn find_spec(name: &str) -> Option<&'static crate::intrinsics::generated::Intrin
         for spec in INTRINSICS {
             if spec.name == primary {
                 return Some(spec);
+            }
+        }
+    }
+    // Try Python builtin aliases (e.g. `globals` -> `molt_globals_builtin`).
+    for &(py_name, intrinsic_name) in PYTHON_BUILTIN_ALIASES {
+        if name == py_name {
+            for spec in INTRINSICS {
+                if spec.name == intrinsic_name {
+                    return Some(spec);
+                }
             }
         }
     }

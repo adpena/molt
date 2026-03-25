@@ -630,7 +630,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         if let Some(&result_id) = op.results.first() {
                             let result = call_result
                                 .try_as_basic_value()
-                                .left()
+                                .basic()
                                 .unwrap_or_else(|| i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false).into());
                             self.values.insert(result_id, result);
                             self.value_types.insert(result_id, TirType::DynBox);
@@ -660,7 +660,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             .build_call(target_fn, &args, "direct_call")
                             .unwrap()
                             .try_as_basic_value()
-                            .left()
+                            .basic()
                             .unwrap_or_else(|| i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false).into());
                         if let Some(&result_id) = op.results.first() {
                             self.values.insert(result_id, result);
@@ -944,7 +944,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             .build_call(intern_fn, &[ptr.into(), len.into()], "intern_name")
                             .unwrap()
                             .try_as_basic_value()
-                            .left()
+                            .basic()
                             .map(|v| self.ensure_i64(v))
                             .unwrap_or_else(|| i64_ty.const_int(0, false))
                     } else if args_start <= op.operands.len() && !op.operands.is_empty() {
