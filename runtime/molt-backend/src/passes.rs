@@ -2244,8 +2244,10 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
         .collect();
 
     if yield_loops.is_empty() {
+        eprintln!("[rewrite_stateful_loops]   no yield-containing loops found");
         return;
     }
+    eprintln!("[rewrite_stateful_loops]   found {} yield-containing loop(s)", yield_loops.len());
 
     // For each yield-containing loop, allocate a state label ID and record
     // the insertions + replacements needed.
