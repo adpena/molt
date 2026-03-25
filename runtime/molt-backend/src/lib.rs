@@ -1803,7 +1803,7 @@ impl SimpleBackend {
         }
 
         // ── TIR optimization pipeline (default ON; set MOLT_TIR_OPT=0 to disable) ──
-        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
+        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             let tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
             let tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
             let mut tir_cache = crate::tir::cache::CompilationCache::open(

@@ -752,13 +752,39 @@ mod tests {
 
     #[test]
     fn roundtrip_state_block_preserves_value() {
+        // Realistic pattern: try_start → call → check_exception → ret_void
+        // then state_label → state_block_start → state_block_end → ret_void
         let ops = vec![
+            OpIR {
+                kind: "try_start".to_string(),
+                value: Some(300),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "call".to_string(),
+                out: Some("r".into()),
+                s_value: Some("foo".into()),
+                value: Some(0),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "check_exception".to_string(),
+                out: Some("exc".into()),
+                value: Some(300),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "try_end".to_string(),
+                value: Some(300),
+                ..OpIR::default()
+            },
+            op("ret_void"),
+            op_val("state_label", 300),
             OpIR {
                 kind: "state_block_start".to_string(),
                 value: Some(300),
                 ..OpIR::default()
             },
-            op("ret_void"),
             OpIR {
                 kind: "state_block_end".to_string(),
                 value: Some(300),
@@ -768,11 +794,13 @@ mod tests {
         ];
         let result = roundtrip_no_opt(ops);
         let sbs = result.iter().find(|o| o.kind == "state_block_start");
-        assert!(sbs.is_some(), "state_block_start must survive round-trip");
+        assert!(sbs.is_some(), "state_block_start must survive round-trip, got kinds: {:?}",
+            result.iter().map(|o| &o.kind).collect::<Vec<_>>());
         assert!(sbs.unwrap().value.is_some(), "state_block_start.value must be preserved");
 
         let sbe = result.iter().find(|o| o.kind == "state_block_end");
-        assert!(sbe.is_some(), "state_block_end must survive round-trip");
+        assert!(sbe.is_some(), "state_block_end must survive round-trip, got kinds: {:?}",
+            result.iter().map(|o| &o.kind).collect::<Vec<_>>());
         assert!(sbe.unwrap().value.is_some(), "state_block_end.value must be preserved");
     }
 

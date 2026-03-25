@@ -12051,12 +12051,10 @@ def _prepare_backend_ir(
         import json as _json_debug
         for func in ir["functions"]:
             name = func["name"]
-            if "init" in name or "main" in name or "exception" in name or "keyword" in name.lower():
-                print(f"DEBUG_IR FUNC: {name} ({len(func.get('ops', []))} ops)", file=sys.stderr)
-                for op in func.get("ops", []):
-                    s = _json_debug.dumps(op, default=str)
-                    if "module_cache" in s or "KeywordError" in s:
-                        print(f"  {s}", file=sys.stderr)
+            if name in ("molt_init_exception_keywords", "molt_init___main__", "molt_main", "exception_keywords__molt_module_chunk_1", "exception_keywords__molt_user_main"):
+                ops = func.get("ops", [])
+                print(f"DEBUG_IR FUNC: {name} ({len(ops)} ops)", file=sys.stderr, flush=True)
+                _json_debug.dump(func, open(f"/tmp/ir_func_{name}.json", "w"), indent=2, default=str)
     emit_ir_error = _write_emitted_ir(emit_ir_path, ir)
     if emit_ir_error is not None:
         return None, _fail(emit_ir_error, json_output, command="build")

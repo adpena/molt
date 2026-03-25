@@ -2907,6 +2907,10 @@ _OZ_PASSES: list[str] = [
     "--vacuum",
     "--duplicate-function-elimination",
     "--code-folding",
+    "--merge-similar-functions",
+    "--simplify-globals-optimizing",
+    "--precompute",
+    "--merge-blocks",
 ]
 
 _O3_PASSES: list[str] = [
@@ -3121,6 +3125,7 @@ def _run_wasm_ld(
         wasm_ld,
         "--no-entry",
         "--gc-sections",
+        "--strip-all",
         f"--allow-undefined-file={str(allowlist)}",
         "--import-table",
         # Place the stack before data segments in linear memory so that the
