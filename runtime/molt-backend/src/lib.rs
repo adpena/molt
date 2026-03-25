@@ -513,6 +513,7 @@ fn int_value_fits_inline(builder: &mut FunctionBuilder, val: Value) -> Value {
     // Inline ints are 47-bit signed payloads: range [-(1<<46), (1<<46)-1].
     // Use direct range comparison instead of box/unbox round-trip, which
     // Cranelift's optimizer can fold away through the band/bor/ishl/sshr chain.
+    eprintln!("[DEBUG] int_value_fits_inline called");
     let min_val = builder.ins().iconst(types::I64, -(1_i64 << 46));
     let max_val = builder.ins().iconst(types::I64, (1_i64 << 46) - 1);
     let ge_min = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, val, min_val);
