@@ -14749,6 +14749,7 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
         // If either operand is a float, skip the integer fast path so that
         // divmod(7, 2.0) returns (3.0, 1.0) instead of (3, 1).
         if !lhs.is_float() && !rhs.is_float() && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            eprintln!("[divmod] INT PATH: li={} ri={}", li, ri);
             if ri == 0 {
                 return raise_exception::<_>(
                     _py,
@@ -14771,7 +14772,10 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
             }
             return MoltObject::from_ptr(tuple_ptr).bits();
         }
+        eprintln!("[divmod] skipped int path, trying bigint. to_bigint(lhs)={} to_bigint(rhs)={}", to_bigint(lhs).is_some(), to_bigint(rhs).is_some());
         if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+            eprintln!("[divmod] BIGINT PATH: l={} r={}", l_big, r_big);
+
             if r_big.is_zero() {
                 return raise_exception::<_>(
                     _py,
