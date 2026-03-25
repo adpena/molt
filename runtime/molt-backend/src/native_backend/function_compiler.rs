@@ -329,7 +329,7 @@ impl SimpleBackend {
         reachable_blocks.insert(entry_block);
         builder.switch_to_block(entry_block);
 
-        let local_dec_ref = import_func_ref(
+        let _local_dec_ref = import_func_ref(
             &mut self.module,
             &mut self.import_ids,
             &mut builder,
@@ -9218,7 +9218,7 @@ impl SimpleBackend {
                         let val = entry_vars.get(name).copied()
                             .or_else(|| var_get(&mut builder, &vars, name).map(|v| *v));
                         let Some(val) = val else { continue; };
-                        builder.ins().call(local_dec_ref, &[val]);
+                        builder.ins().call(local_dec_ref_obj, &[val]);
                     }
                     for val in &arg_cleanup {
                         builder.ins().call(local_dec_ref_obj, &[*val]);
@@ -11171,7 +11171,7 @@ impl SimpleBackend {
                             let val = entry_vars.get(&name).copied()
                                 .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
                             let Some(val) = val else { continue; };
-                            builder.ins().call(local_dec_ref, &[val]);
+                            builder.ins().call(local_dec_ref_obj, &[val]);
                             entry_vars.remove(&name);
                             scrubbed_names.insert(name);
                         }
@@ -11409,7 +11409,7 @@ impl SimpleBackend {
                                 func_ir.name, op_idx, name
                             )
                         });
-                        builder.ins().call(local_dec_ref, &[*val]);
+                        builder.ins().call(local_dec_ref_obj, &[*val]);
                     }
                     let has_explicit_else = if_to_else.contains_key(&op_idx);
                     let end_if_idx = match if_to_end_if.get(&op_idx) {
@@ -11597,7 +11597,7 @@ impl SimpleBackend {
                                             func_ir.name, op_idx, name
                                         )
                                     });
-                                builder.ins().call(local_dec_ref, &[*val]);
+                                builder.ins().call(local_dec_ref_obj, &[*val]);
                             }
                             if !carry_ptr.is_empty() {
                                 extend_unique_tracked(
@@ -11701,7 +11701,7 @@ impl SimpleBackend {
                                                 func_ir.name, op_idx, name
                                             )
                                         });
-                                    builder.ins().call(local_dec_ref, &[*val]);
+                                    builder.ins().call(local_dec_ref_obj, &[*val]);
                                 }
                                 if !carry_ptr.is_empty() {
                                     extend_unique_tracked(
@@ -11776,7 +11776,7 @@ impl SimpleBackend {
                                                 func_ir.name, op_idx, name
                                             )
                                         });
-                                    builder.ins().call(local_dec_ref, &[*val]);
+                                    builder.ins().call(local_dec_ref_obj, &[*val]);
                                 }
                                 if !carry_ptr.is_empty() {
                                     extend_unique_tracked(
@@ -11854,7 +11854,7 @@ impl SimpleBackend {
                                                 func_ir.name, op_idx, name
                                             )
                                         });
-                                    builder.ins().call(local_dec_ref, &[*val]);
+                                    builder.ins().call(local_dec_ref_obj, &[*val]);
                                 }
                                 if !carry_ptr.is_empty() {
                                     extend_unique_tracked(
@@ -12070,7 +12070,7 @@ impl SimpleBackend {
                                 func_ir.name, op_idx, name
                             )
                         });
-                        builder.ins().call(local_dec_ref, &[*val]);
+                        builder.ins().call(local_dec_ref_obj, &[*val]);
                     }
                     reachable_blocks.insert(frame.after_block);
                     jump_block(&mut builder, frame.after_block, &[]);
@@ -12159,7 +12159,7 @@ impl SimpleBackend {
                                 func_ir.name, op_idx, name
                             )
                         });
-                        builder.ins().call(local_dec_ref, &[*val]);
+                        builder.ins().call(local_dec_ref_obj, &[*val]);
                     }
                     reachable_blocks.insert(frame.after_block);
                     jump_block(&mut builder, frame.after_block, &[]);
@@ -12202,7 +12202,7 @@ impl SimpleBackend {
                             let val = entry_vars.get(&name).copied()
                                 .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
                             let Some(val) = val else { continue; };
-                            builder.ins().call(local_dec_ref, &[val]);
+                            builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                     }
                     reachable_blocks.insert(frame.after_block);
@@ -12258,7 +12258,7 @@ impl SimpleBackend {
                             let val = entry_vars.get(&name).copied()
                                 .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
                             let Some(val) = val else { continue; };
-                            builder.ins().call(local_dec_ref, &[val]);
+                            builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                     }
                     reachable_blocks.insert(frame.loop_block);
@@ -13372,13 +13372,13 @@ impl SimpleBackend {
                                                 func_ir.name, op_idx, name
                                             )
                                         });
-                                    builder.ins().call(local_dec_ref, &[*val]);
+                                    builder.ins().call(local_dec_ref_obj, &[*val]);
                                 }
                             }
                         }
                         for name in &tracked_vars {
                             if let Some(val) = var_get(&mut builder, &vars, name) {
-                                builder.ins().call(local_dec_ref, &[*val]);
+                                builder.ins().call(local_dec_ref_obj, &[*val]);
                             }
                         }
                         for name in &tracked_obj_vars {
@@ -13419,7 +13419,7 @@ impl SimpleBackend {
                                 let val = entry_vars.get(&name).copied()
                                     .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
                                 let Some(val) = val else { continue; };
-                                builder.ins().call(local_dec_ref, &[val]);
+                                builder.ins().call(local_dec_ref_obj, &[val]);
                             }
                         }
                     }
@@ -13431,7 +13431,7 @@ impl SimpleBackend {
                         let val = entry_vars.get(name).copied()
                             .or_else(|| var_get(&mut builder, &vars, name).map(|v| *v));
                         if let Some(val) = val {
-                            builder.ins().call(local_dec_ref, &[val]);
+                            builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                     }
                     for name in &tracked_obj_vars {
@@ -13473,13 +13473,13 @@ impl SimpleBackend {
                                             func_ir.name, op_idx, name
                                         )
                                     });
-                                builder.ins().call(local_dec_ref, &[*val]);
+                                builder.ins().call(local_dec_ref_obj, &[*val]);
                             }
                         }
                     }
                     for name in &tracked_vars {
                         if let Some(val) = entry_vars.get(name) {
-                            builder.ins().call(local_dec_ref, &[*val]);
+                            builder.ins().call(local_dec_ref_obj, &[*val]);
                         }
                     }
                     for name in &tracked_obj_vars {
@@ -13526,7 +13526,7 @@ impl SimpleBackend {
                             let val = entry_vars.get(&name).copied()
                                 .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
                             let Some(val) = val else { continue; };
-                            builder.ins().call(local_dec_ref, &[val]);
+                            builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                         if !carry_ptr.is_empty() {
                             extend_unique_tracked(
@@ -13598,7 +13598,7 @@ impl SimpleBackend {
                                 func_ir.name, op_idx, name
                             )
                         });
-                        builder.ins().call(local_dec_ref, &[*val]);
+                        builder.ins().call(local_dec_ref_obj, &[*val]);
                     }
                     if !carry_ptr.is_empty() {
                         extend_unique_tracked(
