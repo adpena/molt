@@ -589,6 +589,20 @@ fn drain_heap_tls() {
         let mut arena = arena.borrow_mut();
         arena.drain();
     });
+    // Drain remaining heap-backed TLS variables.  `clear_thread_local_state`
+    // already ran during `runtime_teardown`, but if the process exited
+    // abnormally (e.g., mid-repr, mid-exception) some of these may still
+    // hold heap allocations.  Replacing them with zero-capacity containers
+    // ensures their TLS destructors won't invoke the (possibly dead)
+    // allocator.
+    let _ = CONTEXT_STACK.try_with(|s| { let _ = std::mem::take(&mut *s.borrow_mut()); });
+    let _ = FRAME_STACK.try_with(|s| { let _ = std::mem::take(&mut *s.borrow_mut()); });
+    let _ = ACTIVE_EXCEPTION_STACK.try_with(|s| { let _ = std::mem::take(&mut *s.borrow_mut()); });
+    let _ = ACTIVE_EXCEPTION_FALLBACK.try_with(|s| { let _ = std::mem::take(&mut *s.borrow_mut()); });
+    let _ = GENERATOR_EXCEPTION_STACKS.try_with(|s| { let _ = std::mem::take(&mut *s.borrow_mut()); });
+    let _ = EXCEPTION_STACK.try_with(|s| { let _ = std::mem::take(&mut *s.borrow_mut()); });
+    let _ = crate::REPR_STACK.try_with(|s| { let _ = std::mem::take(&mut *s.borrow_mut()); });
+    let _ = crate::REPR_SET.try_with(|s| { let _ = std::mem::take(&mut *s.borrow_mut()); });
 }
 
 fn clear_object_pool(state: &RuntimeState) {

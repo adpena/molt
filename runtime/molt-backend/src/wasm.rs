@@ -1146,6 +1146,14 @@ impl WasmBackend {
         bytes: &[u8],
         cacheable: bool,
     ) -> DataSegmentRef {
+        // Skip empty data segments entirely — they waste a segment header
+        // (~7 bytes) in the binary for zero payload.
+        if bytes.is_empty() {
+            return DataSegmentRef {
+                offset: self.data_offset,
+                index: self.data_segments.len().saturating_sub(1) as u32,
+            };
+        }
         if cacheable {
             if let Some(existing) = self.data_segment_cache.get(bytes) {
                 return *existing;
@@ -1166,10 +1174,16 @@ impl WasmBackend {
         // Checked arithmetic: detect overflow instead of silently wrapping,
         // which would place subsequent segments at wrong offsets and corrupt
         // data in shared linear memory.
+        //
+        // Size optimization: use 4-byte alignment for small segments (<=4 bytes)
+        // instead of always 8-byte aligning.  This saves 4 bytes of padding per
+        // small segment (e.g. single i32 constants, short string literals).
+        // Larger segments still get 8-byte alignment for i64 load/store perf.
+        let align_mask: u32 = if byte_len <= 4 { 3 } else { 7 };
         self.data_offset = offset
             .checked_add(byte_len)
-            .and_then(|v| v.checked_add(7))
-            .map(|v| v & !7)
+            .and_then(|v| v.checked_add(align_mask))
+            .map(|v| v & !align_mask)
             .expect("WASM data segment offset overflow (>4 GiB total data)");
         let info = DataSegmentInfo {
             size: byte_len,
@@ -3541,6 +3555,14 @@ impl WasmBackend {
             eprintln!(
                 "[molt-wasm-import-audit] tail calls emitted: {} (return_call instructions)",
                 self.tail_calls_emitted
+            );
+
+            // --- Data segment size audit ---
+            let total_data_bytes: u32 = self.data_segments.iter().map(|s| s.size).sum();
+            let dedup_hits = self.data_segment_cache.len();
+            eprintln!(
+                "[molt-wasm-import-audit] data segments: {} segments, {} total bytes, {} dedup cache entries",
+                self.data_segments.len(), total_data_bytes, dedup_hits,
             );
         }
 

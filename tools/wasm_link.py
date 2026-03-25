@@ -1370,6 +1370,9 @@ def _tree_shake_runtime(
             "-Oz",
             "--remove-unused-module-elements",
             "--closed-world",
+            "--strip-debug",
+            "--strip-producers",
+            "--vacuum",
         ] + feature_flags
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -2894,8 +2897,10 @@ _OZ_PASSES: list[str] = [
     "--remove-unused-module-elements",
     "--remove-unused-names",
     "--strip-debug",
+    "--strip-producers",
     "--coalesce-locals",
     "--reorder-locals",
+    "--merge-locals",
     "--dce",
     "--vacuum",
     "--duplicate-function-elimination",
@@ -2904,19 +2909,27 @@ _OZ_PASSES: list[str] = [
     "--simplify-globals-optimizing",
     "--precompute",
     "--merge-blocks",
+    "--optimize-stack-ir",
+    "--reorder-functions",
+    "--dae-optimizing",
 ]
 
 _O3_PASSES: list[str] = [
     "--closed-world",
     "--remove-unused-module-elements",
     "--remove-unused-names",
+    "--strip-producers",
     "--coalesce-locals",
     "--reorder-locals",
+    "--merge-locals",
     "--dce",
     "--vacuum",
     "--inlining",
     "--flatten",
     "--local-cse",
+    "--optimize-stack-ir",
+    "--reorder-functions",
+    "--precompute",
 ]
 
 _LEVEL_PASSES: dict[str, list[str]] = {

@@ -464,6 +464,12 @@ pub extern "C" fn molt_runtime_init() -> u64 {
         runtime_reset_for_init(&py, state_ref);
     }
     hold_runtime_gil(gil);
+
+    // Initialize the serial crate vtable so all bridge functions dispatch
+    // through a single struct instead of 58 individual extern "C" symbols.
+    #[cfg(feature = "stdlib_serial")]
+    molt_runtime_serial::bridge::init_vtable();
+
     1
 }
 
@@ -520,20 +526,29 @@ thread_local! {
 }
 
 fn runtime_state_tls() -> Option<&'static RuntimeState> {
-    TLS_RUNTIME_STATE.with(|slot| {
-        let ptr = slot.get();
-        if ptr.is_null() {
-            None
-        } else {
-            Some(unsafe { &*ptr })
-        }
-    })
+    // Use `try_with` instead of `with` to avoid panicking (and aborting)
+    // when this TLS variable has already been destroyed during process exit.
+    // During Rust's TLS destructor phase, `ThreadLocalGuard::drop` calls
+    // `runtime_state_for_gil()` which calls this function.  If
+    // `TLS_RUNTIME_STATE` is destroyed before `TLS_GUARD`, `.with()` would
+    // panic inside a Drop impl, causing an abort (exit code 134/139).
+    TLS_RUNTIME_STATE
+        .try_with(|slot| {
+            let ptr = slot.get();
+            if ptr.is_null() {
+                None
+            } else {
+                Some(unsafe { &*ptr })
+            }
+        })
+        .ok()
+        .flatten()
 }
 
 pub(crate) fn set_thread_runtime_state(ptr: *mut RuntimeState) {
-    TLS_RUNTIME_STATE.with(|slot| slot.set(ptr));
+    let _ = TLS_RUNTIME_STATE.try_with(|slot| slot.set(ptr));
 }
 
 pub(crate) fn clear_thread_runtime_state() {
-    TLS_RUNTIME_STATE.with(|slot| slot.set(std::ptr::null_mut()));
+    let _ = TLS_RUNTIME_STATE.try_with(|slot| slot.set(std::ptr::null_mut()));
 }

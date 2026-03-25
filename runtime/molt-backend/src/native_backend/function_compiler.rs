@@ -7676,10 +7676,10 @@ impl SimpleBackend {
                     // State lives in the cold header (HashMap) — call through
                     // the C API instead of an inline memory load.
                     let get_state_ref = import_func_ref(
-                        self.module,
-                        &mut import_ids,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
-                        &mut local_refs,
+                        &mut import_refs,
                         "molt_obj_get_state",
                         &[types::I64],
                         &[types::I64],
@@ -7728,10 +7728,10 @@ impl SimpleBackend {
 
                     let pending_state_id = unbox_int(&mut builder, pending_state_bits, &nbc);
                     let set_state_ref = import_func_ref(
-                        self.module,
-                        &mut import_ids,
+                        &mut self.module,
+                        &mut self.import_ids,
                         &mut builder,
-                        &mut local_refs,
+                        &mut import_refs,
                         "molt_obj_set_state",
                         &[types::I64, types::I64],
                         &[],
@@ -7798,12 +7798,11 @@ impl SimpleBackend {
                         builder.ins().call(local_callee, &[self_ptr, offset, res]);
                     }
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
-                    builder.ins().store(
-                        MemFlags::trusted(),
-                        state_val,
-                        self_ptr,
-                        HEADER_STATE_OFFSET,
+                    let set_state_ref2 = import_func_ref(
+                        &mut self.module, &mut self.import_ids, &mut builder, &mut import_refs,
+                        "molt_obj_set_state", &[types::I64, types::I64], &[],
                     );
+                    builder.ins().call(set_state_ref2, &[self_ptr, state_val]);
                     if args.len() <= 1 {
                         if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                     }
@@ -7820,12 +7819,11 @@ impl SimpleBackend {
                     let self_ptr = unbox_ptr_value(&mut builder, self_bits, &nbc);
 
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
-                    builder.ins().store(
-                        MemFlags::trusted(),
-                        state_val,
-                        self_ptr,
-                        HEADER_STATE_OFFSET,
+                    let set_state_yield = import_func_ref(
+                        &mut self.module, &mut self.import_ids, &mut builder, &mut import_refs,
+                        "molt_obj_set_state", &[types::I64, types::I64], &[],
                     );
+                    builder.ins().call(set_state_yield, &[self_ptr, state_val]);
 
                     reachable_blocks.insert(master_return_block);
                     if has_ret {
@@ -7856,12 +7854,11 @@ impl SimpleBackend {
                     let self_ptr = unbox_ptr_value(&mut builder, self_bits, &nbc);
 
                     let pending_state_id = unbox_int(&mut builder, pending_state_bits, &nbc);
-                    builder.ins().store(
-                        MemFlags::trusted(),
-                        pending_state_id,
-                        self_ptr,
-                        HEADER_STATE_OFFSET,
+                    let set_state_csend1 = import_func_ref(
+                        &mut self.module, &mut self.import_ids, &mut builder, &mut import_refs,
+                        "molt_obj_set_state", &[types::I64, types::I64], &[],
                     );
+                    builder.ins().call(set_state_csend1, &[self_ptr, pending_state_id]);
 
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -7896,12 +7893,11 @@ impl SimpleBackend {
 
                     switch_to_block_tracking(&mut builder, ready_path, &mut is_block_filled);
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
-                    builder.ins().store(
-                        MemFlags::trusted(),
-                        state_val,
-                        self_ptr,
-                        HEADER_STATE_OFFSET,
+                    let set_state_csend2 = import_func_ref(
+                        &mut self.module, &mut self.import_ids, &mut builder, &mut import_refs,
+                        "molt_obj_set_state", &[types::I64, types::I64], &[],
                     );
+                    builder.ins().call(set_state_csend2, &[self_ptr, state_val]);
                     if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                     reachable_blocks.insert(next_block);
                     jump_block(&mut builder, next_block, &[]);
@@ -7922,12 +7918,11 @@ impl SimpleBackend {
                     let self_ptr = unbox_ptr_value(&mut builder, self_bits, &nbc);
 
                     let pending_state_id = unbox_int(&mut builder, pending_state_bits, &nbc);
-                    builder.ins().store(
-                        MemFlags::trusted(),
-                        pending_state_id,
-                        self_ptr,
-                        HEADER_STATE_OFFSET,
+                    let set_state_crecv1 = import_func_ref(
+                        &mut self.module, &mut self.import_ids, &mut builder, &mut import_refs,
+                        "molt_obj_set_state", &[types::I64, types::I64], &[],
                     );
+                    builder.ins().call(set_state_crecv1, &[self_ptr, pending_state_id]);
 
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -7961,12 +7956,11 @@ impl SimpleBackend {
 
                     switch_to_block_tracking(&mut builder, ready_path, &mut is_block_filled);
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
-                    builder.ins().store(
-                        MemFlags::trusted(),
-                        state_val,
-                        self_ptr,
-                        HEADER_STATE_OFFSET,
+                    let set_state_crecv2 = import_func_ref(
+                        &mut self.module, &mut self.import_ids, &mut builder, &mut import_refs,
+                        "molt_obj_set_state", &[types::I64, types::I64], &[],
                     );
+                    builder.ins().call(set_state_crecv2, &[self_ptr, state_val]);
                     if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                     reachable_blocks.insert(next_block);
                     jump_block(&mut builder, next_block, &[]);
