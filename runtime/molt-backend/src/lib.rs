@@ -395,7 +395,9 @@ fn switch_to_block_tracking(
 
 #[cfg(feature = "native-backend")]
 fn box_int(val: i64) -> i64 {
-    let masked = (val as u64) & POINTER_MASK;
+    // Use INT_MASK (47 bits) not POINTER_MASK (48 bits) to match the
+    // sign-extending unbox path (ishl/sshr by INT_SHIFT=17).
+    let masked = (val as u64) & INT_MASK;
     (QNAN | TAG_INT | masked) as i64
 }
 
@@ -1803,7 +1805,7 @@ impl SimpleBackend {
         }
 
         // ── TIR optimization pipeline (default ON; set MOLT_TIR_OPT=0 to disable) ──
-        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
+        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
             let tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
             let tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
             let mut tir_cache = crate::tir::cache::CompilationCache::open(
@@ -1833,12 +1835,27 @@ impl SimpleBackend {
                     if let Some(cached_ops) =
                         crate::tir::serialize::deserialize_ops(&cached_bytes)
                     {
+                        if env_setting("TIR_DEBUG_OPS").is_some() {
+                            eprintln!(
+                                "[TIR-DEBUG] CACHE HIT func={} cached_ops={} kinds={:?}",
+                                func_name,
+                                cached_ops.len(),
+                                cached_ops.iter().map(|o| o.kind.as_str()).collect::<Vec<_>>()
+                            );
+                        }
                         func_ir.ops = cached_ops;
                         continue;
                     }
                 }
 
+                let tir_debug = env_setting("TIR_DEBUG_OPS").is_some();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if tir_debug {
+                        eprintln!("[TIR-DEBUG] PIPELINE func={} input_ops={}", func_name, func_ir.ops.len());
+                        for (i, op) in func_ir.ops.iter().enumerate() {
+                            eprintln!("[TIR-DEBUG]   op[{}] kind={}", i, op.kind);
+                        }
+                    }
                     let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
                     crate::tir::type_refine::refine_types(&mut tir_func);
                     let type_map = crate::tir::type_refine::extract_type_map(&tir_func);
@@ -1859,6 +1876,15 @@ impl SimpleBackend {
 
                 match result {
                     Ok(optimized_ops) => {
+                        if env_setting("TIR_DEBUG_OPS").is_some() {
+                            eprintln!(
+                                "[TIR-DEBUG] FRESH func={} input_ops={} output_ops={} kinds={:?}",
+                                func_name,
+                                original_ops.len(),
+                                optimized_ops.len(),
+                                optimized_ops.iter().map(|o| o.kind.as_str()).collect::<Vec<_>>()
+                            );
+                        }
                         // Validate: every label referenced by jump/br_if/check_exception
                         // must exist as a label op.  If not, fall back to original ops.
                         let valid = crate::tir::lower_to_simple::validate_labels(&optimized_ops);

@@ -4244,24 +4244,39 @@ pub extern "C" fn Py_BuildNone() -> u64 {
 /// into a single `u64` so that `molt_gil_reacquire_guard` can restore it.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gil_release_guard() -> u64 {
-    let guard = crate::concurrency::GilReleaseGuard::new();
-    let depth = guard.depth;
-    let had_runtime = guard.had_runtime_guard;
-    std::mem::forget(guard); // Don't drop — we'll reacquire manually
-    ((depth as u64) << 1) | (had_runtime as u64)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let guard = crate::concurrency::GilReleaseGuard::new();
+        let depth = guard.depth;
+        let had_runtime = guard.had_runtime_guard;
+        std::mem::forget(guard); // Don't drop — we'll reacquire manually
+        ((depth as u64) << 1) | (had_runtime as u64)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        // Single-threaded: no GIL state to save.
+        0
+    }
 }
 
 /// Re-acquire the GIL using the token returned by `molt_gil_release_guard`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gil_reacquire_guard(token: u64) {
-    let depth = (token >> 1) as usize;
-    let had_runtime = (token & 1) != 0;
-    // Reconstruct the guard and let it drop to re-acquire the GIL.
-    let guard = crate::concurrency::GilReleaseGuard {
-        depth,
-        had_runtime_guard: had_runtime,
-    };
-    drop(guard);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let depth = (token >> 1) as usize;
+        let had_runtime = (token & 1) != 0;
+        // Reconstruct the guard and let it drop to re-acquire the GIL.
+        let guard = crate::concurrency::GilReleaseGuard {
+            depth,
+            had_runtime_guard: had_runtime,
+        };
+        drop(guard);
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = token; // Single-threaded: nothing to reacquire.
+    }
 }
 
 #[cfg(test)]
