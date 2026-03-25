@@ -1917,15 +1917,22 @@ impl SimpleBackend {
         None
     }
 
-    #[cfg(test)]
-    fn import_func_id(
-        &mut self,
+    /// Cached version of `module.declare_function(name, Linkage::Import, &sig)`.
+    /// Returns the `FuncId` for the given runtime import, reusing a previous
+    /// declaration when the same name has already been declared.  The signature
+    /// shape is validated on cache hits to guard against mismatches.
+    ///
+    /// Takes split borrows (`module` + `import_ids`) so callers can hold a
+    /// concurrent `FunctionBuilder` borrow on `self.ctx.func`.
+    fn import_func_id_split(
+        module: &mut ObjectModule,
+        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         name: &'static str,
         params: &[types::Type],
         returns: &[types::Type],
     ) -> cranelift_module::FuncId {
         let shape = ImportSignatureShape::from_types(params, returns);
-        if let Some((func_id, cached_shape)) = self.import_ids.get(name) {
+        if let Some((func_id, cached_shape)) = import_ids.get(name) {
             assert_eq!(
                 cached_shape, &shape,
                 "import signature mismatch for {name}: {:?} vs {:?}",
@@ -1934,18 +1941,17 @@ impl SimpleBackend {
             return *func_id;
         }
 
-        let mut sig = self.module.make_signature();
+        let mut sig = module.make_signature();
         for param in params {
             sig.params.push(AbiParam::new(*param));
         }
         for ret in returns {
             sig.returns.push(AbiParam::new(*ret));
         }
-        let func_id = self
-            .module
+        let func_id = module
             .declare_function(name, Linkage::Import, &sig)
             .unwrap();
-        self.import_ids.insert(name, (func_id, shape));
+        import_ids.insert(name, (func_id, shape));
         func_id
     }
 
