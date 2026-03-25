@@ -1598,6 +1598,13 @@ pub extern "C" fn molt_div(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
+        // Python true division: int / int always returns float
+        if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            if ri == 0 {
+                return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
+            }
+            return MoltObject::from_float(li as f64 / ri as f64).bits();
+        }
         if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
             if rf == 0.0 {
                 return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
