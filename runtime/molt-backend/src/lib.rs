@@ -517,6 +517,37 @@ fn int_value_fits_inline(builder: &mut FunctionBuilder, val: Value) -> Value {
     builder.ins().icmp(IntCC::Equal, val, unboxed)
 }
 
+/// Perform `imul` with 64-bit overflow detection via `smulhi`.
+///
+/// Two 47-bit signed values can produce a product exceeding 64 bits (up to ~93
+/// bits).  Plain `imul` silently wraps at 64 bits, and the truncated result may
+/// happen to pass `int_value_fits_inline` even though it is wrong.
+///
+/// Returns `(product, fits)` where `product` is the low 64 bits of the
+/// multiplication and `fits` is a boolean Value that is true only when:
+///   1. The full 128-bit product equals the 64-bit `imul` result (no 64-bit
+///      overflow), AND
+///   2. The 64-bit result fits in a 47-bit signed inline integer.
+#[cfg(feature = "native-backend")]
+fn imul_checked_inline(
+    builder: &mut FunctionBuilder,
+    lhs: Value,
+    rhs: Value,
+) -> (Value, Value) {
+    let prod = builder.ins().imul(lhs, rhs);
+    // smulhi gives the upper 64 bits of the signed 128-bit product.
+    let hi = builder.ins().smulhi(lhs, rhs);
+    // If there was no 64-bit overflow, hi must be the sign-extension of prod,
+    // i.e. hi == prod >> 63 (arithmetic).
+    let sixty_three = builder.ins().iconst(types::I64, 63);
+    let sign = builder.ins().sshr(prod, sixty_three);
+    let no_overflow_64 = builder.ins().icmp(IntCC::Equal, hi, sign);
+    // Also check the result fits in 47-bit signed payload.
+    let fits_47 = int_value_fits_inline(builder, prod);
+    let both_ok = builder.ins().band(no_overflow_64, fits_47);
+    (prod, both_ok)
+}
+
 #[cfg(feature = "native-backend")]
 fn box_bool_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     let one = builder.ins().iconst(types::I64, 1);
@@ -1707,7 +1738,7 @@ impl SimpleBackend {
         }
 
         // ── TIR optimization pipeline (default ON; set MOLT_TIR_OPT=0 to disable) ──
-        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
+        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
             let tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
             let tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
             let mut tir_cache = crate::tir::cache::CompilationCache::open(
