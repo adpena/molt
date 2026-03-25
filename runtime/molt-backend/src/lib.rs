@@ -130,6 +130,24 @@ struct NanBoxConsts {
     int_shift: Variable,
     /// `POINTER_MASK as i64`
     pointer_mask: Variable,
+    /// `(QNAN | TAG_BOOL) as i64`
+    qnan_tag_bool: Variable,
+    /// `INT_WIDTH as i64` (47) — used in fused_both_int_check
+    int_width: Variable,
+    /// `48i64` — shift to isolate tag field for nanboxed-special / int checks
+    shift_48: Variable,
+    /// `0x7FF9i64` — base of special-tag range
+    special_base: Variable,
+    /// `5i64` — width of special-tag range
+    special_limit: Variable,
+    /// `((QNAN | TAG_INT) >> 48) as i64` — 16-bit tag for nanboxed int check
+    int_tag_16: Variable,
+    /// `INT_MASK as i64` — mask for box_int_value
+    int_mask: Variable,
+    /// `16i64` — sign-extension shift for unbox_ptr_value
+    shift_16: Variable,
+    /// `CANONICAL_NAN_BITS as i64` — canonical NaN for box_float_value
+    canonical_nan: Variable,
 }
 
 #[cfg(feature = "native-backend")]
@@ -143,6 +161,15 @@ impl NanBoxConsts {
         let qnan_tag_ptr_var = builder.declare_var(types::I64);
         let int_shift_var = builder.declare_var(types::I64);
         let pointer_mask_var = builder.declare_var(types::I64);
+        let qnan_tag_bool_var = builder.declare_var(types::I64);
+        let int_width_var = builder.declare_var(types::I64);
+        let shift_48_var = builder.declare_var(types::I64);
+        let special_base_var = builder.declare_var(types::I64);
+        let special_limit_var = builder.declare_var(types::I64);
+        let int_tag_16_var = builder.declare_var(types::I64);
+        let int_mask_var = builder.declare_var(types::I64);
+        let shift_16_var = builder.declare_var(types::I64);
+        let canonical_nan_var = builder.declare_var(types::I64);
 
         let v = builder.ins().iconst(types::I64, (QNAN | TAG_MASK) as i64);
         builder.def_var(qnan_tag_mask_var, v);
@@ -159,12 +186,48 @@ impl NanBoxConsts {
         let v = builder.ins().iconst(types::I64, POINTER_MASK as i64);
         builder.def_var(pointer_mask_var, v);
 
+        let v = builder.ins().iconst(types::I64, (QNAN | TAG_BOOL) as i64);
+        builder.def_var(qnan_tag_bool_var, v);
+
+        let v = builder.ins().iconst(types::I64, INT_WIDTH as i64);
+        builder.def_var(int_width_var, v);
+
+        let v = builder.ins().iconst(types::I64, 48);
+        builder.def_var(shift_48_var, v);
+
+        let v = builder.ins().iconst(types::I64, 0x7FF9);
+        builder.def_var(special_base_var, v);
+
+        let v = builder.ins().iconst(types::I64, 5);
+        builder.def_var(special_limit_var, v);
+
+        let v = builder.ins().iconst(types::I64, ((QNAN | TAG_INT) >> 48) as i64);
+        builder.def_var(int_tag_16_var, v);
+
+        let v = builder.ins().iconst(types::I64, INT_MASK as i64);
+        builder.def_var(int_mask_var, v);
+
+        let v = builder.ins().iconst(types::I64, 16);
+        builder.def_var(shift_16_var, v);
+
+        let v = builder.ins().iconst(types::I64, CANONICAL_NAN_BITS as i64);
+        builder.def_var(canonical_nan_var, v);
+
         Self {
             qnan_tag_mask: qnan_tag_mask_var,
             qnan_tag_int: qnan_tag_int_var,
             qnan_tag_ptr: qnan_tag_ptr_var,
             int_shift: int_shift_var,
             pointer_mask: pointer_mask_var,
+            qnan_tag_bool: qnan_tag_bool_var,
+            int_width: int_width_var,
+            shift_48: shift_48_var,
+            special_base: special_base_var,
+            special_limit: special_limit_var,
+            int_tag_16: int_tag_16_var,
+            int_mask: int_mask_var,
+            shift_16: shift_16_var,
+            canonical_nan: canonical_nan_var,
         }
     }
 }
