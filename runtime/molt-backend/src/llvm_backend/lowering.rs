@@ -592,12 +592,38 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             // ── SSA Copy ──
+            // Also serves as the fallback for unknown frontend ops that were
+            // mapped to Copy by the SSA converter.  Handle all combinations of
+            // operand/result counts gracefully:
+            //   - 0 operands, 0 results: no-op (side-effect only)
+            //   - 0 operands, 1+ results: produce NaN-boxed None per result
+            //   - 1+ operands, 0 results: no-op (side-effect only)
+            //   - 1+ operands, 1+ results: pass-through first operand
             OpCode::Copy => {
-                let result_id = op.results[0];
-                let val = self.resolve(op.operands[0]);
-                self.values.insert(result_id, val);
-                let ty = self.value_types.get(&op.operands[0]).cloned().unwrap_or(TirType::DynBox);
-                self.value_types.insert(result_id, ty);
+                if op.results.is_empty() {
+                    // No results — nothing to bind; skip.
+                } else if op.operands.is_empty() {
+                    // Unknown op with no operands — produce None for each result.
+                    let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
+                    let none_val: BasicValueEnum<'ctx> = self
+                        .backend
+                        .context
+                        .i64_type()
+                        .const_int(none_bits, false)
+                        .into();
+                    for &result_id in &op.results {
+                        self.values.insert(result_id, none_val);
+                        self.value_types.insert(result_id, TirType::DynBox);
+                    }
+                } else {
+                    // Standard copy: pass through first operand.
+                    let val = self.resolve(op.operands[0]);
+                    let ty = self.value_types.get(&op.operands[0]).cloned().unwrap_or(TirType::DynBox);
+                    for &result_id in &op.results {
+                        self.values.insert(result_id, val);
+                        self.value_types.insert(result_id, ty.clone());
+                    }
+                }
             }
 
             // ── Allocation ──
