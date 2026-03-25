@@ -85,6 +85,8 @@ struct FunctionLowering<'ctx, 'func> {
     pgo_branch_weights: Option<Vec<u64>>,
     /// Index into `pgo_branch_weights` — advanced by 2 for each CondBranch.
     pgo_weight_index: usize,
+    /// Counter for unique global string constant names.
+    const_str_counter: usize,
 }
 
 /// Lower a TIR function to LLVM IR.
@@ -145,6 +147,7 @@ pub fn lower_tir_to_llvm_with_pgo<'ctx>(
         pending_phis: Vec::new(),
         pgo_branch_weights,
         pgo_weight_index: 0,
+        const_str_counter: 0,
     };
 
     // 2. Create LLVM basic blocks for each TIR block.
@@ -387,27 +390,134 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.value_types.insert(result_id, TirType::None);
             }
             OpCode::ConstStr => {
-                // For now, lower string constants as an i64 placeholder.
-                // Full string interning will be implemented in Phase 4.
                 let result_id = op.results[0];
-                let llvm_val = self
+                let i64_ty = self.backend.context.i64_type();
+
+                // Extract the string bytes from attrs.
+                let str_bytes: Vec<u8> = if let Some(AttrValue::Bytes(b)) = op.attrs.get("bytes") {
+                    b.clone()
+                } else if let Some(AttrValue::Str(s)) = op.attrs.get("s_value") {
+                    s.as_bytes().to_vec()
+                } else {
+                    Vec::new()
+                };
+
+                // Create a global constant for the string data.
+                let byte_array_ty = self
                     .backend
                     .context
-                    .i64_type()
-                    .const_int(0, false)
-                    .into();
-                self.values.insert(result_id, llvm_val);
-                self.value_types.insert(result_id, TirType::DynBox);
+                    .i8_type()
+                    .array_type(str_bytes.len() as u32);
+                let global = self.backend.module.add_global(
+                    byte_array_ty,
+                    None,
+                    &format!("__const_str_{}", self.const_str_counter),
+                );
+                self.const_str_counter += 1;
+                global.set_initializer(
+                    &self.backend.context.const_string(&str_bytes, false),
+                );
+                global.set_constant(true);
+                global.set_unnamed_addr(true);
+
+                // Get or declare molt_string_from_bytes.
+                let sfb_fn = if let Some(f) = self.backend.module.get_function("molt_string_from_bytes") {
+                    f
+                } else {
+                    let ptr_ty = self.backend.context.ptr_type(inkwell::AddressSpace::default());
+                    let i32_ty = self.backend.context.i32_type();
+                    let fn_ty = i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false);
+                    self.backend.module.add_function(
+                        "molt_string_from_bytes",
+                        fn_ty,
+                        Some(inkwell::module::Linkage::External),
+                    )
+                };
+
+                // Allocate a stack slot for the output u64.
+                let out_alloca = self.backend.builder.build_alloca(i64_ty, "str_out").unwrap();
+
+                // Call molt_string_from_bytes(ptr, len, out).
+                let ptr_val = global.as_pointer_value();
+                let len_val = i64_ty.const_int(str_bytes.len() as u64, false);
+                self.backend
+                    .builder
+                    .build_call(sfb_fn, &[ptr_val.into(), len_val.into(), out_alloca.into()], "sfb")
+                    .unwrap();
+
+                // Load the result from the output slot.
+                let result = self
+                    .backend
+                    .builder
+                    .build_load(i64_ty, out_alloca, "str_bits")
+                    .unwrap();
+                self.values.insert(result_id, result);
+                self.value_types.insert(result_id, TirType::Str);
             }
             OpCode::ConstBytes => {
                 let result_id = op.results[0];
-                let llvm_val = self
+                let i64_ty = self.backend.context.i64_type();
+
+                // Extract the raw bytes from attrs.
+                let raw_bytes: Vec<u8> = if let Some(AttrValue::Bytes(b)) = op.attrs.get("bytes") {
+                    b.clone()
+                } else if let Some(AttrValue::Str(s)) = op.attrs.get("s_value") {
+                    s.as_bytes().to_vec()
+                } else {
+                    Vec::new()
+                };
+
+                // Create a global constant for the bytes data.
+                let byte_array_ty = self
                     .backend
                     .context
-                    .i64_type()
-                    .const_int(0, false)
-                    .into();
-                self.values.insert(result_id, llvm_val);
+                    .i8_type()
+                    .array_type(raw_bytes.len() as u32);
+                let global = self.backend.module.add_global(
+                    byte_array_ty,
+                    None,
+                    &format!("__const_bytes_{}", self.const_str_counter),
+                );
+                self.const_str_counter += 1;
+                global.set_initializer(
+                    &self.backend.context.const_string(&raw_bytes, false),
+                );
+                global.set_constant(true);
+                global.set_unnamed_addr(true);
+
+                // Get or declare molt_string_from_bytes (used for bytes too — the
+                // runtime creates a bytes object when the caller context is ConstBytes).
+                let sfb_fn = if let Some(f) = self.backend.module.get_function("molt_string_from_bytes") {
+                    f
+                } else {
+                    let ptr_ty = self.backend.context.ptr_type(inkwell::AddressSpace::default());
+                    let i32_ty = self.backend.context.i32_type();
+                    let fn_ty = i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false);
+                    self.backend.module.add_function(
+                        "molt_string_from_bytes",
+                        fn_ty,
+                        Some(inkwell::module::Linkage::External),
+                    )
+                };
+
+                // Allocate a stack slot for the output u64.
+                let out_alloca = self.backend.builder.build_alloca(i64_ty, "bytes_out").unwrap();
+
+                // Call molt_string_from_bytes(ptr, len, out).
+                let ptr_val = global.as_pointer_value();
+                let len_val = i64_ty.const_int(raw_bytes.len() as u64, false);
+                self.backend
+                    .builder
+                    .build_call(sfb_fn, &[ptr_val.into(), len_val.into(), out_alloca.into()], "bfb")
+                    .unwrap();
+
+                // Load the result from the output slot.
+                let result = self
+                    .backend
+                    .builder
+                    .build_load(i64_ty, out_alloca, "bytes_bits")
+                    .unwrap();
+                self.values.insert(result_id, result);
                 self.value_types.insert(result_id, TirType::DynBox);
             }
 
@@ -942,43 +1052,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 } else {
                     // Generic builtin call via molt_call_builtin.
                     let builtin_name_bits = if let Some(ref name) = builtin_name_str {
-                        // We need a runtime interned string for the name.
-                        // For now, emit a ConstStr-style placeholder.
-                        // The runtime will resolve it via the builtin registry.
-                        let intern_fn = if let Some(f) = self.backend.module.get_function("molt_intern_string") {
-                            f
-                        } else {
-                            let fn_ty = i64_ty.fn_type(&[
-                                self.backend.context.ptr_type(inkwell::AddressSpace::default()).into(),
-                                i64_ty.into(),
-                            ], false);
-                            self.backend.module.add_function(
-                                "molt_intern_string",
-                                fn_ty,
-                                Some(inkwell::module::Linkage::External),
-                            )
-                        };
-                        let name_bytes = name.as_bytes();
-                        let global = self.backend.module.add_global(
-                            self.backend.context.i8_type().array_type(name_bytes.len() as u32),
-                            None,
-                            &format!("__builtin_name_{name}"),
-                        );
-                        global.set_initializer(
-                            &self.backend.context.const_string(name_bytes, false),
-                        );
-                        global.set_constant(true);
-                        global.set_unnamed_addr(true);
-                        let ptr = global.as_pointer_value();
-                        let len = i64_ty.const_int(name_bytes.len() as u64, false);
-                        self.backend
-                            .builder
-                            .build_call(intern_fn, &[ptr.into(), len.into()], "intern_name")
-                            .unwrap()
-                            .try_as_basic_value()
-                            .basic()
-                            .map(|v| self.ensure_i64(v))
-                            .unwrap_or_else(|| i64_ty.const_int(0, false))
+                        // Create a runtime string for the builtin name via
+                        // molt_string_from_bytes.
+                        let name_val = self.intern_string_const(name);
+                        self.ensure_i64(name_val)
                     } else if args_start <= op.operands.len() && !op.operands.is_empty() {
                         let bv = self.resolve(op.operands[0]);
                         self.ensure_i64(bv)
@@ -2525,19 +2602,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap_basic()
     }
 
-    /// Emit a global string constant and call `molt_intern_string` to get
-    /// a NaN-boxed interned string value at runtime.
+    /// Emit a global string constant and call `molt_string_from_bytes` to get
+    /// a NaN-boxed string value at runtime.
     fn intern_string_const(&self, s: &str) -> BasicValueEnum<'ctx> {
         let i64_ty = self.backend.context.i64_type();
-        let intern_fn = if let Some(f) = self.backend.module.get_function("molt_intern_string") {
+        let sfb_fn = if let Some(f) = self.backend.module.get_function("molt_string_from_bytes") {
             f
         } else {
-            let fn_ty = i64_ty.fn_type(&[
-                self.backend.context.ptr_type(inkwell::AddressSpace::default()).into(),
-                i64_ty.into(),
-            ], false);
+            let ptr_ty = self.backend.context.ptr_type(inkwell::AddressSpace::default());
+            let i32_ty = self.backend.context.i32_type();
+            let fn_ty = i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false);
             self.backend.module.add_function(
-                "molt_intern_string",
+                "molt_string_from_bytes",
                 fn_ty,
                 Some(inkwell::module::Linkage::External),
             )
@@ -2555,14 +2631,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         global.set_unnamed_addr(true);
         let ptr = global.as_pointer_value();
         let len = i64_ty.const_int(name_bytes.len() as u64, false);
+        let out_alloca = self.backend.builder.build_alloca(i64_ty, "intern_out").unwrap();
         self.backend
             .builder
-            .build_call(intern_fn, &[ptr.into(), len.into()], "intern_attr")
+            .build_call(sfb_fn, &[ptr.into(), len.into(), out_alloca.into()], "intern_sfb")
+            .unwrap();
+        self.backend
+            .builder
+            .build_load(i64_ty, out_alloca, "intern_bits")
             .unwrap()
-            .try_as_basic_value()
-            .basic()
-            .map(|v| self.ensure_i64(v).into())
-            .unwrap_or_else(|| i64_ty.const_int(0, false).into())
     }
     }
 
