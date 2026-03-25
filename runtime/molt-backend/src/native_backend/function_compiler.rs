@@ -731,7 +731,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
-                        box_float_value(&mut builder, result_f)
+                        box_float_value(&mut builder, result_f, &nbc)
                     } else if op.fast_int.unwrap_or(false)
                         || op.type_hint.as_deref() == Some("int")
                     {
@@ -771,7 +771,7 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -798,7 +798,7 @@ impl SimpleBackend {
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
                         // Inline float fast path: if both operands are floats, do f64 add directly.
-                        let both_flt = both_float_check(&mut builder, *lhs, *rhs);
+                        let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
                         let call_block = builder.create_block();
                         builder.set_cold_block(call_block);
@@ -811,7 +811,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let flt_sum = builder.ins().fadd(lhs_f, rhs_f);
-                        let flt_res = box_float_value(&mut builder, flt_sum);
+                        let flt_res = box_float_value(&mut builder, flt_sum, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
                         builder.switch_to_block(call_block);
@@ -839,7 +839,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
-                        box_float_value(&mut builder, result_f)
+                        box_float_value(&mut builder, result_f, &nbc)
                     } else if op.fast_int.unwrap_or(false)
                         || op.type_hint.as_deref() == Some("int")
                     {
@@ -879,7 +879,7 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -905,7 +905,7 @@ impl SimpleBackend {
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
-                        let both_flt = both_float_check(&mut builder, *lhs, *rhs);
+                        let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
                         let call_block = builder.create_block();
                         builder.set_cold_block(call_block);
@@ -918,7 +918,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let flt_sum = builder.ins().fadd(lhs_f, rhs_f);
-                        let flt_res = box_float_value(&mut builder, flt_sum);
+                        let flt_res = box_float_value(&mut builder, flt_sum, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
                         builder.switch_to_block(call_block);
@@ -1210,7 +1210,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
-                        box_float_value(&mut builder, result_f)
+                        box_float_value(&mut builder, result_f, &nbc)
                     } else if op.fast_int.unwrap_or(false)
                         || op.type_hint.as_deref() == Some("int")
                     {
@@ -1246,7 +1246,7 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -1274,7 +1274,7 @@ impl SimpleBackend {
                         builder.seal_block(slow_block);
                         let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_sub", &[types::I64, types::I64], &[types::I64]);
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let both_flt = both_float_check(&mut builder, *lhs, *rhs);
+                        let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
                         let call_block = builder.create_block();
                         builder.set_cold_block(call_block);
@@ -1287,7 +1287,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let flt_diff = builder.ins().fsub(lhs_f, rhs_f);
-                        let flt_res = box_float_value(&mut builder, flt_diff);
+                        let flt_res = box_float_value(&mut builder, flt_diff, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
                         builder.switch_to_block(call_block);
@@ -1319,7 +1319,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
-                        box_float_value(&mut builder, result_f)
+                        box_float_value(&mut builder, result_f, &nbc)
                     } else if op.fast_int.unwrap_or(false)
                         || op.type_hint.as_deref() == Some("int")
                     {
@@ -1355,7 +1355,7 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -1383,7 +1383,7 @@ impl SimpleBackend {
                         builder.seal_block(slow_block);
                         let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_inplace_sub", &[types::I64, types::I64], &[types::I64]);
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let both_flt = both_float_check(&mut builder, *lhs, *rhs);
+                        let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
                         let call_block = builder.create_block();
                         builder.set_cold_block(call_block);
@@ -1396,7 +1396,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let flt_diff = builder.ins().fsub(lhs_f, rhs_f);
-                        let flt_res = box_float_value(&mut builder, flt_diff);
+                        let flt_res = box_float_value(&mut builder, flt_diff, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
                         builder.switch_to_block(call_block);
@@ -1424,7 +1424,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
-                        box_float_value(&mut builder, result_f)
+                        box_float_value(&mut builder, result_f, &nbc)
                     } else if op.fast_int.unwrap_or(false)
                         || op.type_hint.as_deref() == Some("int")
                     {
@@ -1463,7 +1463,7 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -1488,7 +1488,7 @@ impl SimpleBackend {
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
-                        let both_flt = both_float_check(&mut builder, *lhs, *rhs);
+                        let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
                         let call_block = builder.create_block();
                         builder.set_cold_block(call_block);
@@ -1501,7 +1501,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let flt_prod = builder.ins().fmul(lhs_f, rhs_f);
-                        let flt_res = box_float_value(&mut builder, flt_prod);
+                        let flt_res = box_float_value(&mut builder, flt_prod, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
                         builder.switch_to_block(call_block);
@@ -1529,7 +1529,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
-                        box_float_value(&mut builder, result_f)
+                        box_float_value(&mut builder, result_f, &nbc)
                     } else if op.fast_int.unwrap_or(false)
                         || op.type_hint.as_deref() == Some("int")
                     {
@@ -1568,7 +1568,7 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -1593,7 +1593,7 @@ impl SimpleBackend {
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
-                        let both_flt = both_float_check(&mut builder, *lhs, *rhs);
+                        let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
                         let call_block = builder.create_block();
                         builder.set_cold_block(call_block);
@@ -1606,7 +1606,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let flt_prod = builder.ins().fmul(lhs_f, rhs_f);
-                        let flt_res = box_float_value(&mut builder, flt_prod);
+                        let flt_res = box_float_value(&mut builder, flt_prod, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
                         builder.switch_to_block(call_block);
@@ -1665,7 +1665,7 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -1742,7 +1742,7 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -1819,7 +1819,7 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -1896,7 +1896,7 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -1973,7 +1973,7 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -2050,7 +2050,7 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -2158,7 +2158,7 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         builder
                             .ins()
                             .brif(both_int, int_block, &[], slow_block, &[]);
@@ -2266,7 +2266,7 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         builder
                             .ins()
                             .brif(both_int, int_block, &[], slow_block, &[]);
@@ -2325,7 +2325,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fdiv(lhs_f, rhs_f);
-                        box_float_value(&mut builder, result_f)
+                        box_float_value(&mut builder, result_f, &nbc)
                     } else if op.fast_int.unwrap_or(false) {
                         // Python true division: int / int always returns float.
                         // Convert to f64 and do fdiv.
@@ -2352,7 +2352,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().fcvt_from_sint(types::F64, lhs_val);
                         let rhs_f = builder.ins().fcvt_from_sint(types::F64, rhs_val);
                         let result_f = builder.ins().fdiv(lhs_f, rhs_f);
-                        let fast_res = box_float_value(&mut builder, result_f);
+                        let fast_res = box_float_value(&mut builder, result_f, &nbc);
                         // Float result always valid — use iconst 1 for fits_inline.
                         let fits_inline = builder.ins().iconst(types::I8, 1);
                         brif_block(
@@ -2380,7 +2380,7 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let int_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -2405,13 +2405,13 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().fcvt_from_sint(types::F64, lhs_val);
                         let rhs_f = builder.ins().fcvt_from_sint(types::F64, rhs_val);
                         let result_f = builder.ins().fdiv(lhs_f, rhs_f);
-                        let fast_res = box_float_value(&mut builder, result_f);
+                        let fast_res = box_float_value(&mut builder, result_f, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
                         // Inline float fast path: if both operands are floats, do f64 div directly.
-                        let both_flt = both_float_check(&mut builder, *lhs, *rhs);
+                        let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
                         let call_block = builder.create_block();
                         builder.set_cold_block(call_block);
@@ -2424,7 +2424,7 @@ impl SimpleBackend {
                         let lhs_ff = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_ff = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let flt_quot = builder.ins().fdiv(lhs_ff, rhs_ff);
-                        let flt_res = box_float_value(&mut builder, flt_quot);
+                        let flt_res = box_float_value(&mut builder, flt_quot, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
                         builder.switch_to_block(call_block);
@@ -2503,7 +2503,7 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let int_block = builder.create_block();
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -2619,7 +2619,7 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let int_block = builder.create_block();
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -5082,18 +5082,18 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder.ins().fcmp(FloatCC::LessThan, lhs_f, rhs_f);
-                        box_bool_value(&mut builder, cmp)
+                        box_bool_value(&mut builder, cmp, &nbc)
                     } else if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val);
-                        box_bool_value(&mut builder, cmp)
+                        box_bool_value(&mut builder, cmp, &nbc)
                     } else {
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -5106,14 +5106,14 @@ impl SimpleBackend {
                         builder.switch_to_block(fast_block);
                         builder.seal_block(fast_block);
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val);
-                        let fast_res = box_bool_value(&mut builder, cmp);
+                        let fast_res = box_bool_value(&mut builder, cmp, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
                         let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_lt", &[types::I64, types::I64], &[types::I64]);
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let both_flt = both_float_check(&mut builder, *lhs, *rhs);
+                        let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
                         let call_block = builder.create_block();
                         builder.set_cold_block(call_block);
@@ -5126,7 +5126,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let fcmp = builder.ins().fcmp(FloatCC::LessThan, lhs_f, rhs_f);
-                        let flt_res = box_bool_value(&mut builder, fcmp);
+                        let flt_res = box_bool_value(&mut builder, fcmp, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
                         builder.switch_to_block(call_block);
@@ -5149,7 +5149,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs_f, rhs_f);
-                        box_bool_value(&mut builder, cmp)
+                        box_bool_value(&mut builder, cmp, &nbc)
                     } else if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
@@ -5157,13 +5157,13 @@ impl SimpleBackend {
                             builder
                                 .ins()
                                 .icmp(IntCC::SignedLessThanOrEqual, lhs_val, rhs_val);
-                        box_bool_value(&mut builder, cmp)
+                        box_bool_value(&mut builder, cmp, &nbc)
                     } else {
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -5179,14 +5179,14 @@ impl SimpleBackend {
                             builder
                                 .ins()
                                 .icmp(IntCC::SignedLessThanOrEqual, lhs_val, rhs_val);
-                        let fast_res = box_bool_value(&mut builder, cmp);
+                        let fast_res = box_bool_value(&mut builder, cmp, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
                         let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_le", &[types::I64, types::I64], &[types::I64]);
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let both_flt = both_float_check(&mut builder, *lhs, *rhs);
+                        let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
                         let call_block = builder.create_block();
                         builder.set_cold_block(call_block);
@@ -5199,7 +5199,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let fcmp = builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs_f, rhs_f);
-                        let flt_res = box_bool_value(&mut builder, fcmp);
+                        let flt_res = box_bool_value(&mut builder, fcmp, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
                         builder.switch_to_block(call_block);
@@ -5222,20 +5222,20 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder.ins().fcmp(FloatCC::GreaterThan, lhs_f, rhs_f);
-                        box_bool_value(&mut builder, cmp)
+                        box_bool_value(&mut builder, cmp, &nbc)
                     } else if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp = builder
                             .ins()
                             .icmp(IntCC::SignedGreaterThan, lhs_val, rhs_val);
-                        box_bool_value(&mut builder, cmp)
+                        box_bool_value(&mut builder, cmp, &nbc)
                     } else {
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -5250,14 +5250,14 @@ impl SimpleBackend {
                         let cmp = builder
                             .ins()
                             .icmp(IntCC::SignedGreaterThan, lhs_val, rhs_val);
-                        let fast_res = box_bool_value(&mut builder, cmp);
+                        let fast_res = box_bool_value(&mut builder, cmp, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
                         let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_gt", &[types::I64, types::I64], &[types::I64]);
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let both_flt = both_float_check(&mut builder, *lhs, *rhs);
+                        let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
                         let call_block = builder.create_block();
                         builder.set_cold_block(call_block);
@@ -5270,7 +5270,7 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let fcmp = builder.ins().fcmp(FloatCC::GreaterThan, lhs_f, rhs_f);
-                        let flt_res = box_bool_value(&mut builder, fcmp);
+                        let flt_res = box_bool_value(&mut builder, fcmp, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
                         builder.switch_to_block(call_block);
@@ -5295,7 +5295,7 @@ impl SimpleBackend {
                         let cmp = builder
                             .ins()
                             .fcmp(FloatCC::GreaterThanOrEqual, lhs_f, rhs_f);
-                        box_bool_value(&mut builder, cmp)
+                        box_bool_value(&mut builder, cmp, &nbc)
                     } else if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
@@ -5303,13 +5303,13 @@ impl SimpleBackend {
                             builder
                                 .ins()
                                 .icmp(IntCC::SignedGreaterThanOrEqual, lhs_val, rhs_val);
-                        box_bool_value(&mut builder, cmp)
+                        box_bool_value(&mut builder, cmp, &nbc)
                     } else {
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -5325,14 +5325,14 @@ impl SimpleBackend {
                             builder
                                 .ins()
                                 .icmp(IntCC::SignedGreaterThanOrEqual, lhs_val, rhs_val);
-                        let fast_res = box_bool_value(&mut builder, cmp);
+                        let fast_res = box_bool_value(&mut builder, cmp, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
                         let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_ge", &[types::I64, types::I64], &[types::I64]);
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let both_flt = both_float_check(&mut builder, *lhs, *rhs);
+                        let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
                         let call_block = builder.create_block();
                         builder.set_cold_block(call_block);
@@ -5347,7 +5347,7 @@ impl SimpleBackend {
                         let fcmp = builder
                             .ins()
                             .fcmp(FloatCC::GreaterThanOrEqual, lhs_f, rhs_f);
-                        let flt_res = box_bool_value(&mut builder, fcmp);
+                        let flt_res = box_bool_value(&mut builder, fcmp, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
                         builder.switch_to_block(call_block);
@@ -5371,18 +5371,18 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder.ins().fcmp(FloatCC::Equal, lhs_f, rhs_f);
-                        box_bool_value(&mut builder, cmp)
+                        box_bool_value(&mut builder, cmp, &nbc)
                     } else if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp = builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val);
-                        box_bool_value(&mut builder, cmp)
+                        box_bool_value(&mut builder, cmp, &nbc)
                     } else {
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -5395,7 +5395,7 @@ impl SimpleBackend {
                         builder.switch_to_block(fast_block);
                         builder.seal_block(fast_block);
                         let cmp = builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val);
-                        let fast_res = box_bool_value(&mut builder, cmp);
+                        let fast_res = box_bool_value(&mut builder, cmp, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
                         builder.switch_to_block(slow_block);
@@ -5421,18 +5421,18 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder.ins().fcmp(FloatCC::NotEqual, lhs_f, rhs_f);
-                        box_bool_value(&mut builder, cmp)
+                        box_bool_value(&mut builder, cmp, &nbc)
                     } else if op.fast_int.unwrap_or(false) {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp = builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val);
-                        box_bool_value(&mut builder, cmp)
+                        box_bool_value(&mut builder, cmp, &nbc)
                     } else {
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -5445,7 +5445,7 @@ impl SimpleBackend {
                         builder.switch_to_block(fast_block);
                         builder.seal_block(fast_block);
                         let cmp = builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val);
-                        let fast_res = box_bool_value(&mut builder, cmp);
+                        let fast_res = box_bool_value(&mut builder, cmp, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
                         builder.switch_to_block(slow_block);
@@ -5616,7 +5616,7 @@ impl SimpleBackend {
                         let zero = builder.ins().iconst(types::I64, 0);
                         let is_nonzero =
                             builder.ins().icmp(IntCC::NotEqual, int_val, zero);
-                        box_bool_value(&mut builder, is_nonzero)
+                        box_bool_value(&mut builder, is_nonzero, &nbc)
                     } else {
                         let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_is_truthy", &[types::I64], &[types::I64]);
                         let local_callee =
@@ -5624,7 +5624,7 @@ impl SimpleBackend {
                         let call = builder.ins().call(local_callee, &[*val]);
                         let truthy = builder.inst_results(call)[0];
                         let cond = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
-                        box_bool_value(&mut builder, cond)
+                        box_bool_value(&mut builder, cond, &nbc)
                     };
                     if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }

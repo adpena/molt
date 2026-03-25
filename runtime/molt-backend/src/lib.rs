@@ -98,7 +98,7 @@ mod native_backend_consts {
     //   offset  0: type_id    (u32)
     //   offset  4: ref_count  (u32 / AtomicU32)
     //   offset  8: flags      (u32)
-    //   offset 12: size_class (u16) + _pad (u16)
+    //   offset 12: size_class (u16) + cold_idx (u16)
     // Data pointer = header_ptr + 16, so offsets from data_ptr are negative.
     // NOTE: HEADER_STATE_OFFSET removed — state lives in cold header now;
     // the native JIT uses molt_obj_get_state/molt_obj_set_state C API calls.
@@ -692,9 +692,10 @@ fn fused_both_int_check(
     builder: &mut FunctionBuilder,
     lhs_xored: Value,
     rhs_xored: Value,
+    nbc: &NanBoxConsts,
 ) -> Value {
     let combined = builder.ins().bor(lhs_xored, rhs_xored);
-    let tag_shift = builder.ins().iconst(types::I64, INT_WIDTH as i64);
+    let tag_shift = builder.use_var(nbc.int_width);
     let upper = builder.ins().ushr(combined, tag_shift);
     builder.ins().icmp_imm(IntCC::Equal, upper, 0)
 }
@@ -705,22 +706,22 @@ fn fused_both_int_check(
 /// All NaN-boxed specials have bits 62..48 in the range `0x7FF9..=0x7FFD`.
 /// Returns true if the value IS a special (i.e., NOT a float).
 #[cfg(feature = "native-backend")]
-fn is_nanboxed_special(builder: &mut FunctionBuilder, val: Value) -> Value {
+fn is_nanboxed_special(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
     // Shift right by 48 to isolate the tag field, then check range [0x7FF9, 0x7FFD].
-    let shift48 = builder.ins().iconst(types::I64, 48);
+    let shift48 = builder.use_var(nbc.shift_48);
     let tag16 = builder.ins().ushr(val, shift48);
     // tag16 - 0x7FF9; result < 5 means it's a tagged special
-    let base = builder.ins().iconst(types::I64, 0x7FF9);
+    let base = builder.use_var(nbc.special_base);
     let adjusted = builder.ins().isub(tag16, base);
-    let limit = builder.ins().iconst(types::I64, 5);
+    let limit = builder.use_var(nbc.special_limit);
     builder.ins().icmp(IntCC::UnsignedLessThan, adjusted, limit)
 }
 
 /// Check that both NaN-boxed values are plain f64 (not tagged specials).
 #[cfg(feature = "native-backend")]
-fn both_float_check(builder: &mut FunctionBuilder, lhs: Value, rhs: Value) -> Value {
-    let lhs_special = is_nanboxed_special(builder, lhs);
-    let rhs_special = is_nanboxed_special(builder, rhs);
+fn both_float_check(builder: &mut FunctionBuilder, lhs: Value, rhs: Value, nbc: &NanBoxConsts) -> Value {
+    let lhs_special = is_nanboxed_special(builder, lhs, nbc);
+    let rhs_special = is_nanboxed_special(builder, rhs, nbc);
     let either_special = builder.ins().bor(lhs_special, rhs_special);
     // both_float = !(lhs_special || rhs_special)
     // Since is_nanboxed_special returns an i8 (0 or 1), we check either_special == 0
@@ -729,10 +730,10 @@ fn both_float_check(builder: &mut FunctionBuilder, lhs: Value, rhs: Value) -> Va
 
 /// Check whether a NaN-boxed value carries the int tag.
 #[cfg(feature = "native-backend")]
-fn is_nanboxed_int(builder: &mut FunctionBuilder, val: Value) -> Value {
-    let shift48 = builder.ins().iconst(types::I64, 48);
+fn is_nanboxed_int(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
+    let shift48 = builder.use_var(nbc.shift_48);
     let tag16 = builder.ins().ushr(val, shift48);
-    let expected = builder.ins().iconst(types::I64, ((QNAN | TAG_INT) >> 48) as i64);
+    let expected = builder.use_var(nbc.int_tag_16);
     builder.ins().icmp(IntCC::Equal, tag16, expected)
 }
 
@@ -750,10 +751,10 @@ pub(crate) fn emit_mixed_int_float_op(
     f_op: u8,
     merge_block: Block,
 ) {
-    let lhs_is_int = is_nanboxed_int(builder, lhs);
-    let rhs_is_int = is_nanboxed_int(builder, rhs);
-    let lhs_special = is_nanboxed_special(builder, lhs);
-    let rhs_special = is_nanboxed_special(builder, rhs);
+    let lhs_is_int = is_nanboxed_int(builder, lhs, nbc);
+    let rhs_is_int = is_nanboxed_int(builder, rhs, nbc);
+    let lhs_special = is_nanboxed_special(builder, lhs, nbc);
+    let rhs_special = is_nanboxed_special(builder, rhs, nbc);
     let rhs_not_special = builder.ins().icmp_imm(IntCC::Equal, rhs_special, 0);
     let lhs_not_special = builder.ins().icmp_imm(IntCC::Equal, lhs_special, 0);
     let case_a = builder.ins().band(lhs_is_int, rhs_not_special);
@@ -776,7 +777,7 @@ pub(crate) fn emit_mixed_int_float_op(
         2 => builder.ins().fmul(lhs_conv, rhs_flt),
         _ => unreachable!(),
     };
-    let boxed_a = box_float_value(builder, res_a);
+    let boxed_a = box_float_value(builder, res_a, nbc);
     jump_block(builder, merge_block, &[boxed_a]);
     // Check case_b
     builder.switch_to_block(check_rhs_block);
@@ -794,7 +795,7 @@ pub(crate) fn emit_mixed_int_float_op(
         2 => builder.ins().fmul(lhs_flt, rhs_conv),
         _ => unreachable!(),
     };
-    let boxed_b = box_float_value(builder, res_b);
+    let boxed_b = box_float_value(builder, res_b, nbc);
     jump_block(builder, merge_block, &[boxed_b]);
     // Not mixed: caller emits slow path
     builder.switch_to_block(not_mixed_block);
@@ -803,19 +804,19 @@ pub(crate) fn emit_mixed_int_float_op(
 
 #[cfg(feature = "native-backend")]
 fn box_int_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
-    let mask = builder.ins().iconst(types::I64, INT_MASK as i64);
+    let mask = builder.use_var(nbc.int_mask);
     let masked = builder.ins().band(val, mask);
     let tag = builder.use_var(nbc.qnan_tag_int);
     builder.ins().bor(tag, masked)
 }
 
 #[cfg(feature = "native-backend")]
-fn box_float_value(builder: &mut FunctionBuilder, val: Value) -> Value {
+fn box_float_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
     // Canonicalize NaN: if the f64 value is NaN, replace with CANONICAL_NAN_BITS
     // to avoid collision with the QNAN tag prefix used by NaN-boxing.
     let raw_bits = builder.ins().bitcast(types::I64, MemFlags::new(), val);
     let is_nan = builder.ins().fcmp(FloatCC::Unordered, val, val);
-    let canonical = builder.ins().iconst(types::I64, CANONICAL_NAN_BITS as i64);
+    let canonical = builder.use_var(nbc.canonical_nan);
     builder.ins().select(is_nan, canonical, raw_bits)
 }
 
@@ -863,11 +864,11 @@ fn imul_checked_inline(
 }
 
 #[cfg(feature = "native-backend")]
-fn box_bool_value(builder: &mut FunctionBuilder, val: Value) -> Value {
+fn box_bool_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
     let one = builder.ins().iconst(types::I64, 1);
     let zero = builder.ins().iconst(types::I64, 0);
     let bool_val = builder.ins().select(val, one, zero);
-    let tag = builder.ins().iconst(types::I64, (QNAN | TAG_BOOL) as i64);
+    let tag = builder.use_var(nbc.qnan_tag_bool);
     builder.ins().bor(tag, bool_val)
 }
 
@@ -875,7 +876,7 @@ fn box_bool_value(builder: &mut FunctionBuilder, val: Value) -> Value {
 fn unbox_ptr_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
     let mask = builder.use_var(nbc.pointer_mask);
     let masked = builder.ins().band(val, mask);
-    let shift = builder.ins().iconst(types::I64, 16);
+    let shift = builder.use_var(nbc.shift_16);
     let shifted = builder.ins().ishl(masked, shift);
     builder.ins().sshr(shifted, shift)
 }
