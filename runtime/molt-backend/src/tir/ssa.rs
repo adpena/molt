@@ -589,7 +589,7 @@ impl<'a> SsaContext<'a> {
 
     /// Build the terminator for a given CFG block.
     fn build_terminator(
-        &self,
+        &mut self,
         bid: usize,
         var_stacks: &HashMap<String, Vec<ValueId>>,
     ) -> Terminator {
