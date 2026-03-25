@@ -46,11 +46,33 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     // Compute block visit order (reverse-postorder from entry).
     let rpo = reverse_postorder(func);
 
-    // Build a BlockId → label_id mapping. Blocks that have an original
-    // SimpleIR label value use that; others use the BlockId as a fallback.
-    // This ensures check_exception/jump/br_if targets match the emitted labels.
+    // Build a BlockId → label_id mapping.  Blocks that have an original
+    // SimpleIR label value (stored in label_id_map during lifting) reuse that
+    // value so that check_exception / jump / br_if targets still match.
+    // Blocks without a mapped label (e.g. blocks created by TIR optimisation
+    // passes, or CFG blocks whose original label value coincides with another
+    // block's fallback) are assigned fresh IDs guaranteed not to collide.
+    let label_id_for_block: HashMap<BlockId, i64> = {
+        let used_ids: HashSet<i64> = func.label_id_map.values().copied().collect();
+        let max_used = used_ids.iter().copied().max().unwrap_or(0);
+        let max_bid = func.blocks.keys().map(|b| b.0 as i64).max().unwrap_or(0);
+        let mut next_fresh = max_used.max(max_bid) + 1;
+        let mut mapping = HashMap::new();
+        for bid in func.blocks.keys() {
+            if let Some(&label_val) = func.label_id_map.get(&bid.0) {
+                mapping.insert(*bid, label_val);
+            } else {
+                while used_ids.contains(&next_fresh) {
+                    next_fresh += 1;
+                }
+                mapping.insert(*bid, next_fresh);
+                next_fresh += 1;
+            }
+        }
+        mapping
+    };
     let block_label_id = |bid: &BlockId| -> i64 {
-        func.label_id_map.get(&bid.0).copied().unwrap_or(bid.0 as i64)
+        label_id_for_block.get(bid).copied().unwrap_or(bid.0 as i64)
     };
 
     // Collect block argument info for all blocks so we can generate
@@ -130,6 +152,29 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     }
 
     out
+}
+
+/// Validate that every label referenced by jump/br_if/check_exception exists
+/// as a label op in the output.  Returns false if any reference is dangling.
+pub fn validate_labels(ops: &[crate::ir::OpIR]) -> bool {
+    let mut defined_labels: HashSet<i64> = HashSet::new();
+    let mut referenced_labels: HashSet<i64> = HashSet::new();
+    for op in ops {
+        match op.kind.as_str() {
+            "label" | "state_label" => {
+                if let Some(id) = op.value {
+                    defined_labels.insert(id);
+                }
+            }
+            "jump" | "br_if" | "check_exception" => {
+                if let Some(id) = op.value {
+                    referenced_labels.insert(id);
+                }
+            }
+            _ => {}
+        }
+    }
+    referenced_labels.is_subset(&defined_labels)
 }
 
 // ---------------------------------------------------------------------------
