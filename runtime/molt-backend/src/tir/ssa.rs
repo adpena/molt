@@ -702,6 +702,13 @@ impl<'a> SsaContext<'a> {
         if opcode == OpCode::CallBuiltin && !matches!(op.kind.as_str(), "call_builtin") {
             attrs.insert("_original_kind".into(), AttrValue::Str(op.kind.clone()));
         }
+        // Preserve original kind for attr/index ops that have backend-specific
+        // variants (get_attr_generic_obj, set_attr_generic_obj, store_index, etc.).
+        if matches!(opcode, OpCode::LoadAttr | OpCode::StoreAttr | OpCode::Index | OpCode::StoreIndex | OpCode::DelIndex | OpCode::DelAttr)
+            && !matches!(op.kind.as_str(), "get_attr" | "set_attr" | "index" | "store_index" | "del_index" | "del_attr")
+        {
+            attrs.insert("_original_kind".into(), AttrValue::Str(op.kind.clone()));
+        }
 
         TirOp {
             dialect: Dialect::Molt,

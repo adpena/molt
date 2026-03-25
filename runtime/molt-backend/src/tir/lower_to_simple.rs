@@ -262,26 +262,43 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::Not => Some(unary_op("not", op, out_var)),
 
         // Memory.
-        OpCode::LoadAttr => Some(OpIR {
-            kind: "get_attr".to_string(),
-            args: Some(operand_args(op)),
-            s_value: attr_str(&op.attrs, "name"),
-            out: out_var,
-            ..OpIR::default()
-        }),
-        OpCode::StoreAttr => Some(OpIR {
-            kind: "set_attr".to_string(),
-            args: Some(operand_args(op)),
-            s_value: attr_str(&op.attrs, "name"),
-            ..OpIR::default()
-        }),
-        OpCode::Index => Some(binary_op("subscript", op, out_var)),
-        OpCode::StoreIndex => Some(OpIR {
-            kind: "store_subscript".to_string(),
-            args: Some(operand_args(op)),
-            out: out_var,
-            ..OpIR::default()
-        }),
+        OpCode::LoadAttr => {
+            let kind = attr_str(&op.attrs, "_original_kind")
+                .unwrap_or_else(|| "get_attr".to_string());
+            Some(OpIR {
+                kind,
+                args: Some(operand_args(op)),
+                s_value: attr_str(&op.attrs, "name").or_else(|| attr_str(&op.attrs, "s_value")),
+                out: out_var,
+                ic_index: attr_int(&op.attrs, "ic_index"),
+                ..OpIR::default()
+            })
+        }
+        OpCode::StoreAttr => {
+            let kind = attr_str(&op.attrs, "_original_kind")
+                .unwrap_or_else(|| "set_attr".to_string());
+            Some(OpIR {
+                kind,
+                args: Some(operand_args(op)),
+                s_value: attr_str(&op.attrs, "name").or_else(|| attr_str(&op.attrs, "s_value")),
+                ..OpIR::default()
+            })
+        }
+        OpCode::Index => {
+            let kind = attr_str(&op.attrs, "_original_kind")
+                .unwrap_or_else(|| "index".to_string());
+            Some(binary_op(&kind, op, out_var))
+        }
+        OpCode::StoreIndex => {
+            let kind = attr_str(&op.attrs, "_original_kind")
+                .unwrap_or_else(|| "store_index".to_string());
+            Some(OpIR {
+                kind,
+                args: Some(operand_args(op)),
+                out: out_var,
+                ..OpIR::default()
+            })
+        }
 
         // Call — s_value holds the target function name, value holds the code_id.
         // Recover the original SimpleIR kind (call_func, call_indirect, etc.)
@@ -510,17 +527,25 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         }),
 
         // Remaining attribute ops.
-        OpCode::DelAttr => Some(OpIR {
-            kind: "del_attr".to_string(),
-            args: Some(operand_args(op)),
-            s_value: attr_str(&op.attrs, "name"),
-            ..OpIR::default()
-        }),
-        OpCode::DelIndex => Some(OpIR {
-            kind: "del_subscript".to_string(),
-            args: Some(operand_args(op)),
-            ..OpIR::default()
-        }),
+        OpCode::DelAttr => {
+            let kind = attr_str(&op.attrs, "_original_kind")
+                .unwrap_or_else(|| "del_attr".to_string());
+            Some(OpIR {
+                kind,
+                args: Some(operand_args(op)),
+                s_value: attr_str(&op.attrs, "name").or_else(|| attr_str(&op.attrs, "s_value")),
+                ..OpIR::default()
+            })
+        }
+        OpCode::DelIndex => {
+            let kind = attr_str(&op.attrs, "_original_kind")
+                .unwrap_or_else(|| "del_index".to_string());
+            Some(OpIR {
+                kind,
+                args: Some(operand_args(op)),
+                ..OpIR::default()
+            })
+        }
     }
 }
 
