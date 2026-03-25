@@ -94,11 +94,19 @@ impl CompilationCache {
             if let Some(ref bytes) = entry.data {
                 return Some(bytes.clone());
             }
-            // Lazily load from disk.
+            // Lazily load from disk.  Guard against partial/corrupted reads:
+            // an empty file is treated as a cache miss (artifact writes are
+            // atomic via rename, so an empty file means something went wrong).
             let path = entry.artifact_path.clone();
-            if let Ok(bytes) = std::fs::read(&path) {
-                entry.data = Some(bytes.clone());
-                return Some(bytes);
+            match std::fs::read(&path) {
+                Ok(bytes) if !bytes.is_empty() => {
+                    entry.data = Some(bytes.clone());
+                    return Some(bytes);
+                }
+                _ => {
+                    // Missing, unreadable, or zero-length — treat as cache miss.
+                    return None;
+                }
             }
         }
         None
@@ -115,8 +123,9 @@ impl CompilationCache {
             return; // can't create cache dir — skip caching silently
         }
         let artifact_path = funcs_dir.join(format!("{}.bin", content_hash));
-        // Atomic write: write to temp file then rename to prevent partial writes
-        let tmp_path = funcs_dir.join(format!("{}.bin.tmp", content_hash));
+        // Atomic write: write to PID-unique temp file then rename to prevent
+        // partial reads and collisions between concurrent processes.
+        let tmp_path = funcs_dir.join(format!("{}.bin.tmp.{}", content_hash, std::process::id()));
         if std::fs::write(&tmp_path, artifact).is_err() {
             return; // disk full or permission error — skip
         }
@@ -179,7 +188,15 @@ impl CompilationCache {
             ));
         }
 
-        let _ = std::fs::write(&index_path, lines);
+        // Atomic write: write to PID-unique temp file then rename so concurrent
+        // readers never see a partially-written index.
+        let tmp_path = self.cache_dir.join(format!("index.txt.tmp.{}", std::process::id()));
+        if std::fs::write(&tmp_path, &lines).is_err() {
+            return;
+        }
+        if std::fs::rename(&tmp_path, &index_path).is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
+        }
     }
 
     /// Load the cache index from `cache_dir/index.txt`.
