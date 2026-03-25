@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _has_molt_runner() -> bool:
     """Check if the molt WASM runner is available."""
-    runner = ROOT / "run_wasm.js"
+    runner = ROOT / "wasm" / "run_wasm.js"
     return runner.exists() and shutil.which("node") is not None
 
 

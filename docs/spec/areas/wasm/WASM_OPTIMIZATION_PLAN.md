@@ -250,7 +250,7 @@ Migration path (aligned with spec 0400 Section 13):
 
 ### 4.1 Current State
 
-Per the import analysis (`docs/plans/wasm-import-stripping.md`), a compiled `generator.wasm` is 13.1 MB with 90 imports (60 of which are unused). The monolithic import surface is the primary size driver.
+Per the import analysis (`docs/architecture/wasm-import-stripping.md`), a compiled `generator.wasm` is 13.1 MB with 90 imports (60 of which are unused). The monolithic import surface is the primary size driver.
 
 ### 4.2 Optimization Pipeline
 
@@ -590,7 +590,7 @@ Results must be recorded in `bench/results/bench_wasm.json` and summarized in `R
 - `docs/spec/areas/wasm/0965_CLOUDFLARE_WORKERS_LESSONS_FOR_MOLT.md` -- Edge/worker deployment lessons
 - `docs/spec/areas/wasm/0968_MOLT_EDGE_WORKERS_VFS_AND_HOST_CAPABILITIES.md` -- VFS and capabilities
 - `docs/spec/areas/perf/0604_BINARY_SIZE_AND_COLD_START.md` -- Size and cold-start gates
-- `docs/plans/wasm-import-stripping.md` -- Import stripping analysis
+- `docs/architecture/wasm-import-stripping.md` -- Import stripping analysis
 
 ### Implementation Files
 - `runtime/molt-backend/src/wasm.rs` -- WASM code emitter (9740 lines)

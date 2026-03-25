@@ -6,13 +6,13 @@ Self-contained — does not require the mawn codebase.
 
 Usage:
     # With CPython:
-    python3 scripts/profile_tk_perf.py
+    python3 tools/scripts/profile_tk_perf.py
 
     # With molt:
-    molt run scripts/profile_tk_perf.py
+    molt run tools/scripts/profile_tk_perf.py
 
     # Headless mode (skip tests that need a visible window, just validate import):
-    MOLT_TK_PROFILE_HEADLESS=1 python3 scripts/profile_tk_perf.py
+    MOLT_TK_PROFILE_HEADLESS=1 python3 tools/scripts/profile_tk_perf.py
 """
 from __future__ import annotations
 

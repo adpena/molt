@@ -1883,7 +1883,7 @@ impl SimpleBackend {
             let tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
             let tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
             let mut tir_cache = crate::tir::cache::CompilationCache::open(
-                std::path::PathBuf::from(".molt-cache"),
+                std::path::PathBuf::from(".molt_cache"),
             );
             for func_ir in &mut ir.functions {
                 // GPU kernel functions are handled by the GPU pipeline — skip

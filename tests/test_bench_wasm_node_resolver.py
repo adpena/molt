@@ -74,7 +74,7 @@ def test_resolve_runner_node_enforces_stable_wasm_flags(
     assert "--no-wasm-tier-up" in cmd
     assert "--no-wasm-dynamic-tiering" in cmd
     assert "--wasm-num-compilation-tasks=1" in cmd
-    assert cmd[-1] == "run_wasm.js"
+    assert cmd[-1] == "wasm/run_wasm.js"
 
 
 def test_prepare_wasm_binary_sets_linked_table_base(

@@ -7,12 +7,12 @@ Welcome to the Molt codebase. This guide is designed to help you understand the 
 Molt is a research-grade project to compile a **verified per-application subset of Python** into **small, fast native binaries**. It is not just a compiler; it is a systems engineering platform that treats Python as a specification for high-performance native code.
 
 Key Differentiators:
-- **Verified Subset**: We don't support *everything* (see [docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md](docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md)).
+- **Verified Subset**: We don't support *everything* (see [spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md](spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md)).
 - **Determinism**: Binaries are 100% deterministic.
 
 ## Project Vision and Scope
-For the canonical vision and scope, read [docs/spec/areas/core/0000-vision.md](docs/spec/areas/core/0000-vision.md) and
-[docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md](docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md). At a high level:
+For the canonical vision and scope, read [spec/areas/core/0000-vision.md](spec/areas/core/0000-vision.md) and
+[spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md](spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md). At a high level:
 
 - **What Molt is**: a compiler + runtime for a verified, per-application subset
   of Python with explicit contracts and reproducible outputs.
@@ -30,12 +30,12 @@ For the canonical vision and scope, read [docs/spec/areas/core/0000-vision.md](d
 ## Cross-Platform Notes
 - **macOS**: install Xcode CLT (`xcode-select --install`) and LLVM via Homebrew.
 - **Linux**: install LLVM/Clang, CMake, and Ninja via your package manager.
-- **Windows**: install Visual Studio Build Tools (MSVC) plus LLVM/Clang, CMake, and Ninja (see [docs/spec/areas/tooling/0001-toolchains.md](docs/spec/areas/tooling/0001-toolchains.md)).
+- **Windows**: install Visual Studio Build Tools (MSVC) plus LLVM/Clang, CMake, and Ninja (see [spec/areas/tooling/0001-toolchains.md](spec/areas/tooling/0001-toolchains.md)).
 - **WASM**: linked builds require `wasm-ld` + `wasm-tools` across platforms.
 
 ## Platform Pitfalls
 - **macOS SDK versioning**: if linking fails, ensure Xcode CLT is installed and `xcrun --show-sdk-version` works; set `MACOSX_DEPLOYMENT_TARGET` when cross-linking.
-- **arm64 Python 3.14**: uv-managed 3.14 can hang on macOS arm64; install a system `python3.14` and use `--no-managed-python` (see [docs/spec/STATUS.md](docs/spec/STATUS.md)).
+- **arm64 Python 3.14**: uv-managed 3.14 can hang on macOS arm64; install a system `python3.14` and use `--no-managed-python` (see [spec/STATUS.md](spec/STATUS.md)).
 - **Windows toolchain conflicts**: prefer a single active toolchain (MSVC or clang); ensure `clang`, `cmake`, and `ninja` are on PATH.
 - **Windows path lengths**: keep repo paths short and avoid deeply nested build output paths when possible.
 - **WASM linker availability**: `wasm-ld` and `wasm-tools` must be installed; use `--require-linked` to fail fast when they are missing.
@@ -71,10 +71,10 @@ Build-throughput roadmap lanes are tracked in [ROADMAP.md](../ROADMAP.md) under 
 ## Key Concepts
 
 Molt uses specific terminology that might be new to Python developers.
-- **Glossary**: See [docs/GLOSSARY.md](docs/GLOSSARY.md) for definitions of terms like "Tier 0", "NaN-boxing", and "Monomorphization".
-- **Security & Capabilities**: See [docs/CAPABILITIES.md](docs/CAPABILITIES.md) for how Molt gates access to I/O and network operations.
-- **Security Hardening**: See [docs/SECURITY.md](docs/SECURITY.md) for threat models and safety invariants.
-- **Performance & Benchmarking**: See [docs/BENCHMARKING.md](docs/BENCHMARKING.md) for how to measure and validate optimizations.
+- **Glossary**: See [GLOSSARY.md](GLOSSARY.md) for definitions of terms like "Tier 0", "NaN-boxing", and "Monomorphization".
+- **Security & Capabilities**: See [CAPABILITIES.md](CAPABILITIES.md) for how Molt gates access to I/O and network operations.
+- **Security Hardening**: See [SECURITY.md](SECURITY.md) for threat models and safety invariants.
+- **Performance & Benchmarking**: See [BENCHMARKING.md](BENCHMARKING.md) for how to measure and validate optimizations.
 
 ## Architecture Overview
 
@@ -115,10 +115,10 @@ Use this map when deciding where a change belongs and what else it touches.
    - Paths: `runtime/molt-runtime/src/`, `runtime/molt-backend/src/`
    - Specs: `docs/spec/areas/runtime/0505_IO_ASYNC_AND_CONNECTORS.md`, `docs/spec/areas/wasm/0400_WASM_PORTABLE_ABI.md`
    - Examples: `runtime/molt-backend/src/wasm.rs`, `runtime/molt-backend/src/main.rs`
-3. **Compiler core (Rust)**: IR definitions, lowering rules, optimizations, codegen.
-   - Paths: `compiler/molt/frontend/`, `compiler/molt/codegen/`
+3. **Compiler frontend + lowering (Python + Rust)**: IR construction, lowering rules, optimizations, and code generation.
+   - Paths: `src/molt/frontend/`, `runtime/molt-backend/src/`
    - Specs: `docs/spec/areas/core/0002-architecture.md`, `docs/spec/areas/compiler/0019_BYTECODE_LOWERING_MATRIX.md`
-   - Examples: `compiler/molt/frontend/`, `compiler/molt/codegen/`
+   - Examples: `src/molt/frontend/__init__.py`, `runtime/molt-backend/src/wasm.rs`
 4. **Frontend + CLI (Python)**: parsing, CLI UX, packaging, stdlib shims.
    - Paths: `src/molt/`, `src/molt/cli.py`, `src/molt/stdlib/`
    - Specs: `docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md`
@@ -149,28 +149,31 @@ We recommend reading them in this order:
 
 ### Directory Structure
 
-- **`compiler/`**: The heart of the compilation pipeline.
-    - `molt/`: Compiler crate root.
-    - `molt/frontend/`: Frontend and IR construction.
-    - `molt/codegen/`: Lowering and code generation.
+- **`src/`**: Python frontend, CLI, stdlib shims, and compiler-side orchestration.
+    - `molt/`: The CLI entry point, standard library shims, import/build plumbing, and frontend modules.
+    - `molt/frontend/`: Python-side IR construction, analysis, and compiler orchestration.
 - **`runtime/`**: The runtime support system.
     - `molt-runtime/`: Core runtime (scheduler, intrinsics).
     - `molt-obj-model/`: The NaN-boxed object model and type system.
+    - `molt-backend/`: Native and WASM backend lowering/code generation.
     - `molt-db/`: Database connectors and pools.
     - `molt-worker/`: The execution harness for compiled binaries/workers.
-- **`src/`**: Python source code.
-    - `molt/`: The CLI entry point, standard library shims, and frontend logic.
-    - `molt_accel/`: Accelerator scaffolding.
-- **`tools/`**: Development and build scripts (`dev.py`, `bench.py`).
+- **`crates/`**: Rust helper crates that support tree shaking, lazy loading, and related compile-time packaging concerns.
+- **`tools/`**: Development tooling and shared utility scripts (`dev.py`, `bench.py`, `tools/scripts/`).
+- **`bench/`**: Benchmark harnesses, friend suites, benchmark-specific helper scripts, and benchmark result artifacts.
+- **`demo/`**: Demo applications and vertical-slice integration examples.
+- **`ops/`**: Operational support material and automation inputs.
+- **`formal/` / `fuzz/`**: Formal methods and fuzzing assets.
 - **`tests/`**: Test suites (differential testing vs CPython).
 - **`docs/`**: Project documentation and specifications (`spec/`).
+- **`wasm/`**: Checked-in WASM support assets, browser host files, and the Node/WASI runner `wasm/run_wasm.js`.
 
 ## When Adding New Functionality
 Use this checklist to ensure you touch the right layers and docs.
 
 1. **Decide the layer of truth**:
    - Runtime semantics belong in `runtime/`.
-   - Lowering or IR changes belong in `compiler/`.
+   - Lowering or IR changes belong in `src/molt/frontend/` or `runtime/molt-backend/`, depending on whether the change is Python-side pipeline logic or Rust backend codegen/runtime coupling.
    - CLI/user-facing behavior belongs in `src/molt/`.
 2. **Find the spec anchor**:
    - Add or update a spec in `docs/spec/`.
@@ -335,7 +338,7 @@ cargo flamegraph -p molt-runtime --bench ptr_registry
 - Build (linked): `PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build --target wasm --linked examples/hello.py`
 - Build (custom linked output): `PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`
 - Build (require linked): `PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked examples/hello.py`
-- Run (Node/WASI): `node run_wasm.js /path/to/output.wasm` (requires linked output; build with `--linked` or `--require-linked`)
+- Run (Node/WASI): `node wasm/run_wasm.js /path/to/output.wasm` (requires linked output; build with `--linked` or `--require-linked`)
 
 ## Operational Assumptions
 
@@ -346,11 +349,11 @@ Molt work is designed around long-running, resumable sessions:
 - Include resume commands in progress reports and status updates.
 - Avoid one-shot assumptions or ephemeral terminals.
 
-See `docs/OPERATIONS.md` for the full operational workflow and logging rules.
+See [OPERATIONS.md](OPERATIONS.md) for the full operational workflow and logging rules.
 
 ## Contributing
 
-Ready to contribute code? Please read `CONTRIBUTING.md`. Note that Molt has high standards for "long-running work" and "rigorous verification".
+Ready to contribute code? Please read [CONTRIBUTING.md](../CONTRIBUTING.md). Note that Molt has high standards for "long-running work" and "rigorous verification".
 
 ## Resources
 

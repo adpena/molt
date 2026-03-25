@@ -14732,7 +14732,7 @@ include!(concat!(env!("OUT_DIR"), "/errno_constants.rs"));
 fn socket_constants() -> Vec<(&'static str, i64)> {
     #[cfg(target_arch = "wasm32")]
     {
-        // Keep wasm socket constants aligned with run_wasm.js host values so
+        // Keep wasm socket constants aligned with wasm/run_wasm.js host values so
         // stdlib consumers (e.g. socketserver/smtplib) do not observe missing
         // module attributes.
         vec![

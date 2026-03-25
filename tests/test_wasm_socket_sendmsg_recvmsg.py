@@ -14,7 +14,7 @@ def test_wasm_socket_sendmsg_recvmsg_parity() -> None:
         pytest.skip("node is required for wasm socket worker parity test")
 
     root = Path(__file__).resolve().parents[1]
-    runner = root / "run_wasm.js"
+    runner = root / "wasm" / "run_wasm.js"
     script = (
         "const { Worker } = require('worker_threads');\n"
         f"const RUNNER = {str(runner)!r};\n"

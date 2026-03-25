@@ -81,7 +81,7 @@ Or use the existing `tools/wasm_strip_unused.py` (already in the repo) which can
 
 ## References
 
-- Existing analysis: `docs/wasm-import-analysis.md` (2026-03-06)
+- Existing analysis: `docs/architecture/wasm-import-analysis.md` (2026-03-06)
 - Existing strip tool: `tools/wasm_strip_unused.py`
 - WASM codegen imports: `runtime/molt-backend/src/wasm.rs` lines 1006-1800+
 - Browser host stubs: `strata/` or site `molt-wasm-host.ts`

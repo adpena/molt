@@ -262,7 +262,7 @@ def run_wasm_linked(
     node_bin = _select_node_binary()
     if node_bin is None:
         raise AssertionError("Node >= 18 is required for wasm execution.")
-    runner = root / "run_wasm.js"
+    runner = root / "wasm" / "run_wasm.js"
     node_args = [
         node_bin,
         "--no-warnings",

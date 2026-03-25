@@ -42,7 +42,7 @@ from typing import Any
 
 MOLT_ROOT = Path(__file__).resolve().parent.parent
 TOOLS_DIR = MOLT_ROOT / "tools"
-RUN_WASM_JS = MOLT_ROOT / "run_wasm.js"
+RUN_WASM_JS = MOLT_ROOT / "wasm/run_wasm.js"
 
 # Make tools/ importable
 sys.path.insert(0, str(TOOLS_DIR))
@@ -484,7 +484,7 @@ def _try_profile_wasm_node(
     timeout_s: int = 30,
     sample_interval_us: int = 1000,
 ) -> tuple[bool, Path | None, str]:
-    """Attempt to run WASM under Node.js with --cpu-prof via run_wasm.js.
+    """Attempt to run WASM under Node.js with --cpu-prof via wasm/run_wasm.js.
 
     Returns (ok, profile_path, error_message).
     This is best-effort: if the WASM runtime is broken, it returns ok=False
@@ -495,7 +495,7 @@ def _try_profile_wasm_node(
         return False, None, "node not found in PATH"
 
     if not RUN_WASM_JS.exists():
-        return False, None, f"run_wasm.js not found at {RUN_WASM_JS}"
+        return False, None, f"wasm/run_wasm.js not found at {RUN_WASM_JS}"
 
     profile_dir.mkdir(parents=True, exist_ok=True)
 
