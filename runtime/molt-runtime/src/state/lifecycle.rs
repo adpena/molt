@@ -37,6 +37,19 @@ impl ThreadLocalGuard {
 
 impl Drop for ThreadLocalGuard {
     fn drop(&mut self) {
+        // After `molt_runtime_shutdown` the RuntimeState has been freed and
+        // both `RUNTIME_STATE_PTR` and `TLS_RUNTIME_STATE` are null.
+        // Attempting GIL acquisition + cleanup here would either:
+        //   (a) dereference a dangling TLS pointer (use-after-free), or
+        //   (b) trigger `molt_runtime_init` to re-allocate a new RuntimeState
+        //       just to tear it down again.
+        // Both are incorrect.  The shutdown path already called
+        // `clear_thread_local_state` + `clear_object_pool`, so there is
+        // nothing left to clean up — skip the work and let the OS reclaim
+        // the process memory.
+        if crate::state::runtime_state::runtime_state_for_gil().is_none() {
+            return;
+        }
         crate::with_gil_entry!(_py, {
             clear_thread_local_state(_py);
         });

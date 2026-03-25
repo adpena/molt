@@ -465,6 +465,13 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
         runtime_teardown(&py, state);
         release_runtime_gil();
     }
+    // Clear the TLS cache BEFORE nulling the global pointer and freeing the
+    // state.  Without this, `TLS_RUNTIME_STATE` holds a dangling pointer to
+    // the about-to-be-freed `RuntimeState`.  During process exit, Rust's TLS
+    // destructors (`ThreadLocalGuard::drop`) may still run and indirectly call
+    // `runtime_state()` — which would dereference the dangling pointer,
+    // causing a use-after-free crash (exit code 245 on macOS).
+    clear_thread_runtime_state();
     RUNTIME_STATE_PTR.store(std::ptr::null_mut(), AtomicOrdering::SeqCst);
     unsafe {
         drop(Box::from_raw(ptr));
