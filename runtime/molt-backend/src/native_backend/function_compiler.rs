@@ -10586,8 +10586,10 @@ impl SimpleBackend {
                         .unwrap();
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
-                    let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out_name) = op.out {
+                        let res = builder.inst_results(call)[0];
+                        def_var_named(&mut builder, &vars, out_name, res);
+                    }
                 }
                 "exception_stack_depth" => {
                     let mut sig = self.module.make_signature();
@@ -12950,8 +12952,10 @@ impl SimpleBackend {
                     let call = builder
                         .ins()
                         .call(local_callee, &[*obj, attr_ptr, attr_len, *val]);
-                    let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out_name) = op.out {
+                        let res = builder.inst_results(call)[0];
+                        def_var_named(&mut builder, &vars, out_name, res);
+                    }
                 }
                 "del_attr_generic_ptr" => {
                     let args = op.args.as_ref().unwrap();
