@@ -449,8 +449,22 @@ impl<'a> SsaContext<'a> {
                         source_span: None,
                     });
                     operands.push(vid);
+                } else {
+                    // Unresolved non-numeric arg — treat as string constant
+                    // (e.g., class names in isinstance, function names in call)
+                    let vid = self.fresh_value_typed();
+                    let mut attrs = super::ops::AttrDict::new();
+                    attrs.insert("s_value".into(), super::ops::AttrValue::Str(a.clone()));
+                    self.pending_inline_consts.push(super::ops::TirOp {
+                        dialect: super::ops::Dialect::Molt,
+                        opcode: super::ops::OpCode::ConstStr,
+                        operands: vec![],
+                        results: vec![vid],
+                        attrs,
+                        source_span: None,
+                    });
+                    operands.push(vid);
                 }
-                // else: non-variable, non-numeric arg (e.g., "none") — skip
             }
         }
         // If `var` is an input (not store_var), resolve it too.
