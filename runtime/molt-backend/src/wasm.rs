@@ -9494,7 +9494,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(total));
                         func.instruction(&Instruction::I64Const(kind_bits));
                         emit_call(func, reloc_enabled, import_ids["task_new"]);
-                        if let Some(out) = op.out.as_ref() { let res = locals[out]; func.instruction(&Instruction::LocalSet(res)); } else { func.instruction(&Instruction::Drop); }
+                        let res = if let Some(out) = op.out.as_ref() { let r = locals[out]; func.instruction(&Instruction::LocalSet(r)); r } else { func.instruction(&Instruction::Drop); 0 };
                         // Resolve the task handle pointer once and cache in a
                         // local, mirroring the trampoline codepath pattern
                         // (WASM_OPTIMIZATION_PLAN Section 3.3).
