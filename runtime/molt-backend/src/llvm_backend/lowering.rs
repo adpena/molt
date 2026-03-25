@@ -326,14 +326,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     _ => 0, // graceful fallback for malformed TIR
                 };
                 let result_id = op.results[0];
+                // NaN-box the integer for the runtime ABI.
+                // Small integers (fits in 47 bits): QNAN | TAG_INT | (val & INT_MASK)
+                // Sign extension: if negative, set the sign bit.
+                let boxed = {
+                    let masked = (val as u64) & nanbox::INT_MASK;
+                    let bits = nanbox::QNAN | nanbox::TAG_INT | masked;
+                    bits
+                };
                 let llvm_val = self
                     .backend
                     .context
                     .i64_type()
-                    .const_int(val as u64, val < 0)
+                    .const_int(boxed, false)
                     .into();
                 self.values.insert(result_id, llvm_val);
-                self.value_types.insert(result_id, TirType::I64);
+                self.value_types.insert(result_id, TirType::DynBox);
             }
             OpCode::ConstFloat => {
                 let val = match op.attrs.get("f_value").or_else(|| op.attrs.get("value")) {
