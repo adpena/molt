@@ -6,9 +6,6 @@
 /// FFI bridge to molt-runtime internal functions (resolved at link time).
 pub mod bridge;
 
+pub mod configparser;
 pub mod csv;
-
-// TODO: migrate from molt-runtime/src/builtins/
-// pub mod json;
-// pub mod datetime;
-// pub mod configparser;
+pub mod datetime;
