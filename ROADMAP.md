@@ -258,7 +258,7 @@ Canonical current status: [docs/spec/STATUS.md](docs/spec/STATUS.md). This roadm
   - wasm-linked build blocker fixed in `tools/wasm_link.py`: malformed UTF-8
     function-name entries in optional `name` sections no longer hard-fail table-ref append.
   - wasm runner hardening landed: deterministic Node resolver (`MOLT_NODE_BIN`
-    + auto-select Node >= 18) and explicit `run_wasm.js` WASI fallback
+    + auto-select Node >= 18) and explicit `wasm/run_wasm.js` WASI fallback
     (`node:wasi` -> `wasi`) with actionable error text.
   - wasm socket constants payload now exports required CPython-facing names
     (`AF_INET`, `SOCK_STREAM`, `SOL_SOCKET`, etc.) from runtime intrinsic
@@ -673,7 +673,7 @@ Sign-off criteria:
 - Implemented: `zipfile` central-directory parsing and ZIP64-extra payload construction now lower through dedicated Rust intrinsics (`molt_zipfile_parse_central_directory`, `molt_zipfile_build_zip64_extra`), `zipfile._path` directory/implied-dir matching and glob translation route through dedicated Rust intrinsics (`molt_zipfile_path_implied_dirs`, `molt_zipfile_path_resolve_dir`, `molt_zipfile_path_is_child`, `molt_zipfile_path_translate_glob`), and `zipfile.main` extract-path sanitization lowers through `molt_zipfile_normalize_member_path`.
 - TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P3, status:partial): process model integration for `multiprocessing`/`subprocess`/`concurrent.futures` (spawn-based partial; `subprocess` significantly advanced with `molt_process_spawn_ex` intrinsic in 2026-02-25 sprint; `concurrent.futures` verified intrinsic-complete; IPC + lifecycle parity pending).
 - TODO(runtime, owner:runtime, milestone:RT3, priority:P1, status:divergent): Fork/forkserver currently map to spawn semantics; implement true fork support.
-- Partial: capability-gated `socket`/`select`/`selectors` backed by runtime sockets + io_poller with intrinsic-backed selector objects (`poll`/`epoll`/`kqueue`/`devpoll`) and backend selector classes; native + wasmtime host implemented. Node/WASI host bindings are wired in `run_wasm.js`; browser host supports WebSocket-backed stream sockets + io_poller readiness while UDP/listen/server sockets remain unsupported.
+- Partial: capability-gated `socket`/`select`/`selectors` backed by runtime sockets + io_poller with intrinsic-backed selector objects (`poll`/`epoll`/`kqueue`/`devpoll`) and backend selector classes; native + wasmtime host implemented. Node/WASI host bindings are wired in `wasm/run_wasm.js`; browser host supports WebSocket-backed stream sockets + io_poller readiness while UDP/listen/server sockets remain unsupported.
   (TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P0, status:partial): expand browser socket coverage (UDP/listen/server sockets) + parity tests.)
 - Implemented: wasm/non-Unix socket host ABI now carries ancillary payload buffers + recvmsg `msg_flags` for `socket.sendmsg`/`socket.recvmsg`/`socket.recvmsg_into`; wasm runtime paths no longer hardcode `msg_flags=0`.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete cross-platform ancillary parity for `socket.sendmsg`/`socket.recvmsg`/`socket.recvmsg_into` (`cmsghdr`, `CMSG_*`, control message decode/encode); wasm-managed stream peer paths now transport ancillary payloads (for example `socketpair`), while unsupported non-Unix routes still return `EOPNOTSUPP` for non-empty ancillary control messages.
@@ -723,7 +723,7 @@ Sign-off criteria:
 ## DB
 - Partial: `molt-db` pool skeleton (bounded, sync), feature-gated async pool primitive, SQLite connector (native-only; wasm parity pending), and async Postgres connector with statement cache; `molt_worker` exposes `db_query`/`db_exec` for SQLite + Postgres (TODO(wasm-db-parity, owner:runtime, milestone:DB2, priority:P1, status:partial): wasm DB parity).
 - Top priority: wasm parity for DB connectors before expanding DB adapters or query-builder ergonomics.
-- Implemented: wasm DB client shims + parity test (`molt_db` async helper) consume response streams and surface bytes/Arrow IPC; Node/WASI host adapter forwards `db_query`/`db_exec` to `molt-worker` via `run_wasm.js`.
+- Implemented: wasm DB client shims + parity test (`molt_db` async helper) consume response streams and surface bytes/Arrow IPC; Node/WASI host adapter forwards `db_query`/`db_exec` to `molt-worker` via `wasm/run_wasm.js`.
 
 ## Edge And Workers
 - Proposed: `Molt Edge` as a first-class Edge/Workers tier with a minimal VFS, snapshot-oriented deployment, and Cloudflare-first host profile. Canonical docs: `0294_MOLT_EDGE_WORKERS_RUNTIME_PROPOSAL.md`, `0295_MOLT_ENHANCEMENT_PROPOSAL_0001_EDGE_WORKERS_TIER.md`, and `0968_MOLT_EDGE_WORKERS_VFS_AND_HOST_CAPABILITIES.md`.

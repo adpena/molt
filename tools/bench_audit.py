@@ -56,7 +56,7 @@ DEFAULT_TIMEOUT_S = 60.0
 GREEN_THRESHOLD = 1.0   # Molt is at least as fast as CPython
 YELLOW_THRESHOLD = 0.5  # Molt is within 2x of CPython
 
-RESULTS_DIR = REPO_ROOT / "benchmarks" / "results"
+RESULTS_DIR = REPO_ROOT / "bench" / "results"
 DEFAULT_OUTPUT = RESULTS_DIR / "audit_baseline.json"
 
 

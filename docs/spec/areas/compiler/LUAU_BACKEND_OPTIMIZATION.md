@@ -382,7 +382,7 @@ Transpiled Luau runs in Roblox Studio/runtime context where:
 
 ## 7. Known Bugs and Limitations
 
-See `docs/luau-backend-known-bugs.md` for the 5 known bugs:
+See `docs/architecture/luau-backend-known-bugs.md` for the 5 known bugs:
 
 1. **Global variable subscript precedence** -- `or nil[i]` vs `(... or nil)[i]`
 2. **type_hint not propagated** -- list type lost through function params/subscripts
@@ -437,7 +437,7 @@ See `docs/luau-backend-known-bugs.md` for the 5 known bugs:
 - `tests/luau/test_molt_luau_correctness.py` -- differential tests (Lune vs CPython)
 - `tools/check_luau_static.py` -- static analysis checker
 - `tools/benchmark_luau_vs_cpython.py` -- benchmark harness
-- `docs/luau-backend-known-bugs.md` -- bug tracker
+- `docs/architecture/luau-backend-known-bugs.md` -- bug tracker
 
 ### External
 - [How we make Luau fast](https://luau.org/performance/) -- Luau performance internals

@@ -6,7 +6,7 @@ the original Python and the transpiled Luau (via Lune), and compares
 execution time and output correctness.
 
 Usage:
-    python benchmarks/luau/run_benchmarks.py [--molt-path PATH] [--lune-path PATH]
+    python bench/luau/run_benchmarks.py [--molt-path PATH] [--lune-path PATH]
 
 Environment variables:
     MOLT_PATH       Path to molt binary (default: searches PATH)

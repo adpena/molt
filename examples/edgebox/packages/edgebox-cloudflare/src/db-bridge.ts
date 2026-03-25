@@ -161,7 +161,7 @@ export function createDbHostFunctions(state: BridgeState) {
 
 // ---------------------------------------------------------------------------
 // Full WASI shim for running molt WASM inside a Durable Object
-// Mirrors the pattern from examples/cloudflare-demo/dist/worker.js
+// Mirrors the pattern from the Cloudflare Python worker example.
 // ---------------------------------------------------------------------------
 
 class ProcExit extends Error {
@@ -308,7 +308,7 @@ export function buildWasiShim(
 
 // ---------------------------------------------------------------------------
 // Stub host env functions for unsupported molt imports
-// Matches the signatures from examples/cloudflare-demo/dist/worker.js
+// Matches the signatures used by the Cloudflare Python worker example.
 // ---------------------------------------------------------------------------
 export function createHostStubs() {
   return {

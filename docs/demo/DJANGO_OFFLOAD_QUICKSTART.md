@@ -17,20 +17,26 @@ export MOLT_WORKER_RUNTIME=async
 export MOLT_DB_POSTGRES_DSN="postgres://user:pass@localhost:5432/dbname"
 ```
 
-3. Start Django:
+3. Seed the demo SQLite DB:
+```
+cd demo/django_app
+uv run --python 3.12 python3 -m demoapp.db_seed --path db.sqlite3
+```
+
+4. Start Django:
 ```
 cd demo/django_app
 uv run --python 3.12 python3 manage.py runserver
 ```
 
-4. Hit endpoints:
+5. Hit endpoints:
 - `http://127.0.0.1:8000/health/`
 - `http://127.0.0.1:8000/baseline/?user_id=1` vs `/offload/?user_id=1`
 - `http://127.0.0.1:8000/compute/?values=1,2,3&scale=2&offset=1` vs `/compute_offload/?...`
 - `http://127.0.0.1:8000/offload_table/?rows=10000`
   (or `POST /offload_table/` with JSON `{"rows": 10000}` to override rows)
 
-5. Perf harness:
+6. Perf harness:
 ```
 bench/scripts/run_stack.sh
 ```

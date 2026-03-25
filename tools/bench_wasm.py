@@ -1521,7 +1521,7 @@ def _resolve_runner(
         extra_options = os.environ.get("MOLT_WASM_NODE_OPTIONS")
         if extra_options:
             cmd.extend(shlex.split(extra_options))
-        cmd.append("run_wasm.js")
+        cmd.append("wasm/run_wasm.js")
         return cmd
     if runner != "wasmtime":
         raise ValueError(f"Unsupported wasm runner: {runner}")

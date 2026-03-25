@@ -17,6 +17,7 @@ Canonical status lives in [docs/spec/STATUS.md](docs/spec/STATUS.md) (README and
 
 ## Documentation Quick Links
 - Docs index (canonical navigation): [docs/INDEX.md](docs/INDEX.md)
+- Repo root layout contract: [docs/ROOT_LAYOUT.md](docs/ROOT_LAYOUT.md)
 - Operator support snapshot: [SUPPORTED.md](SUPPORTED.md)
 - Spec index (full spec map): [docs/spec/README.md](docs/spec/README.md)
 - Compatibility corpus manifest: [docs/COMPATIBILITY_CORPUS_MANIFEST.md](docs/COMPATIBILITY_CORPUS_MANIFEST.md)
@@ -32,8 +33,7 @@ Canonical status lives in [docs/spec/STATUS.md](docs/spec/STATUS.md) (README and
 - Current phase: Week 1 observability complete with Week 0 baseline lock artifacts captured; next focus is Week 2 specialization + wasm stabilization clusters.
 - Canonical optimization scope: [OPTIMIZATIONS_PLAN.md](OPTIMIZATIONS_PLAN.md).
 - Canonical optimization execution log: [docs/benchmarks/optimization_progress.md](docs/benchmarks/optimization_progress.md).
-- Latest observability artifact snapshot: [bench/results/optimization_progress/2026-02-11_week1_observability/summary.md](bench/results/optimization_progress/2026-02-11_week1_observability/summary.md).
-- Baseline lock summary: [bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md](bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md).
+- Canonical raw benchmark/result artifacts live under `bench/results/`.
 - Current compile-throughput recovery status: stdlib mid-end functions now default to Tier C unless explicitly promoted; budget degrade checkpoints are stage-level with pre-pass evaluation; frontend layer-parallel diagnostics include stdlib-aware effective min-cost policy details.
 - Stdlib integrity gate status: `tools/check_stdlib_intrinsics.py` now enforces fallback-pattern bans across all stdlib modules by default (opt-down flag: `--fallback-intrinsic-backed-only`).
 - Stdlib coverage gate status: top-level + submodule CPython union coverage (3.12/3.13/3.14) is enforced by `tools/check_stdlib_intrinsics.py` against `tools/stdlib_module_union.py` (missing names, package-kind mismatches, and duplicate mappings are hard failures).
@@ -366,7 +366,7 @@ See `docs/spec/areas/` for detailed architectural decisions.
 - WASM build (linked): `uv run --python 3.12 python3 -m molt.cli build --target wasm --linked examples/hello.py` (emits `output.wasm` + `output_linked.wasm`; linked requires `wasm-ld` + `wasm-tools`).
 - WASM build (custom linked output): `uv run --python 3.12 python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`.
 - WASM build (require linked): `uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked examples/hello.py` (linked output is primary; unlinked artifact removed).
-- WASM run (Node/WASI): `node run_wasm.js /path/to/output.wasm` (requires linked output; build with `--linked` or `--require-linked`).
+- WASM run (Node/WASI): `node wasm/run_wasm.js /path/to/output.wasm` (requires linked output; build with `--linked` or `--require-linked`).
 - WASM bench: `uv run --python 3.14 python3 tools/bench_wasm.py --json-out bench/results/bench_wasm.json` (requires `wasm-ld` + `wasm-tools`; linked output is required by default), then compare against the native CPython baselines in `bench/results/bench.json`.
 
 ## Performance & Comparisons

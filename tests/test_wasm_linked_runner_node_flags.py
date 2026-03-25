@@ -31,7 +31,7 @@ def test_run_wasm_linked_uses_stable_node_flags(
     assert "--no-wasm-tier-up" in cmd
     assert "--no-wasm-dynamic-tiering" in cmd
     assert "--wasm-num-compilation-tasks=1" in cmd
-    assert cmd[-2:] == [str(tmp_path / "run_wasm.js"), str(wasm_path)]
+    assert cmd[-2:] == [str(tmp_path / "wasm" / "run_wasm.js"), str(wasm_path)]
     env = cast(dict[str, str], recorded["env"])
     assert env.get("NODE_NO_WARNINGS") == "1"
 

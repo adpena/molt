@@ -28,7 +28,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Key: hex-encoded hash of (function name + body bytes).
 /// Value: cached compilation artifact stored both in-memory and on disk.
 pub struct CompilationCache {
-    /// Cache root directory (e.g. `.molt-cache/`).
+    /// Cache root directory (e.g. `.molt_cache/`).
     cache_dir: PathBuf,
 
     /// In-memory index: `content_hash` → [`CacheEntry`].
