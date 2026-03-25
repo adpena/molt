@@ -855,6 +855,39 @@ mod tests {
     // ---------------------------------------------------------------------------
 
     #[test]
+    fn roundtrip_trace_ops_survive() {
+        // Reproduce the exact pattern from native_backend_can_opt_in_trace_imports
+        let ops = vec![
+            OpIR {
+                kind: "trace_enter_slot".to_string(),
+                value: Some(7),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "trace_exit".to_string(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".to_string(),
+                ..OpIR::default()
+            },
+        ];
+        let result = roundtrip(ops.clone());
+        let has_trace_enter = result.iter().any(|o| o.kind == "trace_enter_slot");
+        let has_trace_exit = result.iter().any(|o| o.kind == "trace_exit");
+        assert!(
+            has_trace_enter,
+            "trace_enter_slot must survive round-trip with optimization. Got: {:?}",
+            result.iter().map(|o| format!("{}(v={:?})", o.kind, o.value)).collect::<Vec<_>>()
+        );
+        assert!(
+            has_trace_exit,
+            "trace_exit must survive round-trip with optimization. Got: {:?}",
+            result.iter().map(|o| format!("{}(v={:?})", o.kind, o.value)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn roundtrip_const_zero_value() {
         let ops = vec![
             OpIR {
