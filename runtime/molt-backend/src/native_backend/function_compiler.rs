@@ -8651,20 +8651,25 @@ impl SimpleBackend {
                     let code_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("code bits not found");
                     let func_name = op.s_value.as_ref().expect("fn_ptr_code_set expects symbol");
-                    let mut func_sig = self.module.make_signature();
-                    if func_name.ends_with("_poll") {
-                        func_sig.params.push(AbiParam::new(types::I64));
+                    let func_id = if let Some(cranelift_module::FuncOrDataId::Func(id)) =
+                        self.module.get_name(func_name)
+                    {
+                        id
                     } else {
+                        let mut func_sig = self.module.make_signature();
                         let arity = op.value.unwrap_or(0);
-                        for _ in 0..arity {
+                        if arity > 0 {
+                            for _ in 0..arity {
+                                func_sig.params.push(AbiParam::new(types::I64));
+                            }
+                        } else if func_name.ends_with("_poll") {
                             func_sig.params.push(AbiParam::new(types::I64));
                         }
-                    }
-                    func_sig.returns.push(AbiParam::new(types::I64));
-                    let func_id = self
-                        .module
-                        .declare_function(func_name, Linkage::Import, &func_sig)
-                        .unwrap();
+                        func_sig.returns.push(AbiParam::new(types::I64));
+                        self.module
+                            .declare_function(func_name, Linkage::Export, &func_sig)
+                            .unwrap()
+                    };
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
                     let mut sig = self.module.make_signature();
@@ -8688,20 +8693,25 @@ impl SimpleBackend {
                         .s_value
                         .as_ref()
                         .expect("asyncgen_locals_register expects symbol");
-                    let mut func_sig = self.module.make_signature();
-                    if func_name.ends_with("_poll") {
-                        func_sig.params.push(AbiParam::new(types::I64));
+                    let func_id = if let Some(cranelift_module::FuncOrDataId::Func(id)) =
+                        self.module.get_name(func_name)
+                    {
+                        id
                     } else {
+                        let mut func_sig = self.module.make_signature();
                         let arity = op.value.unwrap_or(0);
-                        for _ in 0..arity {
+                        if arity > 0 {
+                            for _ in 0..arity {
+                                func_sig.params.push(AbiParam::new(types::I64));
+                            }
+                        } else if func_name.ends_with("_poll") {
                             func_sig.params.push(AbiParam::new(types::I64));
                         }
-                    }
-                    func_sig.returns.push(AbiParam::new(types::I64));
-                    let func_id = self
-                        .module
-                        .declare_function(func_name, Linkage::Import, &func_sig)
-                        .unwrap();
+                        func_sig.returns.push(AbiParam::new(types::I64));
+                        self.module
+                            .declare_function(func_name, Linkage::Export, &func_sig)
+                            .unwrap()
+                    };
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
                     let mut sig = self.module.make_signature();
@@ -8728,20 +8738,35 @@ impl SimpleBackend {
                         .s_value
                         .as_ref()
                         .expect("gen_locals_register expects symbol");
+                    // Build the signature from the op's declared arity.
                     let mut func_sig = self.module.make_signature();
-                    if func_name.ends_with("_poll") {
-                        func_sig.params.push(AbiParam::new(types::I64));
-                    } else {
-                        let arity = op.value.unwrap_or(0);
+                    let arity = op.value.unwrap_or(0);
+                    if arity > 0 {
                         for _ in 0..arity {
                             func_sig.params.push(AbiParam::new(types::I64));
                         }
+                    } else if func_name.ends_with("_poll") {
+                        func_sig.params.push(AbiParam::new(types::I64));
                     }
                     func_sig.returns.push(AbiParam::new(types::I64));
-                    let func_id = self
-                        .module
-                        .declare_function(func_name, Linkage::Import, &func_sig)
-                        .unwrap();
+                    // The function may have been declared by func_new with a
+                    // different (trampoline) signature.  Reuse the existing
+                    // FuncId when available; if signatures conflict, the
+                    // linker resolves the difference via the trampoline.
+                    let func_id = if let Some(cranelift_module::FuncOrDataId::Func(id)) =
+                        self.module.get_name(func_name)
+                    {
+                        id
+                    } else {
+                        self.module
+                            .declare_function(func_name, Linkage::Export, &func_sig)
+                            .unwrap_or_else(|e| {
+                                panic!(
+                                    "gen_locals_register: failed to declare '{}': {:?}",
+                                    func_name, e
+                                )
+                            })
+                    };
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
                     let mut sig = self.module.make_signature();
