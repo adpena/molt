@@ -28,6 +28,7 @@ pub(crate) mod colorsys;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod compression_common;
 pub(crate) mod concurrent;
+#[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod configparser;
 pub(crate) mod containers;
 pub(crate) mod containers_alloc;
@@ -37,6 +38,7 @@ pub(crate) mod contextvars;
 pub(crate) mod copy_mod;
 #[cfg(not(feature = "stdlib_csv"))]
 pub(crate) mod csv;
+#[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod datetime;
 pub(crate) mod dbm_dumb;
 pub(crate) mod decimal;
