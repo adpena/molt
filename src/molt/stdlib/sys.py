@@ -2,8 +2,23 @@
 
 from __future__ import annotations
 
-import _intrinsics as _stdlib_intrinsics
-from _intrinsics import load_intrinsic as _load_intrinsic
+# Bootstrap intrinsic lookup — avoid importing _intrinsics (not compiled).
+# The runtime injects _molt_intrinsic_lookup into every module's globals.
+def _load_intrinsic(name):
+    """Load an intrinsic by name, returning None if unavailable."""
+    _lookup = globals().get("_molt_intrinsic_lookup")
+    if _lookup is not None:
+        result = _lookup(name)
+        if result is not None:
+            return result
+    # Fallback: check builtins
+    import builtins as _bi
+    _helper = getattr(_bi, "_molt_intrinsic_lookup", None)
+    if _helper is not None:
+        result = _helper(name)
+        if result is not None:
+            return result
+    return None
 
 
 def cast(_tp, value):  # type: ignore[override]
