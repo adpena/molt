@@ -8873,7 +8873,6 @@ mod tests {
         assert!(lowered.iter().any(|op| op.kind == "pcall_wrap_begin"));
         assert!(lowered.iter().any(|op| op.kind == "pcall_wrap_end"));
         assert!(!lowered.iter().any(|op| op.kind == "try_start"));
-        ic_index: None,
     }
 
     #[test]
@@ -8934,6 +8933,5 @@ mod tests {
         let end_count = lowered.iter().filter(|op| op.kind == "pcall_wrap_end").count();
         assert_eq!(begin_count, 2, "should have 2 pcall_wrap_begin");
         assert_eq!(end_count, 2, "should have 2 pcall_wrap_end");
-        ic_index: None,
     }
 }
