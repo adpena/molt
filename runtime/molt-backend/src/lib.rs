@@ -2231,6 +2231,11 @@ impl SimpleBackend {
 
             for func_ir in &ir.functions {
                 let tir_func = lower_to_tir(func_ir);
+                if env_setting("TIR_DUMP").as_deref() == Some("1")
+                    || env_setting("MOLT_TIR_DUMP").as_deref() == Some("1")
+                {
+                    eprintln!("[LLVM] TIR for '{}':\n{}", tir_func.name, crate::tir::printer::print_function(&tir_func));
+                }
                 crate::llvm_backend::lowering::lower_tir_to_llvm(&tir_func, &llvm);
             }
 

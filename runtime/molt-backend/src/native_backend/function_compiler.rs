@@ -2836,7 +2836,6 @@ impl SimpleBackend {
                         builder.switch_to_block(int_block);
                         builder.seal_block(int_block);
                         let zero = builder.ins().iconst(types::I64, 0);
-                        let one = builder.ins().iconst(types::I64, 1);
                         let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
                         let fast_block = builder.create_block();
                         builder
@@ -2845,32 +2844,12 @@ impl SimpleBackend {
 
                         builder.switch_to_block(fast_block);
                         builder.seal_block(fast_block);
-                        // Inline sdiv with Python floor-division adjustment.
-                        let quot = builder.ins().sdiv(lhs_val, rhs_val);
-                        let rem = builder.ins().srem(lhs_val, rhs_val);
-                        let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
-                        let lhs_neg =
-                            builder
-                                .ins()
-                                .icmp(IntCC::SignedLessThan, lhs_val, zero);
-                        let rhs_neg =
-                            builder
-                                .ins()
-                                .icmp(IntCC::SignedLessThan, rhs_val, zero);
-                        let sign_diff = builder.ins().bxor(lhs_neg, rhs_neg);
-                        let adjust = builder.ins().band(rem_nonzero, sign_diff);
-                        let quot_minus_one = builder.ins().isub(quot, one);
-                        let floor_quot = builder.ins().select(adjust, quot_minus_one, quot);
-                        let fast_res = box_int_value(&mut builder, floor_quot, &nbc);
-                        let fits_inline = int_value_fits_inline(&mut builder, floor_quot);
-                        brif_block(
-                            &mut builder,
-                            fits_inline,
-                            merge_block,
-                            &[fast_res],
-                            slow_block,
-                            &[],
-                        );
+                        // Python true division: int / int -> float.
+                        let lhs_f = builder.ins().fcvt_from_sint(types::F64, lhs_val);
+                        let rhs_f = builder.ins().fcvt_from_sint(types::F64, rhs_val);
+                        let result_f = builder.ins().fdiv(lhs_f, rhs_f);
+                        let fast_res = box_float_value(&mut builder, result_f);
+                        jump_block(&mut builder, merge_block, &[fast_res]);
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
