@@ -545,9 +545,40 @@ impl SimpleBackend {
             match op.kind.as_str() {
                 "const" => {
                     let val = op.value.unwrap();
-                    let boxed = box_int(val);
-                    let iconst = builder.ins().iconst(types::I64, boxed);
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), iconst);
+                    const INLINE_MIN: i64 = -(1_i64 << 46);
+                    const INLINE_MAX: i64 = (1_i64 << 46) - 1;
+                    if val >= INLINE_MIN && val <= INLINE_MAX {
+                        let boxed = box_int(val);
+                        let iconst = builder.ins().iconst(types::I64, boxed);
+                        def_var_named(&mut builder, &vars, op.out.unwrap(), iconst);
+                    } else {
+                        // Value exceeds 47-bit signed inline range — use bigint path.
+                        let s = val.to_string();
+                        let bytes = s.as_bytes();
+                        let data_id = Self::intern_data_segment(
+                            &mut self.module,
+                            &mut self.data_pool,
+                            &mut self.next_data_id,
+                            bytes,
+                        );
+                        let out_name = op.out.unwrap();
+                        let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
+                        let ptr = builder.ins().symbol_value(types::I64, global_ptr);
+                        let len = builder.ins().iconst(types::I64, bytes.len() as i64);
+                        let mut sig = self.module.make_signature();
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.params.push(AbiParam::new(types::I64));
+                        sig.returns.push(AbiParam::new(types::I64));
+                        let callee = self
+                            .module
+                            .declare_function("molt_bigint_from_str", Linkage::Import, &sig)
+                            .unwrap();
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[ptr, len]);
+                        let res = builder.inst_results(call)[0];
+                        def_var_named(&mut builder, &vars, out_name, res);
+                        output_is_ptr = true;
+                    }
                 }
                 "const_bigint" => {
                     let s = op.s_value.as_ref().expect("BigInt string not found");
@@ -12556,27 +12587,90 @@ impl SimpleBackend {
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
 
-                    let call = if let Some(ic_idx) = op.ic_index {
-                        // IC-accelerated path: pass the IC table index as a 4th
-                        // argument so `molt_getattr_ic` can probe/populate the
-                        // lock-free inline cache.
-                        let mut sig = self.module.make_signature();
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.params.push(AbiParam::new(types::I64));
-                        sig.returns.push(AbiParam::new(types::I64));
-                        let callee = self
+                    let res = if let Some(ic_idx) = op.ic_index {
+                        // Split-phase IC: fast GIL-free probe, then slow path on miss.
+                        //
+                        // Phase 1: molt_ic_probe_fast(obj_ptr, ic_index) → hit or 0
+                        // Phase 2 (miss only): molt_getattr_ic_slow(obj_ptr, attr, len, ic_index)
+                        //
+                        // The raw ic_index is passed as a plain i64 — NOT NaN-boxed —
+                        // because the runtime treats it as a direct table index.
+                        let ic_raw = builder.ins().iconst(types::I64, ic_idx);
+
+                        // --- Declare molt_ic_probe_fast(obj_ptr, ic_index) -> i64 ---
+                        let mut probe_sig = self.module.make_signature();
+                        probe_sig.params.push(AbiParam::new(types::I64));
+                        probe_sig.params.push(AbiParam::new(types::I64));
+                        probe_sig.returns.push(AbiParam::new(types::I64));
+                        let probe_callee = self
                             .module
-                            .declare_function("molt_getattr_ic", Linkage::Import, &sig)
+                            .declare_function("molt_ic_probe_fast", Linkage::Import, &probe_sig)
                             .unwrap();
-                        let local_callee =
-                            self.module.declare_func_in_func(callee, builder.func);
-                        let ic_bits =
-                            builder.ins().iconst(types::I64, box_int(ic_idx));
+                        let probe_local =
+                            self.module.declare_func_in_func(probe_callee, builder.func);
+
+                        // --- Declare molt_getattr_ic_slow(obj_ptr, attr, len, ic_index) -> i64 ---
+                        let mut slow_sig = self.module.make_signature();
+                        slow_sig.params.push(AbiParam::new(types::I64));
+                        slow_sig.params.push(AbiParam::new(types::I64));
+                        slow_sig.params.push(AbiParam::new(types::I64));
+                        slow_sig.params.push(AbiParam::new(types::I64));
+                        slow_sig.returns.push(AbiParam::new(types::I64));
+                        let slow_callee = self
+                            .module
+                            .declare_function("molt_getattr_ic_slow", Linkage::Import, &slow_sig)
+                            .unwrap();
+                        let slow_local =
+                            self.module.declare_func_in_func(slow_callee, builder.func);
+
+                        // --- Emit: probe_result = molt_ic_probe_fast(obj_ptr, ic_raw) ---
+                        let probe_call =
+                            builder.ins().call(probe_local, &[obj_ptr, ic_raw]);
+                        let probe_result = builder.inst_results(probe_call)[0];
+
+                        // --- Branch: hit (probe_result != 0) vs miss ---
+                        let hit_block = builder.create_block();
+                        let miss_block = builder.create_block();
+                        builder.set_cold_block(miss_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let is_hit = builder.ins().icmp(
+                            IntCC::NotEqual,
+                            probe_result,
+                            zero,
+                        );
                         builder
                             .ins()
-                            .call(local_callee, &[obj_ptr, attr_ptr, attr_len, ic_bits])
+                            .brif(is_hit, hit_block, &[], miss_block, &[]);
+
+                        // --- Hit block: probe returned an owned reference ---
+                        builder.switch_to_block(hit_block);
+                        builder.seal_block(hit_block);
+                        jump_block(&mut builder, merge_block, &[probe_result]);
+
+                        // --- Miss block: full resolution via slow path ---
+                        builder.switch_to_block(miss_block);
+                        builder.seal_block(miss_block);
+                        let slow_call = builder.ins().call(
+                            slow_local,
+                            &[obj_ptr, attr_ptr, attr_len, ic_raw],
+                        );
+                        let slow_result = builder.inst_results(slow_call)[0];
+                        // Slow path returns a borrowed reference; inc_ref to own it.
+                        emit_maybe_ref_adjust_v2(
+                            &mut builder,
+                            slow_result,
+                            local_inc_ref_obj,
+                            &nbc,
+                        );
+                        jump_block(&mut builder, merge_block, &[slow_result]);
+
+                        // --- Merge ---
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
                     } else {
                         // Legacy path: no IC index available.
                         let mut sig = self.module.make_signature();
@@ -12590,14 +12684,15 @@ impl SimpleBackend {
                             .unwrap();
                         let local_callee =
                             self.module.declare_func_in_func(callee, builder.func);
-                        builder
+                        let call = builder
                             .ins()
-                            .call(local_callee, &[obj_ptr, attr_ptr, attr_len])
+                            .call(local_callee, &[obj_ptr, attr_ptr, attr_len]);
+                        let slow_res = builder.inst_results(call)[0];
+                        // Attribute lookup may return borrowed values from object/class internals.
+                        // Normalize to an owned reference so last-use decref remains safe.
+                        emit_maybe_ref_adjust_v2(&mut builder, slow_res, local_inc_ref_obj, &nbc);
+                        slow_res
                     };
-                    let res = builder.inst_results(call)[0];
-                    // Attribute lookup may return borrowed values from object/class internals.
-                    // Normalize to an owned reference so last-use decref remains safe.
-                    emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
                     def_var_named(&mut builder, &vars, op.out.unwrap(), res);
                 }
                 "get_attr_generic_obj" => {
