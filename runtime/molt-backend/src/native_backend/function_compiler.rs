@@ -1,6 +1,9 @@
 use super::*;
 
 #[cfg(feature = "native-backend")]
+static EMPTY_VEC_STRING: Vec<String> = Vec::new();
+
+#[cfg(feature = "native-backend")]
 struct FunctionPreanalysis {
     has_ret: bool,
     stateful: bool,
@@ -544,13 +547,13 @@ impl SimpleBackend {
 
             match op.kind.as_str() {
                 "const" => {
-                    let val = op.value.unwrap();
+                    let val = op.value.unwrap_or(0);
                     const INLINE_MIN: i64 = -(1_i64 << 46);
                     const INLINE_MAX: i64 = (1_i64 << 46) - 1;
                     if val >= INLINE_MIN && val <= INLINE_MAX {
                         let boxed = box_int(val);
                         let iconst = builder.ins().iconst(types::I64, boxed);
-                        def_var_named(&mut builder, &vars, op.out.unwrap(), iconst);
+                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, iconst); }
                     } else {
                         // Value exceeds 47-bit signed inline range — use bigint path.
                         let s = val.to_string();
@@ -561,7 +564,7 @@ impl SimpleBackend {
                             &mut self.next_data_id,
                             bytes,
                         );
-                        let out_name = op.out.unwrap();
+                        let Some(out_name) = op.out else { continue; };
                         let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                         let ptr = builder.ins().symbol_value(types::I64, global_ptr);
                         let len = builder.ins().iconst(types::I64, bytes.len() as i64);
@@ -582,7 +585,7 @@ impl SimpleBackend {
                 }
                 "const_bigint" => {
                     let s = op.s_value.as_ref().expect("BigInt string not found");
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
                     let bytes = s.as_bytes();
                     let data_id = Self::intern_data_segment(
                         &mut self.module,
@@ -608,14 +611,14 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "const_bool" => {
-                    let val = op.value.unwrap();
+                    let val = op.value.unwrap_or(0);
                     let boxed = box_bool(val);
                     let iconst = builder.ins().iconst(types::I64, boxed);
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), iconst);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, iconst); }
                 }
                 "const_none" => {
                     let iconst = builder.ins().iconst(types::I64, box_none());
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), iconst);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, iconst); }
                 }
                 "const_not_implemented" => {
                     let mut sig = self.module.make_signature();
@@ -627,7 +630,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "const_ellipsis" => {
                     let mut sig = self.module.make_signature();
@@ -639,20 +642,20 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "const_float" => {
                     let val = op.f_value.expect("Float value not found");
                     let boxed = box_float(val);
                     let iconst = builder.ins().iconst(types::I64, boxed);
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), iconst);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, iconst); }
                 }
                 "const_str" => {
                     let bytes = op
                         .bytes
                         .as_deref()
-                        .unwrap_or_else(|| op.s_value.as_ref().unwrap().as_bytes());
-                    let out_name = op.out.unwrap();
+                        .unwrap_or_else(|| op.s_value.as_deref().unwrap_or("").as_bytes());
+                    let Some(out_name) = op.out else { continue; };
                     let data_id = Self::intern_data_segment(
                         &mut self.module,
                         &mut self.data_pool,
@@ -692,7 +695,7 @@ impl SimpleBackend {
                 }
                 "const_bytes" => {
                     let bytes = op.bytes.as_ref().expect("Bytes not found");
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
                     let data_id = Self::intern_data_segment(
                         &mut self.module,
                         &mut self.data_pool,
@@ -731,7 +734,7 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, out_name, boxed);
                 }
                 "add" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_float.unwrap_or(false) {
@@ -846,10 +849,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "inplace_add" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_float.unwrap_or(false) {
@@ -962,10 +965,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_sum_int" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
@@ -979,10 +982,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_sum_int_trusted" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
@@ -996,10 +999,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_sum_int_range" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
@@ -1016,10 +1019,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_sum_int_range_trusted" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
@@ -1036,10 +1039,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_sum_int_range_iter" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
@@ -1053,10 +1056,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_sum_int_range_iter_trusted" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
@@ -1074,10 +1077,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_sum_float" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
@@ -1091,10 +1094,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_sum_float_trusted" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
@@ -1108,10 +1111,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_sum_float_range" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
@@ -1128,10 +1131,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_sum_float_range_trusted" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
@@ -1148,10 +1151,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_sum_float_range_iter" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
@@ -1165,10 +1168,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_sum_float_range_iter_trusted" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
@@ -1186,10 +1189,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_prod_int" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
@@ -1203,10 +1206,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_prod_int_trusted" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
@@ -1220,10 +1223,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_prod_int_range" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
@@ -1240,10 +1243,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_prod_int_range_trusted" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
@@ -1260,10 +1263,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_min_int" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
@@ -1277,10 +1280,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_min_int_trusted" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
@@ -1294,10 +1297,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_min_int_range" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
@@ -1314,10 +1317,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_min_int_range_trusted" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
@@ -1334,10 +1337,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_max_int" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
@@ -1351,10 +1354,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_max_int_trusted" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let mut sig = self.module.make_signature();
@@ -1368,10 +1371,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_max_int_range" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
@@ -1388,10 +1391,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "vec_max_int_range_trusted" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
@@ -1408,10 +1411,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "sub" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("LHS not found in {} op {}", func_ir.name, op_idx)
                     });
@@ -1526,10 +1529,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "inplace_sub" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("LHS not found in {} op {}", func_ir.name, op_idx)
                     });
@@ -1644,10 +1647,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "mul" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_float.unwrap_or(false) {
@@ -1758,10 +1761,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "inplace_mul" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_float.unwrap_or(false) {
@@ -1872,10 +1875,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bit_or" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
@@ -1963,10 +1966,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "inplace_bit_or" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
@@ -2054,10 +2057,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bit_and" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
@@ -2145,10 +2148,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "inplace_bit_and" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
@@ -2236,10 +2239,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bit_xor" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
@@ -2327,10 +2330,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "inplace_bit_xor" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
@@ -2418,10 +2421,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "lshift" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
@@ -2555,10 +2558,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "rshift" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
@@ -2666,10 +2669,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "matmul" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
@@ -2683,10 +2686,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "div" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_float.unwrap_or(false) {
@@ -2854,10 +2857,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "floordiv" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
@@ -2990,10 +2993,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "mod" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
@@ -3114,10 +3117,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "floor_div" | "binop_floor_div" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
@@ -3203,10 +3206,10 @@ impl SimpleBackend {
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         builder.inst_results(call)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "pow" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
@@ -3309,10 +3312,10 @@ impl SimpleBackend {
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         builder.inst_results(call)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "pow_mod" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let modulus = var_get(&mut builder, &vars, &args[2]).expect("Mod not found");
@@ -3328,10 +3331,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs, *modulus]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "round" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Round arg not found");
                     let ndigits =
                         var_get(&mut builder, &vars, &args[1]).expect("Round ndigits not found");
@@ -3351,10 +3354,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*val, *ndigits, *has_ndigits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "trunc" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Trunc arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -3366,16 +3369,16 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "len" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Stack-tuple fast path: length is known at compile time.
                     if let Some(elems) = stack_tuples.get(&args[0]) {
                         let len_boxed = builder
                             .ins()
                             .iconst(types::I64, box_int(elems.len() as i64));
-                        def_var_named(&mut builder, &vars, op.out.unwrap(), len_boxed);
+                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, len_boxed); }
                     } else if matches!(op.type_hint.as_deref(), Some("list") | Some("tuple")) {
                         // Inline fast path for list/tuple: read len from the
                         // underlying Vec<u64> without calling into the runtime.
@@ -3398,7 +3401,7 @@ impl SimpleBackend {
                             8, // offset to Vec::len (after the data pointer)
                         );
                         let res = box_int_value(&mut builder, len_val, &nbc);
-                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                     } else {
                         let val = var_get(&mut builder, &vars, &args[0]).expect("Len arg not found");
                         let mut sig = self.module.make_signature();
@@ -3411,11 +3414,11 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*val]);
                         let res = builder.inst_results(call)[0];
-                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                     }
                 }
                 "id" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Id arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -3427,10 +3430,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "ord" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Ord arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -3442,10 +3445,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "chr" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Chr arg not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -3457,10 +3460,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "callargs_new" => {
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
                     let zero = builder.ins().iconst(types::I64, 0);
                     let local_callee = import_func_ref(
                         &mut self.module,
@@ -3478,7 +3481,7 @@ impl SimpleBackend {
                 "list_new" => {
                     let empty_args: Vec<String> = Vec::new();
                     let args = op.args.as_ref().unwrap_or(&empty_args);
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
                     let size = builder.ins().iconst(types::I64, box_int(args.len() as i64));
 
                     let mut new_sig = self.module.make_signature();
@@ -3528,7 +3531,7 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, out_name, list_bits);
                 }
                 "callargs_push_pos" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let builder_ptr =
                         var_get(&mut builder, &vars, &args[0]).expect("Callargs builder not found");
                     let val =
@@ -3545,7 +3548,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[*builder_ptr, *val]);
                 }
                 "callargs_push_kw" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let builder_ptr =
                         var_get(&mut builder, &vars, &args[0]).expect("Callargs builder not found");
                     let name =
@@ -3567,7 +3570,7 @@ impl SimpleBackend {
                         .call(local_callee, &[*builder_ptr, *name, *val]);
                 }
                 "callargs_expand_star" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let builder_ptr =
                         var_get(&mut builder, &vars, &args[0]).expect("Callargs builder not found");
                     let iterable = var_get(&mut builder, &vars, &args[1])
@@ -3584,7 +3587,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[*builder_ptr, *iterable]);
                 }
                 "callargs_expand_kwstar" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let builder_ptr =
                         var_get(&mut builder, &vars, &args[0]).expect("Callargs builder not found");
                     let mapping =
@@ -3601,7 +3604,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[*builder_ptr, *mapping]);
                 }
                 "range_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let start =
                         var_get(&mut builder, &vars, &args[0]).expect("Range start not found");
                     let stop =
@@ -3620,10 +3623,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*start, *stop, *step]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "list_from_range" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let start = var_get(&mut builder, &vars, &args[0])
                         .expect("List-from-range start not found");
                     let stop = var_get(&mut builder, &vars, &args[1])
@@ -3642,12 +3645,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*start, *stop, *step]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "tuple_new" => {
                     let empty_args: Vec<String> = Vec::new();
                     let args = op.args.as_ref().unwrap_or(&empty_args);
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
 
                     if op.stack_eligible == Some(true) && args.len() <= 4 {
                         // Stack-eligible fast path: allocate tuple on the
@@ -3797,10 +3800,10 @@ impl SimpleBackend {
                     // Outlined sequence unpacking: args[0] is the sequence,
                     // args[1..] are the output variable names.
                     // op.value holds the expected element count.
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq_val = var_get(&mut builder, &vars, &args[0])
                         .expect("Unpack sequence source not found");
-                    let expected_count = op.value.unwrap() as usize;
+                    let expected_count = op.value.unwrap_or(0) as usize;
 
                     // Allocate a stack slot for the output array.
                     let slot_size = std::cmp::max(expected_count, 1) * 8;
@@ -3837,7 +3840,7 @@ impl SimpleBackend {
                     }
                 }
                 "list_append" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let val = var_get(&mut builder, &vars, &args[1])
                         .expect("List append value not found");
@@ -3852,10 +3855,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "list_pop" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let idx =
                         var_get(&mut builder, &vars, &args[1]).expect("List pop index not found");
@@ -3870,10 +3873,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *idx]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "list_extend" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let other = var_get(&mut builder, &vars, &args[1])
                         .expect("List extend iterable not found");
@@ -3888,10 +3891,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *other]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "list_insert" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let idx = var_get(&mut builder, &vars, &args[1])
                         .expect("List insert index not found");
@@ -3909,10 +3912,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *idx, *val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "list_remove" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let val = var_get(&mut builder, &vars, &args[1])
                         .expect("List remove value not found");
@@ -3927,10 +3930,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "list_clear" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -3942,10 +3945,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "list_copy" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -3957,10 +3960,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "list_reverse" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -3972,10 +3975,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "list_count" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let val =
                         var_get(&mut builder, &vars, &args[1]).expect("List count value not found");
@@ -3990,10 +3993,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "list_index" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let val =
                         var_get(&mut builder, &vars, &args[1]).expect("List index value not found");
@@ -4008,10 +4011,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "list_index_range" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let val =
                         var_get(&mut builder, &vars, &args[1]).expect("List index value not found");
@@ -4034,10 +4037,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*list, *val, *start, *stop]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "tuple_from_list" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list =
                         var_get(&mut builder, &vars, &args[0]).expect("Tuple source not found");
                     let mut sig = self.module.make_signature();
@@ -4050,12 +4053,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dict_new" => {
                     let empty_args: Vec<String> = Vec::new();
                     let args = op.args.as_ref().unwrap_or(&empty_args);
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
                     let size = builder.ins().iconst(types::I64, (args.len() / 2) as i64);
 
                     let mut new_sig = self.module.make_signature();
@@ -4091,7 +4094,7 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, out_name, current);
                 }
                 "dict_from_obj" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj =
                         var_get(&mut builder, &vars, &args[0]).expect("Dict source not found");
                     let mut sig = self.module.make_signature();
@@ -4104,12 +4107,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "set_new" => {
                     let empty_args: Vec<String> = Vec::new();
                     let args = op.args.as_ref().unwrap_or(&empty_args);
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
                     let size = builder.ins().iconst(types::I64, args.len() as i64);
 
                     let mut new_sig = self.module.make_signature();
@@ -4146,7 +4149,7 @@ impl SimpleBackend {
                 "frozenset_new" => {
                     let empty_args: Vec<String> = Vec::new();
                     let args = op.args.as_ref().unwrap_or(&empty_args);
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
                     let size = builder.ins().iconst(types::I64, args.len() as i64);
 
                     let mut new_sig = self.module.make_signature();
@@ -4181,7 +4184,7 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, out_name, set_bits);
                 }
                 "dict_get" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let key = var_get(&mut builder, &vars, &args[1]).expect("Dict key not found");
                     let default =
@@ -4198,10 +4201,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *key, *default]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dict_inc" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let key = var_get(&mut builder, &vars, &args[1]).expect("Dict key not found");
                     let delta = var_get(&mut builder, &vars, &args[2])
@@ -4218,10 +4221,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *key, *delta]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dict_str_int_inc" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let key = var_get(&mut builder, &vars, &args[1]).expect("Dict key not found");
                     let delta = var_get(&mut builder, &vars, &args[2])
@@ -4238,10 +4241,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *key, *delta]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_split_ws_dict_inc" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let line = var_get(&mut builder, &vars, &args[0]).expect("Line not found");
                     let dict = var_get(&mut builder, &vars, &args[1]).expect("Dict not found");
                     let delta = var_get(&mut builder, &vars, &args[2]).expect("Delta not found");
@@ -4257,10 +4260,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*line, *dict, *delta]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "taq_ingest_line" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let line = var_get(&mut builder, &vars, &args[1]).expect("Line not found");
                     let bucket_size =
@@ -4279,10 +4282,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*dict, *line, *bucket_size]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_split_sep_dict_inc" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let line = var_get(&mut builder, &vars, &args[0]).expect("Line not found");
                     let sep = var_get(&mut builder, &vars, &args[1]).expect("Separator not found");
                     let dict = var_get(&mut builder, &vars, &args[2]).expect("Dict not found");
@@ -4302,10 +4305,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*line, *sep, *dict, *delta]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dict_pop" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let key = var_get(&mut builder, &vars, &args[1]).expect("Dict key not found");
                     let default =
@@ -4327,10 +4330,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*dict, *key, *default, *has_default]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dict_setdefault" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let key = var_get(&mut builder, &vars, &args[1]).expect("Dict key not found");
                     let default =
@@ -4347,10 +4350,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *key, *default]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dict_setdefault_empty_list" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let key = var_get(&mut builder, &vars, &args[1]).expect("Dict key not found");
                     let mut sig = self.module.make_signature();
@@ -4364,10 +4367,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *key]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dict_update" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let other = var_get(&mut builder, &vars, &args[1])
                         .expect("Dict update iterable not found");
@@ -4382,10 +4385,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *other]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dict_clear" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -4397,10 +4400,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dict_copy" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -4412,10 +4415,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dict_popitem" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -4427,10 +4430,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dict_update_kwstar" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let other = var_get(&mut builder, &vars, &args[1])
                         .expect("Dict update mapping not found");
@@ -4445,10 +4448,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *other]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "set_add" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
                     let key_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Set key not found");
@@ -4463,10 +4466,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *key_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "frozenset_add" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let set_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Frozenset not found");
                     let key_bits =
@@ -4482,10 +4485,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *key_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "set_discard" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
                     let key_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Set key not found");
@@ -4500,10 +4503,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *key_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "set_remove" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
                     let key_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Set key not found");
@@ -4518,10 +4521,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *key_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "set_pop" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -4533,10 +4536,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "set_update" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
                     let other_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Set update arg not found");
@@ -4551,10 +4554,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *other_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "set_intersection_update" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
                     let other_bits = var_get(&mut builder, &vars, &args[1])
                         .expect("Set intersection update arg not found");
@@ -4569,10 +4572,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *other_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "set_difference_update" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
                     let other_bits = var_get(&mut builder, &vars, &args[1])
                         .expect("Set difference update arg not found");
@@ -4587,10 +4590,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *other_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "set_symdiff_update" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
                     let other_bits = var_get(&mut builder, &vars, &args[1])
                         .expect("Set symdiff update arg not found");
@@ -4605,10 +4608,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *other_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dict_keys" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -4620,10 +4623,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dict_values" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -4635,10 +4638,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dict_items" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -4650,10 +4653,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "tuple_count" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let tuple = var_get(&mut builder, &vars, &args[0]).expect("Tuple not found");
                     let val = var_get(&mut builder, &vars, &args[1])
                         .expect("Tuple count value not found");
@@ -4668,10 +4671,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*tuple, *val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "tuple_index" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let tuple = var_get(&mut builder, &vars, &args[0]).expect("Tuple not found");
                     let val = var_get(&mut builder, &vars, &args[1])
                         .expect("Tuple index value not found");
@@ -4686,10 +4689,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*tuple, *val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "iter" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj =
                         var_get(&mut builder, &vars, &args[0]).expect("Iter source not found");
                     let mut sig = self.module.make_signature();
@@ -4702,10 +4705,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "enumerate" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let iterable = var_get(&mut builder, &vars, &args[0])
                         .expect("Enumerate iterable not found");
                     let start =
@@ -4726,10 +4729,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*iterable, *start, *has_start]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "aiter" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0])
                         .expect("Async iter source not found");
                     let mut sig = self.module.make_signature();
@@ -4742,10 +4745,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "iter_next" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let iter = var_get(&mut builder, &vars, &args[0]).expect("Iter not found");
                     let pair_name = op.out.clone().unwrap();
 
@@ -4839,7 +4842,7 @@ impl SimpleBackend {
                     }
                 }
                 "anext" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let iter =
                         var_get(&mut builder, &vars, &args[0]).expect("Async iter not found");
                     let mut sig = self.module.make_signature();
@@ -4852,10 +4855,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*iter]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "asyncgen_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let gen_obj =
                         var_get(&mut builder, &vars, &args[0]).expect("Generator not found");
                     let mut sig = self.module.make_signature();
@@ -4868,7 +4871,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*gen_obj]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "asyncgen_shutdown" => {
                     let mut sig = self.module.make_signature();
@@ -4880,10 +4883,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "gen_send" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let gen_obj =
                         var_get(&mut builder, &vars, &args[0]).expect("Generator not found");
                     let val = var_get(&mut builder, &vars, &args[1]).expect("Send value not found");
@@ -4898,10 +4901,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*gen_obj, *val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "gen_throw" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let gen_obj =
                         var_get(&mut builder, &vars, &args[0]).expect("Generator not found");
                     let val =
@@ -4917,10 +4920,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*gen_obj, *val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "gen_close" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let gen_obj =
                         var_get(&mut builder, &vars, &args[0]).expect("Generator not found");
                     let mut sig = self.module.make_signature();
@@ -4933,10 +4936,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*gen_obj]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "is_generator" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Obj not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -4948,10 +4951,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "is_bound_method" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Obj not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -4963,10 +4966,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "is_callable" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Obj not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -4978,10 +4981,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "index" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Stack-tuple fast path: resolve element at compile time.
                     let stack_resolved = stack_tuples.get(&args[0]).and_then(|elems| {
                         Self::resolve_const_int(ops, op_idx, &args[1]).and_then(|ci| {
@@ -4994,7 +4997,7 @@ impl SimpleBackend {
                         // to keep refcount correct since the tuple itself was
                         // never heap-allocated.
                         emit_inc_ref_obj(&mut builder, elem_val, local_inc_ref_obj, &nbc);
-                        def_var_named(&mut builder, &vars, op.out.unwrap(), elem_val);
+                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, elem_val); }
                     } else {
                         let obj = var_get(&mut builder, &vars, &args[0]).expect("Obj not found");
                         let idx = var_get(&mut builder, &vars, &args[1]).expect("Index not found");
@@ -5016,11 +5019,11 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*obj, *idx]);
                         let res = builder.inst_results(call)[0];
-                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                     }
                 }
                 "store_index" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Obj not found in {} op {}", func_ir.name, op_idx)
                     });
@@ -5042,10 +5045,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *idx, *val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dict_set" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict_bits = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Dict not found in {} op {}", func_ir.name, op_idx)
                     });
@@ -5069,10 +5072,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dict_update_missing" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict_bits = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Dict not found in {} op {}", func_ir.name, op_idx)
                     });
@@ -5096,10 +5099,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "del_index" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Obj not found in {} op {}", func_ir.name, op_idx)
                     });
@@ -5117,10 +5120,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *idx]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "slice" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let target =
                         var_get(&mut builder, &vars, &args[0]).expect("Slice target not found");
                     let start =
@@ -5138,10 +5141,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*target, *start, *end]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "slice_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let start =
                         var_get(&mut builder, &vars, &args[0]).expect("Slice start not found");
                     let stop =
@@ -5160,10 +5163,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*start, *stop, *step]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytes_find" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Find haystack not found");
                     let needle =
@@ -5179,10 +5182,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytes_find_slice" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Find haystack not found");
                     let needle =
@@ -5209,10 +5212,10 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytearray_find" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Find haystack not found");
                     let needle =
@@ -5228,10 +5231,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytearray_find_slice" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Find haystack not found");
                     let needle =
@@ -5258,10 +5261,10 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_find" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Find haystack not found");
                     let needle =
@@ -5277,10 +5280,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_find_slice" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Find haystack not found");
                     let needle =
@@ -5307,10 +5310,10 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_format" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val =
                         var_get(&mut builder, &vars, &args[0]).expect("Format value not found");
                     let spec =
@@ -5326,10 +5329,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val, *spec]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_startswith" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay = var_get(&mut builder, &vars, &args[0])
                         .expect("Startswith haystack not found");
                     let needle = var_get(&mut builder, &vars, &args[1])
@@ -5345,10 +5348,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_startswith_slice" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay = var_get(&mut builder, &vars, &args[0])
                         .expect("Startswith haystack not found");
                     let needle = var_get(&mut builder, &vars, &args[1])
@@ -5376,10 +5379,10 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytes_startswith" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay = var_get(&mut builder, &vars, &args[0])
                         .expect("Startswith haystack not found");
                     let needle = var_get(&mut builder, &vars, &args[1])
@@ -5395,10 +5398,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytes_startswith_slice" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay = var_get(&mut builder, &vars, &args[0])
                         .expect("Startswith haystack not found");
                     let needle = var_get(&mut builder, &vars, &args[1])
@@ -5426,10 +5429,10 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytearray_startswith" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay = var_get(&mut builder, &vars, &args[0])
                         .expect("Startswith haystack not found");
                     let needle = var_get(&mut builder, &vars, &args[1])
@@ -5445,10 +5448,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytearray_startswith_slice" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay = var_get(&mut builder, &vars, &args[0])
                         .expect("Startswith haystack not found");
                     let needle = var_get(&mut builder, &vars, &args[1])
@@ -5476,10 +5479,10 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_endswith" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay = var_get(&mut builder, &vars, &args[0])
                         .expect("Endswith haystack not found");
                     let needle =
@@ -5495,10 +5498,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_endswith_slice" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay = var_get(&mut builder, &vars, &args[0])
                         .expect("Endswith haystack not found");
                     let needle =
@@ -5526,10 +5529,10 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytes_endswith" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay = var_get(&mut builder, &vars, &args[0])
                         .expect("Endswith haystack not found");
                     let needle =
@@ -5545,10 +5548,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytes_endswith_slice" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay = var_get(&mut builder, &vars, &args[0])
                         .expect("Endswith haystack not found");
                     let needle =
@@ -5576,10 +5579,10 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytearray_endswith" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay = var_get(&mut builder, &vars, &args[0])
                         .expect("Endswith haystack not found");
                     let needle =
@@ -5595,10 +5598,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytearray_endswith_slice" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay = var_get(&mut builder, &vars, &args[0])
                         .expect("Endswith haystack not found");
                     let needle =
@@ -5626,10 +5629,10 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_count" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Count haystack not found");
                     let needle =
@@ -5645,10 +5648,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytes_count" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Count haystack not found");
                     let needle =
@@ -5664,10 +5667,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytearray_count" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Count haystack not found");
                     let needle =
@@ -5683,10 +5686,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_count_slice" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Count haystack not found");
                     let needle =
@@ -5716,10 +5719,10 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytes_count_slice" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Count haystack not found");
                     let needle =
@@ -5749,10 +5752,10 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytearray_count_slice" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Count haystack not found");
                     let needle =
@@ -5782,10 +5785,10 @@ impl SimpleBackend {
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "env_get" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let key = var_get(&mut builder, &vars, &args[0]).expect("Env key not found");
                     let default =
                         var_get(&mut builder, &vars, &args[1]).expect("Env default not found");
@@ -5800,10 +5803,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*key, *default]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_join" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let sep =
                         var_get(&mut builder, &vars, &args[0]).expect("Join separator not found");
                     let items =
@@ -5819,10 +5822,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*sep, *items]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_split" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Split haystack not found");
                     let needle =
@@ -5838,10 +5841,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_split_max" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Split haystack not found");
                     let needle =
@@ -5862,10 +5865,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*hay, *needle, *maxsplit]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "statistics_mean_slice" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0])
                         .expect("Statistics mean slice sequence not found");
                     let start = var_get(&mut builder, &vars, &args[1])
@@ -5892,10 +5895,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*seq, *start, *end, *has_start, *has_end]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "statistics_stdev_slice" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0])
                         .expect("Statistics stdev slice sequence not found");
                     let start = var_get(&mut builder, &vars, &args[1])
@@ -5922,10 +5925,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*seq, *start, *end, *has_start, *has_end]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_lower" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Lower string not found");
                     let mut sig = self.module.make_signature();
@@ -5938,10 +5941,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_upper" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Upper string not found");
                     let mut sig = self.module.make_signature();
@@ -5954,10 +5957,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_capitalize" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay = var_get(&mut builder, &vars, &args[0])
                         .expect("Capitalize string not found");
                     let mut sig = self.module.make_signature();
@@ -5970,10 +5973,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_strip" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Strip string not found");
                     let chars =
@@ -5989,10 +5992,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *chars]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_lstrip" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Lstrip string not found");
                     let chars =
@@ -6008,10 +6011,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *chars]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_rstrip" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Rstrip string not found");
                     let chars =
@@ -6027,10 +6030,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *chars]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_replace" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Replace haystack not found");
                     let needle =
@@ -6054,10 +6057,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*hay, *needle, *replacement, *count]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytes_split" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Split haystack not found");
                     let needle =
@@ -6073,10 +6076,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytes_split_max" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Split haystack not found");
                     let needle =
@@ -6097,10 +6100,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*hay, *needle, *maxsplit]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytearray_split" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Split haystack not found");
                     let needle =
@@ -6116,10 +6119,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytearray_split_max" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Split haystack not found");
                     let needle =
@@ -6140,10 +6143,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*hay, *needle, *maxsplit]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytes_replace" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Replace haystack not found");
                     let needle =
@@ -6167,10 +6170,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*hay, *needle, *replacement, *count]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytearray_replace" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Replace haystack not found");
                     let needle =
@@ -6194,10 +6197,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*hay, *needle, *replacement, *count]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytes_from_obj" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src =
                         var_get(&mut builder, &vars, &args[0]).expect("Bytes source not found");
                     let mut sig = self.module.make_signature();
@@ -6210,10 +6213,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytes_from_str" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src =
                         var_get(&mut builder, &vars, &args[0]).expect("Bytes source not found");
                     let encoding =
@@ -6234,10 +6237,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*src, *encoding, *errors]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytearray_from_obj" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src =
                         var_get(&mut builder, &vars, &args[0]).expect("Bytearray source not found");
                     let mut sig = self.module.make_signature();
@@ -6250,10 +6253,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bytearray_from_str" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src =
                         var_get(&mut builder, &vars, &args[0]).expect("Bytearray source not found");
                     let encoding = var_get(&mut builder, &vars, &args[1])
@@ -6274,10 +6277,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*src, *encoding, *errors]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "float_from_obj" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src =
                         var_get(&mut builder, &vars, &args[0]).expect("Float source not found");
                     let mut sig = self.module.make_signature();
@@ -6290,10 +6293,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "int_from_obj" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Int value not found");
                     let base = var_get(&mut builder, &vars, &args[1]).expect("Int base not found");
                     let has_base =
@@ -6310,10 +6313,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val, *base, *has_base]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "complex_from_obj" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val =
                         var_get(&mut builder, &vars, &args[0]).expect("Complex value not found");
                     let imag =
@@ -6332,10 +6335,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val, *imag, *has_imag]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "intarray_from_seq" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src =
                         var_get(&mut builder, &vars, &args[0]).expect("Intarray source not found");
                     let mut sig = self.module.make_signature();
@@ -6348,10 +6351,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "memoryview_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src = var_get(&mut builder, &vars, &args[0])
                         .expect("Memoryview source not found");
                     let mut sig = self.module.make_signature();
@@ -6364,10 +6367,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "memoryview_tobytes" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src =
                         var_get(&mut builder, &vars, &args[0]).expect("Memoryview value not found");
                     let mut sig = self.module.make_signature();
@@ -6380,10 +6383,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "memoryview_cast" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let view =
                         var_get(&mut builder, &vars, &args[0]).expect("Memoryview not found");
                     let format = var_get(&mut builder, &vars, &args[1])
@@ -6407,10 +6410,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*view, *format, *shape, *has_shape]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "buffer2d_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let rows =
                         var_get(&mut builder, &vars, &args[0]).expect("Buffer2D rows not found");
                     let cols =
@@ -6429,10 +6432,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*rows, *cols, *init]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "buffer2d_get" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let buf = var_get(&mut builder, &vars, &args[0]).expect("Buffer2D not found");
                     let row =
                         var_get(&mut builder, &vars, &args[1]).expect("Buffer2D row not found");
@@ -6450,10 +6453,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*buf, *row, *col]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "buffer2d_set" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let buf = var_get(&mut builder, &vars, &args[0]).expect("Buffer2D not found");
                     let row =
                         var_get(&mut builder, &vars, &args[1]).expect("Buffer2D row not found");
@@ -6474,10 +6477,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*buf, *row, *col, *val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "buffer2d_matmul" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs =
                         var_get(&mut builder, &vars, &args[0]).expect("Buffer2D lhs not found");
                     let rhs =
@@ -6493,10 +6496,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "str_from_obj" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src = var_get(&mut builder, &vars, &args[0]).expect("Str source not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -6508,10 +6511,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "repr_from_obj" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src =
                         var_get(&mut builder, &vars, &args[0]).expect("Repr source not found");
                     let mut sig = self.module.make_signature();
@@ -6524,10 +6527,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "ascii_from_obj" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src =
                         var_get(&mut builder, &vars, &args[0]).expect("Ascii source not found");
                     let mut sig = self.module.make_signature();
@@ -6540,10 +6543,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dataclass_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let name =
                         var_get(&mut builder, &vars, &args[0]).expect("Dataclass name not found");
                     let fields =
@@ -6567,10 +6570,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*name, *fields, *values, *flags]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dataclass_get" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj =
                         var_get(&mut builder, &vars, &args[0]).expect("Dataclass object not found");
                     let idx =
@@ -6586,10 +6589,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *idx]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dataclass_set" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj =
                         var_get(&mut builder, &vars, &args[0]).expect("Dataclass object not found");
                     let idx =
@@ -6608,10 +6611,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *idx, *val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "dataclass_set_class" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj =
                         var_get(&mut builder, &vars, &args[0]).expect("Dataclass object not found");
                     let class_bits =
@@ -6627,10 +6630,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "lt" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_float.unwrap_or(false) {
@@ -6701,10 +6704,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "le" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_float.unwrap_or(false) {
@@ -6781,10 +6784,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "gt" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_float.unwrap_or(false) {
@@ -6859,10 +6862,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "ge" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_float.unwrap_or(false) {
@@ -6943,10 +6946,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "eq" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_float.unwrap_or(false) {
@@ -7000,10 +7003,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "ne" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_float.unwrap_or(false) {
@@ -7057,10 +7060,10 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "string_eq" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
@@ -7075,10 +7078,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "is" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
@@ -7092,10 +7095,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "not" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -7107,10 +7110,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "neg" | "unary_neg" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
                     let res = if op.fast_int.unwrap_or(false) {
                         // -x == 0 - x; overflow only when x == INT_MIN of the
@@ -7165,10 +7168,10 @@ impl SimpleBackend {
                         let call = builder.ins().call(local_callee, &[*val]);
                         builder.inst_results(call)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "abs" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
                     let res = if op.fast_int.unwrap_or(false) {
                         // abs(x): select(x < 0, -x, x) with overflow check for INT_MIN.
@@ -7227,10 +7230,10 @@ impl SimpleBackend {
                         let call = builder.ins().call(local_callee, &[*val]);
                         builder.inst_results(call)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "invert" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
                     let res = if op.fast_int.unwrap_or(false) {
                         // ~x == x ^ -1 for integers; result always fits if input fits
@@ -7252,10 +7255,10 @@ impl SimpleBackend {
                         let call = builder.ins().call(local_callee, &[*val]);
                         builder.inst_results(call)[0]
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bool" | "cast_bool" | "builtin_bool" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
                     let res = if op.fast_int.unwrap_or(false) {
                         // For known ints, bool(x) is simply x != 0.
@@ -7279,10 +7282,10 @@ impl SimpleBackend {
                         let cond = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
                         box_bool_value(&mut builder, cond)
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "and" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
@@ -7303,10 +7306,10 @@ impl SimpleBackend {
                     // result to prevent a use-after-free when the input's refcount
                     // reaches zero before the output is consumed.
                     emit_inc_ref_obj(&mut builder, res, local_inc_ref_obj, &nbc);
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "or" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let mut sig = self.module.make_signature();
@@ -7323,10 +7326,10 @@ impl SimpleBackend {
                     let res = builder.ins().select(cond, *lhs, *rhs);
                     // Same aliasing hazard as `and` — see comment above.
                     emit_inc_ref_obj(&mut builder, res, local_inc_ref_obj, &nbc);
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "contains" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let container =
                         var_get(&mut builder, &vars, &args[0]).expect("Container not found");
                     let item = var_get(&mut builder, &vars, &args[1]).expect("Item not found");
@@ -7348,10 +7351,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*container, *item]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "print" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = if let Some(val) = var_get(&mut builder, &vars, &args[0]) {
                         *val
                     } else {
@@ -7377,7 +7380,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[]);
                 }
                 "json_parse" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let arg_name = &args[0];
                     if let Some(len) = var_get(&mut builder, &vars, &format!("{}_len", arg_name)) {
                         let ptr = var_get(&mut builder, &vars, &format!("{}_ptr", arg_name))
@@ -7442,7 +7445,7 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         builder.seal_block(merge_block);
                         let res = builder.block_params(merge_block)[0];
-                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                     } else {
                         let arg_bits =
                             var_get(&mut builder, &vars, arg_name).expect("String arg not found");
@@ -7456,11 +7459,11 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*arg_bits]);
                         let res = builder.inst_results(call)[0];
-                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                     }
                 }
                 "msgpack_parse" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let arg_name = &args[0];
                     if let Some(len) = var_get(&mut builder, &vars, &format!("{}_len", arg_name)) {
                         let ptr = var_get(&mut builder, &vars, &format!("{}_ptr", arg_name))
@@ -7525,7 +7528,7 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         builder.seal_block(merge_block);
                         let res = builder.block_params(merge_block)[0];
-                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                     } else {
                         let arg_bits =
                             var_get(&mut builder, &vars, arg_name).expect("Bytes arg not found");
@@ -7543,11 +7546,11 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*arg_bits]);
                         let res = builder.inst_results(call)[0];
-                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                     }
                 }
                 "cbor_parse" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let arg_name = &args[0];
                     if let Some(len) = var_get(&mut builder, &vars, &format!("{}_len", arg_name)) {
                         let ptr = var_get(&mut builder, &vars, &format!("{}_ptr", arg_name))
@@ -7612,7 +7615,7 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         builder.seal_block(merge_block);
                         let res = builder.block_params(merge_block)[0];
-                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                     } else {
                         let arg_bits =
                             var_get(&mut builder, &vars, arg_name).expect("Bytes arg not found");
@@ -7626,11 +7629,11 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*arg_bits]);
                         let res = builder.inst_results(call)[0];
-                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                     }
                 }
                 "block_on" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let task = var_get(&mut builder, &vars, &args[0]).expect("Task not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64)); // boxed task
@@ -7643,7 +7646,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*task]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "state_switch" => {
                     let self_ptr = builder.block_params(entry_block)[0];
@@ -7670,7 +7673,7 @@ impl SimpleBackend {
                     switch_to_block_tracking(&mut builder, fallback_block, &mut is_block_filled);
                 }
                 "state_transition" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let future = var_get(&mut builder, &vars, &args[0]).expect("Future not found");
                     let future_ptr = unbox_ptr_value(&mut builder, *future, &nbc);
                     let (slot_bits, pending_state_bits) = if args.len() == 2 {
@@ -7689,7 +7692,7 @@ impl SimpleBackend {
                                 .expect("Pending state not found"),
                         )
                     };
-                    let next_state_id = op.value.unwrap();
+                    let next_state_id = op.value.unwrap_or(0);
                     let self_bits = *var_get(&mut builder, &vars, "self").expect("Self not found");
                     let self_ptr = unbox_ptr_value(&mut builder, self_bits, &nbc);
 
@@ -7768,17 +7771,17 @@ impl SimpleBackend {
                         HEADER_STATE_OFFSET,
                     );
                     if args.len() <= 1 {
-                        def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                     }
                     jump_block(&mut builder, next_block, &[]);
 
                     switch_to_block_tracking(&mut builder, next_block, &mut is_block_filled);
                 }
                 "state_yield" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let pair =
                         var_get(&mut builder, &vars, &args[0]).expect("Yield pair not found");
-                    let next_state_id = op.value.unwrap();
+                    let next_state_id = op.value.unwrap_or(0);
                     let self_bits = *var_get(&mut builder, &vars, "self").expect("Self not found");
                     let self_ptr = unbox_ptr_value(&mut builder, self_bits, &nbc);
 
@@ -7809,12 +7812,12 @@ impl SimpleBackend {
                     }
                 }
                 "chan_send_yield" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let chan = var_get(&mut builder, &vars, &args[0]).expect("Chan not found");
                     let val = var_get(&mut builder, &vars, &args[1]).expect("Val not found");
                     let pending_state_bits =
                         *var_get(&mut builder, &vars, &args[2]).expect("Pending state not found");
-                    let next_state_id = op.value.unwrap();
+                    let next_state_id = op.value.unwrap_or(0);
                     let self_bits = *var_get(&mut builder, &vars, "self").expect("Self not found");
                     let self_ptr = unbox_ptr_value(&mut builder, self_bits, &nbc);
 
@@ -7865,7 +7868,7 @@ impl SimpleBackend {
                         self_ptr,
                         HEADER_STATE_OFFSET,
                     );
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                     reachable_blocks.insert(next_block);
                     jump_block(&mut builder, next_block, &[]);
 
@@ -7876,11 +7879,11 @@ impl SimpleBackend {
                     }
                 }
                 "chan_recv_yield" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let chan = var_get(&mut builder, &vars, &args[0]).expect("Chan not found");
                     let pending_state_bits =
                         *var_get(&mut builder, &vars, &args[1]).expect("Pending state not found");
-                    let next_state_id = op.value.unwrap();
+                    let next_state_id = op.value.unwrap_or(0);
                     let self_bits = *var_get(&mut builder, &vars, "self").expect("Self not found");
                     let self_ptr = unbox_ptr_value(&mut builder, self_bits, &nbc);
 
@@ -7930,7 +7933,7 @@ impl SimpleBackend {
                         self_ptr,
                         HEADER_STATE_OFFSET,
                     );
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                     reachable_blocks.insert(next_block);
                     jump_block(&mut builder, next_block, &[]);
 
@@ -7941,7 +7944,7 @@ impl SimpleBackend {
                     }
                 }
                 "chan_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let capacity =
                         var_get(&mut builder, &vars, &args[0]).expect("Capacity not found");
                     let mut sig = self.module.make_signature();
@@ -7954,10 +7957,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*capacity]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "chan_drop" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let chan = var_get(&mut builder, &vars, &args[0]).expect("Chan not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -7971,7 +7974,7 @@ impl SimpleBackend {
                     let _ = builder.inst_results(call)[0];
                 }
                 "spawn" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let task = var_get(&mut builder, &vars, &args[0]).expect("Task not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -7983,7 +7986,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[*task]);
                 }
                 "cancel_token_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let parent =
                         var_get(&mut builder, &vars, &args[0]).expect("Parent token not found");
                     let mut sig = self.module.make_signature();
@@ -7996,10 +7999,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*parent]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "cancel_token_clone" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let token = var_get(&mut builder, &vars, &args[0]).expect("Token not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -8012,7 +8015,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[*token]);
                 }
                 "cancel_token_drop" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let token = var_get(&mut builder, &vars, &args[0]).expect("Token not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -8025,7 +8028,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[*token]);
                 }
                 "cancel_token_cancel" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let token = var_get(&mut builder, &vars, &args[0]).expect("Token not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -8038,7 +8041,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[*token]);
                 }
                 "future_cancel" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let future = var_get(&mut builder, &vars, &args[0]).expect("Future not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -8051,7 +8054,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[*future]);
                 }
                 "future_cancel_msg" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let future = var_get(&mut builder, &vars, &args[0]).expect("Future not found");
                     let msg =
                         var_get(&mut builder, &vars, &args[1]).expect("Cancel message not found");
@@ -8067,7 +8070,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[*future, *msg]);
                 }
                 "future_cancel_clear" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let future = var_get(&mut builder, &vars, &args[0]).expect("Future not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -8089,10 +8092,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "promise_set_result" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let future = var_get(&mut builder, &vars, &args[0]).expect("Promise not found");
                     let result = var_get(&mut builder, &vars, &args[1]).expect("Result not found");
                     let mut sig = self.module.make_signature();
@@ -8107,7 +8110,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[*future, *result]);
                 }
                 "promise_set_exception" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let future = var_get(&mut builder, &vars, &args[0]).expect("Promise not found");
                     let exc = var_get(&mut builder, &vars, &args[1]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
@@ -8122,7 +8125,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[*future, *exc]);
                 }
                 "thread_submit" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let callable =
                         var_get(&mut builder, &vars, &args[0]).expect("Callable not found");
                     let call_args = var_get(&mut builder, &vars, &args[1]).expect("Args not found");
@@ -8142,10 +8145,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*callable, *call_args, *call_kwargs]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "task_register_token_owned" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let task = var_get(&mut builder, &vars, &args[0]).expect("Task not found");
                     let token = var_get(&mut builder, &vars, &args[1]).expect("Token not found");
                     let mut sig = self.module.make_signature();
@@ -8160,7 +8163,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[*task, *token]);
                 }
                 "cancel_token_is_cancelled" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let token = var_get(&mut builder, &vars, &args[0]).expect("Token not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -8172,10 +8175,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*token]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "cancel_token_set_current" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let token = var_get(&mut builder, &vars, &args[0]).expect("Token not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -8187,7 +8190,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*token]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "cancel_token_get_current" => {
                     let mut sig = self.module.make_signature();
@@ -8199,7 +8202,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "cancelled" => {
                     let mut sig = self.module.make_signature();
@@ -8211,7 +8214,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "cancel_current" => {
                     let mut sig = self.module.make_signature();
@@ -8224,7 +8227,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[]);
                 }
                 "call_async" => {
-                    let poll_func_name = op.s_value.as_ref().unwrap();
+                    let Some(poll_func_name) = op.s_value.as_ref() else { continue; };
                     if poll_func_name == "molt_async_sleep" {
                         let arg_names = op.args.as_deref().unwrap_or(&[]);
                         let delay_val = arg_names
@@ -8246,7 +8249,7 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[delay_val, result_val]);
                         let res = builder.inst_results(call)[0];
-                        let out_name = op.out.unwrap();
+                        let Some(out_name) = op.out else { continue; };
                         def_var_named(&mut builder, &vars, out_name, res);
                     } else {
                         let args = op.args.as_deref();
@@ -8294,13 +8297,13 @@ impl SimpleBackend {
                                 emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj, &nbc);
                             }
                         }
-                        let out_name = op.out.unwrap();
+                        let Some(out_name) = op.out else { continue; };
                         def_var_named(&mut builder, &vars, out_name, obj);
                     }
                 }
                 "builtin_func" => {
-                    let func_name = op.s_value.as_ref().unwrap();
-                    let arity = op.value.unwrap();
+                    let Some(func_name) = op.s_value.as_ref() else { continue; };
+                    let arity = op.value.unwrap_or(0);
                     let mut func_sig = self.module.make_signature();
                     for _ in 0..arity {
                         func_sig.params.push(AbiParam::new(types::I64));
@@ -8356,11 +8359,11 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[func_addr, tramp_addr, arity_val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "func_new" => {
-                    let func_name = op.s_value.as_ref().unwrap();
-                    let arity = op.value.unwrap();
+                    let Some(func_name) = op.s_value.as_ref() else { continue; };
+                    let arity = op.value.unwrap_or(0);
                     let kind = if func_name.ends_with("_poll") {
                         task_kinds
                             .get(func_name)
@@ -8436,11 +8439,11 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[func_addr, tramp_addr, arity_val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "func_new_closure" => {
-                    let func_name = op.s_value.as_ref().unwrap();
-                    let arity = op.value.unwrap();
+                    let Some(func_name) = op.s_value.as_ref() else { continue; };
+                    let arity = op.value.unwrap_or(0);
                     let kind = if func_name.ends_with("_poll") {
                         task_kinds
                             .get(func_name)
@@ -8546,10 +8549,10 @@ impl SimpleBackend {
                     if let Some(out_name) = op.out.as_ref() {
                         local_closure_envs.insert(func_name.clone(), out_name.clone());
                     }
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "code_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let filename_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("filename not found");
                     let name_bits = var_get(&mut builder, &vars, &args[1]).expect("name not found");
@@ -8594,10 +8597,10 @@ impl SimpleBackend {
                         ],
                     );
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "code_slot_set" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let code_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("code bits not found");
                     let code_id = op.value.unwrap_or(0);
@@ -8614,7 +8617,7 @@ impl SimpleBackend {
                     let _ = builder.ins().call(local_callee, &[code_id_val, *code_bits]);
                 }
                 "fn_ptr_code_set" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let code_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("code bits not found");
                     let func_name = op.s_value.as_ref().expect("fn_ptr_code_set expects symbol");
@@ -8646,7 +8649,7 @@ impl SimpleBackend {
                     let _ = builder.ins().call(local_callee, &[func_addr, *code_bits]);
                 }
                 "asyncgen_locals_register" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let names_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("names tuple not found");
                     let offsets_bits =
@@ -8686,7 +8689,7 @@ impl SimpleBackend {
                         .call(local_callee, &[func_addr, *names_bits, *offsets_bits]);
                 }
                 "gen_locals_register" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let names_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("names tuple not found");
                     let offsets_bits =
@@ -8832,10 +8835,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "function_closure_bits" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let func_bits = var_get(&mut builder, &vars, &args[0]).expect("Func not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -8848,10 +8851,10 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[*func_bits]);
                     let res = builder.inst_results(call)[0];
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bound_method_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let func_bits = var_get(&mut builder, &vars, &args[0]).expect("Func not found");
                     let self_bits = var_get(&mut builder, &vars, &args[1]).expect("Self not found");
                     let mut sig = self.module.make_signature();
@@ -8865,11 +8868,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*func_bits, *self_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "call" => {
-                    let target_name = op.s_value.as_ref().unwrap();
-                    let args_names = op.args.as_ref().unwrap();
+                    let Some(target_name) = op.s_value.as_ref() else { continue; };
+                    let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let mut args = Vec::new();
                     for name in args_names {
                         args.push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
@@ -9197,11 +9200,11 @@ impl SimpleBackend {
                         tracked_vars_set.remove(name);
                         entry_vars.remove(name);
                     }
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "call_internal" => {
-                    let target_name = op.s_value.as_ref().unwrap();
-                    let args_names = op.args.as_ref().unwrap();
+                    let Some(target_name) = op.s_value.as_ref() else { continue; };
+                    let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let mut args = Vec::new();
                     for name in args_names {
                         args.push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
@@ -9244,7 +9247,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &args);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "inc_ref" | "borrow" => {
                     if !rc_skip_inc.contains(&op_idx) {
@@ -9265,7 +9268,7 @@ impl SimpleBackend {
                     {
                         // RC coalesced: still define the output variable as an
                         // alias of the input so downstream ops can read it.
-                        let args_names = op.args.as_ref().unwrap();
+                        let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                         let src_name = args_names.first().unwrap();
                         let src = *var_get(&mut builder, &vars, src_name)
                             .expect("inc_ref/borrow source not found (coalesced)");
@@ -9335,8 +9338,8 @@ impl SimpleBackend {
                     }
                 }
                 "call_guarded" => {
-                    let target_name = op.s_value.as_ref().unwrap();
-                    let args_names = op.args.as_ref().unwrap();
+                    let Some(target_name) = op.s_value.as_ref() else { continue; };
+                    let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let callee_bits =
                         var_get(&mut builder, &vars, &args_names[0]).expect("Callee not found");
                     let mut args = Vec::new();
@@ -9615,13 +9618,13 @@ impl SimpleBackend {
                     builder.switch_to_block(merge_block);
                     builder.seal_block(merge_block);
                     let res = builder.block_params(merge_block)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "call_func" => {
                     // Outlined: delegates to molt_call_func_dispatch runtime helper.
                     // This replaces ~960 lines of inline Cranelift IR that previously
                     // emitted 92 instructions and 39 basic blocks per call site.
-                    let args_names = op.args.as_ref().unwrap();
+                    let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let func_bits =
                         var_get(&mut builder, &vars, &args_names[0]).expect("Func not found");
                     let mut args = Vec::new();
@@ -9662,10 +9665,10 @@ impl SimpleBackend {
                         &[*func_bits, args_ptr, nargs_val, code_id_val],
                     );
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "invoke_ffi" => {
-                    let args_names = op.args.as_ref().unwrap();
+                    let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let func_bits =
                         var_get(&mut builder, &vars, &args_names[0]).expect("Func not found");
                     let mut args = Vec::new();
@@ -9737,10 +9740,10 @@ impl SimpleBackend {
                         &[site_bits, *func_bits, callargs_ptr, require_bridge_cap],
                     );
                     let res = builder.inst_results(invoke_call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "call_bind" | "call_indirect" => {
-                    let args_names = op.args.as_ref().unwrap();
+                    let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let func_bits =
                         var_get(&mut builder, &vars, &args_names[0]).expect("Func not found");
                     let builder_ptr =
@@ -9789,7 +9792,7 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[site_bits, *func_bits, *builder_ptr]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
 
                     // `molt_call_bind*` consumes the CallArgs builder pointer and decrefs it
                     // internally (see `PtrDropGuard` in runtime). The backend's lifetime tracking
@@ -9819,7 +9822,7 @@ impl SimpleBackend {
                     }
                 }
                 "call_method" => {
-                    let args_names = op.args.as_ref().unwrap();
+                    let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let method_bits =
                         var_get(&mut builder, &vars, &args_names[0]).expect("Method not found");
                     let mut extra_args = Vec::new();
@@ -9877,10 +9880,10 @@ impl SimpleBackend {
                         .ins()
                         .call(call_bind_local, &[site_bits, *method_bits, callargs_ptr]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "module_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let name_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module name not found");
                     let mut sig = self.module.make_signature();
@@ -9893,10 +9896,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*name_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "class_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let name_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Class name not found");
                     let mut sig = self.module.make_signature();
@@ -9909,11 +9912,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*name_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 // Outlined class definition via molt_guarded_class_def
                 "class_def" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let meta = op.s_value.as_ref().expect("class_def needs s_value");
                     let parts: Vec<&str> = meta.split(',').collect();
                     let nbases: usize = parts[0].parse().unwrap();
@@ -9980,10 +9983,10 @@ impl SimpleBackend {
                         ],
                     );
                     let res = builder.inst_results(cd_call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "builtin_type" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let tag_bits = var_get(&mut builder, &vars, &args[0]).expect("Tag not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -9995,10 +9998,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*tag_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "type_of" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let mut sig = self.module.make_signature();
@@ -10011,10 +10014,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "is_native_awaitable" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let mut sig = self.module.make_signature();
@@ -10027,10 +10030,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "class_layout_version" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let class_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let mut sig = self.module.make_signature();
@@ -10043,10 +10046,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*class_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "class_set_layout_version" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let class_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let version_bits =
@@ -10071,7 +10074,7 @@ impl SimpleBackend {
                     }
                 }
                 "isinstance" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let class_bits =
@@ -10087,10 +10090,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj_bits, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "issubclass" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let sub_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Subclass not found");
                     let class_bits =
@@ -10106,7 +10109,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*sub_bits, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "object_new" => {
                     let mut sig = self.module.make_signature();
@@ -10118,10 +10121,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "class_set_base" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let class_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let base_bits =
@@ -10137,10 +10140,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*class_bits, *base_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "class_apply_set_name" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let class_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let mut sig = self.module.make_signature();
@@ -10153,10 +10156,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*class_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "super_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let type_bits = var_get(&mut builder, &vars, &args[0]).expect("Type not found");
                     let obj_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Object not found");
@@ -10171,10 +10174,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*type_bits, *obj_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "classmethod_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let func_bits = var_get(&mut builder, &vars, &args[0]).expect("Func not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -10186,10 +10189,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*func_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "staticmethod_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let func_bits = var_get(&mut builder, &vars, &args[0]).expect("Func not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -10201,10 +10204,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*func_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "property_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let getter = var_get(&mut builder, &vars, &args[0]).expect("Getter not found");
                     let setter = var_get(&mut builder, &vars, &args[1]).expect("Setter not found");
                     let deleter =
@@ -10223,10 +10226,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*getter, *setter, *deleter]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "object_set_class" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj_bits, &nbc);
@@ -10243,10 +10246,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[obj_ptr, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "module_cache_get" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let name_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module name not found");
                     let mut sig = self.module.make_signature();
@@ -10259,10 +10262,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*name_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "module_import" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let name_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module name not found");
                     let mut sig = self.module.make_signature();
@@ -10275,10 +10278,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*name_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "module_cache_set" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let name_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module name not found");
                     let module_bits =
@@ -10297,7 +10300,7 @@ impl SimpleBackend {
                         .call(local_callee, &[*name_bits, *module_bits]);
                 }
                 "module_cache_del" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let name_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module name not found");
                     let mut sig = self.module.make_signature();
@@ -10311,7 +10314,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[*name_bits]);
                 }
                 "module_get_attr" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let module_bits = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!(
                             "Module not found in {} op {} ({:?})",
@@ -10337,10 +10340,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*module_bits, *attr_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "module_get_global" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let module_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module not found");
                     let attr_bits = var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
@@ -10357,10 +10360,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*module_bits, *attr_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "module_del_global" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let module_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module not found");
                     let attr_bits = var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
@@ -10384,7 +10387,7 @@ impl SimpleBackend {
                     }
                 }
                 "module_get_name" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let module_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module not found");
                     let attr_bits = var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
@@ -10401,10 +10404,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*module_bits, *attr_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "module_set_attr" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let module_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module not found");
                     let attr_bits = var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
@@ -10429,7 +10432,7 @@ impl SimpleBackend {
                         .call(local_callee, &[*module_bits, *attr_bits, *val_bits]);
                 }
                 "module_import_star" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module not found");
                     let dst_bits =
@@ -10446,7 +10449,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[*src_bits, *dst_bits]);
                 }
                 "context_null" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let payload =
                         var_get(&mut builder, &vars, &args[0]).expect("Payload not found");
                     let mut sig = self.module.make_signature();
@@ -10459,10 +10462,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*payload]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "context_enter" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let ctx = var_get(&mut builder, &vars, &args[0]).expect("Context not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -10474,10 +10477,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*ctx]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "context_exit" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let ctx = var_get(&mut builder, &vars, &args[0]).expect("Context not found");
                     let exc = var_get(&mut builder, &vars, &args[1]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
@@ -10491,10 +10494,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*ctx, *exc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "context_closing" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let payload =
                         var_get(&mut builder, &vars, &args[0]).expect("Payload not found");
                     let mut sig = self.module.make_signature();
@@ -10507,10 +10510,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*payload]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "context_unwind" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -10522,7 +10525,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "context_depth" => {
                     let mut sig = self.module.make_signature();
@@ -10534,10 +10537,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "context_unwind_to" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let depth = var_get(&mut builder, &vars, &args[0]).expect("Depth not found");
                     let exc = var_get(&mut builder, &vars, &args[1]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
@@ -10551,7 +10554,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*depth, *exc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "exception_push" => {
                     let mut sig = self.module.make_signature();
@@ -10563,7 +10566,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "exception_pop" => {
                     let mut sig = self.module.make_signature();
@@ -10575,7 +10578,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "exception_stack_clear" => {
                     let mut sig = self.module.make_signature();
@@ -10601,7 +10604,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "exception_stack_enter" => {
                     let mut sig = self.module.make_signature();
@@ -10613,10 +10616,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "exception_stack_exit" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let prev = var_get(&mut builder, &vars, &args[0])
                         .expect("exception baseline not found");
                     let mut sig = self.module.make_signature();
@@ -10636,7 +10639,7 @@ impl SimpleBackend {
                     }
                 }
                 "exception_stack_set_depth" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let depth =
                         var_get(&mut builder, &vars, &args[0]).expect("exception depth not found");
                     let mut sig = self.module.make_signature();
@@ -10665,7 +10668,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "getargv" => {
                     let mut sig = self.module.make_signature();
@@ -10677,10 +10680,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "getframe" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let depth = var_get(&mut builder, &vars, &args[0]).expect("depth not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -10692,7 +10695,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*depth]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "sys_executable" => {
                     let mut sig = self.module.make_signature();
@@ -10704,10 +10707,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "exception_new" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let kind = var_get(&mut builder, &vars, &args[0]).expect("Kind not found");
                     let args_bits = var_get(&mut builder, &vars, &args[1]).expect("Args not found");
                     let mut sig = self.module.make_signature();
@@ -10721,10 +10724,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*kind, *args_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "exception_new_from_class" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let class_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let args_bits = var_get(&mut builder, &vars, &args[1]).expect("Args not found");
@@ -10739,10 +10742,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*class_bits, *args_bits]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "exceptiongroup_match" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let matcher =
                         var_get(&mut builder, &vars, &args[1]).expect("Matcher not found");
@@ -10757,10 +10760,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc, *matcher]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "exceptiongroup_combine" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let items =
                         var_get(&mut builder, &vars, &args[0]).expect("Exception list not found");
                     let mut sig = self.module.make_signature();
@@ -10773,7 +10776,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*items]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "exception_clear" => {
                     let mut sig = self.module.make_signature();
@@ -10785,10 +10788,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "exception_kind" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -10800,10 +10803,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "exception_class" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let kind =
                         var_get(&mut builder, &vars, &args[0]).expect("Exception kind not found");
                     let mut sig = self.module.make_signature();
@@ -10816,10 +10819,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*kind]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "exception_message" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -10831,10 +10834,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "exception_set_cause" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let cause = var_get(&mut builder, &vars, &args[1]).expect("Cause not found");
                     let mut sig = self.module.make_signature();
@@ -10848,10 +10851,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc, *cause]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "exception_set_last" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -10863,10 +10866,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "exception_set_value" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let value = var_get(&mut builder, &vars, &args[1]).expect("Value not found");
                     let mut sig = self.module.make_signature();
@@ -10880,10 +10883,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc, *value]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "exception_context_set" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -10895,10 +10898,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "raise" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -10917,7 +10920,7 @@ impl SimpleBackend {
                     }
                 }
                 "check_exception" => {
-                    let target_id = op.value.unwrap();
+                    let target_id = op.value.unwrap_or(0);
                     let Some(&target_block) = state_blocks.get(&target_id) else {
                         // Orphaned check_exception (handler stripped by IR pass) — skip.
                         continue;
@@ -11077,7 +11080,7 @@ impl SimpleBackend {
                     }
                 }
                 "file_open" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let path = var_get(&mut builder, &vars, &args[0]).expect("Path not found");
                     let mode = var_get(&mut builder, &vars, &args[1]).expect("Mode not found");
                     let mut sig = self.module.make_signature();
@@ -11091,10 +11094,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*path, *mode]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "file_read" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let handle = var_get(&mut builder, &vars, &args[0]).expect("Handle not found");
                     let size = var_get(&mut builder, &vars, &args[1]).expect("Size not found");
                     let mut sig = self.module.make_signature();
@@ -11108,10 +11111,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*handle, *size]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "file_write" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let handle = var_get(&mut builder, &vars, &args[0]).expect("Handle not found");
                     let data = var_get(&mut builder, &vars, &args[1]).expect("Data not found");
                     let mut sig = self.module.make_signature();
@@ -11125,10 +11128,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*handle, *data]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "file_close" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let handle = var_get(&mut builder, &vars, &args[0]).expect("Handle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -11140,10 +11143,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*handle]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "file_flush" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let handle = var_get(&mut builder, &vars, &args[0]).expect("Handle not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -11155,10 +11158,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*handle]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "bridge_unavailable" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let msg = var_get(&mut builder, &vars, &args[0]).expect("Message not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -11170,10 +11173,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*msg]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "if" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -11748,13 +11751,13 @@ impl SimpleBackend {
                     loop_depth += 1;
                 }
                 "loop_index_start" => {
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
                     let loop_block = builder.create_block();
                     let body_block = builder.create_block();
                     let after_block = builder.create_block();
                     let idx_param = builder.append_block_param(loop_block, types::I64);
                     if !is_block_filled {
-                        let args = op.args.as_ref().unwrap();
+                        let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                         let start = var_get(&mut builder, &vars, &args[0])
                             .expect("Loop index start not found");
                         ensure_block_in_layout(&mut builder, loop_block);
@@ -11780,7 +11783,7 @@ impl SimpleBackend {
                     if loop_stack.is_empty() {
                         is_block_filled = true;
                     } else {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let cond =
                         var_get(&mut builder, &vars, &args[0]).expect("Loop break cond not found");
                     let frame = loop_stack.last().unwrap();
@@ -11847,7 +11850,7 @@ impl SimpleBackend {
                     if loop_stack.is_empty() {
                         is_block_filled = true;
                     } else {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let cond =
                         var_get(&mut builder, &vars, &args[0]).expect("Loop break cond not found");
                     let frame = loop_stack.last().unwrap();
@@ -11942,7 +11945,7 @@ impl SimpleBackend {
                     }
                 }
                 "loop_index_next" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let next_idx =
                         var_get(&mut builder, &vars, &args[0]).expect("Loop index next not found");
                     if loop_stack.is_empty() {
@@ -11950,12 +11953,12 @@ impl SimpleBackend {
                         // boundary — this happens when `continue` inside a
                         // nested try/except is duplicated into an outer
                         // exception handler path.  Treat as unreachable.
-                        let out_name = op.out.unwrap();
+                        let Some(out_name) = op.out else { continue; };
                         def_var_named(&mut builder, &vars, out_name, *next_idx);
                     } else {
                         let frame = loop_stack.last_mut().unwrap();
                         frame.next_index = Some(*next_idx);
-                        let out_name = op.out.unwrap();
+                        let Some(out_name) = op.out else { continue; };
                         def_var_named(&mut builder, &vars, out_name, *next_idx);
                     }
                 }
@@ -12044,7 +12047,7 @@ impl SimpleBackend {
                     }
                 }
                 "alloc" => {
-                    let size = op.value.unwrap();
+                    let size = op.value.unwrap_or(0);
                     let iconst = builder.ins().iconst(types::I64, size);
 
                     let mut sig = self.module.make_signature();
@@ -12057,12 +12060,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[iconst]);
                     let res = builder.inst_results(call)[0];
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "alloc_class" => {
-                    let size = op.value.unwrap();
-                    let args = op.args.as_ref().unwrap();
+                    let size = op.value.unwrap_or(0);
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let class_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let iconst = builder.ins().iconst(types::I64, size);
@@ -12078,12 +12081,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[iconst, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "alloc_class_trusted" => {
-                    let size = op.value.unwrap();
-                    let args = op.args.as_ref().unwrap();
+                    let size = op.value.unwrap_or(0);
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let class_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let iconst = builder.ins().iconst(types::I64, size);
@@ -12099,12 +12102,12 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[iconst, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "alloc_class_static" => {
-                    let size = op.value.unwrap();
-                    let args = op.args.as_ref().unwrap();
+                    let size = op.value.unwrap_or(0);
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let class_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let iconst = builder.ins().iconst(types::I64, size);
@@ -12120,11 +12123,11 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[iconst, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "alloc_task" => {
-                    let closure_size = op.value.unwrap();
+                    let closure_size = op.value.unwrap_or(0);
                     let task_kind = op.task_kind.as_deref().unwrap_or("future");
                     let (kind_bits, payload_base) = match task_kind {
                         "generator" => (TASK_KIND_GENERATOR, GENERATOR_CONTROL_BYTES),
@@ -12134,7 +12137,7 @@ impl SimpleBackend {
                     };
                     let size = builder.ins().iconst(types::I64, closure_size);
 
-                    let poll_func_name = op.s_value.as_ref().unwrap();
+                    let Some(poll_func_name) = op.s_value.as_ref() else { continue; };
                     let mut poll_sig = self.module.make_signature();
                     poll_sig.params.push(AbiParam::new(types::I64));
                     poll_sig.returns.push(AbiParam::new(types::I64));
@@ -12204,7 +12207,7 @@ impl SimpleBackend {
                     }
 
                     output_is_ptr = false;
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
                     def_var_named(&mut builder, &vars, out_name, obj);
                 }
                 "store" => {
@@ -12212,10 +12215,10 @@ impl SimpleBackend {
                         local_profile_struct.expect("store lowering requires profile import");
                     let profile_enabled_val =
                         profile_enabled_val.expect("store lowering requires profile flag");
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let val = var_get(&mut builder, &vars, &args[1]).expect("Value not found");
-                    let offset = op.value.unwrap() as i32;
+                    let offset = op.value.unwrap_or(0) as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
                     let profile_block = builder.create_block();
                     let profile_cont = builder.create_block();
@@ -12258,10 +12261,10 @@ impl SimpleBackend {
                     }
                 }
                 "store_init" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let val = var_get(&mut builder, &vars, &args[1]).expect("Value not found");
-                    let offset = op.value.unwrap() as i32;
+                    let offset = op.value.unwrap_or(0) as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
                     let offset_bits = builder.ins().iconst(types::I64, i64::from(offset));
                     let mut sig = self.module.make_signature();
@@ -12285,21 +12288,21 @@ impl SimpleBackend {
                     }
                 }
                 "load" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
-                    let offset = op.value.unwrap() as i32;
+                    let offset = op.value.unwrap_or(0) as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
                     let res = builder
                         .ins()
                         .load(types::I64, MemFlags::trusted(), obj_ptr, offset);
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "closure_load" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
-                    let offset = builder.ins().iconst(types::I64, op.value.unwrap());
+                    let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -12312,14 +12315,14 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[obj_ptr, offset]);
                     let res = builder.inst_results(call)[0];
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "closure_store" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let val = var_get(&mut builder, &vars, &args[1]).expect("Value not found");
-                    let offset = builder.ins().iconst(types::I64, op.value.unwrap());
+                    let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
@@ -12338,26 +12341,26 @@ impl SimpleBackend {
                     }
                 }
                 "guarded_load" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
-                    let offset = op.value.unwrap() as i32;
+                    let offset = op.value.unwrap_or(0) as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
                     let res = builder
                         .ins()
                         .load(types::I64, MemFlags::trusted(), obj_ptr, offset);
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "guarded_field_get" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
                     let class_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Class not found");
                     let expected_version =
                         var_get(&mut builder, &vars, &args[2]).expect("Expected version not found");
-                    let attr_name = op.s_value.as_ref().unwrap();
+                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
                     let data_id = self
                         .module
                         .declare_data(
@@ -12374,7 +12377,7 @@ impl SimpleBackend {
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-                    let offset = builder.ins().iconst(types::I64, op.value.unwrap());
+                    let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -12400,11 +12403,11 @@ impl SimpleBackend {
                         ],
                     );
                     let res = builder.inst_results(call)[0];
-                    let out_name = op.out.unwrap();
+                    let Some(out_name) = op.out else { continue; };
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "guarded_field_set" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
                     let class_bits =
@@ -12412,7 +12415,7 @@ impl SimpleBackend {
                     let expected_version =
                         var_get(&mut builder, &vars, &args[2]).expect("Expected version not found");
                     let val = var_get(&mut builder, &vars, &args[3]).expect("Value not found");
-                    let attr_name = op.s_value.as_ref().unwrap();
+                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
                     let data_id = self
                         .module
                         .declare_data(
@@ -12429,7 +12432,7 @@ impl SimpleBackend {
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-                    let offset = builder.ins().iconst(types::I64, op.value.unwrap());
+                    let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -12464,7 +12467,7 @@ impl SimpleBackend {
                     }
                 }
                 "guarded_field_init" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
                     let class_bits =
@@ -12472,7 +12475,7 @@ impl SimpleBackend {
                     let expected_version =
                         var_get(&mut builder, &vars, &args[2]).expect("Expected version not found");
                     let val = var_get(&mut builder, &vars, &args[3]).expect("Value not found");
-                    let attr_name = op.s_value.as_ref().unwrap();
+                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
                     let data_id = self
                         .module
                         .declare_data(
@@ -12489,7 +12492,7 @@ impl SimpleBackend {
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-                    let offset = builder.ins().iconst(types::I64, op.value.unwrap());
+                    let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -12524,7 +12527,7 @@ impl SimpleBackend {
                     }
                 }
                 "guard_type" | "guard_tag" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val =
                         var_get(&mut builder, &vars, &args[0]).expect("Guard value not found");
                     let expected = var_get(&mut builder, &vars, &args[1])
@@ -12541,7 +12544,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[*val, *expected]);
                 }
                 "guard_layout" | "guard_dict_shape" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj =
                         var_get(&mut builder, &vars, &args[0]).expect("Guard object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
@@ -12563,15 +12566,15 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[obj_ptr, *class_bits, *expected_version]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "get_attr_generic_ptr" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
-                    let attr_name = op.s_value.as_ref().unwrap();
+                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
                     let data_id = self
                         .module
                         .declare_data(
@@ -12695,14 +12698,14 @@ impl SimpleBackend {
                         emit_maybe_ref_adjust_v2(&mut builder, slow_res, local_inc_ref_obj, &nbc);
                         slow_res
                     };
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "get_attr_generic_obj" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let attr_name = op.s_value.as_ref().unwrap();
+                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
                     let data_id = self
                         .module
                         .declare_data(
@@ -12745,14 +12748,14 @@ impl SimpleBackend {
                     // `molt_get_attr_object_ic` delegates to `molt_get_attr_name`, which can
                     // hand back borrowed values on fast paths. Own the result here.
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "get_attr_special_obj" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let attr_name = op.s_value.as_ref().unwrap();
+                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
                     let data_id = self
                         .module
                         .declare_data(
@@ -12785,10 +12788,10 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     // Keep attribute result ownership consistent across all get-attr ops.
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "get_attr_name" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
@@ -12808,10 +12811,10 @@ impl SimpleBackend {
                     // some fast paths. Convert it to an owned reference so lifetime tracking can
                     // safely decref at last use without corrupting dict-owned values.
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "get_attr_name_default" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
@@ -12832,10 +12835,10 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     // See `get_attr_name` above: ensure the returned value is owned.
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "has_attr_name" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
@@ -12851,10 +12854,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *name]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "set_attr_name" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
@@ -12872,16 +12875,16 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *name, *val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "set_attr_generic_ptr" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
                     let val = var_get(&mut builder, &vars, &args[1]).expect("Attr value not found");
-                    let attr_name = op.s_value.as_ref().unwrap();
+                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
                     let data_id = self
                         .module
                         .declare_data(
@@ -12913,15 +12916,15 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[obj_ptr, attr_ptr, attr_len, *val]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "set_attr_generic_obj" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
                     let val = var_get(&mut builder, &vars, &args[1]).expect("Attr value not found");
-                    let attr_name = op.s_value.as_ref().unwrap();
+                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
                     let data_id = self
                         .module
                         .declare_data(
@@ -12958,12 +12961,12 @@ impl SimpleBackend {
                     }
                 }
                 "del_attr_generic_ptr" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
-                    let attr_name = op.s_value.as_ref().unwrap();
+                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
                     let data_id = self
                         .module
                         .declare_data(
@@ -12994,14 +12997,14 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[obj_ptr, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "del_attr_generic_obj" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let attr_name = op.s_value.as_ref().unwrap();
+                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
                     let data_id = self
                         .module
                         .declare_data(
@@ -13032,10 +13035,10 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[*obj, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "del_attr_name" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
@@ -13051,7 +13054,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *name]);
                     let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, op.out.unwrap(), res);
+                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "ret" => {
                     if std::env::var("MOLT_DEBUG_RET_CLEANUP").as_deref() == Ok("1")
@@ -13223,7 +13226,7 @@ impl SimpleBackend {
                     is_block_filled = true;
                 }
                 "jump" => {
-                    let target_id = op.value.unwrap();
+                    let target_id = op.value.unwrap_or(0);
                     let target_block = state_blocks[&target_id];
                     if let Some(block) = builder.current_block() {
                         let mut carry_obj = block_tracked_obj.remove(&block).unwrap_or_default();
@@ -13266,9 +13269,9 @@ impl SimpleBackend {
                     is_block_filled = true;
                 }
                 "br_if" => {
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
-                    let target_id = op.value.unwrap();
+                    let target_id = op.value.unwrap_or(0);
                     let target_block = state_blocks[&target_id];
                     let origin_block = builder
                         .current_block()
@@ -13343,7 +13346,7 @@ impl SimpleBackend {
                     builder.seal_block(fallthrough_block);
                 }
                 "label" | "state_label" => {
-                    let label_id = op.value.unwrap();
+                    let label_id = op.value.unwrap_or(0);
                     let block = state_blocks[&label_id];
                     let is_function_exception_label = Some(label_id) == function_exception_label_id;
 
@@ -13380,7 +13383,7 @@ impl SimpleBackend {
                 // TIR round-trip variable ops — wire SSA values between blocks
                 "store_var" => {
                     // Store a value into a named variable (block arg passing)
-                    let args = op.args.as_ref().unwrap();
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("store_var: src not found");
                     if let Some(ref var_name) = op.var {
                         def_var_named(&mut builder, &vars, var_name, *val);

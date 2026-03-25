@@ -27246,72 +27246,63 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             elif op.kind == "CONST_ELLIPSIS":
                 json_ops.append({"kind": "const_ellipsis", "out": op.result.name})
-            elif op.kind == "ADD":
-                add_entry: dict[str, Any] = {
-                    "kind": "add",
+            elif op.kind in ("ADD", "SUB", "MUL"):
+                # Compile-time constant fold: when both operands are known
+                # integer constants and the result overflows the 47-bit signed
+                # inline range, emit const_bigint instead of the arithmetic op.
+                # This prevents Cranelift 0.130 from miscompiling the overflow
+                # check during its constant-folding pass.
+                _arith_folded = False
+                if (
+                    len(op.args) == 2
+                    and self._should_fast_int(op)
+                ):
+                    lhs_arg, rhs_arg = op.args
+                    if isinstance(lhs_arg, MoltValue) and isinstance(rhs_arg, MoltValue):
+                        lhs_c = self.const_ints.get(lhs_arg.name)
+                        rhs_c = self.const_ints.get(rhs_arg.name)
+                        if lhs_c is not None and rhs_c is not None:
+                            if op.kind == "ADD":
+                                result_val = lhs_c + rhs_c
+                            elif op.kind == "SUB":
+                                result_val = lhs_c - rhs_c
+                            else:
+                                result_val = lhs_c * rhs_c
+                            _inline_min = -(1 << 46)
+                            _inline_max = (1 << 46) - 1
+                            if not (_inline_min <= result_val <= _inline_max):
+                                json_ops.append(
+                                    {
+                                        "kind": "const_bigint",
+                                        "s_value": str(result_val),
+                                        "out": op.result.name,
+                                    }
+                                )
+                                _arith_folded = True
+                if not _arith_folded:
+                    kind_lower = op.kind.lower()
+                    entry: dict[str, Any] = {
+                        "kind": kind_lower,
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                    if self._should_fast_int(op):
+                        entry["fast_int"] = True
+                    elif self._should_fast_float(op):
+                        entry["fast_float"] = True
+                    json_ops.append(entry)
+            elif op.kind in ("INPLACE_ADD", "INPLACE_SUB", "INPLACE_MUL"):
+                kind_lower = op.kind.lower()
+                entry = {
+                    "kind": kind_lower,
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
                 if self._should_fast_int(op):
-                    add_entry["fast_int"] = True
+                    entry["fast_int"] = True
                 elif self._should_fast_float(op):
-                    add_entry["fast_float"] = True
-                json_ops.append(add_entry)
-            elif op.kind == "INPLACE_ADD":
-                add_entry = {
-                    "kind": "inplace_add",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-                if self._should_fast_int(op):
-                    add_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    add_entry["fast_float"] = True
-                json_ops.append(add_entry)
-            elif op.kind == "SUB":
-                sub_entry: dict[str, Any] = {
-                    "kind": "sub",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-                if self._should_fast_int(op):
-                    sub_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    sub_entry["fast_float"] = True
-                json_ops.append(sub_entry)
-            elif op.kind == "INPLACE_SUB":
-                sub_entry = {
-                    "kind": "inplace_sub",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-                if self._should_fast_int(op):
-                    sub_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    sub_entry["fast_float"] = True
-                json_ops.append(sub_entry)
-            elif op.kind == "MUL":
-                mul_entry: dict[str, Any] = {
-                    "kind": "mul",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-                if self._should_fast_int(op):
-                    mul_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    mul_entry["fast_float"] = True
-                json_ops.append(mul_entry)
-            elif op.kind == "INPLACE_MUL":
-                mul_entry = {
-                    "kind": "inplace_mul",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-                if self._should_fast_int(op):
-                    mul_entry["fast_int"] = True
-                elif self._should_fast_float(op):
-                    mul_entry["fast_float"] = True
-                json_ops.append(mul_entry)
+                    entry["fast_float"] = True
+                json_ops.append(entry)
             elif op.kind == "DIV":
                 div_entry: dict[str, Any] = {
                     "kind": "div",
