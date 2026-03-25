@@ -8771,8 +8771,13 @@ impl SimpleBackend {
                     {
                         id
                     } else {
+                        let linkage = if defined_functions.contains(func_name) {
+                            Linkage::Export
+                        } else {
+                            Linkage::Import
+                        };
                         self.module
-                            .declare_function(func_name, Linkage::Export, &func_sig)
+                            .declare_function(func_name, linkage, &func_sig)
                             .unwrap_or_else(|e| {
                                 panic!(
                                     "gen_locals_register: failed to declare '{}': {:?}",
