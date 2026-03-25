@@ -1499,6 +1499,11 @@ impl WasmBackend {
                     crate::tir::type_refine::refine_types(&mut tir_func);
                     let type_map = crate::tir::type_refine::extract_type_map(&tir_func);
                     let stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                    // Empty stats = verification failed; skip lowering to
+                    // avoid producing corrupted IR that crashes wasm codegen.
+                    if stats.is_empty() {
+                        return None;
+                    }
                     if tir_dump {
                         eprintln!("{}", crate::tir::printer::print_function(&tir_func));
                     }
@@ -1510,11 +1515,11 @@ impl WasmBackend {
                             );
                         }
                     }
-                    crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func, &type_map)
+                    Some(crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func, &type_map))
                 }));
 
                 match result {
-                    Ok(optimized_ops) => {
+                    Ok(Some(optimized_ops)) => {
                         let valid = crate::tir::lower_to_simple::validate_labels(&optimized_ops);
                         if valid {
                             let serialized =
@@ -1524,6 +1529,14 @@ impl WasmBackend {
                         } else {
                             func_ir.ops = original_ops;
                         }
+                    }
+                    Ok(None) => {
+                        // TIR verification failed — fall back to unoptimized.
+                        eprintln!(
+                            "[TIR] WARNING: verification failed on function '{}' (WASM) — falling back to unoptimized.",
+                            func_name
+                        );
+                        func_ir.ops = original_ops;
                     }
                     Err(_panic) => {
                         eprintln!(
