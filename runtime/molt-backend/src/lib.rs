@@ -2025,24 +2025,15 @@ impl SimpleBackend {
                 })
                 .collect();
         for (fid, name, sig) in declared {
-            // In batched compilation, cross-batch references should use Import
-            // linkage (not Export).  Skip trap stubs for functions that exist
-            // in other batches — ld -r will resolve them at merge time.  But
-            // functions that don't exist in ANY batch (like __ov variants or
-            // internally-generated names) still need stubs to avoid Cranelift
-            // "Export must be defined" panics.
-            //
-            // Safety net: if an external function was still declared as Export
-            // (should not happen after linkage fixes), emit a trap stub anyway
-            // to prevent the Cranelift panic — better a duplicate symbol warning
-            // from ld -r than a hard crash.
+            // In batched compilation, skip trap stubs for functions that
+            // exist in other batches — ld -r will resolve them at merge
+            // time.  But functions that don't exist in ANY batch (like
+            // __ov variants or internally-generated names) still need
+            // stubs to avoid Cranelift "Export must be defined" panics.
             if !self.external_function_names.is_empty()
                 && self.external_function_names.contains(&name)
             {
-                eprintln!(
-                    "WARNING: cross-batch function `{}` unexpectedly declared as Export; emitting fallback stub",
-                    name
-                );
+                continue;
             }
             if let Err(e) = Self::emit_trap_stub(&mut self.module, fid, &sig, &name) {
                 eprintln!("WARNING: failed to emit trap stub for `{}`: {}", name, e);
