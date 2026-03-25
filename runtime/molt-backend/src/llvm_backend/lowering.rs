@@ -1319,8 +1319,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             // ── CheckException: inspect the current exception state ──
+            // The runtime exposes `molt_exception_pending` (returns u64 bool).
+            // For MVP, we call it and ignore the result (no branch to handler).
             OpCode::CheckException => {
-                let check_fn = self.backend.module.get_function("molt_check_exception").unwrap();
+                let check_fn = self.backend.module.get_function("molt_exception_pending").unwrap_or_else(|| {
+                    let i64_ty = self.backend.context.i64_type();
+                    let fn_ty = i64_ty.fn_type(&[], false);
+                    self.backend.module.add_function("molt_exception_pending", fn_ty, Some(inkwell::module::Linkage::External))
+                });
                 let result = self
                     .backend
                     .builder

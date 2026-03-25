@@ -381,11 +381,11 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
     }
 
     // ── Exception ──
-    // molt_check_exception() -> u64  (returns the current exception or None)
+    // molt_exception_pending() -> u64  (returns nonzero if exception pending)
     {
         let fn_ty = i64_ty.fn_type(&[], false);
         module.add_function(
-            "molt_check_exception",
+            "molt_exception_pending",
             fn_ty,
             Some(inkwell::module::Linkage::External),
         );
