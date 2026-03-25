@@ -284,8 +284,8 @@ impl Drop for GilGuard {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct GilReleaseGuard {
-    depth: usize,
-    had_runtime_guard: bool,
+    pub(crate) depth: usize,
+    pub(crate) had_runtime_guard: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]

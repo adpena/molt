@@ -727,12 +727,22 @@ impl TclInterpreter {
         let parts = command.into_command();
         let mut objv = Vec::with_capacity(parts.len());
         for part in &parts {
-            objv.push(self.alloc_obj(part)?);
+            match self.alloc_obj(part) {
+                Ok(obj) => {
+                    // Immediately own the object (refcount 0→1).
+                    unsafe { self.api.incr_ref_count_obj(obj) };
+                    objv.push(obj);
+                }
+                Err(err) => {
+                    // Clean up already-allocated objects on partial failure.
+                    for &allocated in &objv {
+                        unsafe { self.api.decr_ref_count_obj(allocated) };
+                    }
+                    return Err(err);
+                }
+            }
         }
         let rc = unsafe {
-            for &obj in &objv {
-                self.api.incr_ref_count_obj(obj);
-            }
             let call_rc =
                 (self.api.eval_objv)(self.interp_ptr(), objv.len() as c_int, objv.as_ptr(), 0);
             for &obj in &objv {
@@ -796,8 +806,11 @@ impl TclInterpreter {
                         (self.api.list_obj_append_element)(self.interp_ptr(), list_obj, nested_obj)
                     };
                     if rc != TCL_OK {
+                        // Safely free refcount-0 objects: incr then decr (0→1→0).
                         unsafe {
+                            self.api.incr_ref_count_obj(nested_obj);
                             self.api.decr_ref_count_obj(nested_obj);
+                            self.api.incr_ref_count_obj(list_obj);
                             self.api.decr_ref_count_obj(list_obj);
                         }
                         let err = tcl_result_string(self.api, self.interp_ptr());
@@ -3238,36 +3251,144 @@ fn build_native_tk_app(py: &PyToken, use_tk: bool) -> Result<TkAppState, u64> {
     Ok(app)
 }
 
+/// Allocate a Tcl_Obj from a `TclObj` part, using the given `TclApi`.
+///
+/// This is a free-standing version of `TclInterpreter::alloc_obj` that does
+/// not require a `&TclInterpreter` reference — only the API function pointers
+/// and the interpreter address (for list-append error messages).
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+fn alloc_tcl_obj_from_part(
+    api: &'static TclApi,
+    interp_addr: usize,
+    part: &TclObj,
+) -> Result<*mut c_void, String> {
+    match &part.kind {
+        TclObjKind::Scalar(text) => {
+            let bytes = CString::new(text.as_bytes())
+                .map_err(|_| "Tcl string contained interior NUL byte".to_string())?;
+            let obj =
+                unsafe { (api.new_string_obj)(bytes.as_ptr(), text.len() as c_int) };
+            if obj.is_null() {
+                return Err("Tcl_NewStringObj returned null".to_string());
+            }
+            Ok(obj)
+        }
+        TclObjKind::List(list) => {
+            let list_obj = unsafe { (api.new_list_obj)(0, ptr::null()) };
+            if list_obj.is_null() {
+                return Err("Tcl_NewListObj returned null".to_string());
+            }
+            let interp = interp_addr as *mut c_void;
+            for nested in list {
+                let nested_obj = alloc_tcl_obj_from_part(api, interp_addr, nested)?;
+                let rc = unsafe {
+                    (api.list_obj_append_element)(interp, list_obj, nested_obj)
+                };
+                if rc != TCL_OK {
+                    // Safely free refcount-0 objects: incr then decr
+                    unsafe {
+                        api.incr_ref_count_obj(nested_obj);
+                        api.decr_ref_count_obj(nested_obj);
+                        api.incr_ref_count_obj(list_obj);
+                        api.decr_ref_count_obj(list_obj);
+                    }
+                    let err = tcl_result_string(api, interp);
+                    return Err(if err.is_empty() {
+                        "Tcl_ListObjAppendElement failed".to_string()
+                    } else {
+                        err
+                    });
+                }
+            }
+            Ok(list_obj)
+        }
+    }
+}
+
+/// Evaluate a Tcl command (given as `Vec<TclObj>` parts) on the interpreter
+/// at `interp_addr`, releasing the GIL for the duration of the Tcl call.
+///
+/// All argument conversion must happen *before* this function is called
+/// (while the GIL is held).  This function only touches Tcl APIs — no
+/// Molt runtime calls.
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+fn eval_tcl_without_gil(
+    api: &'static TclApi,
+    interp_addr: usize,
+    parts: &[TclObj],
+) -> Result<String, String> {
+    let interp = interp_addr as *mut c_void;
+    let mut objv = Vec::with_capacity(parts.len());
+    for part in parts {
+        let obj = alloc_tcl_obj_from_part(api, interp_addr, part)?;
+        // Immediately incr so the object is owned (refcount 1).
+        unsafe { api.incr_ref_count_obj(obj) };
+        objv.push(obj);
+    }
+
+    let rc = {
+        let _gil_release = GilReleaseGuard::new();
+        unsafe {
+            (api.eval_objv)(interp, objv.len() as c_int, objv.as_ptr(), 0)
+        }
+    };
+
+    for &obj in &objv {
+        unsafe { api.decr_ref_count_obj(obj) };
+    }
+
+    let result = tcl_result_string(api, interp);
+    if rc != TCL_OK {
+        return Err(if result.is_empty() {
+            "Tcl_EvalObjv failed".to_string()
+        } else {
+            result
+        });
+    }
+    Ok(result)
+}
+
 #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
 fn run_tcl_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> {
+    // Phase 1: Convert Molt objects to TclObj (needs GIL for Molt runtime).
     let mut command = Vec::with_capacity(args.len());
     for &bits in args {
         command.push(tcl_obj_from_bits(py, bits));
     }
-    let script = TclObj::new_list(command.into_iter());
 
     // Trace Tcl commands for debugging layout issues
     if std::env::var("MOLT_TRACE_TCL").is_ok() {
+        let script = TclObj::new_list(command.clone().into_iter());
         eprintln!("[tcl] {}", script.to_string());
     }
 
-    let mut registry = tk_registry().lock().unwrap();
-    let app = app_mut_from_registry(py, &mut registry, handle)?;
-    let Some(interp) = app.interpreter.as_ref() else {
-        return Err(app_tcl_error_locked(
-            py,
-            app,
-            "tk runtime interpreter is unavailable",
-        ));
-    };
-    match interp.eval(script) {
-        Ok(result) => {
-            app.last_error = None;
-            Ok(tcl_result_to_bits(py, result))
+    // Phase 2: Extract interpreter context, then drop registry lock.
+    let (api, interp_addr) = {
+        let mut registry = tk_registry().lock().unwrap();
+        let app = app_mut_from_registry(py, &mut registry, handle)?;
+        let Some(interp) = app.interpreter.as_ref() else {
+            return Err(app_tcl_error_locked(
+                py,
+                app,
+                "tk runtime interpreter is unavailable",
+            ));
+        };
+        if let Err(err) = interp.ensure_owner_thread() {
+            return Err(app_tcl_error_locked(py, app, err));
         }
-        Err(err) => Err(app_tcl_error_locked(
+        (interp.api, interp.interp_addr)
+        // registry lock dropped here
+    };
+
+    // Phase 3: Evaluate without GIL (Tcl FFI only, no Molt runtime).
+    match eval_tcl_without_gil(api, interp_addr, &command) {
+        Ok(result) => {
+            clear_last_error(handle);
+            Ok(tcl_result_to_bits(py, TclObj::scalar_from_interp(result, interp_addr)))
+        }
+        Err(err) => Err(raise_tcl_for_handle(
             py,
-            app,
+            handle,
             format!("tk command failed: {err}"),
         )),
     }
@@ -3275,22 +3396,81 @@ fn run_tcl_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> 
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
 fn take_pending_tcl_callbacks(py: &PyToken, handle: i64) -> Result<Vec<Vec<String>>, u64> {
-    let mut registry = tk_registry().lock().unwrap();
-    let app = app_mut_from_registry(py, &mut registry, handle)?;
-    let Some(interp) = app.interpreter.as_ref() else {
+    // Extract interpreter context, then drop registry lock before
+    // releasing the GIL for the Tcl variable operations.
+    let (api, interp_addr) = {
+        let mut registry = tk_registry().lock().unwrap();
+        let app = app_mut_from_registry(py, &mut registry, handle)?;
+        let Some(interp) = app.interpreter.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if interp.ensure_owner_thread().is_err() {
+            return Ok(Vec::new());
+        }
+        (interp.api, interp.interp_addr)
+        // registry lock dropped here
+    };
+
+    // Read and reset the pending callbacks variable with GIL released.
+    let pending_text = {
+        let get_parts = [TclObj::from("set"), TclObj::from("::__molt_pending_callbacks")];
+        let reset_parts = [
+            TclObj::from("set"),
+            TclObj::from("::__molt_pending_callbacks"),
+            TclObj::new_list(std::iter::empty::<TclObj>()),
+        ];
+
+        let interp = interp_addr as *mut c_void;
+        let _gil_release = GilReleaseGuard::new();
+
+        // Read current value
+        let mut get_objv = Vec::with_capacity(get_parts.len());
+        for part in &get_parts {
+            let obj = match alloc_tcl_obj_from_part(api, interp_addr, part) {
+                Ok(obj) => obj,
+                Err(_) => return Ok(Vec::new()),
+            };
+            unsafe { api.incr_ref_count_obj(obj) };
+            get_objv.push(obj);
+        }
+        let rc = unsafe {
+            (api.eval_objv)(interp, get_objv.len() as c_int, get_objv.as_ptr(), 0)
+        };
+        for &obj in &get_objv {
+            unsafe { api.decr_ref_count_obj(obj) };
+        }
+        if rc != TCL_OK {
+            return Ok(Vec::new());
+        }
+        let pending_text = tcl_result_string(api, interp);
+
+        // Reset to empty list
+        let mut reset_objv = Vec::with_capacity(reset_parts.len());
+        for part in &reset_parts {
+            let obj = match alloc_tcl_obj_from_part(api, interp_addr, part) {
+                Ok(obj) => obj,
+                Err(_) => break,
+            };
+            unsafe { api.incr_ref_count_obj(obj) };
+            reset_objv.push(obj);
+        }
+        if reset_objv.len() == reset_parts.len() {
+            let _ = unsafe {
+                (api.eval_objv)(interp, reset_objv.len() as c_int, reset_objv.as_ptr(), 0)
+            };
+        }
+        for &obj in &reset_objv {
+            unsafe { api.decr_ref_count_obj(obj) };
+        }
+
+        pending_text
+    };
+
+    if pending_text.is_empty() {
         return Ok(Vec::new());
-    };
+    }
 
-    let pending_obj = match interp.get("::__molt_pending_callbacks") {
-        Ok(value) => value,
-        Err(_) => return Ok(Vec::new()),
-    };
-    let _ = interp.eval((
-        "set",
-        "::__molt_pending_callbacks",
-        TclObj::new_list(std::iter::empty::<TclObj>()),
-    ));
-
+    let pending_obj = TclObj::scalar_from_interp(pending_text, interp_addr);
     let mut calls = Vec::new();
     let Ok(pending_iter) = pending_obj.get_elements() else {
         return Ok(calls);
@@ -3383,17 +3563,26 @@ fn dispatch_named_callback_from_strings(
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
 fn pump_tcl_events(py: &PyToken, handle: i64, flags: i32) -> Result<bool, u64> {
-    let event_handled = {
+    // Extract the do_one_event fn pointer and interp address, then drop
+    // the registry lock before releasing the GIL for the Tcl call.
+    let (do_one_event_fn, _interp_addr) = {
         let mut registry = tk_registry().lock().unwrap();
         let app = app_mut_from_registry(py, &mut registry, handle)?;
         let Some(interp) = app.interpreter.as_ref() else {
             return Ok(false);
         };
-        match interp.do_one_event(flags) {
-            Ok(handled) => handled,
-            Err(err) => return Err(app_tcl_error_locked(py, app, err)),
+        if let Err(err) = interp.ensure_owner_thread() {
+            return Err(app_tcl_error_locked(py, app, err));
         }
+        (interp.api.do_one_event, interp.interp_addr)
+        // registry lock dropped here
     };
+
+    let event_handled = {
+        let _gil_release = GilReleaseGuard::new();
+        unsafe { do_one_event_fn(flags as c_int) != 0 }
+    };
+
     let pending_callbacks = take_pending_tcl_callbacks(py, handle)?;
     let mut callback_handled = false;
     for callback_argv in pending_callbacks {
@@ -4646,7 +4835,10 @@ fn handle_after_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, 
             while remaining > 0 {
                 let _ = pump_tcl_events(py, handle, 0)?;
                 let _ = dispatch_next_pending_event(py, handle)?;
-                std::thread::sleep(Duration::from_millis(1));
+                {
+                    let _gil_release = GilReleaseGuard::new();
+                    std::thread::sleep(Duration::from_micros(100));
+                }
                 remaining = remaining.saturating_sub(1);
             }
             clear_last_error(handle);
@@ -5485,7 +5677,10 @@ where
         if progressed {
             continue;
         }
-        std::thread::sleep(Duration::from_millis(1));
+        {
+            let _gil_release = GilReleaseGuard::new();
+            std::thread::sleep(Duration::from_micros(100));
+        }
     }
 }
 
@@ -14226,7 +14421,10 @@ pub extern "C" fn molt_tk_mainloop(app_bits: u64) -> u64 {
                 app_has_pending_after_work(app)
             };
             if has_pending {
-                std::thread::sleep(Duration::from_millis(1));
+                {
+                    let _gil_release = GilReleaseGuard::new();
+                    std::thread::sleep(Duration::from_micros(100));
+                }
                 continue;
             }
             clear_last_error(handle);
@@ -14275,7 +14473,10 @@ pub extern "C" fn molt_tk_do_one_event(app_bits: u64, flags_bits: u64) -> u64 {
                 if !has_pending {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(1));
+                {
+                    let _gil_release = GilReleaseGuard::new();
+                    std::thread::sleep(Duration::from_micros(100));
+                }
                 let progressed = match dispatch_next_pending_event(_py, handle) {
                     Ok(progressed) => progressed,
                     Err(bits) => return bits,
@@ -14339,20 +14540,38 @@ pub extern "C" fn molt_tk_after(app_bits: u64, delay_ms_bits: u64, callback_bits
                 }
                 return app_tcl_error_locked(_py, app, "tk runtime interpreter is unavailable");
             };
-            let after_token = match interp.eval(("after", delay_ms, callback_name.clone())) {
-                Ok(value) => value.to_string(),
+            let api = interp.api;
+            let interp_addr = interp.interp_addr;
+            let cb_name_clone = callback_name.clone();
+            drop(registry);
+            // Release GIL during Tcl "after" scheduling eval.
+            let after_cmd = [
+                TclObj::from("after"),
+                TclObj::from(delay_ms),
+                TclObj::from(cb_name_clone),
+            ];
+            let after_token = match eval_tcl_without_gil(api, interp_addr, &after_cmd) {
+                Ok(value) => value,
                 Err(err) => {
-                    unregister_tcl_callback_proc(app, &callback_name);
-                    app.one_shot_callbacks.remove(&callback_name);
-                    if let Some(bits) = app.callbacks.remove(&callback_name) {
-                        dec_ref_bits(_py, bits);
+                    let mut registry = tk_registry().lock().unwrap();
+                    if let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) {
+                        unregister_tcl_callback_proc(app, &callback_name);
+                        app.one_shot_callbacks.remove(&callback_name);
+                        if let Some(bits) = app.callbacks.remove(&callback_name) {
+                            dec_ref_bits(_py, bits);
+                        }
+                        return app_tcl_error_locked(_py, app, format!("tk command failed: {err}"));
                     }
-                    return app_tcl_error_locked(_py, app, format!("tk command failed: {err}"));
+                    return raise_invalid_handle_error(_py);
                 }
             };
-            register_after_command_token(app, &after_token, &callback_name, "timer");
-            app.last_error = None;
-            drop(registry);
+            {
+                let mut registry = tk_registry().lock().unwrap();
+                if let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) {
+                    register_after_command_token(app, &after_token, &callback_name, "timer");
+                    app.last_error = None;
+                }
+            }
             return match alloc_string_bits(_py, &after_token) {
                 Ok(bits) => bits,
                 Err(bits) => bits,
@@ -14418,20 +14637,38 @@ pub extern "C" fn molt_tk_after_idle(app_bits: u64, callback_bits: u64) -> u64 {
                 }
                 return app_tcl_error_locked(_py, app, "tk runtime interpreter is unavailable");
             };
-            let after_token = match interp.eval(("after", "idle", callback_name.clone())) {
-                Ok(value) => value.to_string(),
+            let api = interp.api;
+            let interp_addr = interp.interp_addr;
+            let cb_name_clone = callback_name.clone();
+            drop(registry);
+            // Release GIL during Tcl "after idle" scheduling eval.
+            let after_cmd = [
+                TclObj::from("after"),
+                TclObj::from("idle"),
+                TclObj::from(cb_name_clone),
+            ];
+            let after_token = match eval_tcl_without_gil(api, interp_addr, &after_cmd) {
+                Ok(value) => value,
                 Err(err) => {
-                    unregister_tcl_callback_proc(app, &callback_name);
-                    app.one_shot_callbacks.remove(&callback_name);
-                    if let Some(bits) = app.callbacks.remove(&callback_name) {
-                        dec_ref_bits(_py, bits);
+                    let mut registry = tk_registry().lock().unwrap();
+                    if let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) {
+                        unregister_tcl_callback_proc(app, &callback_name);
+                        app.one_shot_callbacks.remove(&callback_name);
+                        if let Some(bits) = app.callbacks.remove(&callback_name) {
+                            dec_ref_bits(_py, bits);
+                        }
+                        return app_tcl_error_locked(_py, app, format!("tk command failed: {err}"));
                     }
-                    return app_tcl_error_locked(_py, app, format!("tk command failed: {err}"));
+                    return raise_invalid_handle_error(_py);
                 }
             };
-            register_after_command_token(app, &after_token, &callback_name, "idle");
-            app.last_error = None;
-            drop(registry);
+            {
+                let mut registry = tk_registry().lock().unwrap();
+                if let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) {
+                    register_after_command_token(app, &after_token, &callback_name, "idle");
+                    app.last_error = None;
+                }
+            }
             return match alloc_string_bits(_py, &after_token) {
                 Ok(bits) => bits,
                 Err(bits) => bits,
@@ -15596,13 +15833,28 @@ pub extern "C" fn molt_tk_destroy_widget(app_bits: u64, widget_path_bits: u64) -
             let Some(interp) = app.interpreter.as_ref() else {
                 return app_tcl_error_locked(_py, app, "tk runtime interpreter is unavailable");
             };
-            if let Err(err) = interp.eval(("destroy", widget_path.clone())) {
-                return app_tcl_error_locked(_py, app, format!("tk command failed: {err}"));
+            let api = interp.api;
+            let interp_addr = interp.interp_addr;
+            let wp = widget_path.clone();
+            drop(registry);
+            // Release GIL during Tcl "destroy" command.
+            let destroy_cmd = [TclObj::from("destroy"), TclObj::from(wp)];
+            if let Err(err) = eval_tcl_without_gil(api, interp_addr, &destroy_cmd) {
+                return raise_tcl_for_handle(
+                    _py,
+                    handle,
+                    format!("tk command failed: {err}"),
+                );
             }
-            if let Some(widget) = app.widgets.remove(&widget_path) {
-                clear_widget_refs(_py, widget);
+            {
+                let mut registry = tk_registry().lock().unwrap();
+                if let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) {
+                    if let Some(widget) = app.widgets.remove(&widget_path) {
+                        clear_widget_refs(_py, widget);
+                    }
+                    app.last_error = None;
+                }
             }
-            app.last_error = None;
             return MoltObject::none().bits();
         }
         #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]

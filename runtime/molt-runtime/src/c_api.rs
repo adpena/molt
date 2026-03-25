@@ -4234,6 +4234,36 @@ pub extern "C" fn Py_BuildNone() -> u64 {
     none_bits()
 }
 
+// ---------------------------------------------------------------------------
+// GIL release/re-acquire — resolved by molt-runtime-core's FFI declarations
+// ---------------------------------------------------------------------------
+
+/// Release the GIL and return an opaque token encoding the saved state.
+///
+/// The token packs `depth` (shifted left 1) and `had_runtime_guard` (bit 0)
+/// into a single `u64` so that `molt_gil_reacquire_guard` can restore it.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gil_release_guard() -> u64 {
+    let guard = crate::concurrency::GilReleaseGuard::new();
+    let depth = guard.depth;
+    let had_runtime = guard.had_runtime_guard;
+    std::mem::forget(guard); // Don't drop — we'll reacquire manually
+    ((depth as u64) << 1) | (had_runtime as u64)
+}
+
+/// Re-acquire the GIL using the token returned by `molt_gil_release_guard`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gil_reacquire_guard(token: u64) {
+    let depth = (token >> 1) as usize;
+    let had_runtime = (token & 1) != 0;
+    // Reconstruct the guard and let it drop to re-acquire the GIL.
+    let guard = crate::concurrency::GilReleaseGuard {
+        depth,
+        had_runtime_guard: had_runtime,
+    };
+    drop(guard);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -112,6 +112,30 @@ impl PyToken {
     }
 }
 
+/// RAII guard that releases the GIL on creation and re-acquires on drop.
+///
+/// In the real runtime, this delegates to `molt-runtime`'s
+/// `concurrency::GilReleaseGuard` via `#[no_mangle]` FFI functions.
+/// The token preserves GIL depth so nested releases work correctly.
+pub struct GilReleaseGuard {
+    token: u64,
+}
+
+impl GilReleaseGuard {
+    #[inline]
+    pub fn new() -> Self {
+        let token = unsafe { ffi::molt_gil_release_guard() };
+        Self { token }
+    }
+}
+
+impl Drop for GilReleaseGuard {
+    #[inline]
+    fn drop(&mut self) {
+        unsafe { ffi::molt_gil_reacquire_guard(self.token) };
+    }
+}
+
 /// Execute a body while "holding the GIL".
 ///
 /// Stub implementation: binds a [`PyToken`] and runs the body immediately.
@@ -309,6 +333,15 @@ pub mod ffi {
             expected_count: u64,
             output_ptr: *mut u64,
         ) -> u64;
+
+        // -- GIL release/re-acquire (concurrency/gil.rs) ----------------------
+
+        /// Release the GIL and return an opaque token encoding the saved depth.
+        /// Resolved by `molt-runtime`'s concurrency::gil module.
+        pub fn molt_gil_release_guard() -> u64;
+
+        /// Re-acquire the GIL using the token returned by `molt_gil_release_guard`.
+        pub fn molt_gil_reacquire_guard(token: u64);
     }
 }
 
@@ -476,7 +509,7 @@ pub mod prelude {
     pub use crate::type_ids::*;
     pub use crate::{
         bits_from_ptr, obj_from_bits, ptr_from_bits,
-        MoltObject, PyToken,
+        GilReleaseGuard, MoltObject, PyToken,
     };
     pub use crate::with_gil_entry;
 
