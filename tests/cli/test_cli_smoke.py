@@ -23,6 +23,9 @@ ROOT = Path(__file__).resolve().parents[2]
 def _base_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src")
+    # Disable backend daemon in tests to avoid stale daemon state from
+    # previous runs interfering with test assertions.
+    env.setdefault("MOLT_BACKEND_DAEMON", "0")
     return env
 
 
