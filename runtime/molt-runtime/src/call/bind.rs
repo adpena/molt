@@ -569,6 +569,19 @@ unsafe fn call_type_with_builder(
             let new_name_bits =
                 intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
             if let Some(new_bits) = class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits) {
+                // Detect whether __new__ is the default Exception.__new__
+                // (molt_exception_new_bound).  The default __new__ only
+                // accepts positional args (cls, *args); keyword args must be
+                // forwarded exclusively to __init__.  A user-defined __new__
+                // may accept keyword args, so forward everything in that case.
+                let default_new = if let Some(new_ptr) = obj_from_bits(new_bits).as_ptr()
+                    && object_type_id(new_ptr) == TYPE_ID_FUNCTION
+                    && function_fn_ptr(new_ptr) == fn_addr!(crate::builtins::exceptions::molt_exception_new_bound)
+                {
+                    true
+                } else {
+                    false
+                };
                 let (pos_len, kw_len) = if builder_ptr.is_null() {
                     (1usize, 0usize)
                 } else {
@@ -576,7 +589,8 @@ unsafe fn call_type_with_builder(
                     if args_ptr.is_null() {
                         (1usize, 0usize)
                     } else {
-                        (1 + (*args_ptr).pos.len(), (*args_ptr).kw_names.len())
+                        let kw = if default_new { 0 } else { (*args_ptr).kw_names.len() };
+                        (1 + (*args_ptr).pos.len(), kw)
                     }
                 };
                 let new_builder_bits = molt_callargs_new(pos_len as u64, kw_len as u64);
@@ -590,12 +604,18 @@ unsafe fn call_type_with_builder(
                         for &arg in (*args_ptr).pos.iter() {
                             let _ = molt_callargs_push_pos(new_builder_bits, arg);
                         }
-                        for (&name_bits, &val_bits) in (*args_ptr)
-                            .kw_names
-                            .iter()
-                            .zip((*args_ptr).kw_values.iter())
-                        {
-                            let _ = molt_callargs_push_kw(new_builder_bits, name_bits, val_bits);
+                        // Only forward keyword args to __new__ if it is NOT
+                        // the default Exception.__new__ — that function only
+                        // understands positional args.  Keywords are always
+                        // forwarded to __init__ later.
+                        if !default_new {
+                            for (&name_bits, &val_bits) in (*args_ptr)
+                                .kw_names
+                                .iter()
+                                .zip((*args_ptr).kw_values.iter())
+                            {
+                                let _ = molt_callargs_push_kw(new_builder_bits, name_bits, val_bits);
+                            }
                         }
                     }
                 }
