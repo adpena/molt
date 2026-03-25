@@ -9598,8 +9598,10 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(name));
                         func.instruction(&Instruction::LocalGet(module));
                         emit_call(func, reloc_enabled, import_ids["module_cache_set"]);
-                        let res = locals[op.out.as_ref().unwrap()];
-                        func.instruction(&Instruction::LocalSet(res));
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        }
                     }
                     "module_get_attr" => {
                         let args = op.args.as_ref().unwrap();
@@ -9866,7 +9868,11 @@ impl WasmBackend {
                     }
                     "exception_clear" => {
                         emit_call(func, reloc_enabled, import_ids["exception_clear"]);
-                        func.instruction(&Instruction::LocalSet(locals[op.out.as_ref().unwrap()]));
+                        if let Some(out) = op.out.as_ref() {
+                            func.instruction(&Instruction::LocalSet(locals[out]));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
                     }
                     "exception_kind" => {
                         let args = op.args.as_ref().unwrap();
