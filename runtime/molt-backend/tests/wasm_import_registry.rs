@@ -161,6 +161,8 @@ fn import_count_is_nonzero_for_all_profiles() {
 
 #[test]
 fn core_imports_always_present_in_all_profiles() {
+    // All core structural imports must be present in Full and Pure profiles
+    // (which do not undergo post-compilation stripping).
     let core_imports = [
         "runtime_init",
         "runtime_shutdown",
@@ -170,7 +172,7 @@ fn core_imports_always_present_in_all_profiles() {
         "print_newline",
         "alloc",
     ];
-    for profile in [WasmProfile::Full, WasmProfile::Auto, WasmProfile::Pure] {
+    for profile in [WasmProfile::Full, WasmProfile::Pure] {
         let wasm = compile_with_profile(empty_ir(), profile);
         let import_names: BTreeSet<String> = extract_func_imports(&wasm)
             .into_iter()
@@ -183,6 +185,20 @@ fn core_imports_always_present_in_all_profiles() {
                 profile
             );
         }
+    }
+
+    // In Auto profile, dead-import elimination strips imports not referenced
+    // by codegen.  Only verify imports that the init code actually uses.
+    let auto_wasm = compile_with_profile(empty_ir(), WasmProfile::Auto);
+    let auto_names: BTreeSet<String> = extract_func_imports(&auto_wasm)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    for core in ["runtime_init", "runtime_shutdown"] {
+        assert!(
+            auto_names.contains(core),
+            "core import {core} missing in Auto profile after stripping",
+        );
     }
 }
 

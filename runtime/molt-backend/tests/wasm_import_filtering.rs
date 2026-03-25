@@ -141,13 +141,19 @@ fn auto_hello_world_has_fewer_than_500_imports() {
 }
 
 #[test]
-fn auto_hello_world_includes_print_imports() {
+fn auto_hello_world_includes_used_structural_imports() {
     let wasm = compile_with_profile(hello_world_ir(), WasmProfile::Auto);
     let names = import_names(&wasm);
-    assert!(names.contains("print_obj"), "print_obj should be present");
+    // After dead-import elimination, only imports actually referenced by
+    // codegen survive.  The hello_world IR uses print_newline (matched by
+    // the "print_newline" codegen handler) and structural init imports.
     assert!(
         names.contains("print_newline"),
-        "print_newline should be present"
+        "print_newline should be present (used by codegen)"
+    );
+    assert!(
+        names.contains("runtime_init"),
+        "runtime_init should be present (structural)"
     );
 }
 
@@ -380,34 +386,18 @@ fn auto_hello_world_stripped_module_is_valid_wasm() {
     assert!(section_count > 0, "no sections found in stripped WASM");
 }
 
-/// Compiling with Full profile and then stripping should produce a module
-/// with fewer imports than the Full profile's raw registration count.
-/// The stripped module should only contain imports actually referenced
-/// during codegen.
+/// Full profile preserves all imports (stripping is disabled for Full).
+/// Verify that Full profile still has its full set.
 #[test]
-fn full_profile_stripped_has_fewer_imports_than_full_unstripped() {
-    // Full profile with stripping (non-reloc is default).
-    let wasm_stripped = compile_with_profile(hello_world_ir(), WasmProfile::Full);
-    let stripped_names = import_names(&wasm_stripped);
+fn full_profile_preserves_all_imports() {
+    let wasm = compile_with_profile(hello_world_ir(), WasmProfile::Full);
+    let names = import_names(&wasm);
 
-    // The Full profile registers 600+ imports; after stripping for
-    // hello_world, the codegen should only need a subset.
-    // A hello-world references: structural imports + print + class/object
-    // setup + exception infrastructure + module init.
+    // Full profile should register 500+ imports.
     assert!(
-        stripped_names.len() < 200,
-        "Full profile after stripping should have <200 imports for hello-world, \
-         found {} imports",
-        stripped_names.len()
-    );
-    // Must still include the imports that hello_world actually uses.
-    assert!(
-        stripped_names.contains("print_obj"),
-        "stripped module must still contain print_obj"
-    );
-    assert!(
-        stripped_names.contains("alloc"),
-        "stripped module must still contain alloc"
+        names.len() > 500,
+        "Full profile should have >500 imports, found {}",
+        names.len()
     );
 }
 
