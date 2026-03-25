@@ -317,7 +317,7 @@ class AsyncGenerator(AsyncIterator):
         """Return the next item from the asynchronous generator.
         When exhausted, raise StopAsyncIteration.
         """
-        return await self.asend(None)
+        raise StopAsyncIteration
 
     @abstractmethod
     async def asend(self, value):
@@ -351,9 +351,7 @@ class AsyncGenerator(AsyncIterator):
     @classmethod
     def __subclasshook__(cls, C):
         if cls is AsyncGenerator:
-            return _check_methods(
-                C, "__aiter__", "__anext__", "asend", "athrow", "aclose"
-            )
+            return _check_methods(C, "__aiter__", "__anext__", "asend", "athrow")
         return NotImplemented
 
 

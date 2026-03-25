@@ -51,7 +51,7 @@ pub use crate::passes::{
     apply_profile_order, build_const_int_map, elide_dead_struct_allocs,
     elide_safe_exception_checks, eliminate_dead_functions, escape_analysis,
     fold_constants, fold_constants_cross_block, hoist_loop_invariants,
-    inline_functions, propagate_loop_fast_int, rc_coalescing,
+    inline_functions, propagate_loop_fast_int, rc_coalescing, rewrite_stateful_loops,
     split_megafunctions,
 };
 
@@ -1684,6 +1684,9 @@ impl SimpleBackend {
             eprintln!("[molt] WARNING: MOLT_BACKEND=llvm requested but llvm feature is not compiled in; falling back to Cranelift");
         }
         apply_profile_order(&mut ir);
+        for func_ir in &mut ir.functions {
+            rewrite_stateful_loops(func_ir);
+        }
         for func_ir in &mut ir.functions {
             elide_dead_struct_allocs(func_ir);
         }
