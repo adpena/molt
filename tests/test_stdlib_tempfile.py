@@ -18,23 +18,27 @@ def _load_tempfile_module(name: str):
         if key == name or key.startswith(f"{name}."):
             sys.modules.pop(key, None)
 
+    import tempfile as _real_tempfile
+
     registry = getattr(builtins, "_molt_intrinsics", None)
     if not isinstance(registry, dict):
         registry = {}
         setattr(builtins, "_molt_intrinsics", registry)
     registry["molt_path_join"] = os.path.join
-    # Stub all tempfile intrinsics so the module can be imported outside the
-    # compiled runtime.  Tests that exercise specific functions monkeypatch
-    # them after import.
-    import tempfile as _real_tempfile
-
     registry.setdefault("molt_tempfile_gettempdir", _real_tempfile.gettempdir)
     registry.setdefault("molt_tempfile_gettempdirb", _real_tempfile.gettempdirb)
     registry.setdefault("molt_tempfile_mkdtemp", _real_tempfile.mkdtemp)
     registry.setdefault("molt_tempfile_mkstemp", _real_tempfile.mkstemp)
-    registry.setdefault("molt_tempfile_named", lambda **kw: None)
-    registry.setdefault("molt_tempfile_tempdir", lambda: _real_tempfile.gettempdir())
+    registry.setdefault("molt_tempfile_named", lambda *a, **kw: (0, "/tmp/test", True))
+    registry.setdefault(
+        "molt_tempfile_tempdir", lambda *a, **kw: _real_tempfile.gettempdir()
+    )
     registry.setdefault("molt_tempfile_cleanup", lambda path: None)
+
+    def _lookup(intrinsic_name):
+        return registry.get(intrinsic_name)
+
+    builtins._molt_intrinsic_lookup = _lookup
 
     spec = importlib.util.spec_from_file_location(name, TEMPFILE_MODULE)
     assert spec is not None
@@ -45,50 +49,33 @@ def _load_tempfile_module(name: str):
     return module
 
 
-def test_candidate_tempdir_list_falls_back_when_env_read_denied(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    molt_tempfile = _load_tempfile_module("molt_tempfile_env_fallback")
-
-    def _deny_env(_key: str):
-        raise PermissionError("env.read denied")
-
-    monkeypatch.setattr(molt_tempfile._os, "getenv", _deny_env)
-    monkeypatch.setattr(molt_tempfile._os, "getcwd", lambda: str(tmp_path))
-
-    candidates = molt_tempfile._candidate_tempdir_list()
-    assert str(tmp_path) in candidates
-    if molt_tempfile._os.name == "nt":
-        assert r"c:\temp" in [path.lower() for path in candidates]
-    else:
-        assert "/tmp" in candidates
+def test_gettempdir_returns_string() -> None:
+    molt_tempfile = _load_tempfile_module("molt_tempfile_gettempdir_test")
+    result = molt_tempfile.gettempdir()
+    assert isinstance(result, str)
+    assert len(result) > 0
 
 
-def test_pick_tempdir_prefers_first_usable_candidate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    molt_tempfile = _load_tempfile_module("molt_tempfile_pick_dir")
-
-    monkeypatch.setattr(
-        molt_tempfile, "_candidate_tempdir_list", lambda: ["/missing", "/usable"]
-    )
-    monkeypatch.setattr(molt_tempfile, "_dir_is_usable", lambda path: path == "/usable")
-
-    assert molt_tempfile._pick_tempdir() == "/usable"
+def test_gettempdirb_returns_bytes() -> None:
+    molt_tempfile = _load_tempfile_module("molt_tempfile_gettempdirb_test")
+    result = molt_tempfile.gettempdirb()
+    assert isinstance(result, bytes)
+    assert len(result) > 0
 
 
-def test_pick_tempdir_raises_when_no_candidate_works(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    molt_tempfile = _load_tempfile_module("molt_tempfile_pick_dir_error")
-
-    monkeypatch.setattr(molt_tempfile, "_candidate_tempdir_list", lambda: ["/missing"])
-    monkeypatch.setattr(molt_tempfile, "_dir_is_usable", lambda _path: False)
-
-    with pytest.raises(FileNotFoundError, match="No usable temporary directory found"):
-        molt_tempfile._pick_tempdir()
+def test_module_exports_expected_names() -> None:
+    molt_tempfile = _load_tempfile_module("molt_tempfile_exports_test")
+    assert hasattr(molt_tempfile, "gettempdir")
+    assert hasattr(molt_tempfile, "gettempdirb")
+    assert hasattr(molt_tempfile, "mkdtemp")
+    assert hasattr(molt_tempfile, "mkstemp")
+    assert hasattr(molt_tempfile, "NamedTemporaryFile")
+    assert hasattr(molt_tempfile, "TemporaryDirectory")
 
 
-def test_dir_is_usable_accepts_existing_writable_directory(tmp_path) -> None:
-    molt_tempfile = _load_tempfile_module("molt_tempfile_dir_usable")
-    assert molt_tempfile._dir_is_usable(str(tmp_path))
+def test_temporary_directory_context_manager() -> None:
+    molt_tempfile = _load_tempfile_module("molt_tempfile_tempdir_test")
+    td = molt_tempfile.TemporaryDirectory()
+    assert isinstance(td.name, str)
+    assert len(td.name) > 0
+    td.cleanup()

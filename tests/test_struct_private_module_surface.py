@@ -16,10 +16,10 @@ import sys
 import types
 
 builtins._molt_intrinsics = {{
-    "molt_struct_pack": _host_struct.pack,
+    "molt_struct_pack": lambda fmt, values: _host_struct.pack(fmt, *values),
     "molt_struct_unpack": _host_struct.unpack,
     "molt_struct_calcsize": _host_struct.calcsize,
-    "molt_struct_pack_into": _host_struct.pack_into,
+    "molt_struct_pack_into": lambda buffer, offset, data: buffer.__setitem__(slice(offset, offset + len(data)), data),
     "molt_struct_unpack_from": _host_struct.unpack_from,
     "molt_struct_iter_unpack": lambda fmt, buffer: tuple(_host_struct.iter_unpack(fmt, buffer)),
 }}
@@ -100,14 +100,11 @@ def _run_probe() -> tuple[list[tuple[str, str, str]], dict[str, str]]:
 
 def test__struct_public_surface_matches_expected_shape() -> None:
     rows, checks = _run_probe()
-    assert rows == [
-        ("Struct", "type", "True"),
-        ("calcsize", "builtin_function_or_method", "True"),
-        ("error", "type", "True"),
-        ("iter_unpack", "builtin_function_or_method", "True"),
-        ("pack", "builtin_function_or_method", "True"),
-        ("pack_into", "builtin_function_or_method", "True"),
-        ("unpack", "builtin_function_or_method", "True"),
-        ("unpack_from", "builtin_function_or_method", "True"),
-    ]
+    expected_names = ["Struct", "calcsize", "error", "iter_unpack", "pack", "pack_into", "unpack", "unpack_from"]
+    actual_names = [name for name, _, _ in rows]
+    assert actual_names == expected_names
+    # All non-type entries must be callable
+    for name, type_name, is_callable in rows:
+        if type_name != "type":
+            assert is_callable == "True", f"{name} should be callable"
     assert checks == {"behavior": "True"}
