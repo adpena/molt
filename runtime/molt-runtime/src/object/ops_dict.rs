@@ -10,7 +10,8 @@ use molt_obj_model::MoltObject;
 use super::ops::{
     dict_clear_in_place, dict_del_in_place, dict_find_entry, dict_get_in_place,
     dict_inc_in_place, dict_inc_prehashed_string_key_in_place, dict_like_bits_from_ptr,
-    dict_rebuild, dict_set_in_place, dict_table_capacity, ensure_hashable,
+    dict_rebuild, dict_set_in_place, dict_set_inline_int_in_place, dict_table_capacity,
+    ensure_hashable,
 };
 
 #[unsafe(no_mangle)]
@@ -303,6 +304,19 @@ pub extern "C" fn molt_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) ->
             return MoltObject::none().bits();
         };
         unsafe {
+            // Ultra-fast path: plain dict container + inline int key.
+            if object_type_id(ptr) == TYPE_ID_DICT {
+                let key_obj = obj_from_bits(key_bits);
+                if let Some(i) = key_obj.as_int() {
+                    dict_set_inline_int_in_place(_py, ptr, key_bits, i, val_bits);
+                    return dict_bits;
+                }
+                dict_set_in_place(_py, ptr, key_bits, val_bits);
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                return dict_bits;
+            }
             let Some(real_dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
                 // Fallback: not a plain dict, use the general store path.
                 if !ensure_hashable(_py, key_bits) {
