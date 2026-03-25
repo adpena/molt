@@ -3680,23 +3680,32 @@ impl WasmBackend {
         // linked by wasm-ld which performs its own --gc-sections pass).
         if !reloc_enabled {
             let unused: BTreeSet<String> = self.import_ids.unused_names().into_iter().collect();
-            if !unused.is_empty() && validate_wasm_sections(&bytes) {
-                let before_len = bytes.len();
-                let stripped = strip_unused_imports(bytes.clone(), &unused);
-                if validate_wasm_sections(&stripped) {
+            if !unused.is_empty() {
+                let orig_valid = validate_wasm_sections(&bytes);
+                if !orig_valid {
                     eprintln!(
-                        "[molt-wasm-strip] eliminated {} unused imports, \
-                         {} -> {} bytes (saved {})",
-                        unused.len(), before_len, stripped.len(),
-                        before_len.saturating_sub(stripped.len()),
+                        "[molt-wasm-strip] original module invalid ({} bytes), \
+                         skipping strip of {} unused imports",
+                        bytes.len(), unused.len(),
                     );
-                    bytes = stripped;
                 } else {
-                    eprintln!(
-                        "[molt-wasm-strip] WARNING: stripped output invalid, \
-                         keeping original ({} unused imports)",
-                        unused.len(),
-                    );
+                    let before_len = bytes.len();
+                    let stripped = strip_unused_imports(bytes.clone(), &unused);
+                    if validate_wasm_sections(&stripped) {
+                        eprintln!(
+                            "[molt-wasm-strip] eliminated {} unused imports, \
+                             {} -> {} bytes (saved {})",
+                            unused.len(), before_len, stripped.len(),
+                            before_len.saturating_sub(stripped.len()),
+                        );
+                        bytes = stripped;
+                    } else {
+                        eprintln!(
+                            "[molt-wasm-strip] WARNING: stripped output invalid, \
+                             keeping original ({} unused imports)",
+                            unused.len(),
+                        );
+                    }
                 }
             }
         }

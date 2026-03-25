@@ -1571,7 +1571,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_enter_poll(obj_bits: u64) -> i
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
             }
-            let header = header_from_obj_ptr(obj_ptr);
+            let _header = header_from_obj_ptr(obj_ptr);
             let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 2 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
@@ -1645,7 +1645,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i6
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
             }
-            let header = header_from_obj_ptr(obj_ptr);
+            let _header = header_from_obj_ptr(obj_ptr);
             let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 7 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
@@ -1772,7 +1772,7 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_enter_context_poll(obj_
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
             }
-            let header = header_from_obj_ptr(obj_ptr);
+            let _header = header_from_obj_ptr(obj_ptr);
             let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 3 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
@@ -1880,7 +1880,7 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_exit_poll(obj_bits: u64
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
             }
-            let header = header_from_obj_ptr(obj_ptr);
+            let _header = header_from_obj_ptr(obj_ptr);
             let payload_bytes = crate::object::object_payload_size(obj_ptr);
             if payload_bytes < 9 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(

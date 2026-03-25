@@ -34634,7 +34634,6 @@ pub extern "C" fn molt_string_eq_fast(a: u64, b: u64) -> u64 {
 ///
 /// Violating any of these preconditions causes undefined behaviour.
 #[unsafe(no_mangle)]
-#[inline(always)]
 pub extern "C" fn molt_list_getitem_unchecked(list_bits: u64, index: i64) -> u64 {
     let list_obj = obj_from_bits(list_bits);
     // Safety: caller guarantees list_bits is a valid list heap pointer.
