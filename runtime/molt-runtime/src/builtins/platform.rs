@@ -3645,6 +3645,54 @@ fn importlib_extension_exec_unavailable(
     raise_exception::<u64>(_py, "ImportError", message.as_str())
 }
 
+/// Load a native C extension (.so/.dylib/.pyd) via dlopen and inject its
+/// module dict entries into the caller's namespace.
+#[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
+fn cext_loader_dlopen(
+    _py: &PyToken<'_>,
+    namespace_ptr: *mut u8,
+    module_name: &str,
+    path: &str,
+) -> Result<(), String> {
+    // Initialize the CPython ABI bridge and register runtime hooks (idempotent).
+    molt_cpython_abi::bridge::molt_cpython_abi_init();
+    crate::cpython_abi_hooks::register_cpython_hooks();
+
+    // For "pkg.mod", use "mod" as the init function suffix.
+    let init_name = module_name.rsplit('.').next().unwrap_or(module_name);
+
+    let ext_path = std::path::Path::new(path);
+    let module_bits = unsafe {
+        molt_cpython_abi::loader::load_cpython_extension(ext_path, init_name)
+    }
+    .map_err(|e| format!("{e}"))?;
+
+    if module_bits == 0 || module_bits == MoltObject::none().bits() {
+        return Err("PyInit returned a null/None module".into());
+    }
+
+    // Copy the loaded module's __dict__ entries into the namespace dict.
+    let module_obj = obj_from_bits(module_bits);
+    if let Some(module_ptr) = module_obj.as_ptr() {
+        let module_dict_bits = unsafe { crate::object::layout::module_dict_bits(module_ptr) };
+        let module_dict = obj_from_bits(module_dict_bits);
+        if let Some(dict_ptr) = module_dict.as_ptr() {
+            if unsafe { object_type_id(dict_ptr) == TYPE_ID_DICT } {
+                unsafe {
+                    crate::object::ops_dict::dict_update_apply(
+                        _py,
+                        MoltObject::from_ptr(namespace_ptr).bits(),
+                        crate::object::ops_dict::dict_update_set_in_place,
+                        module_dict_bits,
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn importlib_decode_source_text(source_bytes: &[u8]) -> String {
     match crate::object::ops::decode_bytes_text("utf-8", "surrogateescape", source_bytes) {
         Ok((text, _encoding)) => String::from_utf8_lossy(&text).into_owned(),
@@ -7578,6 +7626,23 @@ pub extern "C" fn molt_importlib_exec_extension(
         if let Some(message) = restricted_error {
             return raise_exception::<_>(_py, "ImportError", &message);
         }
+        // -- Native C extension loading via dlopen --
+        #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
+        {
+            match cext_loader_dlopen(_py, namespace_ptr, &module_name, &path) {
+                Ok(()) => return MoltObject::none().bits(),
+                Err(msg) => {
+                    return raise_exception::<_>(
+                        _py,
+                        "ImportError",
+                        &format!(
+                            "failed to load C extension {module_name:?} from {path:?}: {msg}"
+                        ),
+                    );
+                }
+            }
+        }
+        #[allow(unreachable_code)]
         importlib_extension_exec_unavailable(
             _py,
             &module_name,

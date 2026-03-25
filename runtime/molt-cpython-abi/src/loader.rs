@@ -31,7 +31,6 @@
 use crate::abi_types::PyObject;
 use crate::bridge::GLOBAL_BRIDGE;
 use libloading::{Library, Symbol};
-use std::ffi::{CString, OsStr};
 use std::path::Path;
 
 /// Error type for extension loading failures.

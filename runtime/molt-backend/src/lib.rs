@@ -2246,8 +2246,20 @@ impl SimpleBackend {
                 eprintln!("LLVM module verification warning:\n{}", msg.to_string());
             }
 
-            // Run LLVM O3 optimization on the whole module.
-            llvm.optimize(MoltOptLevel::Aggressive);
+            // Dump IR before optimization if requested.
+            if env_setting("MOLT_LLVM_DUMP_IR").as_deref() == Some("1") {
+                eprintln!("=== LLVM IR (before optimization) ===");
+                eprintln!("{}", llvm.dump_ir());
+            }
+
+            // Run LLVM O2 optimization on the whole module.
+            // (O3 includes internalization that can strip needed symbols.)
+            llvm.optimize(MoltOptLevel::Speed);
+
+            if env_setting("MOLT_LLVM_DUMP_IR").as_deref() == Some("1") {
+                eprintln!("=== LLVM IR (after optimization) ===");
+                eprintln!("{}", llvm.dump_ir());
+            }
 
             if timing {
                 let codegen_elapsed = codegen_start.elapsed();
@@ -2256,7 +2268,7 @@ impl SimpleBackend {
 
             // Emit object bytes to a temporary file, then read them back.
             let tmp_obj = std::env::temp_dir().join("molt_llvm_output.o");
-            llvm.emit_object(&tmp_obj, MoltOptLevel::Aggressive)
+            llvm.emit_object(&tmp_obj, MoltOptLevel::None)
                 .expect("LLVM object emission failed");
             let bytes = std::fs::read(&tmp_obj).expect("failed to read LLVM object file");
             let _ = std::fs::remove_file(&tmp_obj);

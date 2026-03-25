@@ -82,7 +82,18 @@ SOURCE_SUFFIXES = [".py"]
 BYTECODE_SUFFIXES = [".pyc"]
 DEBUG_BYTECODE_SUFFIXES = [".pyc"]
 OPTIMIZED_BYTECODE_SUFFIXES = [".pyc"]
-EXTENSION_SUFFIXES: list[str] = []
+try:
+    import sys as _sys
+    _platform = _sys.platform
+except Exception:
+    _platform = ""
+
+if _platform == "win32":
+    EXTENSION_SUFFIXES: list[str] = [".pyd", ".dll"]
+elif _platform == "darwin":
+    EXTENSION_SUFFIXES: list[str] = [".so", ".dylib"]
+else:
+    EXTENSION_SUFFIXES: list[str] = [".so"]
 
 
 def all_suffixes() -> list[str]:
