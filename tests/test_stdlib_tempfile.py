@@ -23,6 +23,18 @@ def _load_tempfile_module(name: str):
         registry = {}
         setattr(builtins, "_molt_intrinsics", registry)
     registry["molt_path_join"] = os.path.join
+    # Stub all tempfile intrinsics so the module can be imported outside the
+    # compiled runtime.  Tests that exercise specific functions monkeypatch
+    # them after import.
+    import tempfile as _real_tempfile
+
+    registry.setdefault("molt_tempfile_gettempdir", _real_tempfile.gettempdir)
+    registry.setdefault("molt_tempfile_gettempdirb", _real_tempfile.gettempdirb)
+    registry.setdefault("molt_tempfile_mkdtemp", _real_tempfile.mkdtemp)
+    registry.setdefault("molt_tempfile_mkstemp", _real_tempfile.mkstemp)
+    registry.setdefault("molt_tempfile_named", lambda **kw: None)
+    registry.setdefault("molt_tempfile_tempdir", lambda: _real_tempfile.gettempdir())
+    registry.setdefault("molt_tempfile_cleanup", lambda path: None)
 
     spec = importlib.util.spec_from_file_location(name, TEMPFILE_MODULE)
     assert spec is not None
