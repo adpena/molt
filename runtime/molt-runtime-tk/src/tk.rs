@@ -3381,16 +3381,31 @@ fn run_tcl_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> 
     };
 
     // Phase 3: Evaluate without GIL (Tcl FFI only, no Molt runtime).
-    match eval_tcl_without_gil(api, interp_addr, &command) {
+    let tcl_result = eval_tcl_without_gil(api, interp_addr, &command);
+
+    // Phase 4: Handle result with a single registry lock acquisition for
+    // error/success bookkeeping (avoids separate clear_last_error /
+    // raise_tcl_for_handle calls that each re-acquire the lock).
+    match tcl_result {
         Ok(result) => {
-            clear_last_error(handle);
+            {
+                let mut registry = tk_registry().lock().unwrap();
+                if let Some(app) = registry.apps.get_mut(&handle) {
+                    app.last_error = None;
+                }
+            }
             Ok(tcl_result_to_bits(py, TclObj::scalar_from_interp(result, interp_addr)))
         }
-        Err(err) => Err(raise_tcl_for_handle(
-            py,
-            handle,
-            format!("tk command failed: {err}"),
-        )),
+        Err(err) => {
+            let message = format!("tk command failed: {err}");
+            {
+                let mut registry = tk_registry().lock().unwrap();
+                if let Some(app) = registry.apps.get_mut(&handle) {
+                    app.last_error = Some(message.clone());
+                }
+            }
+            Err(raise_tcl_error(py, &message))
+        }
     }
 }
 
@@ -15839,15 +15854,17 @@ pub extern "C" fn molt_tk_destroy_widget(app_bits: u64, widget_path_bits: u64) -
             drop(registry);
             // Release GIL during Tcl "destroy" command.
             let destroy_cmd = [TclObj::from("destroy"), TclObj::from(wp)];
-            if let Err(err) = eval_tcl_without_gil(api, interp_addr, &destroy_cmd) {
-                return raise_tcl_for_handle(
-                    _py,
-                    handle,
-                    format!("tk command failed: {err}"),
-                );
-            }
+            let destroy_result = eval_tcl_without_gil(api, interp_addr, &destroy_cmd);
+            // Single registry lock acquisition for both success and error paths.
             {
                 let mut registry = tk_registry().lock().unwrap();
+                if let Err(err) = destroy_result {
+                    let message = format!("tk command failed: {err}");
+                    if let Some(app) = registry.apps.get_mut(&handle) {
+                        app.last_error = Some(message.clone());
+                    }
+                    return raise_tcl_error(_py, &message);
+                }
                 if let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) {
                     if let Some(widget) = app.widgets.remove(&widget_path) {
                         clear_widget_refs(_py, widget);
