@@ -37,11 +37,25 @@ def _write_exception_program(path: Path) -> None:
     )
 
 
+def _is_valid_static_lib(path: Path) -> bool:
+    """Return True if *path* looks like a real static library (ar archive)."""
+    try:
+        with path.open("rb") as f:
+            return f.read(8).startswith(b"!<arch>")
+    except OSError:
+        return False
+
+
 def test_native_exception_constructor_keywords(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     runtime_lib = root / "target" / "release" / "libmolt_runtime.a"
     if not runtime_lib.exists():
         pytest.skip("molt-runtime release library not built")
+    if not _is_valid_static_lib(runtime_lib):
+        pytest.skip(
+            "libmolt_runtime.a is not a valid archive "
+            "(rebuild with: cargo build -p molt-runtime --release)"
+        )
     if shutil.which("clang") is None:
         pytest.skip("clang not available")
     if shutil.which("cargo") is None:

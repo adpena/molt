@@ -11517,6 +11517,12 @@ def _build_entry_main_ops(
             "value": register_global_code_id("molt_runtime_init"),
         },
         *version_ops,
+        # Clear any stale exception flag left by version_ops (code_new /
+        # code_slot_set).  Without this, the first check_exception inside
+        # the entry init function sees the leftover flag and jumps straight
+        # to the error handler, skipping module_cache_set and leaving the
+        # module unavailable at runtime.
+        {"kind": "exception_clear"},
         {
             "kind": "call",
             "s_value": entry_init,
