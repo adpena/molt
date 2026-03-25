@@ -1228,6 +1228,14 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
         // Guard: if prev was already 0 (double-free) or the underflow wrapped
         // to u32::MAX, restore the refcount and return without freeing.
         // This converts a heap-corrupting double-free into a benign no-op.
+        // In debug builds, catch double-free bugs early so they can be diagnosed.
+        debug_assert!(
+            prev > 0 && prev != u32::MAX,
+            "dec_ref_ptr double-free: ptr=0x{:x} type_id={} prev={}",
+            ptr as usize,
+            type_id,
+            prev,
+        );
         if prev == 0 || prev == u32::MAX {
             header.ref_count.store(0, AtomicOrdering::Release);
             return;
