@@ -32571,14 +32571,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if effect_class == "reads_heap":
                     func_stats["cse_readheap_rejected"] += 1
 
-            out.append(canonical_op)
-
-            if canonical_op.kind == "CONST":
-                value = canonical_op.args[0]
-                if isinstance(value, int) and not isinstance(value, bool):
-                    const_int_values[result_name] = value
-                    state_dirty = True
-            elif (
+            # Constant-fold arithmetic: when both operands are known
+            # constants, compute the result.  If it overflows the
+            # 47-bit signed inline range, replace with CONST_BIGINT
+            # to prevent Cranelift 0.130 constant-folding miscompilation.
+            _INLINE_MIN = -(1 << 46)
+            _INLINE_MAX = (1 << 46) - 1
+            _folded_to_bigint = False
+            with open("/tmp/_molt_all_ops.txt", "a") as _tf:
+                _tf.write(f"op: {canonical_op.kind} result={result_name}\n")
+            if (
                 canonical_op.kind in {"ADD", "SUB", "MUL"}
                 and len(canonical_op.args) == 2
             ):
@@ -32588,12 +32590,28 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     rhs_const = const_int_values.get(rhs.name)
                     if lhs_const is not None and rhs_const is not None:
                         if canonical_op.kind == "ADD":
-                            const_int_values[result_name] = lhs_const + rhs_const
+                            folded = lhs_const + rhs_const
                         elif canonical_op.kind == "SUB":
-                            const_int_values[result_name] = lhs_const - rhs_const
-                        elif canonical_op.kind == "MUL":
-                            const_int_values[result_name] = lhs_const * rhs_const
+                            folded = lhs_const - rhs_const
+                        else:
+                            folded = lhs_const * rhs_const
+                        if not (_INLINE_MIN <= folded <= _INLINE_MAX):
+                            canonical_op = MoltOp(
+                                kind="CONST_BIGINT",
+                                args=[str(folded)],
+                                result=canonical_op.result,
+                            )
+                            _folded_to_bigint = True
+                        const_int_values[result_name] = folded
                         state_dirty = True
+
+            out.append(canonical_op)
+
+            if not _folded_to_bigint and canonical_op.kind == "CONST":
+                value = canonical_op.args[0]
+                if isinstance(value, int) and not isinstance(value, bool):
+                    const_int_values[result_name] = value
+                    state_dirty = True
             elif canonical_op.kind == "ABS" and len(canonical_op.args) == 1:
                 arg = canonical_op.args[0]
                 if isinstance(arg, MoltValue):
@@ -35753,6 +35771,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         *,
         allow_cross_block_const_dedupe: bool,
     ) -> list[MoltOp]:
+        with open("/tmp/_molt_impl.txt", "a") as _tf: _tf.write(f"impl called: {len(ops)} ops\n")
         self._refresh_midend_env_config_if_needed()
         # Current contract: sparse SCCP covers arithmetic/boolean/comparison/type
         # families plus bounded loop facts used by today’s fixed-point passes;
