@@ -1472,7 +1472,7 @@ impl SimpleBackend {
         // Carry forward the same safety-critical settings used by
         // new_with_target so the emitted code is ABI-compatible.
         fb.set("use_colocated_libcalls", "true").unwrap();
-        fb.set("enable_alias_analysis", "false").unwrap();
+        fb.set("enable_alias_analysis", "true").unwrap();
         let targeting_aarch64 = cfg!(target_arch = "aarch64");
         fb.set(
             "preserve_frame_pointers",
@@ -1560,7 +1560,7 @@ impl SimpleBackend {
         fb.set("opt_level", "none").unwrap();
         fb.set("is_pic", "true").unwrap();
         fb.set("use_colocated_libcalls", "true").unwrap();
-        fb.set("enable_alias_analysis", "false").unwrap();
+        fb.set("enable_alias_analysis", "true").unwrap();
         let targeting_aarch64 = cfg!(target_arch = "aarch64");
         fb.set(
             "preserve_frame_pointers",
