@@ -1833,19 +1833,22 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
                         }
                     }
                 }
-                // Generator/coroutine ops reference a base function AND its
-                // companion _poll function (the actual state-machine body).
-                // Both backends derive the poll name as "{base}_poll", so we
-                // must mark both as referenced to prevent the poll function
-                // from being eliminated.
-                "generator_create" | "coro_create" => {
+                // alloc_task's s_value is the poll function name directly
+                // (e.g., "foo_poll"). generator_create/coro_create reference
+                // a base function whose companion _poll must also be kept.
+                "alloc_task" | "generator_create" | "coro_create" => {
                     if let Some(name) = op.s_value.as_ref() {
                         if defined.contains(name.as_str()) {
                             refs.insert(name.clone());
                         }
-                        let poll_name = format!("{name}_poll");
-                        if defined.contains(poll_name.as_str()) {
-                            refs.insert(poll_name);
+                        // generator_create/coro_create reference the base
+                        // function; the backends derive "{base}_poll" at
+                        // compile time, so mark both.
+                        if !name.ends_with("_poll") {
+                            let poll_name = format!("{name}_poll");
+                            if defined.contains(poll_name.as_str()) {
+                                refs.insert(poll_name);
+                            }
                         }
                     }
                 }
