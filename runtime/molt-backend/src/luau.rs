@@ -52,11 +52,6 @@ pub struct LuauBackend {
     in_spill_do_block: bool,
     /// True when the current function needs local spilling (>190 ops with output).
     needs_local_spill: bool,
-    /// Variables that have already been declared with `local` in the current
-    /// function scope (either via hoisting pre-declarations or inline `local x = ...`).
-    /// When a variable is already in this set, subsequent assignments must omit
-    /// the `local` keyword to avoid Luau duplicate-declaration syntax errors.
-    declared_locals: BTreeSet<String>,
 }
 
 impl LuauBackend {
@@ -76,7 +71,6 @@ impl LuauBackend {
             func_body_indent: 1,
             in_spill_do_block: false,
             needs_local_spill: false,
-            declared_locals: BTreeSet::new(),
         }
     }
 
@@ -680,7 +674,6 @@ impl LuauBackend {
         self.pcall_counter = 0;
         self.inside_pcall_body = false;
         self.nonneg_consts.clear();
-        self.declared_locals.clear();
         self.scope_local_count = 0;
         self.func_body_indent = self.indent as u32;
         self.in_spill_do_block = false;
@@ -690,12 +683,6 @@ impl LuauBackend {
             op.out.is_some() && op.out.as_deref() != Some("none")
         }).count();
         self.needs_local_spill = local_producing_ops > 190;
-
-        // Seed declared_locals with function parameters — they are implicitly
-        // declared by the function signature and must not get `local` again.
-        for p in &func.params {
-            self.declared_locals.insert(sanitize_ident(p));
-        }
 
         // Seed var_type_hints from param_types so that parameters annotated
         // as list/dict/str carry their type hints into codegen.  Without this,
@@ -726,7 +713,6 @@ impl LuauBackend {
         if !loop_idx_vars.is_empty() {
             for var in &loop_idx_vars {
                 self.emit_line(&format!("local {var}"));
-                self.declared_locals.insert(var.clone());
             }
         }
 
@@ -749,7 +735,6 @@ impl LuauBackend {
             }
             for var in &closure_slots {
                 self.emit_line(&format!("local {var}"));
-                self.declared_locals.insert(var.clone());
             }
         }
 
@@ -883,7 +868,6 @@ impl LuauBackend {
             }
             for var in &sorted {
                 self.emit_line(&format!("local {var}"));
-                self.declared_locals.insert(var.clone());
             }
         }
 
@@ -1091,7 +1075,6 @@ impl LuauBackend {
 
         self.hoisted_vars.clear();
         self.tuple_vars.clear();
-        self.declared_locals.clear();
     }
 
     fn emit_op(&mut self, op: &OpIR) {
@@ -4035,18 +4018,6 @@ impl LuauBackend {
             .as_deref()
             .map(sanitize_ident)
             .unwrap_or_else(|| "_".to_string())
-    }
-
-    /// Return `"local {var}"` if this is the first declaration of `var` in the
-    /// current function scope, or just `"{var}"` if it was already declared.
-    /// Tracks the variable in `declared_locals` so subsequent calls omit `local`.
-    fn decl(&mut self, var: &str) -> String {
-        if self.hoisted_vars.contains(var) || !self.declared_locals.insert(var.to_string()) {
-            // Already declared (hoisted or previously emitted) — plain assignment.
-            var.to_string()
-        } else {
-            format!("local {var}")
-        }
     }
 
     fn var_ref(&self, op: &OpIR) -> String {
@@ -8969,6 +8940,37 @@ mod tests {
         assert!(output.contains("pcall(function()"), "Expected pcall wrapper, got:\n{output}");
         assert!(output.contains("__ok_0") && output.contains("__err_0"), "Expected __ok_0/__err_0, got:\n{output}");
         assert!(!output.contains("= nil -- [exception_last]"), "exception_last should NOT emit nil inside pcall, got:\n{output}");
+    }
+
+    #[test]
+    fn test_no_duplicate_local_declarations() {
+        // When the same variable name appears as `out` in multiple ops,
+        // only the first should emit `local`.  Subsequent uses should be
+        // plain assignment to avoid Luau syntax errors.
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "dup_local_test".into(),
+                params: vec![],
+                param_types: None,
+                ops: vec![
+                    // First definition of v0 — should get `local v0 = 1`
+                    OpIR { kind: "const_int".into(), value: Some(1), out: Some("v0".into()), ..OpIR::default() },
+                    // Second definition of v0 — must NOT emit `local` again
+                    OpIR { kind: "const_int".into(), value: Some(2), out: Some("v0".into()), ..OpIR::default() },
+                    OpIR { kind: "call_function".into(), s_value: Some("print".into()), args: Some(vec!["print".into(), "v0".into()]), out: Some("v1".into()), ..OpIR::default() },
+                    OpIR { kind: "ret_void".into(), ..OpIR::default() },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        // Count occurrences of `local v0` — should be exactly 1.
+        let local_v0_count = output.matches("local v0").count();
+        assert_eq!(
+            local_v0_count, 1,
+            "Expected exactly 1 `local v0`, found {local_v0_count} in:\n{output}"
+        );
     }
 
     #[test]
