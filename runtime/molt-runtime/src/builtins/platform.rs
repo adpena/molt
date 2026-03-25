@@ -6970,14 +6970,87 @@ fn importlib_import_with_fallback(
     }
 
     clear_exception(_py);
-    importlib_import_via_spec(
+    let spec_result = importlib_import_via_spec(
         _py,
         resolved,
         resolved_bits,
         modules_ptr,
         util_bits,
         machinery_bits,
-    )
+    );
+
+    // If spec-based import failed with ModuleNotFoundError, try loading a
+    // native C extension (.so / .dylib) from sys.path before giving up.
+    #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
+    if let Err(_) = &spec_result {
+        if importlib_exception_should_fallback(_py) {
+            if let Some(module_bits) =
+                importlib_try_cext_on_sys_path(_py, resolved, modules_ptr)
+            {
+                return Ok(module_bits);
+            }
+            // Extension search failed too – restore the original error.
+            return Err(raise_exception::<_>(
+                _py,
+                "ModuleNotFoundError",
+                &format!("No module named '{resolved}'"),
+            ));
+        }
+    }
+
+    spec_result
+}
+
+/// Scan `sys.path` directories for a native C extension matching `module_name`,
+/// load it via dlopen, register it in sys.modules, and return its module bits.
+#[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
+fn importlib_try_cext_on_sys_path(
+    _py: &PyToken<'_>,
+    module_name: &str,
+    modules_ptr: *mut u8,
+) -> Option<u64> {
+    // Retrieve sys.path as a Vec<String>.
+    static PATH_NAME_CEXT: AtomicU64 = AtomicU64::new(0);
+    let sys_bits = importlib_sys_module_bits(_py)?;
+    if obj_from_bits(sys_bits).is_none() {
+        return None;
+    }
+    let path_name = intern_static_name(_py, &PATH_NAME_CEXT, b"path");
+    let path_attr = getattr_optional_bits(_py, sys_bits, path_name).ok()??;
+    let search_paths = string_sequence_arg_from_bits(_py, path_attr, "sys.path").ok()?;
+    if !obj_from_bits(path_attr).is_none() {
+        dec_ref_bits(_py, path_attr);
+    }
+
+    // Search each directory for a matching .so / .dylib file.
+    for dir in &search_paths {
+        if let Some(ext_path) = importlib_find_extension_module(dir, module_name) {
+            // Found a candidate – attempt dlopen.
+            molt_cpython_abi::bridge::molt_cpython_abi_init();
+            crate::cpython_abi_hooks::register_cpython_hooks();
+
+            let init_name = module_name.rsplit('.').next().unwrap_or(module_name);
+            let path_obj = std::path::Path::new(&ext_path);
+            let module_bits = match unsafe {
+                molt_cpython_abi::loader::load_cpython_extension(path_obj, init_name)
+            } {
+                Ok(bits) => bits,
+                Err(_) => continue,
+            };
+            if module_bits == 0 || module_bits == MoltObject::none().bits() {
+                continue;
+            }
+
+            // Register in sys.modules so subsequent imports hit the cache.
+            if let Ok(key_bits) = alloc_str_bits(_py, module_name) {
+                let _ = importlib_dict_set_string_key(_py, modules_ptr, key_bits, module_bits);
+                dec_ref_bits(_py, key_bits);
+            }
+
+            return Some(module_bits);
+        }
+    }
+    None
 }
 
 fn importlib_bind_submodule_on_parent(

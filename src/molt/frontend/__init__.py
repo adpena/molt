@@ -26247,6 +26247,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if alias.asname:
                     self._typing_import_aliases.add(alias.asname)
                 continue
+            if module_name == "_intrinsics":
+                # _intrinsics is resolved entirely at compile time.
+                continue
             if module_name in self._STUB_IMPORT_MODULES:
                 continue
             bind_name = alias.asname or module_name.split(".")[0]
@@ -26288,6 +26291,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.future_annotations = True
             return None
         if module_name == "typing_extensions":
+            return None
+        if module_name == "_intrinsics":
+            # All require_intrinsic / load_intrinsic calls are resolved at
+            # compile time (see the _require_intrinsic handler in visit_Call).
+            # The _intrinsics module has no meaningful runtime representation,
+            # so skip the import entirely to avoid MODULE_GET_ATTR failures.
             return None
         if module_name in self._STUB_IMPORT_MODULES:
             return None
