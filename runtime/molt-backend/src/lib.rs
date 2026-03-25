@@ -679,6 +679,7 @@ fn emit_maybe_ref_adjust_v2(builder: &mut FunctionBuilder, val: Value, call_ref:
 /// entirely. This eliminates function-call + GIL overhead for the common case
 /// where cleanup values are immediate integers.
 #[cfg(feature = "native-backend")]
+#[allow(dead_code)]
 fn emit_dec_ref_obj(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef) {
     if !inline_rc_enabled() {
         builder.ins().call(call_ref, &[val]);
