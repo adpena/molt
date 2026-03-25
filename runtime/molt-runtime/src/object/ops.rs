@@ -25966,6 +25966,17 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                 }
                 match type_id {
                     TYPE_ID_LIST => {
+                        // Fast path: for NaN-boxed integers/bools/None, identity
+                        // (bit-equality) implies value equality. Scan the raw u64
+                        // slice first to avoid per-element inc_ref/eq/dec_ref.
+                        // This is the hot path for `x in [1, 2, 3]` style range checks.
+                        if item.as_int().is_some() || item.is_bool() || item.is_none() {
+                            let elems = seq_vec_ref(ptr);
+                            if simd_contains_u64(elems, item_bits) {
+                                return MoltObject::from_bool(true).bits();
+                            }
+                            return MoltObject::from_bool(false).bits();
+                        }
                         let mut idx = 0usize;
                         while let Some(val) = list_elem_at(ptr, idx) {
                             let elem_bits = val;
@@ -25987,6 +25998,13 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                     }
                     TYPE_ID_TUPLE => {
                         let elems = seq_vec_ref(ptr);
+                        // Same identity fast path for tuples with inline-int/bool/None needle.
+                        if item.as_int().is_some() || item.is_bool() || item.is_none() {
+                            if simd_contains_u64(elems, item_bits) {
+                                return MoltObject::from_bool(true).bits();
+                            }
+                            return MoltObject::from_bool(false).bits();
+                        }
                         for &elem_bits in elems.iter() {
                             let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
                                 Some(val) => val,
@@ -31596,14 +31614,46 @@ impl SipHasher13 {
 
     fn update(&mut self, bytes: &[u8]) {
         self.total_len = self.total_len.wrapping_add(bytes.len() as u64);
-        for &byte in bytes {
-            self.tail |= (byte as u64) << (8 * self.ntail);
-            self.ntail += 1;
+        let mut offset = 0usize;
+
+        // If there's a partial tail from a previous update, fill it first.
+        if self.ntail > 0 {
+            while offset < bytes.len() && self.ntail < 8 {
+                self.tail |= (bytes[offset] as u64) << (8 * self.ntail);
+                self.ntail += 1;
+                offset += 1;
+            }
             if self.ntail == 8 {
                 self.process_block(self.tail);
                 self.tail = 0;
                 self.ntail = 0;
             }
+        }
+
+        // Bulk path: process 8-byte blocks directly using little-endian reads.
+        // This avoids per-byte shift-and-OR for strings >16 bytes (common for
+        // dict keys like module-qualified names, file paths, etc.).
+        let remaining = &bytes[offset..];
+        let chunks = remaining.len() / 8;
+        for i in 0..chunks {
+            let block = u64::from_le_bytes([
+                remaining[i * 8],
+                remaining[i * 8 + 1],
+                remaining[i * 8 + 2],
+                remaining[i * 8 + 3],
+                remaining[i * 8 + 4],
+                remaining[i * 8 + 5],
+                remaining[i * 8 + 6],
+                remaining[i * 8 + 7],
+            ]);
+            self.process_block(block);
+        }
+        offset += chunks * 8;
+
+        // Tail: accumulate remaining bytes (0-7).
+        for &byte in &bytes[offset..] {
+            self.tail |= (byte as u64) << (8 * self.ntail);
+            self.ntail += 1;
         }
     }
 
@@ -32745,13 +32795,36 @@ pub(crate) fn dict_find_entry(
 
 /// SIMD byte equality: returns true if `a[..len] == b[..len]`.
 /// Precondition: both pointers are valid for `len` bytes.
-#[inline]
+#[inline(always)]
 unsafe fn simd_bytes_eq(a: *const u8, b: *const u8, len: usize) -> bool {
     unsafe {
-        // Short strings: defer to compiler intrinsic (already very fast)
+        // Tiny strings (<=8 bytes): direct comparison, no SIMD overhead.
+        if len <= 8 {
+            if len == 0 { return true; }
+            return std::slice::from_raw_parts(a, len) == std::slice::from_raw_parts(b, len);
+        }
+
+        // Short strings (9-31 bytes): use NEON/SSE2 16-byte loads instead of
+        // scalar memcmp. Two overlapping 16-byte loads cover any length in 9..31
+        // without a loop, which is measurably faster for dict-key comparisons
+        // where keys are typically short identifiers (< 32 bytes).
+        #[cfg(target_arch = "aarch64")]
+        if len < 32 {
+            return simd_bytes_eq_short_neon(a, b, len);
+        }
+        #[cfg(target_arch = "x86_64")]
+        if len < 32 {
+            if std::arch::is_x86_feature_detected!("sse2") {
+                return simd_bytes_eq_short_sse2(a, b, len);
+            }
+            return std::slice::from_raw_parts(a, len) == std::slice::from_raw_parts(b, len);
+        }
+        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
         if len < 32 {
             return std::slice::from_raw_parts(a, len) == std::slice::from_raw_parts(b, len);
         }
+
+        // Long strings (>= 32 bytes): full SIMD loops.
         #[cfg(target_arch = "x86_64")]
         {
             if std::arch::is_x86_feature_detected!("avx2") {
@@ -32772,6 +32845,167 @@ unsafe fn simd_bytes_eq(a: *const u8, b: *const u8, len: usize) -> bool {
             std::slice::from_raw_parts(a, len) == std::slice::from_raw_parts(b, len)
         }
     }
+}
+
+/// NEON short-string equality for 9-31 bytes: two overlapping 16-byte loads.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn simd_bytes_eq_short_neon(a: *const u8, b: *const u8, len: usize) -> bool {
+    use std::arch::aarch64::*;
+    debug_assert!(len >= 9 && len < 32);
+    unsafe {
+        // Load from the start
+        let va0 = vld1q_u8(a);
+        let vb0 = vld1q_u8(b);
+        let cmp0 = vceqq_u8(va0, vb0);
+        // Load from (end - 16), overlapping with the first load for short strings
+        let va1 = vld1q_u8(a.add(len - 16));
+        let vb1 = vld1q_u8(b.add(len - 16));
+        let cmp1 = vceqq_u8(va1, vb1);
+        // Both loads must match: AND the comparison results and check all-0xFF
+        let combined = vandq_u8(cmp0, cmp1);
+        vminvq_u8(combined) == 0xFF
+    }
+}
+
+/// SSE2 short-string equality for 9-31 bytes: two overlapping 16-byte loads.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn simd_bytes_eq_short_sse2(a: *const u8, b: *const u8, len: usize) -> bool {
+    use std::arch::x86_64::*;
+    debug_assert!(len >= 9 && len < 32);
+    // Load from the start
+    let va0 = _mm_loadu_si128(a as *const __m128i);
+    let vb0 = _mm_loadu_si128(b as *const __m128i);
+    let cmp0 = _mm_cmpeq_epi8(va0, vb0);
+    // Load from (end - 16), overlapping with the first load
+    let va1 = _mm_loadu_si128(a.add(len - 16) as *const __m128i);
+    let vb1 = _mm_loadu_si128(b.add(len - 16) as *const __m128i);
+    let cmp1 = _mm_cmpeq_epi8(va1, vb1);
+    // Both must be all-equal: AND the masks
+    let mask0 = _mm_movemask_epi8(cmp0);
+    let mask1 = _mm_movemask_epi8(cmp1);
+    (mask0 & mask1) == 0xFFFF
+}
+
+// ---------------------------------------------------------------------------
+// SIMD-accelerated u64 linear scan for list/tuple `in` operator.
+// For NaN-boxed integers, bools, and None, bit-equality implies value equality,
+// so we can scan the raw u64 element slice without calling eq_bool_from_bits.
+// On aarch64 (NEON) and x86_64 (SSE2/AVX2), we broadcast the needle into a
+// SIMD register and compare 2-4 elements per cycle.
+// ---------------------------------------------------------------------------
+
+/// Returns true if `needle` appears in `haystack` by raw u64 identity.
+/// Only valid when the needle is a NaN-boxed int, bool, or None (where
+/// bit-equality implies Python value equality).
+#[inline(always)]
+fn simd_contains_u64(haystack: &[u64], needle: u64) -> bool {
+    let len = haystack.len();
+    if len == 0 { return false; }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        return unsafe { simd_contains_u64_neon(haystack, needle) };
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if len >= 4 && std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { simd_contains_u64_avx2(haystack, needle) };
+        }
+        if len >= 2 && std::arch::is_x86_feature_detected!("sse2") {
+            return unsafe { simd_contains_u64_sse2(haystack, needle) };
+        }
+    }
+
+    // Scalar fallback (also covers wasm32 and other targets).
+    #[allow(unreachable_code)]
+    {
+        for &elem in haystack {
+            if elem == needle { return true; }
+        }
+        false
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn simd_contains_u64_neon(haystack: &[u64], needle: u64) -> bool {
+    unsafe {
+        use std::arch::aarch64::*;
+        let ptr = haystack.as_ptr();
+        let len = haystack.len();
+        let needle_vec = vdupq_n_u64(needle);
+        let mut i = 0usize;
+        // Process 2 u64s at a time (128-bit NEON register = 2 x u64).
+        while i + 2 <= len {
+            let chunk = vld1q_u64(ptr.add(i));
+            let cmp = vceqq_u64(chunk, needle_vec);
+            // vmaxvq_u64 is not available; use vgetq_lane to check both lanes.
+            if vgetq_lane_u64(cmp, 0) != 0 || vgetq_lane_u64(cmp, 1) != 0 {
+                return true;
+            }
+            i += 2;
+        }
+        // Tail element
+        if i < len && *ptr.add(i) == needle {
+            return true;
+        }
+        false
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn simd_contains_u64_sse2(haystack: &[u64], needle: u64) -> bool {
+    use std::arch::x86_64::*;
+    let ptr = haystack.as_ptr() as *const __m128i;
+    let len = haystack.len();
+    let needle_vec = _mm_set1_epi64x(needle as i64);
+    let mut i = 0usize;
+    // Process 2 u64s at a time (128-bit register = 2 x u64).
+    while i + 2 <= len {
+        let chunk = _mm_loadu_si128(ptr.add(i / 2));
+        let cmp = _mm_cmpeq_epi32(chunk, needle_vec);
+        // For 64-bit equality, both 32-bit halves must match.
+        // Shuffle to align adjacent 32-bit results and AND them.
+        let shuffled = _mm_shuffle_epi32(cmp, 0b10_11_00_01);
+        let both = _mm_and_si128(cmp, shuffled);
+        if _mm_movemask_epi8(both) != 0 {
+            return true;
+        }
+        i += 2;
+    }
+    if i < len && haystack[i] == needle {
+        return true;
+    }
+    false
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn simd_contains_u64_avx2(haystack: &[u64], needle: u64) -> bool {
+    use std::arch::x86_64::*;
+    let ptr = haystack.as_ptr() as *const __m256i;
+    let len = haystack.len();
+    let needle_vec = _mm256_set1_epi64x(needle as i64);
+    let mut i = 0usize;
+    // Process 4 u64s at a time (256-bit register = 4 x u64).
+    while i + 4 <= len {
+        let chunk = _mm256_loadu_si256(ptr.add(i / 4));
+        let cmp = _mm256_cmpeq_epi64(chunk, needle_vec);
+        if _mm256_movemask_epi8(cmp) != 0 {
+            return true;
+        }
+        i += 4;
+    }
+    // Tail: scalar check for remaining 0-3 elements.
+    while i < len {
+        if haystack[i] == needle { return true; }
+        i += 1;
+    }
+    false
 }
 
 #[cfg(target_arch = "wasm32")]

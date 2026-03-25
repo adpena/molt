@@ -1650,7 +1650,7 @@ impl SimpleBackend {
         let portable = env_setting("MOLT_PORTABLE")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-        let isa_builder = if let Some(triple) = target {
+        let mut isa_builder = if let Some(triple) = target {
             isa::lookup_by_name(triple).unwrap_or_else(|msg| {
                 panic!("target {} is not supported: {}", triple, msg);
             })
@@ -1668,6 +1668,35 @@ impl SimpleBackend {
                 panic!("host machine is not supported: {}", msg);
             })
         };
+
+        // Ensure critical ISA-specific features are explicitly enabled when the
+        // CPU supports them. While native_isa_builder_with_options(true) probes
+        // CPUID/system registers, explicit enablement here serves as a safety net
+        // for edge cases (custom target triples, future Cranelift changes) and
+        // documents our performance-critical feature requirements.
+        //
+        // x86_64: BMI1/BMI2 (tzcnt, blsr for bit manipulation in hash probing),
+        //         POPCNT (popcount for set operations and hash table occupancy).
+        // aarch64: LSE (atomic CAS/SWP for lock-free refcount operations).
+        #[cfg(target_arch = "x86_64")]
+        if !portable && target.is_none() {
+            if std::arch::is_x86_feature_detected!("bmi1") {
+                let _ = isa_builder.enable("has_bmi1");
+            }
+            if std::arch::is_x86_feature_detected!("bmi2") {
+                let _ = isa_builder.enable("has_bmi2");
+            }
+            if std::arch::is_x86_feature_detected!("popcnt") {
+                let _ = isa_builder.enable("has_popcnt");
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        if !portable && target.is_none() {
+            if std::arch::is_aarch64_feature_detected!("lse") {
+                let _ = isa_builder.enable("has_lse");
+            }
+        }
+
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
             .unwrap();
@@ -2218,7 +2247,6 @@ impl SimpleBackend {
         // optimized and emitted as a native object file.
         #[cfg(feature = "llvm")]
         if _use_llvm {
-            let _ = std::fs::write("/tmp/molt_llvm_sentinel.txt", format!("LLVM backend reached: {} functions", ir.functions.len()));
             use crate::llvm_backend::{LlvmBackend, MoltOptLevel};
             use crate::tir::lower_from_simple::lower_to_tir;
 
@@ -2253,14 +2281,16 @@ impl SimpleBackend {
                 eprintln!("LLVM module verification warning:\n{}", msg.to_string());
             }
 
-            // Dump IR to /tmp for debugging.
+            // Dump LLVM IR to /tmp for debugging when MOLT_LLVM_DUMP_IR=1.
             let dump_ir = env_setting("MOLT_LLVM_DUMP_IR").as_deref() == Some("1");
             if dump_ir {
                 let _ = std::fs::write("/tmp/molt_llvm_before_opt.ll", llvm.dump_ir());
             }
 
-            // Skip optimization — it strips symbols via GlobalDCE/Internalize.
-            // TODO: Run selected passes that preserve external linkage.
+            // NOTE: LLVM optimization is currently disabled because the default
+            // pass pipeline (O2/O3) includes GlobalDCE/Internalize which removes
+            // all externally-visible functions.  To re-enable, use a custom pass
+            // pipeline that preserves external linkage on user functions.
             // llvm.optimize(MoltOptLevel::Speed);
 
             if dump_ir {
@@ -2287,7 +2317,6 @@ impl SimpleBackend {
                 );
             }
 
-            let _ = std::fs::write("/tmp/molt_llvm_debug_bytes.o", &bytes);
             return bytes;
         }
         // Re-analyze after dead function elimination and megafunction
