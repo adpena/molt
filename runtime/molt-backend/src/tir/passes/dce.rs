@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{AttrValue, OpCode, TirOp};
+use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
 
 use super::PassStats;
@@ -27,18 +27,13 @@ fn op_is_side_effecting(op: &TirOp) -> bool {
     if is_side_effecting(op.opcode) {
         return true;
     }
-    // Safety net: if this Copy was originally a call-like op that wasn't
-    // mapped in kind_to_opcode, keep it alive.
-    if op.opcode == OpCode::Copy {
-        if let Some(AttrValue::Str(kind)) = op.attrs.get("_original_kind") {
-            if kind.starts_with("call")
-                || kind.starts_with("invoke")
-                || kind == "print"
-                || kind == "builtin_print"
-            {
-                return true;
-            }
-        }
+    // Safety net: if this Copy was originally an unmapped SimpleIR op (has
+    // `_original_kind` attribute), conservatively treat it as side-effecting.
+    // TIR does not model these ops, so the safe default is to keep them alive
+    // rather than silently dropping runtime calls like trace_enter_slot, store,
+    // profile helpers, etc.
+    if op.opcode == OpCode::Copy && op.attrs.contains_key("_original_kind") {
+        return true;
     }
     false
 }
