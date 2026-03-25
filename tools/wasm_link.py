@@ -1686,16 +1686,16 @@ def _collect_code_referenced_funcs(sections: list[tuple[int, bytes]]) -> set[int
             except (IndexError, ValueError):
                 offset = body_end
                 continue
-            # Scan for call opcode (0x10) and read the immediate func index
+            # Scan for call (0x10), return_call (0x12), and ref.func (0xD2)
+            # opcodes — each has a single varuint func-index immediate.
             while pos < body_end:
                 b = payload[pos]
-                if b == 0x10:  # call
+                if b in (0x10, 0x12, 0xD2):
                     pos += 1
                     try:
                         idx, pos = _read_varuint(payload, pos)
                         if idx < total_funcs:
                             called.add(idx)
-                        # else: false positive from byte scan -- ignore
                     except (IndexError, ValueError):
                         break
                 else:
