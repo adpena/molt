@@ -15208,6 +15208,36 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                 }
             }
         }
+        // Fast path: if the iterable is a list or tuple of integers, sum
+        // directly without going through the iterator protocol.  This avoids
+        // allocating a (value, done) tuple per element.
+        {
+            let iter_obj_check = obj_from_bits(iter_bits);
+            if let Some(ptr) = iter_obj_check.as_ptr() {
+                let type_id = unsafe { object_type_id(ptr) };
+                if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                    let elems = unsafe { seq_vec_ref(ptr) };
+                    let start_int = to_i64(start_obj);
+                    if let Some(_) = start_int {
+                        let mut acc128 = start_int.unwrap() as i128;
+                        let mut all_int = true;
+                        for &bits in elems.iter() {
+                            let elem = obj_from_bits(bits);
+                            if let Some(i) = to_i64(elem) {
+                                acc128 += i as i128;
+                            } else {
+                                all_int = false;
+                                break;
+                            }
+                        }
+                        if all_int {
+                            use crate::builtins::numbers::int_bits_from_i128;
+                            return int_bits_from_i128(_py, acc128);
+                        }
+                    }
+                }
+            }
+        }
         let iter_obj = molt_iter(iter_bits);
         if obj_from_bits(iter_obj).is_none() {
             return raise_not_iterable(_py, iter_bits);
