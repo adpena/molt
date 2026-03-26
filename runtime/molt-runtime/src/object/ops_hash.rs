@@ -1,11 +1,12 @@
-//\! Hash functions — extracted from ops.rs.
+//! Hash functions — extracted from ops.rs.
 
 use crate::*;
+use crate::randomness::{fill_os_random, os_random_supported};
 use molt_obj_model::MoltObject;
-use num_bigint::BigInt;
-use num_traits::ToPrimitive;
+use num_bigint::{BigInt, Sign};
+use num_integer::Integer;
+use num_traits::{Signed, ToPrimitive};
 use std::sync::OnceLock;
-
 
 pub(crate) struct HashSecret {
     k0: u64,
@@ -57,7 +58,7 @@ fn init_hash_secret() -> HashSecret {
     }
 }
 
-fn fatal_hash_seed(value: &str) -> ! {
+pub(crate) fn fatal_hash_seed(value: &str) -> ! {
     eprintln!(
         "Fatal Python error: PYTHONHASHSEED must be \"random\" or an integer in range [0; {PY_HASHSEED_MAX}]"
     );
@@ -141,14 +142,46 @@ impl SipHasher13 {
 
     fn update(&mut self, bytes: &[u8]) {
         self.total_len = self.total_len.wrapping_add(bytes.len() as u64);
-        for &byte in bytes {
-            self.tail |= (byte as u64) << (8 * self.ntail);
-            self.ntail += 1;
+        let mut offset = 0usize;
+
+        // If there's a partial tail from a previous update, fill it first.
+        if self.ntail > 0 {
+            while offset < bytes.len() && self.ntail < 8 {
+                self.tail |= (bytes[offset] as u64) << (8 * self.ntail);
+                self.ntail += 1;
+                offset += 1;
+            }
             if self.ntail == 8 {
                 self.process_block(self.tail);
                 self.tail = 0;
                 self.ntail = 0;
             }
+        }
+
+        // Bulk path: process 8-byte blocks directly using little-endian reads.
+        // This avoids per-byte shift-and-OR for strings >16 bytes (common for
+        // dict keys like module-qualified names, file paths, etc.).
+        let remaining = &bytes[offset..];
+        let chunks = remaining.len() / 8;
+        for i in 0..chunks {
+            let block = u64::from_le_bytes([
+                remaining[i * 8],
+                remaining[i * 8 + 1],
+                remaining[i * 8 + 2],
+                remaining[i * 8 + 3],
+                remaining[i * 8 + 4],
+                remaining[i * 8 + 5],
+                remaining[i * 8 + 6],
+                remaining[i * 8 + 7],
+            ]);
+            self.process_block(block);
+        }
+        offset += chunks * 8;
+
+        // Tail: accumulate remaining bytes (0-7).
+        for &byte in &bytes[offset..] {
+            self.tail |= (byte as u64) << (8 * self.ntail);
+            self.ntail += 1;
         }
     }
 
@@ -474,7 +507,7 @@ fn hash_bytes_cached(_py: &PyToken<'_>, ptr: *mut u8, bytes: &[u8]) -> i64 {
     hash
 }
 
-fn hash_int(val: i64) -> i64 {
+pub(crate) fn hash_int(val: i64) -> i64 {
     // Fast path: for values whose magnitude fits within PY_HASH_MODULUS
     // (which includes all 47-bit inline NaN-boxed ints), skip the i128
     // modulus arithmetic entirely.
@@ -847,7 +880,7 @@ fn hash_frozenset(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     hash as i64
 }
 
-fn hash_pointer(ptr: u64) -> i64 {
+pub(crate) fn hash_pointer(ptr: u64) -> i64 {
     let hash = (ptr >> 4) as i64;
     fix_hash(hash)
 }
@@ -876,7 +909,7 @@ fn is_unhashable_type(type_id: u32) -> bool {
     )
 }
 
-fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
+pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
     let obj = obj_from_bits(bits);
     if let Some(i) = obj.as_int() {
         return hash_int(i);
@@ -1110,7 +1143,7 @@ unsafe fn hash_from_dunder(_py: &PyToken<'_>, obj: MoltObject, obj_ptr: *mut u8)
     }
 }
 
-fn hash_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
+pub(crate) fn hash_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
     hash_bits_signed(_py, bits) as u64
 }
 
