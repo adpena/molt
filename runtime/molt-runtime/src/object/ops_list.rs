@@ -2,7 +2,6 @@
 
 use crate::*;
 use molt_obj_model::MoltObject;
-use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
 use std::cmp::Ordering;
 use super::ops::{eq_bool_from_bits, is_truthy};

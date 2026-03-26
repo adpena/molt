@@ -3,9 +3,6 @@
 
 use crate::*;
 use molt_obj_model::MoltObject;
-use num_bigint::BigInt;
-use num_traits::{ToPrimitive, Zero};
-use std::borrow::Cow;
 use std::cmp::Ordering;
 
 use super::ops::{BinaryDunderOutcome, call_dunder_raw, simd_bytes_eq, simd_find_first_mismatch};
