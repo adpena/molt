@@ -10,6 +10,7 @@ libc = "0.2"
 num-bigint = "0.4"
 memchr = "2"
 num-traits = "0.2"
+libm = "0.2"
 serde_json = { version = "1.0", optional = true }
 
 [features]
