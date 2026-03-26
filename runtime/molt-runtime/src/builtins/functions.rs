@@ -1,4 +1,3 @@
-use super::functions_http::urllib_request_attr_optional;
 #[cfg(not(feature = "stdlib_serial"))]
 use super::functions_email::email_quopri_alloc_str;
 #[cfg(feature = "stdlib_serial")]
@@ -10,21 +9,16 @@ fn email_quopri_alloc_str(_py: &crate::PyToken<'_>, value: &str) -> u64 {
         MoltObject::from_ptr(ptr).bits()
     }
 }
-use super::functions_pickle::pickle_resolve_global_bits;
 use molt_obj_model::MoltObject;
 #[cfg(feature = "stdlib_ast")]
 use rustpython_parser::{Mode as ParseMode, ParseErrorType, ast as pyast, parse as parse_python};
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
-use std::net::TcpStream;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::types::cell_class;
 use crate::builtins::numbers::index_i64_with_overflow;
@@ -34,15 +28,12 @@ use crate::{
     TYPE_ID_MODULE, TYPE_ID_STRING,
     TYPE_ID_TUPLE, alloc_bound_method_obj, alloc_bytes, alloc_code_obj, alloc_dict_with_pairs,
     alloc_function_obj, alloc_list_with_capacity, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes, bound_method_func_bits, builtin_classes, bytes_like_slice,
-    call_callable0, call_callable1,
-    call_callable2, call_class_init_with_args, clear_exception, dec_ref_bits,
-    dict_get_in_place, ensure_function_code_bits, exception_kind_bits, exception_pending, function_dict_bits, function_set_closure_bits, function_set_trampoline_ptr,
-    inc_ref_bits, is_truthy, maybe_ptr_from_bits, missing_bits, module_dict_bits,
-    molt_exception_last, molt_getattr_builtin, molt_getitem_method, molt_is_callable, molt_iter,
-    molt_iter_next, molt_list_insert, molt_trace_enter_slot, obj_from_bits, object_class_bits,
-    object_set_class_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned,
-    to_f64, to_i64, type_name,
+    attr_name_bits_from_bytes, bound_method_func_bits, builtin_classes, bytes_like_slice, call_callable1,
+    call_callable2, dec_ref_bits,
+    dict_get_in_place, ensure_function_code_bits, exception_pending, function_dict_bits, function_set_closure_bits, function_set_trampoline_ptr,
+    inc_ref_bits, is_truthy, missing_bits, module_dict_bits, molt_getattr_builtin, molt_getitem_method, molt_iter,
+    molt_iter_next, molt_trace_enter_slot, obj_from_bits, object_class_bits,
+    object_set_class_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_i64, type_name,
 };
 use memchr::{memchr, memmem};
 

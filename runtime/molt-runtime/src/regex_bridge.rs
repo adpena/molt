@@ -6,7 +6,6 @@
 
 use crate::*;
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
-use crate::builtins::containers::list_len as _list_len;
 
 // ---------------------------------------------------------------------------
 // Exception / error handling
