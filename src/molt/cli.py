@@ -25536,7 +25536,7 @@ def main() -> int:
         "--backend",
         choices=["cranelift", "llvm", "auto"],
         default="auto",
-        help="Compilation backend (auto=cranelift for dev, llvm for release).",
+        help="Compilation backend (auto=cranelift; llvm is experimental).",
     )
     build_parser.add_argument(
         "--profile",
@@ -25879,7 +25879,7 @@ def main() -> int:
         "--backend",
         choices=["cranelift", "llvm", "auto"],
         default=None,
-        help="Compilation backend passed to `molt build` (auto=cranelift for dev, llvm for release).",
+        help="Compilation backend passed to `molt build` (auto=cranelift; llvm is experimental).",
     )
     run_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."

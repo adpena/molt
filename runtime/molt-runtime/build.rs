@@ -13,9 +13,9 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR missing"));
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
 
-    if target_os == "macos" {
-        println!("cargo:rustc-link-arg-cdylib=-Wl,-undefined,dynamic_lookup");
-    }
+    // NOTE: cdylib removed from crate-type — staticlib+rlib only.
+    // The cdylib-specific linker flag is no longer needed.
+    let _ = &target_os;
     println!("cargo:rustc-check-cfg=cfg(molt_has_mpdec)");
 
     // Emit `molt_has_net_io` when both non-WASM *and* stdlib_net feature are
