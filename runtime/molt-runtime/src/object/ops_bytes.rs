@@ -2708,7 +2708,7 @@ fn bytes_hex_string(bytes: &[u8], sep: Option<&str>, bytes_per_sep: i64) -> Stri
     out
 }
 
-pub(super) fn bytes_hex_from_bits(
+pub(crate) fn bytes_hex_from_bits(
     _py: &PyToken<'_>,
     bytes: &[u8],
     sep_bits: u64,
