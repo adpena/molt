@@ -64,6 +64,7 @@ pub(crate) mod hmac;
 pub(crate) mod html;
 pub(crate) mod inspect;
 pub(crate) mod io;
+pub(crate) mod io_file;
 pub(crate) mod ipaddress;
 pub(crate) mod itertools;
 pub(crate) mod json;
