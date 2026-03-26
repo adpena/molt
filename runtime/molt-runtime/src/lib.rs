@@ -47,17 +47,25 @@ mod constants;
 mod crypto_bridge;
 #[cfg(feature = "stdlib_math")]
 mod math_bridge;
+#[cfg(feature = "stdlib_regex")]
+mod regex_bridge;
 #[cfg(feature = "stdlib_serial")]
 mod serial_bridge;
+#[cfg(feature = "stdlib_itertools")]
+mod itertools_bridge;
 // Re-export extracted crates so their symbols are available at link time.
 #[cfg(feature = "stdlib_serial")]
 pub use molt_runtime_serial;
+#[cfg(feature = "stdlib_itertools")]
+pub use molt_runtime_itertools;
 #[cfg(feature = "stdlib_crypto")]
 pub use molt_runtime_crypto;
 #[cfg(feature = "stdlib_compression")]
 pub use molt_runtime_compression;
 #[cfg(feature = "stdlib_math")]
 pub use molt_runtime_math;
+#[cfg(feature = "stdlib_regex")]
+pub use molt_runtime_regex;
 #[cfg(feature = "stdlib_tk")]
 mod gui;
 #[cfg(feature = "stdlib_tk")]
@@ -303,7 +311,9 @@ pub use crate::builtins::fractions::*;
 pub use molt_runtime_math::fractions::*;
 pub use crate::builtins::functions::*;
 pub use crate::builtins::functions_email::*;
+pub use crate::builtins::functions_http::*;
 pub use crate::builtins::functions_pickle::*;
+pub use crate::builtins::functions_zipfile::*;
 pub use crate::builtins::functools::*;
 #[cfg(feature = "stdlib_fs_extra")]
 pub use crate::builtins::glob_mod::*;
@@ -322,7 +332,10 @@ pub(crate) use crate::builtins::io::{
     file_handle_exit, file_handle_is_closed, path_from_bits,
 };
 pub use crate::builtins::ipaddress::*;
+#[cfg(not(feature = "stdlib_itertools"))]
 pub use crate::builtins::itertools::*;
+#[cfg(feature = "stdlib_itertools")]
+pub use molt_runtime_itertools::itertools::*;
 pub use crate::builtins::json::*;
 pub use crate::builtins::logging_ext::*;
 #[cfg(feature = "stdlib_compression")]
@@ -352,7 +365,10 @@ pub use crate::builtins::punycode::*;
 pub use crate::builtins::random_mod::*;
 #[cfg(feature = "stdlib_math")]
 pub use molt_runtime_math::random_mod::*;
+#[cfg(not(feature = "stdlib_regex"))]
 pub use crate::builtins::regex::*;
+#[cfg(feature = "stdlib_regex")]
+pub use molt_runtime_regex::regex::*;
 #[cfg(feature = "stdlib_crypto")]
 pub use crate::builtins::secrets::*;
 pub use crate::builtins::select::*;

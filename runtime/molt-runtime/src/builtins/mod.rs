@@ -54,7 +54,9 @@ pub(crate) mod fractions;
 pub(crate) mod frames;
 pub(crate) mod functions;
 pub(crate) mod functions_email;
+pub(crate) mod functions_http;
 pub(crate) mod functions_pickle;
+pub(crate) mod functions_zipfile;
 pub(crate) mod functools;
 #[cfg(feature = "stdlib_fs_extra")]
 pub(crate) mod glob_mod;
@@ -70,6 +72,7 @@ pub(crate) mod inspect;
 pub(crate) mod io;
 pub(crate) mod io_path;
 pub(crate) mod ipaddress;
+#[cfg(not(feature = "stdlib_itertools"))]
 pub(crate) mod itertools;
 pub(crate) mod json;
 pub(crate) mod logging_ext;
@@ -93,6 +96,7 @@ pub(crate) mod pprint_ext;
 pub(crate) mod punycode;
 #[cfg(not(feature = "stdlib_math"))]
 pub(crate) mod random_mod;
+#[cfg(not(feature = "stdlib_regex"))]
 pub(crate) mod regex;
 #[cfg(feature = "stdlib_crypto")]
 pub(crate) mod secrets;
