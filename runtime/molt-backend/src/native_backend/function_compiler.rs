@@ -3271,10 +3271,9 @@ impl SimpleBackend {
                             .declare_func_in_func(append_callee, builder.func);
                         for name in args {
                             let val = var_get(&mut builder, &vars, name).expect("Tuple elem not found");
-                            // Inc-ref each element via the runtime function
-                            // (not inline) to avoid potential header layout
-                            // issues with the inline path.
-                            builder.ins().call(local_inc_ref_obj, &[*val]);
+                            // Inc-ref each element so the builder owns its own
+                            // reference.
+                            emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj, &nbc);
                             builder.ins().call(append_local, &[builder_ptr, *val]);
                         }
 
@@ -9811,7 +9810,6 @@ impl SimpleBackend {
                     }
                 }
                 "loop_index_next" => {
-                    eprintln!("[CODEGEN] loop_index_next: op_idx={} is_block_filled={} args={:?}", op_idx, is_block_filled, op.args);
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let next_idx =
                         var_get(&mut builder, &vars, &args[0]).expect("Loop index next not found");
@@ -11159,13 +11157,6 @@ impl SimpleBackend {
             if std::env::var_os("MOLT_DUMP_CLIF_ON_CFG_ERROR").is_some() {
                 eprintln!("CLIF {}:\n{}", func_ir.name, builder.func.display());
             }
-        }
-
-        // Pre-finalize CLIF dump (before seal_all_blocks which resolves phis)
-        if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF_PRE")
-            && (filter == "1" || func_ir.name.contains(&filter))
-        {
-            eprintln!("CLIF-PRE {}:\n{}", func_ir.name, builder.func.display());
         }
 
         let finalize_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
