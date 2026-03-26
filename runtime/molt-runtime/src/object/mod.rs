@@ -59,6 +59,7 @@ pub(crate) mod ops_string;
 pub(crate) mod ops_vec;
 pub(crate) mod ops_slice;
 pub(crate) mod ops_memoryview;
+pub(crate) mod ops_index;
 pub(crate) mod refcount;
 #[allow(dead_code)]
 pub mod string_intern;
