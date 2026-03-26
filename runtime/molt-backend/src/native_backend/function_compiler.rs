@@ -9408,7 +9408,8 @@ impl SimpleBackend {
                         );
                         // Materialize the merged value(s) for any `phi` ops by binding the
                         // merge-block parameters to their output variable names.
-                        if !frame.phi_ops.is_empty() {
+                        // Guard: skip if the merge block was already filled (can't emit defs).
+                        if !is_block_filled && !frame.phi_ops.is_empty() {
                             for (idx, (out, _then_name, _else_name)) in
                                 frame.phi_ops.iter().enumerate()
                             {
