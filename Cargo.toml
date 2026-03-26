@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "runtime/molt-runtime",
+    "runtime/molt-runtime-itertools",
     "runtime/molt-runtime-crypto",
     "runtime/molt-runtime-compression",
     "runtime/molt-runtime-tk",

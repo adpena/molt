@@ -703,6 +703,14 @@ pub struct RuntimeVtable {
 
     // --- OS ---
     pub fill_os_random: unsafe extern "C" fn(*mut u8, usize) -> i32,
+
+    // --- Extended helpers (email / zipfile / decimal) ---
+    pub alloc_list_with_capacity: unsafe extern "C" fn(*const u64, usize, usize) -> *mut u8,
+    pub attr_name_bits_from_bytes: unsafe extern "C" fn(*const u8, usize, *mut u64) -> i32,
+    pub call_class_init_with_args: unsafe extern "C" fn(*mut u8, *const u64, usize) -> u64,
+    pub missing_bits: unsafe extern "C" fn() -> u64,
+    pub molt_getattr_builtin: unsafe extern "C" fn(u64, u64, u64) -> u64,
+    pub molt_module_import: unsafe extern "C" fn(u64) -> u64,
 }
 
 // SAFETY: The vtable is populated once at init time and then only read.

@@ -1,41 +1,21 @@
 //! FFI bridge to molt-runtime internal functions.
 //!
-//! All dispatch goes through a single `RuntimeVtable` fetched once at init,
-//! plus direct `extern "C"` imports for itertools-specific helpers.
+//! Uses direct `extern "C"` imports resolved by the linker at link time.
+//! No vtable initialization needed — all symbols are resolved from molt-runtime.
 
 use molt_runtime_core::prelude::*;
-use molt_runtime_core::RuntimeVtable;
-use std::sync::OnceLock;
+use molt_runtime_core::ffi;
 
-/// Global vtable reference, populated once at init time.
-static VTABLE: OnceLock<&'static RuntimeVtable> = OnceLock::new();
-
-/// Initialize the vtable. Called once by the runtime at startup.
-pub fn init_vtable() {
-    unsafe extern "C" {
-        fn __molt_itertools_get_vtable() -> *const RuntimeVtable;
-    }
-    let ptr = unsafe { __molt_itertools_get_vtable() };
-    if !ptr.is_null() {
-        let vtable = unsafe { &*ptr };
-        let _ = VTABLE.set(vtable);
-    }
-}
-
-/// Get the vtable reference. Panics if not initialized.
-#[inline(always)]
-fn vt() -> &'static RuntimeVtable {
-    VTABLE
-        .get()
-        .copied()
-        .expect("molt-runtime-itertools: vtable not initialized — call bridge::init_vtable() first")
-}
+/// No-op init for API compatibility with the vtable pattern.
+/// All symbols are resolved at link time so no initialization is needed.
+pub fn init_vtable() {}
 
 // ---------------------------------------------------------------------------
-// Itertools-specific C API imports (from molt-runtime/itertools_bridge.rs)
+// Itertools-specific + runtime C API imports
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
+    // Itertools-specific helpers (from molt-runtime/itertools_bridge.rs):
     fn molt_itertools_alloc_instance_for_class(class_bits: u64) -> u64;
     fn molt_itertools_call_callable1(call_bits: u64, arg0_bits: u64) -> u64;
     fn molt_itertools_call_callable2_bridge(call_bits: u64, arg0_bits: u64, arg1_bits: u64) -> u64;
@@ -63,6 +43,14 @@ unsafe extern "C" {
     fn molt_callargs_new(pos_capacity_bits: u64, kw_capacity_bits: u64) -> u64;
     fn molt_callargs_expand_star(builder_bits: u64, iterable_bits: u64) -> u64;
     fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64;
+
+    // Runtime object system:
+    fn molt_iter(bits: u64) -> u64;
+    fn molt_raise_not_iterable(bits: u64) -> u64;
+    fn molt_object_type_id(ptr: *mut u8) -> u32;
+    fn molt_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64>;
+    fn molt_index_i64_from_obj(obj_bits: u64, err_ptr: *const u8, err_len: usize) -> i64;
+    fn molt_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64;
 }
 
 // ---------------------------------------------------------------------------
@@ -70,19 +58,18 @@ unsafe extern "C" {
 // ---------------------------------------------------------------------------
 
 pub fn raise_exception<T: ExceptionSentinel>(_py: &PyToken, type_name: &str, msg: &str) -> T {
-    let bits = unsafe {
-        (vt().raise_exception)(
-            type_name.as_ptr(),
-            type_name.len(),
-            msg.as_ptr(),
-            msg.len(),
-        )
-    };
-    T::from_bits(bits)
+    let kind_bits = unsafe { ffi::molt_string_from(type_name.as_ptr(), type_name.len() as u64) };
+    let msg_bits = unsafe { ffi::molt_string_from(msg.as_ptr(), msg.len() as u64) };
+    let args_bits = unsafe { ffi::molt_tuple_from_array(&msg_bits as *const u64, 1) };
+    let exc_bits = unsafe { ffi::molt_exception_new(kind_bits, args_bits) };
+    unsafe { ffi::molt_dec_ref_obj(kind_bits) };
+    unsafe { ffi::molt_dec_ref_obj(args_bits) };
+    let result = unsafe { ffi::molt_raise(exc_bits) };
+    T::from_bits(result)
 }
 
 pub fn exception_pending(_py: &PyToken) -> bool {
-    unsafe { (vt().exception_pending)() != 0 }
+    unsafe { ffi::molt_exception_pending() != 0 }
 }
 
 /// Trait for exception return sentinels.
@@ -114,15 +101,13 @@ impl ExceptionSentinel for () {
 // ---------------------------------------------------------------------------
 
 pub fn alloc_tuple(_py: &PyToken, elems: &[u64]) -> *mut u8 {
-    unsafe { (vt().alloc_tuple)(elems.as_ptr(), elems.len()) }
+    let bits = unsafe { ffi::molt_tuple_from_array(elems.as_ptr(), elems.len() as u64) };
+    obj_from_bits(bits).as_ptr().unwrap_or(std::ptr::null_mut())
 }
 
 pub fn alloc_list(_py: &PyToken, elems: &[u64]) -> *mut u8 {
-    unsafe { (vt().alloc_list)(elems.as_ptr(), elems.len()) }
-}
-
-pub fn alloc_string(_py: &PyToken, data: &[u8]) -> *mut u8 {
-    unsafe { (vt().alloc_string)(data.as_ptr(), data.len()) }
+    let bits = unsafe { ffi::molt_list_from_array(elems.as_ptr(), elems.len() as u64) };
+    obj_from_bits(bits).as_ptr().unwrap_or(std::ptr::null_mut())
 }
 
 // ---------------------------------------------------------------------------
@@ -130,15 +115,15 @@ pub fn alloc_string(_py: &PyToken, data: &[u8]) -> *mut u8 {
 // ---------------------------------------------------------------------------
 
 pub unsafe fn object_type_id(ptr: *mut u8) -> u32 {
-    unsafe { (vt().object_type_id)(ptr) }
+    unsafe { molt_object_type_id(ptr) }
 }
 
 pub fn is_truthy(_py: &PyToken, obj: MoltObject) -> bool {
-    unsafe { (vt().is_truthy)(obj.bits()) != 0 }
+    unsafe { ffi::molt_is_truthy(obj.bits()) == 1 }
 }
 
 pub unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
-    unsafe { &*(vt().seq_vec_ptr)(ptr) }
+    unsafe { &*molt_seq_vec_ptr(ptr) }
 }
 
 // ---------------------------------------------------------------------------
@@ -146,19 +131,19 @@ pub unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
 // ---------------------------------------------------------------------------
 
 pub fn dec_ref_bits(_py: &PyToken, bits: u64) {
-    unsafe { (vt().dec_ref_bits)(bits) }
+    unsafe { ffi::molt_dec_ref_obj(bits) }
 }
 
 pub fn inc_ref_bits(_py: &PyToken, bits: u64) {
-    unsafe { (vt().inc_ref_bits)(bits) }
+    unsafe { ffi::molt_inc_ref_obj(bits) }
 }
 
 // ---------------------------------------------------------------------------
 // Iteration helpers
 // ---------------------------------------------------------------------------
 
-pub fn molt_iter(_py: &PyToken, bits: u64) -> u64 {
-    unsafe { (vt().molt_iter)(bits) }
+pub fn molt_iter_bridge(_py: &PyToken, bits: u64) -> u64 {
+    unsafe { molt_iter(bits) }
 }
 
 /// Call `molt_iter_next` — returns a 2-tuple (value, done_bool) or None on error.
@@ -167,7 +152,7 @@ pub fn bridge_molt_iter_next(_py: &PyToken, iter_bits: u64) -> u64 {
 }
 
 pub fn raise_not_iterable<T: ExceptionSentinel>(_py: &PyToken, bits: u64) -> T {
-    let result = unsafe { (vt().raise_not_iterable)(bits) };
+    let result = unsafe { molt_raise_not_iterable(bits) };
     T::from_bits(result)
 }
 
@@ -176,11 +161,11 @@ pub fn raise_not_iterable<T: ExceptionSentinel>(_py: &PyToken, bits: u64) -> T {
 // ---------------------------------------------------------------------------
 
 pub fn index_i64_from_obj(_py: &PyToken, obj_bits: u64, err: &str) -> i64 {
-    unsafe { (vt().index_i64_from_obj)(obj_bits, err.as_ptr(), err.len()) }
+    unsafe { molt_index_i64_from_obj(obj_bits, err.as_ptr(), err.len()) }
 }
 
 pub fn intern_static_name(_py: &PyToken, key: &[u8]) -> u64 {
-    unsafe { (vt().intern_static_name)(key.as_ptr(), key.len()) }
+    unsafe { molt_intern_static_name(key.as_ptr(), key.len()) }
 }
 
 // ---------------------------------------------------------------------------

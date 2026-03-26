@@ -1358,7 +1358,7 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         let table = set_table(target_ptr);
                         let order = set_order(target_ptr);
                         let mut slot = idx;
-                        while slot < table.len() && table[slot] == 0 {
+                        while slot < table.len() && (table[slot] == 0 || table[slot] == usize::MAX) {
                             slot += 1;
                         }
                         if slot >= table.len() {

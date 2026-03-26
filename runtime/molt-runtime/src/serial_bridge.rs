@@ -742,6 +742,63 @@ extern "C" fn bridge_dict_order_clone(
 }
 
 // ---------------------------------------------------------------------------
+// Extended helpers (email / zipfile / decimal)
+// ---------------------------------------------------------------------------
+
+extern "C" fn bridge_alloc_list_with_capacity(
+    elems_ptr: *const u64,
+    elems_len: usize,
+    capacity: usize,
+) -> *mut u8 {
+    crate::with_gil_entry!(_py, {
+        let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
+        crate::object::builders::alloc_list_with_capacity(_py, elems, capacity)
+    })
+}
+
+extern "C" fn bridge_attr_name_bits_from_bytes(
+    name_ptr: *const u8,
+    name_len: usize,
+    out: *mut u64,
+) -> i32 {
+    crate::with_gil_entry!(_py, {
+        let name = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
+        match crate::builtins::attr::attr_name_bits_from_bytes(_py, name) {
+            Some(bits) => {
+                unsafe { *out = bits; }
+                1
+            }
+            None => 0,
+        }
+    })
+}
+
+extern "C" fn bridge_call_class_init_with_args(
+    class_ptr: *mut u8,
+    args_ptr: *const u64,
+    args_len: usize,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let args = unsafe { std::slice::from_raw_parts(args_ptr, args_len) };
+        unsafe { crate::call::class_init::call_class_init_with_args(_py, class_ptr, args) }
+    })
+}
+
+extern "C" fn bridge_missing_bits() -> u64 {
+    crate::with_gil_entry!(_py, {
+        crate::builtins::methods::missing_bits(_py)
+    })
+}
+
+extern "C" fn bridge_molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bits: u64) -> u64 {
+    crate::object::ops_builtins::molt_getattr_builtin(obj_bits, name_bits, default_bits)
+}
+
+extern "C" fn bridge_molt_module_import(name_bits: u64) -> u64 {
+    crate::builtins::modules::molt_module_import(name_bits)
+}
+
+// ---------------------------------------------------------------------------
 // RuntimeVtable — single-dispatch entry point for the serial crate
 // ---------------------------------------------------------------------------
 
@@ -808,6 +865,12 @@ static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
     molt_sorted_builtin: bridge_molt_sorted_builtin,
     molt_mul: bridge_molt_mul,
     fill_os_random: bridge_fill_os_random,
+    alloc_list_with_capacity: bridge_alloc_list_with_capacity,
+    attr_name_bits_from_bytes: bridge_attr_name_bits_from_bytes,
+    call_class_init_with_args: bridge_call_class_init_with_args,
+    missing_bits: bridge_missing_bits,
+    molt_getattr_builtin: bridge_molt_getattr_builtin,
+    molt_module_import: bridge_molt_module_import,
 };
 
 #[unsafe(no_mangle)]
