@@ -699,7 +699,7 @@ extern "C" fn bridge_molt_sorted_builtin(bits: u64) -> u64 {
 }
 
 extern "C" fn bridge_molt_mul(a: u64, b: u64) -> u64 {
-    crate::object::ops::molt_mul(a, b)
+    crate::object::ops_arith::molt_mul(a, b)
 }
 
 // ---------------------------------------------------------------------------
