@@ -11,6 +11,8 @@ pub(crate) mod process;
 pub(crate) mod scheduler;
 pub(crate) mod sockets;
 pub(crate) mod sockets_net;
+pub(crate) use sockets_net::*;
+pub(crate) use generators_async::*;
 pub(crate) mod task;
 pub(crate) mod threads;
 
