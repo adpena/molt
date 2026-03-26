@@ -518,6 +518,27 @@ pub(crate) fn format_obj_str(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 return String::from_utf8_lossy(bytes).into_owned();
             }
             if type_id == TYPE_ID_EXCEPTION {
+                // Check for a custom __str__ on the exception class before
+                // falling back to the default format_exception_message path.
+                let str_name_exc =
+                    intern_static_name(_py, &runtime_state(_py).interned.str_name, b"__str__");
+                if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, str_name_exc) {
+                    // If this is NOT a default object/__str__, call the custom one.
+                    if !call_bits_is_default_object_str(call_bits)
+                        && !call_bits_is_default_object_repr(call_bits)
+                    {
+                        let res_bits = call_callable0(_py, call_bits);
+                        dec_ref_bits(_py, call_bits);
+                        let res_obj = obj_from_bits(res_bits);
+                        if let Some(rendered) = string_obj_to_owned(res_obj) {
+                            dec_ref_bits(_py, res_bits);
+                            return rendered;
+                        }
+                        dec_ref_bits(_py, res_bits);
+                    } else {
+                        dec_ref_bits(_py, call_bits);
+                    }
+                }
                 return format_exception_message(_py, ptr);
             }
             let str_name_bits =

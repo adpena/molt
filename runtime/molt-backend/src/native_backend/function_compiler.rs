@@ -599,6 +599,9 @@ impl SimpleBackend {
                 continue;
             }
             let op = ops[op_idx].clone();
+            if op.kind == "index" {
+                eprintln!("[DEBUG-BACKEND-OP] func={} op_idx={} kind={} args={:?} out={:?}", func_ir.name, op_idx, op.kind, op.args, op.out);
+            }
             sync_block_filled(&builder, &mut is_block_filled);
             if is_block_filled {
                 if op.kind == "if"
@@ -805,11 +808,23 @@ impl SimpleBackend {
                     {
                         let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_add", &[types::I64, types::I64], &[types::I64]);
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
+                        // Guard: both operands must be inline ints (not bigint pointers).
+                        // fast_int assumes NaN-boxed inline ints, but bigints are heap-
+                        // allocated pointers with a different tag. Unboxing a pointer as
+                        // an inline int produces garbage.
+                        let lhs_is_int = is_int_or_bool_tag(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_int_or_bool_tag(&mut builder, *rhs, &nbc);
+                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let guard_fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+                        builder.ins().brif(both_inline, guard_fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(guard_fast_block);
+                        builder.seal_block(guard_fast_block);
+                        let fast_block = builder.create_block();
                         // Use unbox_int_or_bool: Python booleans are ints (True+True==2).
                         let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
@@ -4035,6 +4050,9 @@ impl SimpleBackend {
                 }
                 "index" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    if func_ir.name == "molt_main" || func_ir.name.contains("module") {
+                        eprintln!("[DEBUG-BACKEND] index op: args={:?} in func={}", args, func_ir.name);
+                    }
                     // Stack-tuple fast path: resolve element at compile time.
                     let stack_resolved = stack_tuples.get(&args[0]).and_then(|elems| {
                         Self::resolve_const_int(ops, op_idx, &args[1]).and_then(|ci| {
