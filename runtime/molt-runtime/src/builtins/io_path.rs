@@ -3,6 +3,9 @@
 //! Split from io.rs to reduce file size. Contains all `molt_path_*`,
 //! `molt_glob*`, `molt_os_*`, and `molt_getcwd` extern functions.
 
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
 use crate::PyToken;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
