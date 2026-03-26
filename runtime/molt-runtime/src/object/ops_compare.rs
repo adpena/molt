@@ -8,6 +8,8 @@ use num_traits::{ToPrimitive, Zero};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
+use super::ops::{BinaryDunderOutcome, call_dunder_raw, simd_bytes_eq, simd_find_first_mismatch};
+
 pub(crate) fn compare_type_error(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject, op: &str) -> u64 {
     let msg = format!(
         "'{}' not supported between instances of '{}' and '{}'",
@@ -923,4 +925,3 @@ pub extern "C" fn molt_string_eq(a: u64, b: u64) -> u64 {
 pub extern "C" fn molt_is(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::from_bool(a == b).bits() })
 }
-
