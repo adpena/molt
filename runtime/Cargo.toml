@@ -16,6 +16,7 @@ members = [
     "molt-runtime-difflib",
     "molt-runtime-logging",
     "molt-runtime-http",
+    "molt-runtime-xml",
     "molt-runtime",
     "molt-backend",
     "molt-wasm-host",

@@ -67,6 +67,8 @@ mod http_bridge;
 mod logging_bridge;
 #[cfg(feature = "stdlib_stringprep")]
 mod stringprep_bridge;
+#[cfg(feature = "stdlib_xml")]
+mod xml_bridge;
 // Re-export extracted crates so their symbols are available at link time.
 #[cfg(feature = "stdlib_serial")]
 pub use molt_runtime_serial;
@@ -94,6 +96,8 @@ pub use molt_runtime_logging;
 pub use molt_runtime_http;
 #[cfg(feature = "stdlib_stringprep")]
 pub use molt_runtime_stringprep;
+#[cfg(feature = "stdlib_xml")]
+pub use molt_runtime_xml;
 #[cfg(feature = "stdlib_tk")]
 mod gui;
 #[cfg(feature = "stdlib_tk")]
@@ -160,7 +164,6 @@ pub(crate) use crate::async_rt::scheduler::BLOCK_ON_TASK;
 pub(crate) use crate::async_rt::sockets::io_wait_release_socket;
 #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
 pub(crate) use crate::async_rt::net_stubs::io_wait_release_socket;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub use crate::async_rt::sockets::*;
 // Socket utilities from sockets_net.rs: only available when networking is compiled in.
 #[cfg(molt_has_net_io)]

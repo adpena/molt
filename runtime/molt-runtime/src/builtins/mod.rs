@@ -140,7 +140,9 @@ pub(crate) mod types;
 #[cfg(not(feature = "stdlib_text"))]
 pub(crate) mod unicodedata_mod;
 pub(crate) mod warnings_ext;
+#[cfg(not(feature = "stdlib_xml"))]
 pub(crate) mod xml_etree;
+#[cfg(not(feature = "stdlib_xml"))]
 pub(crate) mod xml_sax;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod zlib;
