@@ -179,7 +179,7 @@ pub(crate) fn slice_match(slice: &[u8], needle: &[u8], start_raw: i64, total: i6
     }
 }
 
-pub(super) fn range_components_bigint(ptr: *mut u8) -> Option<(BigInt, BigInt, BigInt)> {
+pub(crate) fn range_components_bigint(ptr: *mut u8) -> Option<(BigInt, BigInt, BigInt)> {
     unsafe {
         let start_obj = obj_from_bits(range_start_bits(ptr));
         let stop_obj = obj_from_bits(range_stop_bits(ptr));
@@ -191,7 +191,7 @@ pub(super) fn range_components_bigint(ptr: *mut u8) -> Option<(BigInt, BigInt, B
     }
 }
 
-pub(super) fn range_components_i64(ptr: *mut u8) -> Option<(i64, i64, i64)> {
+pub(crate) fn range_components_i64(ptr: *mut u8) -> Option<(i64, i64, i64)> {
     unsafe {
         let start = to_i64(obj_from_bits(range_start_bits(ptr)))?;
         let stop = to_i64(obj_from_bits(range_stop_bits(ptr)))?;
@@ -203,7 +203,7 @@ pub(super) fn range_components_i64(ptr: *mut u8) -> Option<(i64, i64, i64)> {
     }
 }
 
-pub(super) fn range_len_i128(start: i64, stop: i64, step: i64) -> i128 {
+pub(crate) fn range_len_i128(start: i64, stop: i64, step: i64) -> i128 {
     if step == 0 {
         return 0;
     }
@@ -225,7 +225,7 @@ pub(super) fn range_len_i128(start: i64, stop: i64, step: i64) -> i128 {
     1 + span / step_abs
 }
 
-pub(super) fn range_value_at_index_i64(start: i64, stop: i64, step: i64, idx: i128) -> Option<i64> {
+pub(crate) fn range_value_at_index_i64(start: i64, stop: i64, step: i64, idx: i128) -> Option<i64> {
     if idx < 0 {
         return None;
     }
@@ -245,7 +245,7 @@ pub(super) fn range_value_at_index_i64(start: i64, stop: i64, step: i64, idx: i1
     i64::try_from(val).ok()
 }
 
-pub(super) fn range_index_for_candidate(
+pub(crate) fn range_index_for_candidate(
     start: &BigInt,
     stop: &BigInt,
     step: &BigInt,
@@ -274,7 +274,7 @@ pub(super) fn range_index_for_candidate(
     Some(offset / step)
 }
 
-pub(super) fn range_lookup_candidate(_py: &PyToken<'_>, val_bits: u64) -> Option<BigInt> {
+pub(crate) fn range_lookup_candidate(_py: &PyToken<'_>, val_bits: u64) -> Option<BigInt> {
     let val = obj_from_bits(val_bits);
     if let Some(f) = val.as_float() {
         if !f.is_finite() || f.fract() != 0.0 {
@@ -311,7 +311,7 @@ pub(crate) fn debug_store_index_enabled() -> bool {
     *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_STORE_INDEX").as_deref() == Ok("1"))
 }
 
-pub(super) fn range_len_bigint(start: &BigInt, stop: &BigInt, step: &BigInt) -> BigInt {
+pub(crate) fn range_len_bigint(start: &BigInt, stop: &BigInt, step: &BigInt) -> BigInt {
     if step.is_zero() {
         return BigInt::from(0);
     }
@@ -330,7 +330,7 @@ pub(super) fn range_len_bigint(start: &BigInt, stop: &BigInt, step: &BigInt) -> 
     BigInt::from(1) + span / step_abs
 }
 
-pub(super) fn alloc_range_from_bigints(_py: &PyToken<'_>, start: BigInt, stop: BigInt, step: BigInt) -> u64 {
+pub(crate) fn alloc_range_from_bigints(_py: &PyToken<'_>, start: BigInt, stop: BigInt, step: BigInt) -> u64 {
     let start_bits = int_bits_from_bigint(_py, start);
     let stop_bits = int_bits_from_bigint(_py, stop);
     let step_bits = int_bits_from_bigint(_py, step);

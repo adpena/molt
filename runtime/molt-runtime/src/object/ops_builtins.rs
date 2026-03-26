@@ -9,6 +9,10 @@ use num_traits::{Signed, ToPrimitive, Zero};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use crate::object::accessors::object_field_init_ptr_raw;
+use crate::object::ops_string::utf8_char_to_byte_index_cached;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_code_slots_init(count: u64) -> u64 {
