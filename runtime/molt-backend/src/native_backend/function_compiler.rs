@@ -3215,10 +3215,10 @@ impl SimpleBackend {
                             data_ptr,
                             HEADER_REFCOUNT_OFFSET,
                         );
-                        // flags (u64 at -8) — set HEADER_FLAG_IMMORTAL
+                        // flags (u32 at -8) — set HEADER_FLAG_IMMORTAL
                         let flags_val = builder
                             .ins()
-                            .iconst(types::I64, HEADER_FLAG_IMMORTAL as i64);
+                            .iconst(types::I32, HEADER_FLAG_IMMORTAL as i64);
                         builder.ins().store(
                             MemFlags::trusted(),
                             flags_val,
@@ -4063,9 +4063,6 @@ impl SimpleBackend {
                 }
                 "index" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    if func_ir.name == "molt_main" || func_ir.name.contains("module") {
-                        eprintln!("[DEBUG-BACKEND] index op: args={:?} in func={}", args, func_ir.name);
-                    }
                     // Stack-tuple fast path: resolve element at compile time.
                     let stack_resolved = stack_tuples.get(&args[0]).and_then(|elems| {
                         Self::resolve_const_int(ops, op_idx, &args[1]).and_then(|ci| {
@@ -9814,6 +9811,7 @@ impl SimpleBackend {
                     }
                 }
                 "loop_index_next" => {
+                    eprintln!("[CODEGEN] loop_index_next: op_idx={} is_block_filled={} args={:?}", op_idx, is_block_filled, op.args);
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let next_idx =
                         var_get(&mut builder, &vars, &args[0]).expect("Loop index next not found");
@@ -11161,6 +11159,13 @@ impl SimpleBackend {
             if std::env::var_os("MOLT_DUMP_CLIF_ON_CFG_ERROR").is_some() {
                 eprintln!("CLIF {}:\n{}", func_ir.name, builder.func.display());
             }
+        }
+
+        // Pre-finalize CLIF dump (before seal_all_blocks which resolves phis)
+        if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF_PRE")
+            && (filter == "1" || func_ir.name.contains(&filter))
+        {
+            eprintln!("CLIF-PRE {}:\n{}", func_ir.name, builder.func.display());
         }
 
         let finalize_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
