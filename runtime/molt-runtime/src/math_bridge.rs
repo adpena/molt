@@ -722,7 +722,7 @@ pub extern "C" fn __molt_math_hash_builtin(val_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_math_slice_new(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
-    crate::object::ops::molt_slice_new(start_bits, stop_bits, step_bits)
+    crate::object::ops_slice::molt_slice_new(start_bits, stop_bits, step_bits)
 }
 
 #[unsafe(no_mangle)]
