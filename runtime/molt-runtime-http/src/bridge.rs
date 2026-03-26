@@ -206,7 +206,7 @@ pub fn to_f64(obj: MoltObject) -> Option<f64> {
 unsafe extern "C" {
     fn __molt_http_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64>;
     fn __molt_http_dict_get_in_place(dict_ptr: *mut u8, key_bits: u64, out: *mut u64) -> i32;
-    fn __molt_http_molt_list_insert(list_bits: u64, index: i64, value_bits: u64);
+    fn __molt_http_molt_list_insert(list_bits: u64, index_bits: u64, value_bits: u64) -> u64;
     fn __molt_http_molt_dict_new(initial_capacity: usize) -> u64;
 }
 
@@ -220,8 +220,8 @@ pub unsafe fn dict_get_in_place(_py: &CoreGilToken, dict_ptr: *mut u8, key_bits:
     if ok != 0 { Some(out) } else { None }
 }
 
-pub fn molt_list_insert(list_bits: u64, index: i64, value_bits: u64) {
-    unsafe { __molt_http_molt_list_insert(list_bits, index, value_bits) }
+pub fn molt_list_insert(list_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
+    unsafe { __molt_http_molt_list_insert(list_bits, index_bits, value_bits) }
 }
 
 pub fn molt_dict_new(initial_capacity: usize) -> u64 {
@@ -428,7 +428,7 @@ pub fn resolve_global_bits(
     _py: &CoreGilToken,
     module: &str,
     name: &str,
-) -> Option<u64> {
+) -> Result<u64, u64> {
     let mut out: u64 = 0;
     let ok = unsafe {
         __molt_http_resolve_global_bits(
@@ -437,7 +437,7 @@ pub fn resolve_global_bits(
             &mut out,
         )
     };
-    if ok != 0 { Some(out) } else { None }
+    if ok != 0 { Ok(out) } else { Err(MoltObject::none().bits()) }
 }
 
 // ---------------------------------------------------------------------------

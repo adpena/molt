@@ -2,5 +2,9 @@
 name = "molt-runtime-logging"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+description = "Logging intrinsics (LogRecord, Formatter, Handler, Logger, etc.) for the Molt runtime."
 
 [dependencies]
+molt-runtime-core = { path = "../molt-runtime-core" }
+molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
