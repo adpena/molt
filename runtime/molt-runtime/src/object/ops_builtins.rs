@@ -2,19 +2,16 @@
 // Split from ops.rs for compilation-unit size reduction.
 
 use crate::*;
-use crate::object::accessors::object_field_init_ptr_raw;
 use crate::object::ops_string::utf8_char_to_byte_index_cached;
 use molt_obj_model::MoltObject;
-use num_bigint::BigInt;
 use num_integer::Integer;
-use num_traits::{Signed, ToPrimitive, Zero};
-use std::borrow::Cow;
+use num_traits::{Signed, Zero};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-use super::ops::{SliceError, decode_slice_bound, slice_error};
+use super::ops::{decode_slice_bound, slice_error};
 use super::ops_arith::binary_type_error;
 
 pub extern "C" fn molt_code_slots_init(count: u64) -> u64 {

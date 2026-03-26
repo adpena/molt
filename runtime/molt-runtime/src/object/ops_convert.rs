@@ -3,13 +3,10 @@
 
 use crate::*;
 use crate::object::accessors::object_field_init_ptr_raw;
-use crate::object::ops_string::{push_wtf8_codepoint, wtf8_codepoint_at, wtf8_from_bytes, wtf8_has_surrogates};
 use molt_obj_model::MoltObject;
-use num_bigint::{BigInt, Sign};
+use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
-use std::borrow::Cow;
-use std::sync::OnceLock;
 
 pub extern "C" fn molt_str_from_obj(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
