@@ -3061,6 +3061,7 @@ dependencies = [
  "molt-runtime-stringprep",
  "molt-runtime-text",
  "molt-runtime-tk",
+ "molt-runtime-xml",
  "num-bigint",
  "num-integer",
  "num-traits",
@@ -3270,6 +3271,14 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "libloading 0.8.9",
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+]
+
+[[package]]
+name = "molt-runtime-xml"
+version = "0.1.0"
+dependencies = [
  "molt-lang-obj-model",
  "molt-runtime-core",
 ]
