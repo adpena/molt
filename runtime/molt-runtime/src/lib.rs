@@ -302,6 +302,7 @@ pub use crate::builtins::fractions::*;
 #[cfg(feature = "stdlib_math")]
 pub use molt_runtime_math::fractions::*;
 pub use crate::builtins::functions::*;
+pub use crate::builtins::functions_pickle::*;
 pub use crate::builtins::functools::*;
 #[cfg(feature = "stdlib_fs_extra")]
 pub use crate::builtins::glob_mod::*;
