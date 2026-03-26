@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! `molt-runtime-text` — Text/encoding intrinsics for the Molt runtime.
 //!
 //! Isolates the unicodedata and html intrinsics into a dedicated crate.

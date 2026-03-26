@@ -49,6 +49,8 @@ mod crypto_bridge;
 mod math_bridge;
 #[cfg(feature = "stdlib_regex")]
 mod regex_bridge;
+#[cfg(feature = "stdlib_text")]
+mod text_bridge;
 #[cfg(feature = "stdlib_serial")]
 mod serial_bridge;
 #[cfg(feature = "stdlib_itertools")]
@@ -66,6 +68,8 @@ pub use molt_runtime_compression;
 pub use molt_runtime_math;
 #[cfg(feature = "stdlib_regex")]
 pub use molt_runtime_regex;
+#[cfg(feature = "stdlib_text")]
+pub use molt_runtime_text;
 #[cfg(feature = "stdlib_tk")]
 mod gui;
 #[cfg(feature = "stdlib_tk")]
@@ -326,7 +330,10 @@ pub use crate::builtins::gzip::*;
 pub use crate::builtins::hashlib::*;
 #[cfg(feature = "stdlib_crypto")]
 pub use crate::builtins::hmac::*;
+#[cfg(not(feature = "stdlib_text"))]
 pub use crate::builtins::html::*;
+#[cfg(feature = "stdlib_text")]
+pub use molt_runtime_text::html::*;
 pub use crate::builtins::inspect::*;
 pub use crate::builtins::io::*;
 pub(crate) use crate::builtins::io::{
@@ -406,7 +413,10 @@ pub(crate) use crate::builtins::type_ops::{
     issubclass_bits, issubclass_runtime, type_of_bits,
 };
 pub use crate::builtins::types::*;
+#[cfg(not(feature = "stdlib_text"))]
 pub use crate::builtins::unicodedata_mod::*;
+#[cfg(feature = "stdlib_text")]
+pub use molt_runtime_text::unicodedata_mod::*;
 pub use crate::builtins::warnings_ext::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::zlib::*;
