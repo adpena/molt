@@ -4523,75 +4523,6 @@ fn pickle_memo_get(
     Err(pickle_raise(_py, &msg))
 }
 
-    protocol_bits: u64,
-    _fix_imports_bits: u64,
-    persistent_id_bits: u64,
-    buffer_callback_bits: u64,
-    dispatch_table_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(protocol) = to_i64(obj_from_bits(protocol_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "pickle protocol must be int");
-        };
-        if !(-1..=PICKLE_PROTO_5).contains(&protocol) {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "pickle protocol must be in range -1..5",
-            );
-        }
-        let actual_protocol = if protocol < 0 {
-            PICKLE_PROTO_5
-        } else {
-            protocol
-        };
-        if actual_protocol <= 1 {
-            return molt_pickle_dumps_protocol01(
-                obj_bits,
-                MoltObject::from_int(actual_protocol).bits(),
-            );
-        }
-        let persistent_id =
-            match pickle_option_callable_bits(_py, persistent_id_bits, "persistent_id") {
-                Ok(bits) => bits,
-                Err(err_bits) => return err_bits,
-            };
-        let buffer_callback =
-            match pickle_option_callable_bits(_py, buffer_callback_bits, "buffer_callback") {
-                Ok(bits) => bits,
-                Err(err_bits) => return err_bits,
-            };
-        let dispatch_table = if obj_from_bits(dispatch_table_bits).is_none() {
-            None
-        } else {
-            Some(dispatch_table_bits)
-        };
-        let mut state = PickleDumpState::new(
-            actual_protocol,
-            persistent_id,
-            buffer_callback,
-            dispatch_table,
-        );
-        if state.buffer_callback_bits.is_some() && actual_protocol < PICKLE_PROTO_5 {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "buffer_callback requires protocol 5 or higher",
-            );
-        }
-        pickle_emit_proto_header(&mut state);
-        if let Err(err_bits) = pickle_dump_obj_binary(_py, &mut state, obj_bits, true) {
-            return err_bits;
-        }
-        state.push(PICKLE_OP_STOP);
-        let out_ptr = crate::alloc_bytes(_py, state.out.as_slice());
-        if out_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(out_ptr).bits()
-        }
-    })
-}
 fn shlex_is_safe(s: &str) -> bool {
     s.bytes().all(|b| {
         matches!(
@@ -10106,30 +10037,6 @@ fn email_get_int_attr(_py: &crate::PyToken<'_>, obj_bits: u64, name: &[u8]) -> R
     Ok(value)
 }
 
-    name_bits: u64,
-    value_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let id = match email_message_id_from_bits(_py, message_bits) {
-            Ok(id) => id,
-            Err(err) => return err,
-        };
-        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "header name must be str");
-        };
-        let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "header value must be str");
-        };
-        let mut registry = email_message_registry()
-            .lock()
-            .expect("email message registry lock poisoned");
-        let Some(message) = registry.get_mut(&id) else {
-            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
-        };
-        message.headers.push((name, value));
-        MoltObject::none().bits()
-    })
-}
 fn opcode_num_popped_312(opcode: i64, oparg: i64) -> Option<i64> {
     match opcode {
         0 => Some(0),                 // CACHE
@@ -10933,46 +10840,6 @@ fn parse_stat_mode(_py: &crate::PyToken<'_>, mode_bits: u64) -> Result<i64, u64>
     Ok(mode)
 }
 
-    width_bits: u64,
-    initial_indent_bits: u64,
-    subsequent_indent_bits: u64,
-    expand_tabs_bits: u64,
-    replace_whitespace_bits: u64,
-    fix_sentence_endings_bits: u64,
-    break_long_words_bits: u64,
-    drop_whitespace_bits: u64,
-    break_on_hyphens_bits: u64,
-    tabsize_bits: u64,
-    max_lines_placeholder_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "text must be str");
-        };
-        let options = match textwrap_parse_options_ex(
-            _py,
-            width_bits,
-            initial_indent_bits,
-            subsequent_indent_bits,
-            expand_tabs_bits,
-            replace_whitespace_bits,
-            fix_sentence_endings_bits,
-            break_long_words_bits,
-            drop_whitespace_bits,
-            break_on_hyphens_bits,
-            tabsize_bits,
-            max_lines_placeholder_bits,
-        ) {
-            Ok(options) => options,
-            Err(bits) => return bits,
-        };
-        let lines = match textwrap_wrap_impl(&text, &options) {
-            Ok(lines) => lines,
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
-        };
-        alloc_string_list(_py, &lines)
-    })
-}
 fn http_server_read_request_impl(_py: &crate::PyToken<'_>, handler_bits: u64) -> Result<i64, u64> {
     let request_line = http_server_readline(_py, handler_bits, 65537)?;
     if request_line.is_empty() {
@@ -11144,24 +11011,6 @@ fn http_server_compute_close_connection_impl(
     Ok(request_version != HTTP_SERVER_HTTP11)
 }
 
-    code_bits: u64,
-    message_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(code) = to_i64(obj_from_bits(code_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "code must be int");
-        };
-        let message = if obj_from_bits(message_bits).is_none() {
-            None
-        } else {
-            Some(crate::format_obj_str(_py, obj_from_bits(message_bits)))
-        };
-        match http_server_send_response_impl(_py, handler_bits, code, message) {
-            Ok(()) => MoltObject::none().bits(),
-            Err(bits) => bits,
-        }
-    })
-}
 #[inline]
 fn urllib_response_is_data(resp: &MoltUrllibResponse) -> bool {
     resp.code < 0
@@ -11210,11 +11059,6 @@ fn urllib_response_readinto_len(
     }
     resp.pos = end;
     Ok(read_len)
-}
-
-    buffer_bits: u64,
-) -> u64 {
-    molt_urllib_request_response_readinto(handle_bits, buffer_bits)
 }
 
 fn urllib_response_readline_vec(
@@ -11270,45 +11114,6 @@ fn urllib_response_seek_pos(
     Ok(as_u128 as usize)
 }
 
-    offset_bits: u64,
-    whence_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        let Some(offset) = to_i64(obj_from_bits(offset_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "offset must be int");
-        };
-        let Some(whence) = to_i64(obj_from_bits(whence_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "whence must be int");
-        };
-        let Some(out) = urllib_response_with_mut(handle, |resp| {
-            if !urllib_response_is_data(resp) {
-                return Err(raise_exception::<u64>(_py, "UnsupportedOperation", "seek"));
-            }
-            if resp.closed {
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "ValueError",
-                    "I/O operation on closed file.",
-                ));
-            }
-            let pos = match urllib_response_seek_pos(resp, offset, whence) {
-                Ok(pos) => pos,
-                Err(msg) => return Err(raise_exception::<u64>(_py, "ValueError", &msg)),
-            };
-            resp.pos = pos;
-            Ok(pos)
-        }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        match out {
-            Ok(pos) => MoltObject::from_int(pos as i64).bits(),
-            Err(bits) => bits,
-        }
-    })
-}
 fn urllib_response_message_bits(_py: &crate::PyToken<'_>, handle: i64) -> u64 {
     let Some(headers) = urllib_response_with(handle, |resp| resp.headers.clone()) else {
         return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
@@ -11319,24 +11124,6 @@ fn urllib_response_message_bits(_py: &crate::PyToken<'_>, handle: i64) -> u64 {
     MoltObject::from_int(message_handle).bits()
 }
 
-    name_bits: u64,
-    value_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let handle = match http_message_handle_from_bits(_py, handle_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let name = crate::format_obj_str(_py, obj_from_bits(name_bits));
-        let value = crate::format_obj_str(_py, obj_from_bits(value_bits));
-        let Some(()) = http_message_with_mut(handle, |message| {
-            http_message_push_header(_py, message, name, value);
-        }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
-        };
-        MoltObject::none().bits()
-    })
-}
 // --- Begin stdlib_ast-gated compile infrastructure ---
 #[cfg(feature = "stdlib_ast")]
 fn compile_error_type(error: &ParseErrorType) -> &'static str {
@@ -12506,25 +12293,6 @@ fn logging_config_resolve_ext_stream(
         "ValueError",
         "unsupported logging stream ext target",
     ))
-}
-
-    defaults_bits: u64,
-    disable_existing_loggers_bits: u64,
-    encoding_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let _ = (
-            config_file_bits,
-            defaults_bits,
-            disable_existing_loggers_bits,
-            encoding_bits,
-        );
-        raise_exception::<_>(
-            _py,
-            "NotImplementedError",
-            "logging.config.fileConfig is not implemented in Molt yet",
-        )
-    })
 }
 
 fn imghdr_detect_kind(header: &[u8]) -> Option<&'static str> {
