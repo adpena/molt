@@ -575,7 +575,9 @@ def _reload_collections_abc() -> ModuleType | None:
 
 
 Awaitable = _LazySpecialGenericAlias("Awaitable", "Awaitable")
+print("[TYPING-DBG] before _load_collections_abc")
 _abc_module = _load_collections_abc()
+print(f"[TYPING-DBG] after _load_collections_abc: {_abc_module}")
 Iterable = _SpecialGenericAlias(getattr(_abc_module, "Iterable"), "Iterable")
 Iterator = _SpecialGenericAlias(getattr(_abc_module, "Iterator"), "Iterator")
 MutableMapping = _LazySpecialGenericAlias("MutableMapping", "MutableMapping")

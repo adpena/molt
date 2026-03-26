@@ -920,8 +920,10 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "alloc" => OpCode::Alloc,
         "stack_alloc" => OpCode::StackAlloc,
         "free" => OpCode::Free,
-        "get_attr" | "get_attr_generic_ptr" | "get_attr_generic_obj" | "load_attr" => OpCode::LoadAttr,
-        "set_attr" | "store_attr" | "set_attr_name" | "set_attr_generic_ptr" | "set_attr_generic_obj" => OpCode::StoreAttr,
+        "get_attr" | "get_attr_generic_ptr" | "get_attr_generic_obj" | "get_attr_name"
+        | "guarded_field_get" | "load" | "load_attr" => OpCode::LoadAttr,
+        "set_attr" | "store_attr" | "set_attr_name" | "set_attr_generic_ptr" | "set_attr_generic_obj"
+        | "guarded_field_set" | "guarded_field_set_init" | "store" | "store_init" => OpCode::StoreAttr,
         "del_attr" | "del_attr_generic_ptr" | "del_attr_generic_obj" => OpCode::DelAttr,
         "index" => OpCode::Index,
         "store_index" | "index_set" => OpCode::StoreIndex,
