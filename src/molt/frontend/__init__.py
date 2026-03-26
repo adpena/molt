@@ -26316,16 +26316,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if module_name == "_intrinsics":
             # All require_intrinsic / load_intrinsic calls are resolved at
             # compile time (see the _require_intrinsic handler in visit_Call).
-            # Bind the imported names as None sentinels so they exist in scope
-            # when the call resolver checks func_id.  The actual resolution
-            # happens in visit_Call, not here.
-            for alias in node.names:
-                bind_name = alias.asname or alias.name
-                none_val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                self.locals[bind_name] = none_val
-                if self.current_func_name == "molt_main":
-                    self.globals[bind_name] = none_val
+            # Do NOT bind names in locals — the intrinsic resolver in
+            # visit_Call triggers specifically when the name is NOT in locals.
             return None
         if module_name in self._STUB_IMPORT_MODULES:
             return None

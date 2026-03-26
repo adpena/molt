@@ -1,6 +1,6 @@
 pub(crate) mod capabilities;
 mod generated;
-mod registry;
+pub(crate) mod registry;
 
 #[allow(unused_imports)]
 pub(crate) use capabilities::*;
