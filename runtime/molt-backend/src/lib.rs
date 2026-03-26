@@ -261,6 +261,10 @@ struct NativeBackendIrAnalysis {
     /// functions.  For these functions, a `{name}__fast_int` twin is compiled
     /// that operates on raw i64 values without NaN-boxing overhead.
     _typed_int_functions: BTreeSet<String>,
+    /// Functions that contain no user-level calls (call, call_guarded,
+    /// call_func, call_internal, call_indirect, call_bind, invoke_ffi).
+    /// These can skip the recursion guard on direct calls.
+    leaf_functions: BTreeSet<String>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -492,6 +496,26 @@ fn analyze_native_backend_ir(ir: &SimpleIR) -> NativeBackendIrAnalysis {
         );
     }
 
+    // Detect leaf functions: functions that contain no user-level calls.
+    // These can safely skip the recursion guard since they cannot recurse.
+    let mut leaf_functions: BTreeSet<String> = BTreeSet::new();
+    for func_ir in &ir.functions {
+        let has_call = func_ir.ops.iter().any(|op| matches!(
+            op.kind.as_str(),
+            "call" | "call_guarded" | "call_func" | "call_internal"
+            | "call_indirect" | "call_bind" | "invoke_ffi"
+        ));
+        if !has_call {
+            leaf_functions.insert(func_ir.name.clone());
+        }
+    }
+    if !leaf_functions.is_empty() {
+        eprintln!(
+            "MOLT_BACKEND: leaf functions (skip recursion guard): {} detected",
+            leaf_functions.len()
+        );
+    }
+
     NativeBackendIrAnalysis {
         defined_functions,
         closure_functions,
@@ -499,6 +523,7 @@ fn analyze_native_backend_ir(ir: &SimpleIR) -> NativeBackendIrAnalysis {
         task_closure_sizes,
         needs_inlining,
         _typed_int_functions: typed_int_functions,
+        leaf_functions,
     }
 }
 
@@ -2464,6 +2489,7 @@ impl SimpleBackend {
                 &ir_analysis.defined_functions,
                 &ir_analysis.closure_functions,
                 emit_traces,
+                &ir_analysis.leaf_functions,
             );
             let func_elapsed = func_start.elapsed();
             if timing && func_elapsed.as_millis() > 500 {
