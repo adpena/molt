@@ -10,6 +10,7 @@ members = [
     "molt-runtime-asyncio",
     "molt-runtime-math",
     "molt-runtime-serial",
+    "molt-runtime-regex",
     "molt-runtime",
     "molt-backend",
     "molt-wasm-host",
