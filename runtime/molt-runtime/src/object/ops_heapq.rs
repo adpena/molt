@@ -11,7 +11,7 @@ use std::cmp::Ordering;
 use super::ops::{compare_objects, CompareOutcome};
 
 fn heapq_lt(_py: &PyToken<'_>, a_bits: u64, b_bits: u64) -> Option<bool> {
-    let res_bits = super::ops::molt_lt(a_bits, b_bits);
+    let res_bits = super::ops_compare::molt_lt(a_bits, b_bits);
     if exception_pending(_py) {
         return None;
     }
