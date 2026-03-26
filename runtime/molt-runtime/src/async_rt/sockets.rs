@@ -2,6 +2,10 @@ use super::channels::has_capability;
 use crate::PyToken;
 use crate::*;
 
+// Re-export network utilities so that `sockets::*` includes them
+#[allow(unused_imports)]
+pub use super::sockets_net::*;
+
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 use num_bigint::BigInt;
