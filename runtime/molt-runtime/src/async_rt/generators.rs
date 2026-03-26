@@ -1,11 +1,8 @@
 use crate::PyToken;
 use std::sync::OnceLock;
-use std::sync::atomic::Ordering as AtomicOrdering;
-use std::time::{Duration, Instant};
 
 use molt_obj_model::MoltObject;
 
-use crate::concurrency::GilGuard;
 use crate::object::HEADER_FLAG_COROUTINE;
 use crate::object::accessors::resolve_obj_ptr;
 use super::generators_async::{cancel_future_task, molt_future_new};
@@ -13,53 +10,25 @@ use crate::{
     ACTIVE_EXCEPTION_STACK, ASYNCGEN_CONTROL_SIZE, ASYNCGEN_FIRSTITER_OFFSET, ASYNCGEN_GEN_OFFSET,
     ASYNCGEN_OP_ACLOSE, ASYNCGEN_OP_ANEXT, ASYNCGEN_OP_ASEND, ASYNCGEN_OP_ATHROW,
     ASYNCGEN_PENDING_OFFSET, ASYNCGEN_RUNNING_OFFSET, GEN_CLOSED_OFFSET, GEN_CONTROL_SIZE,
-    GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET, GEN_THROW_OFFSET, GEN_YIELD_FROM_OFFSET,
-    HEADER_FLAG_BLOCK_ON, HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED,
-    HEADER_FLAG_SPAWN_RETAIN, MoltHeader, PtrSlot, TASK_KIND_COROUTINE, TASK_KIND_FUTURE,
+    GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET, GEN_THROW_OFFSET, GEN_YIELD_FROM_OFFSET, HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED, MoltHeader, PtrSlot, TASK_KIND_COROUTINE, TASK_KIND_FUTURE,
     TASK_KIND_GENERATOR, TYPE_ID_ASYNC_GENERATOR, TYPE_ID_EXCEPTION, TYPE_ID_GENERATOR,
     TYPE_ID_OBJECT, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_dict_with_pairs,
-    alloc_exception, alloc_list, alloc_object, alloc_tuple, async_sleep_poll_fn_addr,
-    async_trace_enabled, asyncgen_poll_fn_addr, asyncgen_registry, asyncio_fd_watcher_poll_fn_addr,
-    asyncio_gather_poll_fn_addr, asyncio_ready_runner_poll_fn_addr,
-    asyncio_server_accept_loop_poll_fn_addr, asyncio_sock_accept_poll_fn_addr,
-    asyncio_sock_connect_poll_fn_addr, asyncio_sock_recv_into_poll_fn_addr,
-    asyncio_sock_recv_poll_fn_addr, asyncio_sock_recvfrom_into_poll_fn_addr,
-    asyncio_sock_recvfrom_poll_fn_addr, asyncio_sock_sendall_poll_fn_addr,
-    asyncio_sock_sendto_poll_fn_addr, asyncio_socket_reader_read_poll_fn_addr,
-    asyncio_socket_reader_readline_poll_fn_addr, asyncio_stream_reader_read_poll_fn_addr,
-    asyncio_stream_reader_readline_poll_fn_addr, asyncio_stream_send_all_poll_fn_addr,
-    asyncio_timer_handle_poll_fn_addr, asyncio_wait_for_poll_fn_addr, asyncio_wait_poll_fn_addr,
-    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, await_waiter_clear,
-    await_waiter_register, await_waiters, await_waiters_take, call_callable0, call_callable1,
-    call_callable2, call_callable3, call_poll_fn, class_name_for_error, clear_exception,
-    clear_exception_state, context_stack_store, context_stack_take, current_task_ptr, dec_ref_bits,
-    exception_args_bits, exception_clear_reason_set, exception_context_align_depth,
+    alloc_exception, alloc_object, alloc_tuple, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr, asyncgen_registry,
+    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, call_callable0, call_callable1, call_poll_fn, clear_exception, context_stack_store, context_stack_take, current_task_ptr, dec_ref_bits, exception_clear_reason_set, exception_context_align_depth,
     exception_context_fallback_pop, exception_context_fallback_push, exception_kind_bits,
     exception_pending, exception_stack_depth, exception_stack_set_depth,
     exception_type_bits_from_name, fn_ptr_code_get, generator_context_stack_store,
     generator_context_stack_take, generator_exception_stack_store, generator_exception_stack_take,
-    generator_raise_active, header_from_obj_ptr, inc_ref_bits, instant_from_monotonic_secs,
+    generator_raise_active, header_from_obj_ptr, inc_ref_bits,
     io_wait_poll_fn_addr, is_truthy, issubclass_bits, maybe_ptr_from_bits, missing_bits,
-    molt_anext, molt_bytes_from_obj, molt_call_bind, molt_callargs_expand_star, molt_callargs_new,
-    molt_exception_clear, molt_exception_kind, molt_exception_last, molt_exception_set_last,
-    molt_float_from_obj, molt_getitem_method, molt_io_wait_new, molt_is_callable, molt_len,
-    molt_raise, molt_set_add, molt_set_new, molt_slice_new, molt_socket_reader_read,
-    molt_socket_reader_readline, molt_str_from_obj, molt_stream_reader_read,
-    molt_stream_reader_readline, molt_stream_send_obj, obj_from_bits, object_class_bits,
-    object_mark_has_ptrs, object_type_id, pending_bits_i64, process_poll_fn_addr,
-    promise_poll_fn_addr, ptr_from_bits, raise_cancelled_with_message, raise_exception,
-    raise_os_error_errno, register_task_token, resolve_task_ptr, runtime_state, seq_vec_ref,
-    set_generator_raise, string_obj_to_owned, task_cancel_message_clear, task_cancel_message_set,
-    task_cancel_pending, task_exception_baseline_drop, task_exception_depth_drop,
-    task_exception_stack_drop, task_has_token, task_last_exceptions, task_mark_done,
-    task_set_cancel_pending, task_take_cancel_pending, task_waiting_on, thread_poll_fn_addr,
-    to_f64, to_i64, token_id_from_bits, tuple_from_iter_bits, type_name, wake_task_ptr,
+    molt_exception_clear, molt_exception_kind, molt_exception_last, molt_exception_set_last, molt_is_callable,
+    molt_raise, molt_str_from_obj, obj_from_bits,
+    object_mark_has_ptrs, object_type_id, pending_bits_i64, ptr_from_bits, raise_exception, register_task_token, resolve_task_ptr, runtime_state, seq_vec_ref,
+    set_generator_raise, string_obj_to_owned, task_mark_done, task_waiting_on, to_i64, token_id_from_bits, type_name,
 };
 
 use crate::state::runtime_state::{AsyncGenLocalsEntry, GenLocalsEntry};
 
-#[cfg(not(target_arch = "wasm32"))]
-use crate::{is_block_on_task, process_task_state, thread_task_state};
 
 pub(crate) fn promise_trace_enabled() -> bool {
     static TRACE: OnceLock<bool> = OnceLock::new();
