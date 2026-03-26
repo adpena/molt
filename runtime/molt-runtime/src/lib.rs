@@ -65,6 +65,8 @@ mod difflib_bridge;
 mod http_bridge;
 #[cfg(feature = "stdlib_logging_ext")]
 mod logging_bridge;
+#[cfg(feature = "stdlib_stringprep")]
+mod stringprep_bridge;
 // Re-export extracted crates so their symbols are available at link time.
 #[cfg(feature = "stdlib_serial")]
 pub use molt_runtime_serial;
@@ -90,6 +92,8 @@ pub use molt_runtime_difflib;
 pub use molt_runtime_logging;
 #[cfg(feature = "stdlib_http")]
 pub use molt_runtime_http;
+#[cfg(feature = "stdlib_stringprep")]
+pub use molt_runtime_stringprep;
 #[cfg(feature = "stdlib_tk")]
 mod gui;
 #[cfg(feature = "stdlib_tk")]
@@ -158,10 +162,16 @@ pub(crate) use crate::async_rt::sockets::io_wait_release_socket;
 pub(crate) use crate::async_rt::net_stubs::io_wait_release_socket;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub use crate::async_rt::sockets::*;
-// Re-export non-networking socket utilities that sockets.rs defines unconditionally.
-// When sockets::* glob is active (networking enabled), these are already included.
-// Unconditional socket utilities: available on all platforms regardless of stdlib_net.
+// Socket utilities from sockets_net.rs: only available when networking is compiled in.
+#[cfg(molt_has_net_io)]
 pub use crate::async_rt::sockets::{
+    molt_socket_cmsg_len, molt_socket_cmsg_space,
+    molt_socket_if_indextoname, molt_socket_if_nameindex, molt_socket_if_nametoindex,
+    molt_socket_send_fds, molt_socket_recv_fds,
+    molt_socket_sendmsg_afalg, molt_socket_sethostname,
+};
+#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
+pub use crate::async_rt::net_stubs::{
     molt_socket_cmsg_len, molt_socket_cmsg_space,
     molt_socket_if_indextoname, molt_socket_if_nameindex, molt_socket_if_nametoindex,
     molt_socket_send_fds, molt_socket_recv_fds,
@@ -169,7 +179,7 @@ pub use crate::async_rt::sockets::{
 };
 
 #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-pub use crate::async_rt::sockets::{
+pub use crate::async_rt::net_stubs::{
     molt_socket_getfqdn,
     molt_socket_gethostbyaddr,
     molt_socket_gethostbyname,
@@ -440,6 +450,7 @@ pub use crate::builtins::sitebuiltins::*;
 #[cfg(feature = "stdlib_net")]
 pub use crate::builtins::ssl::*;
 pub use crate::builtins::string_ext::*;
+#[cfg(not(feature = "stdlib_stringprep"))]
 pub use crate::builtins::stringprep::*;
 pub(crate) use crate::builtins::strings::{
     bytes_count_impl, bytes_find_impl, bytes_rfind_impl, bytes_strip_range, replace_bytes_impl,

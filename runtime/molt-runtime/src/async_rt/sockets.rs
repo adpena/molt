@@ -4,6 +4,8 @@ use crate::*;
 
 // Re-export network utilities so that `sockets::*` includes them
 #[allow(unused_imports)]
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 pub use super::sockets_net::*;
 
 #[cfg(target_arch = "wasm32")]

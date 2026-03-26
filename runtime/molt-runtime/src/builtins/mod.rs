@@ -121,6 +121,7 @@ pub(crate) mod sitebuiltins;
 #[cfg(feature = "stdlib_net")]
 pub(crate) mod ssl;
 pub(crate) mod string_ext;
+#[cfg(not(feature = "stdlib_stringprep"))]
 pub(crate) mod stringprep;
 pub(crate) mod strings;
 #[cfg(not(feature = "stdlib_serial"))]
