@@ -8,6 +8,7 @@ use molt_obj_model::MoltObject;
 use crate::concurrency::GilGuard;
 use crate::object::HEADER_FLAG_COROUTINE;
 use crate::object::accessors::resolve_obj_ptr;
+use super::generators_async::{cancel_future_task, molt_future_new};
 use crate::{
     ACTIVE_EXCEPTION_STACK, ASYNCGEN_CONTROL_SIZE, ASYNCGEN_FIRSTITER_OFFSET, ASYNCGEN_GEN_OFFSET,
     ASYNCGEN_OP_ACLOSE, ASYNCGEN_OP_ANEXT, ASYNCGEN_OP_ASEND, ASYNCGEN_OP_ATHROW,
