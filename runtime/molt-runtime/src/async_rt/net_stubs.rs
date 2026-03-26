@@ -100,12 +100,6 @@ macro_rules! net_error {
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_htons(_: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_ntohl(_: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_ntohs(_: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_reader_at_eof(_: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_reader_drop(_: u64) {}
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_reader_new(_: u64, _: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_reader_read(_: u64, _: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_reader_readline(_: u64) -> u64 { net_error!() }
-#[unsafe(no_mangle)] pub extern "C" fn molt_socket_reader_readline_limit(_: u64, _: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_if_nameindex() -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_if_nametoindex(_: u64) -> u64 { net_error!() }
 #[unsafe(no_mangle)] pub extern "C" fn molt_socket_if_indextoname(_: u64) -> u64 { net_error!() }
