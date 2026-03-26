@@ -11,6 +11,8 @@ members = [
     "molt-runtime-math",
     "molt-runtime-serial",
     "molt-runtime-regex",
+    "molt-runtime-path",
+    "molt-runtime-text",
     "molt-runtime",
     "molt-backend",
     "molt-wasm-host",

@@ -1,4 +1,3 @@
-#[allow(dead_code, unused_imports)]
 //! Intrinsics for the `html`, `html.parser`, and `html.entities` stdlib modules.
 //!
 //! Coverage:
