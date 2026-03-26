@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::ffi::CStr;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 #[cfg(not(target_arch = "wasm32"))]
 use std::ffi::CString;
