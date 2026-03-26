@@ -79,7 +79,7 @@ fn callback_repr(_py: &PyToken<'_>, callback_bits: u64) -> String {
     if obj_from_bits(callback_bits).is_none() {
         return "<callback>".to_string();
     }
-    let repr_bits = crate::object::ops::molt_repr_from_obj(callback_bits);
+    let repr_bits = crate::molt_repr_from_obj(callback_bits);
     if exception_pending(_py) {
         atexit_clear_pending_exception_state(_py);
         return "<callback>".to_string();
