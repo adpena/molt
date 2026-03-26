@@ -1,7 +1,4 @@
-//! String encoding and decoding — extracted from ops.rs for maintainability.
-//!
-//! Contains EncodingKind, EncodeError, normalize_encoding,
-//! encode_string_with_errors, decode_bytes_text, DecodeTextError, and all codec tables.
+//\! String encoding and decoding — extracted from ops.rs.
 
 use crate::*;
 use super::ops_string::{push_wtf8_codepoint, wtf8_from_bytes, wtf8_has_surrogates};

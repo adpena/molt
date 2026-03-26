@@ -1,4 +1,4 @@
-//\! List, tuple, and bisect operations — extracted from ops.rs for maintainability.
+//\! List, tuple, and bisect operations — extracted from ops.rs.
 
 use crate::*;
 use molt_obj_model::MoltObject;
@@ -14,21 +14,6 @@ enum SortError {
     NotComparable(u64, u64),
     Exception,
 }
-
-            if is_truthy(_py, obj_from_bits(done_bits)) {
-                break;
-            }
-            let val_bits = pair_elems[0];
-            set_add_in_place(_py, set_ptr, val_bits);
-            if exception_pending(_py) {
-                dec_ref_bits(_py, set_bits);
-                return None;
-            }
-        }
-        Some(set_bits)
-    }
-}
-
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_append(list_bits: u64, val_bits: u64) -> u64 {
@@ -1103,3 +1088,4 @@ pub extern "C" fn molt_tuple_index_range(
         MoltObject::none().bits()
     })
 }
+
