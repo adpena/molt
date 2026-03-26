@@ -1,11 +1,13 @@
-//\! Formatting, repr, and string conversion — extracted from ops.rs.
+//! Formatting, repr, and string conversion — extracted from ops.rs.
 
 use crate::*;
 use molt_obj_model::MoltObject;
-use num_bigint::{BigInt, Sign};
-use num_traits::{ToPrimitive, Signed};
+use num_bigint::BigInt;
+use num_traits::{Signed, ToPrimitive};
 use std::borrow::Cow;
-use std::sync::OnceLock;
+
+use super::ops::range_components_bigint;
+use super::ops_string::{wtf8_from_bytes};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_print_obj(val: u64) {
@@ -562,12 +564,10 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
     if let Some(i) = obj.as_int() {
         return i.to_string();
     }
-    // Codegen zero-init: raw 0x0 is float +0.0 in NaN-boxing but
-    // represents int 0 when produced by Cranelift's default variable
-    // initialisation.  Render as "0" for CPython parity.
-    if obj.bits() == 0 {
-        return "0".to_string();
-    }
+    // NaN-boxing: raw 0x0 is IEEE 754 +0.0.  Previous code treated it
+    // as int 0 because Cranelift zero-inits variables to 0x0, but that
+    // broke float parity (e.g. math.sin(0) displayed "0" not "0.0").
+    // Proper int 0 is MoltObject::from_int(0) (0x7ff9_0000_0000_0000).
     if let Some(f) = obj.as_float() {
         return format_float(f);
     }
@@ -1027,14 +1027,14 @@ fn format_string_repr(s: &str) -> String {
 }
 
 pub(crate) struct FormatSpec {
-    fill: char,
-    align: Option<char>,
-    sign: Option<char>,
-    alternate: bool,
-    width: Option<usize>,
-    grouping: Option<char>,
-    precision: Option<usize>,
-    ty: Option<char>,
+    pub(crate) fill: char,
+    pub(crate) align: Option<char>,
+    pub(crate) sign: Option<char>,
+    pub(crate) alternate: bool,
+    pub(crate) width: Option<usize>,
+    pub(crate) grouping: Option<char>,
+    pub(crate) precision: Option<usize>,
+    pub(crate) ty: Option<char>,
 }
 
 pub(crate) type FormatError = (&'static str, Cow<'static, str>);
@@ -1340,7 +1340,7 @@ fn format_int_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, Fo
     Ok(apply_alignment(&prefix, &digits, spec, '>'))
 }
 
-fn format_float_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, FormatError> {
+pub(crate) fn format_float_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, FormatError> {
     let val = if let Some(f) = obj.as_float() {
         f
     } else if let Some(i) = obj.as_int() {
@@ -1615,10 +1615,6 @@ pub(crate) fn format_with_spec(
                 Ok(format_string_with_spec(format_obj_str(_py, obj), spec))
             } else if obj.as_int().is_some() || bigint_ptr_from_bits(obj.bits()).is_some() {
                 format_int_with_spec(obj, spec)
-            } else if obj.bits() == 0 {
-                // Codegen zero-init: raw 0x0 is float +0.0 in NaN-boxing
-                // but represents int 0.  Format as integer for parity.
-                format_int_with_spec(MoltObject::from_int(0), spec)
             } else if obj.as_float().is_some() {
                 format_float_with_spec(obj, spec)
             } else {
@@ -1627,4 +1623,3 @@ pub(crate) fn format_with_spec(
         }
     }
 }
-
