@@ -156,12 +156,10 @@ macro_rules! with_gil_entry {
 
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-/// Opaque GIL token — proof that the GIL is held.
-/// Equivalent to PyToken but usable across crate boundaries.
-#[derive(Clone, Copy)]
-pub struct CoreGilToken {
-    _private: (),
-}
+/// CoreGilToken is an alias for PyToken — both represent proof that the GIL is held.
+/// This unifies the token type so bridge functions (which take &PyToken) work seamlessly
+/// with with_core_gil! (which produces a CoreGilToken).
+pub type CoreGilToken = PyToken;
 
 /// GIL vtable — function pointers for acquire/release.
 /// Populated by molt-runtime at init time.
@@ -218,7 +216,7 @@ impl CoreGilGuard {
 
     #[inline]
     pub fn token(&self) -> CoreGilToken {
-        CoreGilToken { _private: () }
+        PyToken::new()
     }
 }
 

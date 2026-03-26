@@ -1,0 +1,8 @@
+[package]
+name = "molt-runtime-itertools"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+molt-runtime-core = { path = "../molt-runtime-core" }
+molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }

@@ -2682,6 +2682,7 @@ dependencies = [
  "molt-runtime-crypto",
  "molt-runtime-math",
  "molt-runtime-net",
+ "molt-runtime-regex",
  "molt-runtime-serial",
  "molt-runtime-tk",
  "num-bigint",
@@ -2793,6 +2794,14 @@ dependencies = [
  "socket2",
  "tungstenite",
  "webpki-roots 1.0.6",
+]
+
+[[package]]
+name = "molt-runtime-regex"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-obj-model",
+ "molt-runtime-core",
 ]
 
 [[package]]
