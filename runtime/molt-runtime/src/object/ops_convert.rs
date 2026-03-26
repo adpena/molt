@@ -2,6 +2,7 @@
 // Split from ops.rs for compilation-unit size reduction.
 
 use crate::*;
+use crate::object::accessors::object_field_init_ptr_raw;
 use crate::object::ops_string::{push_wtf8_codepoint, wtf8_codepoint_at, wtf8_from_bytes, wtf8_has_surrogates};
 use molt_obj_model::MoltObject;
 use num_bigint::{BigInt, Sign};
