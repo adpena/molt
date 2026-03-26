@@ -314,6 +314,7 @@ pub use crate::builtins::functions_email::*;
 pub use crate::builtins::functions_http::*;
 pub use crate::builtins::functions_logging::*;
 pub use crate::builtins::functions_pickle::*;
+pub use crate::builtins::functions_stat::*;
 pub use crate::builtins::functions_zipfile::*;
 pub use crate::builtins::functools::*;
 #[cfg(feature = "stdlib_fs_extra")]

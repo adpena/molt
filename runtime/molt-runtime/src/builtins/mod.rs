@@ -57,6 +57,7 @@ pub(crate) mod functions_email;
 pub(crate) mod functions_http;
 pub(crate) mod functions_logging;
 pub(crate) mod functions_pickle;
+pub(crate) mod functions_stat;
 pub(crate) mod functions_zipfile;
 pub(crate) mod functools;
 #[cfg(feature = "stdlib_fs_extra")]
