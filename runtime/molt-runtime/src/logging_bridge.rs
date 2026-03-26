@@ -6,6 +6,7 @@
 
 use crate::*;
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // ---------------------------------------------------------------------------
 // Exception / error handling
@@ -33,10 +34,9 @@ pub extern "C" fn __molt_logging_exception_pending() -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_logging_clear_exception() -> u64 {
+pub extern "C" fn __molt_logging_clear_exception() {
     crate::with_gil_entry!(_py, {
         clear_exception(_py);
-        MoltObject::none().bits()
     })
 }
 
@@ -112,24 +112,49 @@ pub extern "C" fn __molt_logging_to_i64(bits: u64, out: *mut i64) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_logging_call_callable1(call_bits: u64, arg0: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        call_callable1(_py, call_bits, arg0)
+        unsafe { call_callable1(_py, call_bits, arg0) }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_logging_attr_lookup_ptr_allow_missing(ptr: *mut u8, name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        match attr_lookup_ptr_allow_missing(_py, ptr, name_bits) {
+        match unsafe { attr_lookup_ptr_allow_missing(_py, ptr, name_bits) } {
             Some(bits) => bits,
             None => 0,
         }
     })
 }
 
+// Interning slot for attribute names used by the logging crate.
+// Currently only "write" is interned.
+static INTERN_WRITE: AtomicU64 = AtomicU64::new(0);
+
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_logging_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64 {
     crate::with_gil_entry!(_py, {
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
-        intern_static_name(_py, key)
+        let slot = &INTERN_WRITE;
+        // Fast path: already interned.
+        let cached = slot.load(Ordering::Acquire);
+        if cached != 0 {
+            return cached;
+        }
+        // Slow path: allocate and cache.
+        let ptr = alloc_string(_py, key);
+        let bits = if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        };
+        match slot.compare_exchange(0, bits, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => bits,
+            Err(existing) => {
+                if let Some(p) = MoltObject::from_bits(bits).as_ptr() {
+                    dec_ref_bits(_py, MoltObject::from_ptr(p).bits());
+                }
+                existing
+            }
+        }
     })
 }
