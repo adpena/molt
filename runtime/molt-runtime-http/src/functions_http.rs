@@ -19,7 +19,6 @@ use crate::bridge::{
     to_i64, to_f64,
     maybe_ptr_from_bits, exception_kind_bits,
     env_state_get,
-    ExceptionSentinel,
 };
 
 // ---------------------------------------------------------------------------

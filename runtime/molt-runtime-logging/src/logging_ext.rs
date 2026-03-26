@@ -8,8 +8,9 @@
 //! visibility.  The GIL serializes all Python-level access so the Mutex is
 //! always uncontended — it only satisfies Rust's `Send + Sync` requirements.
 
-use crate::{
-    MoltObject, PyToken, alloc_string, dec_ref_bits, obj_from_bits, raise_exception,
+use molt_runtime_core::prelude::*;
+use crate::bridge::{
+    alloc_string, dec_ref_bits, raise_exception,
     string_obj_to_owned, to_i64,
 };
 use std::collections::HashMap;
@@ -51,7 +52,7 @@ fn next_logger_handle() -> i64 {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-fn return_str(_py: &PyToken<'_>, s: &str) -> u64 {
+fn return_str(_py: &PyToken, s: &str) -> u64 {
     let ptr = alloc_string(_py, s.as_bytes());
     if ptr.is_null() {
         return raise_exception::<u64>(_py, "MemoryError", "out of memory");
@@ -59,7 +60,7 @@ fn return_str(_py: &PyToken<'_>, s: &str) -> u64 {
     MoltObject::from_ptr(ptr).bits()
 }
 
-fn handle_from_bits(_py: &PyToken<'_>, handle_bits: u64, kind: &str) -> Option<i64> {
+fn handle_from_bits(_py: &PyToken, handle_bits: u64, kind: &str) -> Option<i64> {
     let obj = obj_from_bits(handle_bits);
     let Some(id) = to_i64(obj) else {
         let msg = format!("{kind} handle must be an int");
@@ -212,7 +213,7 @@ pub extern "C" fn molt_logging_record_new(
     args_bits: u64,
     exc_info_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "LogRecord name must be str");
         };
@@ -266,7 +267,7 @@ pub extern "C" fn molt_logging_record_new(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_record_get_message(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(id) = handle_from_bits(_py, handle_bits, "LogRecord") else {
             return MoltObject::none().bits();
         };
@@ -283,7 +284,7 @@ pub extern "C" fn molt_logging_record_get_message(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_record_get_attr(handle_bits: u64, attr_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(id) = handle_from_bits(_py, handle_bits, "LogRecord") else {
             return MoltObject::none().bits();
         };
@@ -339,7 +340,7 @@ pub extern "C" fn molt_logging_record_get_attr(handle_bits: u64, attr_bits: u64)
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_record_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(id) = handle_from_bits(_py, handle_bits, "LogRecord") else {
             return MoltObject::none().bits();
         };
@@ -737,7 +738,7 @@ pub extern "C" fn molt_logging_formatter_new(
     style_bits: u64,
     _validate_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let fmt_str = opt_str(fmt_bits);
         let datefmt = opt_str(datefmt_bits);
         let style_str = opt_str(style_bits).unwrap_or_else(|| "%".to_string());
@@ -773,7 +774,7 @@ pub extern "C" fn molt_logging_formatter_new(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_formatter_format(formatter_bits: u64, record_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(fmt_id) = handle_from_bits(_py, formatter_bits, "Formatter") else {
             return MoltObject::none().bits();
         };
@@ -806,7 +807,7 @@ pub extern "C" fn molt_logging_formatter_format_time(
     record_bits: u64,
     datefmt_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(fmt_id) = handle_from_bits(_py, formatter_bits, "Formatter") else {
             return MoltObject::none().bits();
         };
@@ -835,7 +836,7 @@ pub extern "C" fn molt_logging_formatter_format_time(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_formatter_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(id) = handle_from_bits(_py, handle_bits, "Formatter") else {
             return MoltObject::none().bits();
         };
@@ -918,7 +919,7 @@ impl HandlerState {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_handler_new(level_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let level = to_i64(obj_from_bits(level_bits)).unwrap_or(NOTSET);
         let handler = HandlerState::new_base(level);
         let id = next_handler_handle();
@@ -929,7 +930,7 @@ pub extern "C" fn molt_logging_handler_new(level_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_handler_emit(handler_bits: u64, record_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(h_id) = handle_from_bits(_py, handler_bits, "Handler") else {
             return MoltObject::none().bits();
         };
@@ -958,7 +959,7 @@ pub extern "C" fn molt_logging_handler_emit(handler_bits: u64, record_bits: u64)
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_handler_set_level(handler_bits: u64, level_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(h_id) = handle_from_bits(_py, handler_bits, "Handler") else {
             return MoltObject::none().bits();
         };
@@ -978,7 +979,7 @@ pub extern "C" fn molt_logging_handler_set_formatter(
     handler_bits: u64,
     formatter_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(h_id) = handle_from_bits(_py, handler_bits, "Handler") else {
             return MoltObject::none().bits();
         };
@@ -999,7 +1000,7 @@ pub extern "C" fn molt_logging_handler_set_formatter(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_handler_flush(handler_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(h_id) = handle_from_bits(_py, handler_bits, "Handler") else {
             return MoltObject::none().bits();
         };
@@ -1021,7 +1022,7 @@ pub extern "C" fn molt_logging_handler_flush(handler_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_handler_close(handler_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(h_id) = handle_from_bits(_py, handler_bits, "Handler") else {
             return MoltObject::none().bits();
         };
@@ -1036,7 +1037,7 @@ pub extern "C" fn molt_logging_handler_close(handler_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_handler_drop(handler_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(h_id) = handle_from_bits(_py, handler_bits, "Handler") else {
             return MoltObject::none().bits();
         };
@@ -1049,7 +1050,7 @@ pub extern "C" fn molt_logging_handler_drop(handler_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_stream_handler_new(stream_bits: u64, level_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let level = to_i64(obj_from_bits(level_bits)).unwrap_or(NOTSET);
         let stream_target = if obj_from_bits(stream_bits).is_none() {
             StreamTarget::Stderr
@@ -1074,7 +1075,7 @@ pub extern "C" fn molt_logging_stream_handler_new(stream_bits: u64, level_bits: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_stream_handler_emit(handler_bits: u64, record_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(h_id) = handle_from_bits(_py, handler_bits, "StreamHandler") else {
             return MoltObject::none().bits();
         };
@@ -1114,21 +1115,17 @@ pub extern "C" fn molt_logging_stream_handler_emit(handler_bits: u64, record_bit
                     let msg_bits = MoltObject::from_ptr(msg_ptr).bits();
                     if let Some(stream_ptr) = obj_from_bits(stream_obj_bits).as_ptr() {
                         unsafe {
-                            let write_name = crate::intern_static_name(
-                                _py,
-                                &crate::runtime_state(_py).interned.write_name,
-                                b"write",
-                            );
+                            let write_name = crate::bridge::intern_static_name(_py, b"write");
                             if let Some(write_fn) =
-                                crate::attr_lookup_ptr_allow_missing(_py, stream_ptr, write_name)
+                                crate::bridge::attr_lookup_ptr_allow_missing(_py, stream_ptr, write_name)
                             {
-                                let result = crate::call_callable1(_py, write_fn, msg_bits);
+                                let result = crate::bridge::call_callable1(_py, write_fn, msg_bits);
                                 if !obj_from_bits(result).is_none() {
                                     dec_ref_bits(_py, result);
                                 }
                                 dec_ref_bits(_py, write_fn);
-                                if crate::exception_pending(_py) {
-                                    crate::clear_exception(_py);
+                                if crate::bridge::exception_pending(_py) {
+                                    crate::bridge::clear_exception(_py);
                                 }
                             }
                         }
@@ -1191,7 +1188,7 @@ impl LoggerState {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_logger_new(name_bits: u64, level_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "Logger name must be str");
         };
@@ -1205,7 +1202,7 @@ pub extern "C" fn molt_logging_logger_new(name_bits: u64, level_bits: u64) -> u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_logger_set_level(handle_bits: u64, level_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(id) = handle_from_bits(_py, handle_bits, "Logger") else {
             return MoltObject::none().bits();
         };
@@ -1222,7 +1219,7 @@ pub extern "C" fn molt_logging_logger_set_level(handle_bits: u64, level_bits: u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_logger_add_handler(logger_bits: u64, handler_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(logger_id) = handle_from_bits(_py, logger_bits, "Logger") else {
             return MoltObject::none().bits();
         };
@@ -1243,7 +1240,7 @@ pub extern "C" fn molt_logging_logger_add_handler(logger_bits: u64, handler_bits
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_logger_remove_handler(logger_bits: u64, handler_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(logger_id) = handle_from_bits(_py, logger_bits, "Logger") else {
             return MoltObject::none().bits();
         };
@@ -1267,7 +1264,7 @@ pub extern "C" fn molt_logging_logger_log(
     msg_bits: u64,
     args_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(logger_id) = handle_from_bits(_py, logger_bits, "Logger") else {
             return MoltObject::none().bits();
         };
@@ -1379,22 +1376,18 @@ pub extern "C" fn molt_logging_logger_log(
                             let msg_bits_val = MoltObject::from_ptr(msg_ptr).bits();
                             if let Some(stream_ptr) = obj_from_bits(stream_obj_bits).as_ptr() {
                                 unsafe {
-                                    let write_name = crate::intern_static_name(
-                                        _py,
-                                        &crate::runtime_state(_py).interned.write_name,
-                                        b"write",
-                                    );
-                                    if let Some(write_fn) = crate::attr_lookup_ptr_allow_missing(
+                                    let write_name = crate::bridge::intern_static_name(_py, b"write");
+                                    if let Some(write_fn) = crate::bridge::attr_lookup_ptr_allow_missing(
                                         _py, stream_ptr, write_name,
                                     ) {
                                         let result =
-                                            crate::call_callable1(_py, write_fn, msg_bits_val);
+                                            crate::bridge::call_callable1(_py, write_fn, msg_bits_val);
                                         if !obj_from_bits(result).is_none() {
                                             dec_ref_bits(_py, result);
                                         }
                                         dec_ref_bits(_py, write_fn);
-                                        if crate::exception_pending(_py) {
-                                            crate::clear_exception(_py);
+                                        if crate::bridge::exception_pending(_py) {
+                                            crate::bridge::clear_exception(_py);
                                         }
                                     }
                                 }
@@ -1421,7 +1414,7 @@ pub extern "C" fn molt_logging_logger_log(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_logger_is_enabled_for(logger_bits: u64, level_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(logger_id) = handle_from_bits(_py, logger_bits, "Logger") else {
             return MoltObject::from_bool(false).bits();
         };
@@ -1437,7 +1430,7 @@ pub extern "C" fn molt_logging_logger_is_enabled_for(logger_bits: u64, level_bit
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_logger_get_effective_level(logger_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(logger_id) = handle_from_bits(_py, logger_bits, "Logger") else {
             return MoltObject::from_int(NOTSET).bits();
         };
@@ -1452,7 +1445,7 @@ pub extern "C" fn molt_logging_logger_get_effective_level(logger_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_logger_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(id) = handle_from_bits(_py, handle_bits, "Logger") else {
             return MoltObject::none().bits();
         };
@@ -1484,7 +1477,7 @@ fn ensure_root_logger() -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_manager_get_logger(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "logger name must be str");
         };
@@ -1522,7 +1515,7 @@ pub extern "C" fn molt_logging_manager_get_logger(name_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_root_logger() -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let root_id = ensure_root_logger();
         MoltObject::from_int(root_id).bits()
     })
@@ -1535,7 +1528,7 @@ pub extern "C" fn molt_logging_basic_config(
     datefmt_bits: u64,
     stream_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let root_id = ensure_root_logger();
 
         // Check if root already has handlers — if so, basicConfig is a no-op
@@ -1602,7 +1595,7 @@ pub extern "C" fn molt_logging_basic_config(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_shutdown() -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         // Flush and close all handlers.
         let handler_ids: Vec<i64> = {
             let registry = HANDLER_REGISTRY.lock().unwrap();
@@ -1632,7 +1625,7 @@ pub extern "C" fn molt_logging_shutdown() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_get_level_name(level_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(level) = to_i64(obj_from_bits(level_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "level must be an int");
         };
@@ -1643,7 +1636,7 @@ pub extern "C" fn molt_logging_get_level_name(level_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_add_level_name(level_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(level) = to_i64(obj_from_bits(level_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "level must be an int");
         };
@@ -1657,7 +1650,7 @@ pub extern "C" fn molt_logging_add_level_name(level_bits: u64, name_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_level_to_int(name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "level name must be str");
         };
