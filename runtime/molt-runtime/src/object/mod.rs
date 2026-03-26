@@ -44,6 +44,7 @@ pub(crate) mod memoryview;
 pub(crate) mod ops;
 pub(crate) mod ops_bytes;
 pub(crate) mod ops_dict;
+pub(crate) mod ops_encoding;
 pub(crate) mod ops_heapq;
 pub(crate) mod ops_iter;
 pub(crate) mod ops_set;
