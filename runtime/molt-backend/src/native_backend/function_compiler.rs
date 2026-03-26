@@ -9563,29 +9563,103 @@ impl SimpleBackend {
                 }
                 "loop_index_start" => {
                     let Some(out_name) = op.out else { continue; };
-                    let loop_block = builder.create_block();
-                    let body_block = builder.create_block();
-                    let after_block = builder.create_block();
-                    let idx_param = builder.append_block_param(loop_block, types::I64);
                     if !is_block_filled {
                         let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                        let start = var_get(&mut builder, &vars, &args[0])
-                            .expect("Loop index start not found");
+
+                        // Detect linearized TIR loops: the TIR optimizer may
+                        // replace structured loop_continue/loop_end with
+                        // store_var + jump to a state label.  In that case the
+                        // back-edge bypasses any dedicated loop block we create.
+                        let has_structured_backedge = (op_idx + 1..ops.len()).any(|i| {
+                            matches!(ops[i].kind.as_str(), "loop_continue" | "loop_end")
+                        });
+
+                        // Try to find the phi variable for the counter via
+                        // the store_var/load_var pattern from TIR optimization.
+                        let phi_value: Option<Value> = 'find_phi: {
+                            // Step 1: forward-scan for loop_index_next output
+                            let mut next_out: Option<&str> = None;
+                            for fwd in (op_idx + 1)..ops.len() {
+                                if ops[fwd].kind == "loop_index_next" {
+                                    next_out = ops[fwd].out.as_deref();
+                                    break;
+                                }
+                                if ops[fwd].kind == "loop_end" { break; }
+                            }
+                            // Step 2: find store_var _bb*_arg* that stores it
+                            let mut arg_name: Option<String> = None;
+                            if let Some(next) = next_out {
+                                for fwd in (op_idx + 1)..ops.len() {
+                                    let f = &ops[fwd];
+                                    if f.kind == "store_var" {
+                                        if let (Some(v), Some(a)) = (&f.var, &f.args) {
+                                            if v.starts_with("_bb") && v.contains("_arg")
+                                                && a.first().map(|s| s.as_str()) == Some(next)
+                                            {
+                                                arg_name = Some(v.clone());
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if f.kind == "loop_end" { break; }
+                                }
+                            }
+                            // Step 3: backward-scan for load_var of that arg
+                            if let Some(ref an) = arg_name {
+                                for bwd in (0..op_idx).rev() {
+                                    let b = &ops[bwd];
+                                    if b.kind == "load_var"
+                                        && b.var.as_deref() == Some(an.as_str())
+                                    {
+                                        if let Some(ref out) = b.out {
+                                            if let Some(v) = var_get(&mut builder, &vars, out) {
+                                                break 'find_phi Some(*v);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            None
+                        };
+
+                        if !has_structured_backedge && phi_value.is_some() {
+                            // Linearized loop: define counter directly from the
+                            // phi variable.  The back-edge flows through
+                            // store_var/load_var on the state label block, so
+                            // SSA resolution handles the counter update.
+                            def_var_named(&mut builder, &vars, out_name.clone(), phi_value.unwrap());
+                            let dummy = builder.create_block();
+                            loop_stack.push(LoopFrame {
+                                loop_block: dummy,
+                                body_block: dummy,
+                                after_block: dummy,
+                                index_name: Some(out_name),
+                                next_index: None,
+                            });
+                            loop_depth += 1;
+                            continue;
+                        }
+
+                        // Structured loop: create a dedicated loop block with a
+                        // block parameter for the counter.
+                        let loop_block = builder.create_block();
+                        let body_block = builder.create_block();
+                        let after_block = builder.create_block();
+                        let idx_param = builder.append_block_param(loop_block, types::I64);
+                        let start = phi_value.unwrap_or_else(|| {
+                            *var_get(&mut builder, &vars, &args[0])
+                                .expect("Loop index start not found")
+                        });
                         // Workaround for Cranelift 0.130 remove_constant_phis
                         // bug: when inside a nested loop the start value is
-                        // derived from the outer loop's block param. The
-                        // remove_constant_phis pass incorrectly tries to
-                        // rewrite the inner loop header, panicking at
-                        // "you cannot switch to a block which is already
-                        // filled". Routing through a dedicated pre-header
-                        // block isolates the entry edge so the pass does not
-                        // see a single-source constant phi on the loop header.
+                        // derived from the outer loop's block param.  Routing
+                        // through a pre-header block isolates the entry edge.
                         if loop_depth > 0 {
                             let preheader = builder.create_block();
                             let ph_param = builder.append_block_param(preheader, types::I64);
                             ensure_block_in_layout(&mut builder, preheader);
                             reachable_blocks.insert(preheader);
-                            jump_block(&mut builder, preheader, &[*start]);
+                            jump_block(&mut builder, preheader, &[start]);
                             switch_to_block_tracking(&mut builder, preheader, &mut is_block_filled);
                             builder.seal_block(preheader);
                             ensure_block_in_layout(&mut builder, loop_block);
@@ -9595,23 +9669,35 @@ impl SimpleBackend {
                         } else {
                             ensure_block_in_layout(&mut builder, loop_block);
                             reachable_blocks.insert(loop_block);
-                            jump_block(&mut builder, loop_block, &[*start]);
+                            jump_block(&mut builder, loop_block, &[start]);
                             switch_to_block_tracking(&mut builder, loop_block, &mut is_block_filled);
                         }
+                        if reachable_blocks.contains(&loop_block) {
+                            def_var_named(&mut builder, &vars, out_name.clone(), idx_param);
+                        }
+                        loop_stack.push(LoopFrame {
+                            loop_block,
+                            body_block,
+                            after_block,
+                            index_name: Some(out_name),
+                            next_index: None,
+                        });
+                        loop_depth += 1;
                     } else {
+                        let loop_block = builder.create_block();
+                        let body_block = builder.create_block();
+                        let after_block = builder.create_block();
+                        builder.append_block_param(loop_block, types::I64);
                         is_block_filled = true;
+                        loop_stack.push(LoopFrame {
+                            loop_block,
+                            body_block,
+                            after_block,
+                            index_name: Some(out_name),
+                            next_index: None,
+                        });
+                        loop_depth += 1;
                     }
-                    if reachable_blocks.contains(&loop_block) {
-                        def_var_named(&mut builder, &vars, out_name.clone(), idx_param);
-                    }
-                    loop_stack.push(LoopFrame {
-                        loop_block,
-                        body_block,
-                        after_block,
-                        index_name: Some(out_name),
-                        next_index: None,
-                    });
-                    loop_depth += 1;
                 }
                 "loop_break_if_true" => {
                     if loop_stack.is_empty() {
