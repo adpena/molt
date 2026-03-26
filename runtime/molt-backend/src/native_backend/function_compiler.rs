@@ -8898,6 +8898,7 @@ impl SimpleBackend {
                         brif_block(&mut builder, cond, target_block, &[], fallthrough, &[]);
                     }
                     switch_to_block_tracking(&mut builder, fallthrough, &mut is_block_filled);
+                    builder.seal_block(fallthrough);
                     // Propagate remaining tracked objects to BOTH the fallthrough
                     // and the exception handler. Without this, the exception handler
                     // may access objects that were only passed to the fallthrough,
