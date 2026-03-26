@@ -11,6 +11,9 @@ pub mod binascii;
 pub mod configparser;
 pub mod csv;
 pub mod datetime;
+
+/// Fallback for local UTC offset when libc localtime_r is unavailable.
+pub fn molt_time_local_offset_fallback(_secs: i64) -> i64 { 0 }
 pub mod decimal;
 pub mod email;
 pub mod structs;

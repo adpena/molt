@@ -16,6 +16,11 @@
 
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
+#[cfg(not(target_arch = "wasm32"))]
+const EBADF_VALUE: i32 = libc::EBADF;
+#[cfg(target_arch = "wasm32")]
+const EBADF_VALUE: i32 = 9; // EBADF = 9 on WASI
+
 
 use crate::bridge::*;
 use molt_obj_model::MoltObject;
@@ -1457,7 +1462,7 @@ pub extern "C" fn molt_os_dup2(fd_bits: u64, fd2_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "TypeError", "fd2 must be an integer");
         };
         if fd < 0 || fd2 < 0 {
-            return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "dup2");
+            return raise_os_error_errno::<u64>(_py, EBADF_VALUE as i64, "dup2");
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -1495,7 +1500,7 @@ pub extern "C" fn molt_os_lseek(fd_bits: u64, pos_bits: u64, how_bits: u64) -> u
             return raise_exception::<_>(_py, "TypeError", "how must be an integer");
         };
         if fd < 0 {
-            return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "lseek");
+            return raise_os_error_errno::<u64>(_py, EBADF_VALUE as i64, "lseek");
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -1531,7 +1536,7 @@ pub extern "C" fn molt_os_ftruncate(fd_bits: u64, length_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "TypeError", "length must be an integer");
         };
         if fd < 0 {
-            return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "ftruncate");
+            return raise_os_error_errno::<u64>(_py, EBADF_VALUE as i64, "ftruncate");
         }
         if length < 0 {
             return raise_exception::<_>(

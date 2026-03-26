@@ -1,0 +1,11 @@
+[package]
+name = "molt-runtime-http"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "HTTP client/server, urllib, socketserver, cookies, ctypes, and logging configuration intrinsics for the Molt runtime."
+
+[dependencies]
+# Core runtime types used by the HTTP/logging implementations
+molt-runtime-core = { path = "../molt-runtime-core" }
+molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
