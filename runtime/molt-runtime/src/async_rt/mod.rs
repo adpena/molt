@@ -9,6 +9,8 @@ pub(crate) mod poll;
 pub(crate) mod process;
 pub(crate) mod scheduler;
 pub(crate) mod sockets;
+pub(crate) mod sockets_net;
+pub(crate) mod sockets_ops;
 pub(crate) mod task;
 pub(crate) mod threads;
 
