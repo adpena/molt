@@ -1,3 +1,21 @@
+/*
+ * Python.h — Molt's canonical CPython-compatible C API header.
+ *
+ * THIS IS THE HEADER TO USE for compiling C extensions against Molt.
+ *
+ *   cc -O2 -shared -fPIC -I include myext.c -o _myext.so
+ *
+ * All CPython 3.12 types, macros, and API functions needed for extension
+ * modules are provided here as static inline functions that dispatch to the
+ * Molt runtime via <molt/molt.h>.
+ *
+ * NOTE: There is a second, SEPARATE header at
+ *   runtime/molt-cpython-abi/include/Python.h
+ * That header uses extern declarations and a traditional CPython struct
+ * layout (ob_refcnt, ob_type). It is intended ONLY for extensions that
+ * link against libmolt_cpython_abi.{dylib,so,dll} and is NOT compatible
+ * with this header. Do not mix them.
+ */
 #ifndef MOLT_C_API_PYTHON_H
 #define MOLT_C_API_PYTHON_H
 
