@@ -490,6 +490,12 @@ pub extern "C" fn molt_runtime_init() -> u64 {
         let py = gil.token();
         runtime_reset_for_init(&py, state_ref);
     }
+    // Register synthetic _intrinsics module so stdlib .py files can import it
+    {
+        let py = crate::concurrency::GilGuard::new();
+        let tok = py.token();
+        crate::intrinsics::registry::register_intrinsics_module(&tok);
+    }
     hold_runtime_gil(gil);
 
     // Initialize the serial crate vtable so all bridge functions dispatch
