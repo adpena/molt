@@ -2,10 +2,7 @@ use molt_obj_model::MoltObject;
 use std::collections::HashMap;
 
 use crate::{
-    TYPE_ID_BIGINT, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_DATACLASS, TYPE_ID_DICT,
-    TYPE_ID_FROZENSET, TYPE_ID_LIST, TYPE_ID_MEMORYVIEW, TYPE_ID_OBJECT, TYPE_ID_SET,
-    TYPE_ID_SLICE, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
-    alloc_bytes, alloc_dict_with_pairs, alloc_list_with_capacity, alloc_string, alloc_tuple,
+    TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_dict_with_pairs, alloc_list_with_capacity, alloc_string, alloc_tuple,
     attr_name_bits_from_bytes, builtin_classes, bytes_like_slice,
     call_callable0, call_callable1, call_callable2, call_callable3,
     clear_exception, dec_ref_bits, dict_get_in_place,
