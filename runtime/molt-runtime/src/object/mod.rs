@@ -641,6 +641,12 @@ thread_local! {
     /// exit) rather than freeing objects individually.
     pub(crate) static NURSERY_TLS: RefCell<nursery::Nursery> =
         RefCell::new(nursery::Nursery::new());
+
+    /// When true, nursery allocation is bypassed — all objects go to the
+    /// global allocator.  Set during module import to prevent type objects
+    /// from being nursery-allocated and then stored into persistent dicts
+    /// that outlive the nursery reset.
+    pub(crate) static NURSERY_SUSPENDED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Reset the thread-local nursery, reclaiming all bump-allocated memory.

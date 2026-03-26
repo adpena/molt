@@ -559,6 +559,36 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     assert first.link_fingerprint["hash"] != second.link_fingerprint["hash"]
 
 
+def test_build_native_link_command_does_not_read_ambient_stdlib_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_obj = tmp_path / "output.o"
+    stub_path = tmp_path / "main_stub.c"
+    runtime_lib = tmp_path / "libmolt_runtime.a"
+    output_binary = tmp_path / "app"
+    ambient_stdlib = tmp_path / "ambient.stdlib.o"
+    output_obj.write_bytes(b"\x7fELFobject")
+    stub_path.write_text("int main(void) { return 0; }\n")
+    runtime_lib.write_bytes(b"archive")
+    ambient_stdlib.write_bytes(b"stdlib")
+
+    monkeypatch.setenv("CC", "clang")
+    monkeypatch.setenv("MOLT_STDLIB_OBJ", str(ambient_stdlib))
+
+    link_cmd, _linker_hint, _normalized_target = cli._build_native_link_command(
+        output_obj=output_obj,
+        stub_path=stub_path,
+        runtime_lib=runtime_lib,
+        output_binary=output_binary,
+        target_triple=None,
+        sysroot_path=None,
+        profile="dev",
+        stdlib_obj_path=None,
+    )
+
+    assert str(ambient_stdlib) not in link_cmd
+
+
 def test_cache_payloads_for_ir_share_sorted_function_order() -> None:
     ir = {
         "functions": [
@@ -3930,6 +3960,8 @@ def test_build_skips_daemon_preflight_when_socket_exists(
         config_digest: str,
         skip_module_output_if_synced: bool,
         skip_function_output_if_synced: bool,
+        entry_module: str | None = None,
+        stdlib_object_path: Path | None = None,
         timeout: float | None,
         request_bytes: bytes | None = None,
     ) -> cli._BackendDaemonCompileResult:
@@ -3945,6 +3977,8 @@ def test_build_skips_daemon_preflight_when_socket_exists(
             config_digest,
             skip_module_output_if_synced,
             skip_function_output_if_synced,
+            entry_module,
+            stdlib_object_path,
             timeout,
             request_bytes,
         )
@@ -3983,7 +4017,7 @@ def test_build_skips_daemon_preflight_when_socket_exists(
     assert compile_calls == 1
 
 
-def test_build_native_backend_sets_stdlib_object_env_from_helper(
+def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = tmp_path / "project"
@@ -4042,7 +4076,7 @@ def test_build_native_backend_sets_stdlib_object_env_from_helper(
 
     assert rc == 0
     assert seen_backend_env is not None
-    assert seen_backend_env["MOLT_STDLIB_OBJ"] == str(expected_stdlib_obj)
+    assert "MOLT_STDLIB_OBJ" not in seen_backend_env
 
 
 def test_read_module_source_uses_utf8_fast_path(
@@ -5628,6 +5662,7 @@ def test_native_backend_compile_routes_stdlib_object_env(
     backend_bin = tmp_path / "backend-bin"
     artifacts_root = tmp_path / "artifacts"
     stdlib_object_path = project_root / "build" / "main.stdlib.o"
+    entry_module = "pkg.app"
     captured_envs: list[dict[str, str] | None] = []
 
     def fake_subprocess_run(
@@ -5682,6 +5717,7 @@ def test_native_backend_compile_routes_stdlib_object_env(
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
+        entry_module=entry_module,
         _ensure_backend_ir_bytes=lambda: b"{}",
         _get_backend_ir_fmt=lambda: "json",
         cache_hit=False,
@@ -5696,6 +5732,37 @@ def test_native_backend_compile_routes_stdlib_object_env(
     stdlib_obj = captured_envs[0]["MOLT_STDLIB_OBJ"]
     assert stdlib_obj == str(stdlib_object_path)
     assert stdlib_obj != str(output_artifact)
+    assert captured_envs[0]["MOLT_ENTRY_MODULE"] == entry_module
+
+
+def test_backend_daemon_compile_request_includes_partition_env(
+    tmp_path: Path,
+) -> None:
+    backend_output = tmp_path / "output.o"
+    stdlib_object_path = tmp_path / "cache" / "main.stdlib.o"
+    request_bytes, error = cli._backend_daemon_compile_request_bytes(
+        ir={"functions": []},
+        backend_output=backend_output,
+        is_wasm=False,
+        wasm_link=False,
+        wasm_data_base=None,
+        wasm_table_base=None,
+        target_triple=None,
+        cache_key="module-cache",
+        function_cache_key="function-cache",
+        config_digest="digest123",
+        skip_module_output_if_synced=False,
+        skip_function_output_if_synced=False,
+        entry_module="pkg.app",
+        stdlib_object_path=stdlib_object_path,
+    )
+
+    assert error is None
+    assert request_bytes is not None
+    payload = json.loads(request_bytes)
+    env = payload["env"]
+    assert env["MOLT_ENTRY_MODULE"] == "pkg.app"
+    assert env["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
 
 
 def test_compare_uses_build_profile_flag_for_nested_build(
