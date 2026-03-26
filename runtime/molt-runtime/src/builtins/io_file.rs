@@ -34,7 +34,7 @@ enum TextEncodingKind {
     Utf32,
 }
 
-fn normalize_text_encoding(encoding: &str) -> Result<(String, TextEncodingKind), String> {
+pub(super) fn normalize_text_encoding(encoding: &str) -> Result<(String, TextEncodingKind), String> {
     let normalized = encoding.to_ascii_lowercase().replace('_', "-");
     match normalized.as_str() {
         "utf-8" | "utf8" => Ok(("utf-8".to_string(), TextEncodingKind::Utf8)),
