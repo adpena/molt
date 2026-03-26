@@ -42,3 +42,9 @@ panic = "abort"        # no unwind tables
 [profile.dev]
 lto = false
 codegen-units = 16
+
+[profile.dev-release]
+inherits = "release"
+lto = "thin"
+codegen-units = 4
+strip = "none"
