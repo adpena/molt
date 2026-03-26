@@ -2,8 +2,13 @@
 
 use crate::*;
 use molt_obj_model::MoltObject;
+use num_bigint::BigInt;
+use num_traits::{Signed, ToPrimitive};
 use std::cmp::Ordering;
-use super::ops::{compare_objects, CompareOutcome, is_truthy, repeat_sequence, eq_bool_from_bits};
+use super::ops::{
+    CompareBoolOutcome, CompareOp, CompareOutcome, compare_builtin_bool, compare_objects,
+    compare_type_error, eq_bool_from_bits, is_truthy, repeat_sequence, rich_compare_bool,
+};
 
 struct SortItem {
     key_bits: u64,
@@ -230,7 +235,7 @@ unsafe fn list_snapshot_release(_py: &PyToken<'_>, snapshot: Vec<u64>) {
     }
 }
 
-unsafe fn list_elem_at(list_ptr: *mut u8, idx: usize) -> Option<u64> {
+pub(crate) unsafe fn list_elem_at(list_ptr: *mut u8, idx: usize) -> Option<u64> {
     unsafe {
         let elems = seq_vec_ref(list_ptr);
         elems.get(idx).copied()
