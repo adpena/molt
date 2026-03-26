@@ -350,8 +350,14 @@ pub use crate::builtins::functions::*;
 pub use crate::builtins::functions_email::*;
 #[cfg(feature = "stdlib_serial")]
 pub use molt_runtime_serial::email::*;
+#[cfg(not(feature = "stdlib_http"))]
 pub use crate::builtins::functions_http::*;
+#[cfg(feature = "stdlib_http")]
+pub use molt_runtime_http::functions_http::*;
+#[cfg(not(feature = "stdlib_http"))]
 pub use crate::builtins::functions_logging::*;
+#[cfg(feature = "stdlib_http")]
+pub use molt_runtime_http::functions_logging::*;
 pub use crate::builtins::functions_pickle::*;
 pub use crate::builtins::functions_stat::*;
 #[cfg(not(feature = "stdlib_serial"))]
@@ -384,8 +390,10 @@ pub use crate::builtins::itertools::*;
 #[cfg(feature = "stdlib_itertools")]
 pub use molt_runtime_itertools::itertools::*;
 pub use crate::builtins::json::*;
-// NOTE: molt-runtime-logging is still a stub — always use the local module.
+#[cfg(not(feature = "stdlib_logging_ext"))]
 pub use crate::builtins::logging_ext::*;
+#[cfg(feature = "stdlib_logging_ext")]
+pub use molt_runtime_logging::logging_ext::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::lzma::*;
 #[cfg(not(feature = "stdlib_math"))]

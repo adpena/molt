@@ -2682,6 +2682,7 @@ dependencies = [
  "molt-runtime-core",
  "molt-runtime-crypto",
  "molt-runtime-difflib",
+ "molt-runtime-http",
  "molt-runtime-itertools",
  "molt-runtime-logging",
  "molt-runtime-math",
