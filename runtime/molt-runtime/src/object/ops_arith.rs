@@ -9,7 +9,7 @@ use num_traits::{Signed, ToPrimitive, Zero};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
-// --- NaN-boxed ops ---
+use super::ops::{call_binary_dunder, call_inplace_dunder, concat_bytes_like, fill_repeated_bytes};
 
 fn is_number_for_concat(obj: MoltObject) -> bool {
     if obj.as_float().is_some() {
@@ -2458,7 +2458,7 @@ pub extern "C" fn molt_trunc(val_bits: u64) -> u64 {
     })
 }
 
-pub(crate) fn set_like_result_type_id(type_id: u32) -> u32 {
+pub(super) fn set_like_result_type_id(type_id: u32) -> u32 {
     if type_id == TYPE_ID_FROZENSET {
         TYPE_ID_FROZENSET
     } else {
@@ -2466,7 +2466,7 @@ pub(crate) fn set_like_result_type_id(type_id: u32) -> u32 {
     }
 }
 
-pub(crate) unsafe fn set_like_new_bits(type_id: u32, capacity: usize) -> u64 {
+pub(super) unsafe fn set_like_new_bits(type_id: u32, capacity: usize) -> u64 {
     if type_id == TYPE_ID_FROZENSET {
         molt_frozenset_new(capacity as u64)
     } else {
@@ -2474,7 +2474,7 @@ pub(crate) unsafe fn set_like_new_bits(type_id: u32, capacity: usize) -> u64 {
     }
 }
 
-pub(crate) unsafe fn set_like_union(
+pub(super) unsafe fn set_like_union(
     _py: &PyToken<'_>,
     lhs_ptr: *mut u8,
     rhs_ptr: *mut u8,
@@ -2500,7 +2500,7 @@ pub(crate) unsafe fn set_like_union(
     }
 }
 
-pub(crate) unsafe fn set_like_intersection(
+pub(super) unsafe fn set_like_intersection(
     _py: &PyToken<'_>,
     lhs_ptr: *mut u8,
     rhs_ptr: *mut u8,
@@ -2539,7 +2539,7 @@ pub(crate) unsafe fn set_like_intersection(
     }
 }
 
-pub(crate) unsafe fn set_like_difference(
+pub(super) unsafe fn set_like_difference(
     _py: &PyToken<'_>,
     lhs_ptr: *mut u8,
     rhs_ptr: *mut u8,
@@ -2574,7 +2574,7 @@ pub(crate) unsafe fn set_like_difference(
     }
 }
 
-pub(crate) unsafe fn set_like_symdiff(
+pub(super) unsafe fn set_like_symdiff(
     _py: &PyToken<'_>,
     lhs_ptr: *mut u8,
     rhs_ptr: *mut u8,
@@ -2624,7 +2624,7 @@ pub(crate) unsafe fn set_like_symdiff(
     }
 }
 
-pub(crate) unsafe fn set_like_copy_bits(_py: &PyToken<'_>, ptr: *mut u8, result_type_id: u32) -> u64 {
+pub(super) unsafe fn set_like_copy_bits(_py: &PyToken<'_>, ptr: *mut u8, result_type_id: u32) -> u64 {
     unsafe {
         let elems = set_order(ptr);
         let res_bits = set_like_new_bits(result_type_id, elems.len());
@@ -2645,7 +2645,7 @@ pub(crate) unsafe fn set_like_copy_bits(_py: &PyToken<'_>, ptr: *mut u8, result_
     }
 }
 
-pub(crate) unsafe fn set_like_ptr_from_bits(
+pub(super) unsafe fn set_like_ptr_from_bits(
     _py: &PyToken<'_>,
     other_bits: u64,
 ) -> Option<(*mut u8, Option<u64>)> {
@@ -2663,7 +2663,7 @@ pub(crate) unsafe fn set_like_ptr_from_bits(
     }
 }
 
-pub(crate) unsafe fn set_from_iter_bits(_py: &PyToken<'_>, other_bits: u64) -> Option<u64> {
+pub(super) unsafe fn set_from_iter_bits(_py: &PyToken<'_>, other_bits: u64) -> Option<u64> {
     unsafe {
         let iter_bits = molt_iter(other_bits);
         if obj_from_bits(iter_bits).is_none() {
@@ -2697,7 +2697,7 @@ pub(crate) unsafe fn set_from_iter_bits(_py: &PyToken<'_>, other_bits: u64) -> O
     }
 }
 
-pub(crate) fn binary_type_error(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject, op: &str) -> u64 {
+pub(super) fn binary_type_error(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject, op: &str) -> u64 {
     let msg = format!(
         "unsupported operand type(s) for {op}: '{}' and '{}'",
         type_name(_py, lhs),
@@ -3394,4 +3394,3 @@ pub extern "C" fn molt_inplace_matmul(a: u64, b: u64) -> u64 {
         molt_matmul(a, b)
     })
 }
-

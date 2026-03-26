@@ -690,7 +690,7 @@ pub extern "C" fn __molt_math_molt_sorted_builtin(bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_math_molt_mul(a: u64, b: u64) -> u64 {
     // molt_mul is pub extern "C" fn(u64, u64) -> u64
-    crate::object::ops::molt_mul(a, b)
+    crate::object::ops_arith::molt_mul(a, b)
 }
 
 // ---------------------------------------------------------------------------
