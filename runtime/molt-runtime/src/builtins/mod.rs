@@ -82,6 +82,7 @@ pub(crate) mod html;
 pub(crate) mod inspect;
 pub(crate) mod io;
 pub(crate) mod io_path;
+#[cfg(not(feature = "stdlib_ipaddress"))]
 pub(crate) mod ipaddress;
 #[cfg(not(feature = "stdlib_itertools"))]
 pub(crate) mod itertools;

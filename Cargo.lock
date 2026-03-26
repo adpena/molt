@@ -3051,6 +3051,7 @@ dependencies = [
  "molt-runtime-crypto",
  "molt-runtime-difflib",
  "molt-runtime-http",
+ "molt-runtime-ipaddress",
  "molt-runtime-itertools",
  "molt-runtime-logging",
  "molt-runtime-math",
@@ -3168,6 +3169,15 @@ dependencies = [
  "libc",
  "molt-lang-obj-model",
  "molt-runtime-core",
+]
+
+[[package]]
+name = "molt-runtime-ipaddress"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+ "num-bigint",
 ]
 
 [[package]]
