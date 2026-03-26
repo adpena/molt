@@ -9336,6 +9336,8 @@ def _backend_daemon_compile_request_bytes(
     config_digest: str | None,
     skip_module_output_if_synced: bool,
     skip_function_output_if_synced: bool,
+    entry_module: str | None = None,
+    stdlib_object_path: Path | None = None,
     probe_cache_only: bool = False,
     include_health: bool = False,
 ) -> tuple[bytes | None, str | None]:
@@ -9374,6 +9376,10 @@ def _backend_daemon_compile_request_bytes(
         val = os.environ.get(key)
         if val is not None:
             env_passthrough[key] = val
+    if entry_module:
+        env_passthrough[ENTRY_OVERRIDE_ENV] = entry_module
+    if stdlib_object_path is not None:
+        env_passthrough["MOLT_STDLIB_OBJ"] = str(stdlib_object_path)
     if env_passthrough:
         payload["env"] = env_passthrough
     return _backend_daemon_request_payload_bytes(payload)
@@ -9564,6 +9570,8 @@ def _compile_with_backend_daemon(
     config_digest: str | None,
     skip_module_output_if_synced: bool = False,
     skip_function_output_if_synced: bool = False,
+    entry_module: str | None = None,
+    stdlib_object_path: Path | None = None,
     timeout: float | None,
     request_bytes: bytes | None = None,
 ) -> _BackendDaemonCompileResult:
@@ -9584,6 +9592,8 @@ def _compile_with_backend_daemon(
             config_digest=config_digest,
             skip_module_output_if_synced=skip_module_output_if_synced,
             skip_function_output_if_synced=skip_function_output_if_synced,
+            entry_module=entry_module,
+            stdlib_object_path=stdlib_object_path,
             probe_cache_only=True,
             include_health=False,
         )
@@ -9605,6 +9615,8 @@ def _compile_with_backend_daemon(
             config_digest=config_digest,
             skip_module_output_if_synced=skip_module_output_if_synced,
             skip_function_output_if_synced=skip_function_output_if_synced,
+            entry_module=entry_module,
+            stdlib_object_path=stdlib_object_path,
             include_health=False,
         )
         if encode_err is not None:
@@ -9725,6 +9737,8 @@ def _compile_with_backend_daemon(
                 config_digest=config_digest,
                 skip_module_output_if_synced=skip_module_output_if_synced,
                 skip_function_output_if_synced=skip_function_output_if_synced,
+                entry_module=entry_module,
+                stdlib_object_path=stdlib_object_path,
                 include_health=False,
             )
             if encode_err is not None:
@@ -12676,10 +12690,6 @@ def _build_native_link_command(
         if deployment_target:
             link_cmd.append(f"-mmacosx-version-min={deployment_target}")
     _link_inputs = [str(stub_path), str(output_obj)]
-    if stdlib_obj_path is None:
-        _stdlib_obj_path = os.environ.get("MOLT_STDLIB_OBJ")
-        if _stdlib_obj_path:
-            stdlib_obj_path = Path(_stdlib_obj_path)
     if stdlib_obj_path is not None and stdlib_obj_path.exists():
         _link_inputs.append(str(stdlib_obj_path))
     # Use -force_load on macOS to ensure ALL objects from the static archive
@@ -14431,6 +14441,7 @@ def _execute_backend_compile(
     cache_setup: _BackendCacheSetup,
     target_triple: str | None,
     backend_daemon_config_digest: str | None,
+    entry_module: str,
     ir: Mapping[str, Any],
     json_output: bool,
     warnings: list[str],
@@ -14522,6 +14533,8 @@ def _execute_backend_compile(
                     config_digest=backend_daemon_config_digest,
                     skip_module_output_if_synced=skip_module_output_if_synced,
                     skip_function_output_if_synced=skip_function_output_if_synced,
+                    entry_module=entry_module,
+                    stdlib_object_path=cache_setup.stdlib_object_path,
                 )
             )
             if request_encode_err is not None:
@@ -14546,6 +14559,8 @@ def _execute_backend_compile(
                 config_digest=backend_daemon_config_digest,
                 skip_module_output_if_synced=skip_module_output_if_synced,
                 skip_function_output_if_synced=skip_function_output_if_synced,
+                entry_module=entry_module,
+                stdlib_object_path=cache_setup.stdlib_object_path,
                 timeout=None,
                 request_bytes=backend_daemon_request_bytes_cached,
             )
@@ -14588,6 +14603,8 @@ def _execute_backend_compile(
                         config_digest=backend_daemon_config_digest,
                         skip_module_output_if_synced=skip_module_output_if_synced,
                         skip_function_output_if_synced=skip_function_output_if_synced,
+                        entry_module=entry_module,
+                        stdlib_object_path=cache_setup.stdlib_object_path,
                         timeout=None,
                         request_bytes=backend_daemon_request_bytes_cached,
                     )
@@ -14624,6 +14641,8 @@ def _execute_backend_compile(
                 stdlib_obj_path.parent.mkdir(parents=True, exist_ok=True)
                 if backend_env is not None:
                     backend_env.setdefault("MOLT_STDLIB_OBJ", str(stdlib_obj_path))
+            if not is_wasm and not _is_transpile and backend_env is not None:
+                backend_env.setdefault(ENTRY_OVERRIDE_ENV, entry_module)
             cmd = [str(backend_bin)]
             if is_luau_transpile:
                 cmd.extend(["--target", "luau"])
@@ -14799,6 +14818,7 @@ def _prepare_backend_compile(
     backend_cargo_profile: str,
     backend_timeout: float | None,
     backend_daemon_config_digest: str | None,
+    entry_module: str,
     ensure_runtime_wasm_shared: Callable[[], bool],
     ensure_runtime_wasm_reloc: Callable[[], bool],
     artifacts_root: Path,
@@ -14897,6 +14917,7 @@ def _prepare_backend_compile(
                 backend_daemon_config_digest=(
                     prepared_backend_dispatch.backend_daemon_config_digest
                 ),
+                entry_module=entry_module,
                 ir=ir,
                 json_output=json_output,
                 warnings=warnings,
@@ -15172,6 +15193,7 @@ def _run_backend_pipeline(
         backend_cargo_profile=prepared_build_config.backend_cargo_profile,
         backend_timeout=prepared_build_config.backend_timeout,
         backend_daemon_config_digest=prepared_build_preamble.backend_daemon_config_digest,
+        entry_module=resolved_build_entry.entry_module,
         ensure_runtime_wasm_shared=prepared_backend_runtime_context.ensure_runtime_wasm_shared,
         ensure_runtime_wasm_reloc=prepared_backend_runtime_context.ensure_runtime_wasm_reloc,
         artifacts_root=artifacts_root,
