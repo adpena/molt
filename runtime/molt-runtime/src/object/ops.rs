@@ -9445,40 +9445,33 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     let msg = format!("'{}' object is not subscriptable", view_name);
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
-                if type_id == TYPE_ID_TYPE
-                    && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__class_getitem__")
-                {
-                    if let Some(call_bits) = class_attr_lookup(_py, ptr, ptr, Some(ptr), name_bits)
+                if type_id == TYPE_ID_TYPE {
+                    // Try explicit __class_getitem__ first (handles custom
+                    // implementations in user-defined classes).
+                    if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__class_getitem__")
                     {
-                        dec_ref_bits(_py, name_bits);
-                        exception_stack_push();
-                        if let Some(kp) = obj_from_bits(key_bits).as_ptr() {
-                            let kid = object_type_id(kp);
-                            eprintln!("[DEBUG-CGI] key_bits=0x{:016x} key_type_id={} key_type_name={}", key_bits, kid, type_name(_py, obj_from_bits(key_bits)));
-                            if kid == TYPE_ID_TUPLE {
-                                let elems = seq_vec_ref(kp);
-                                for (i, e) in elems.iter().enumerate() {
-                                    let eo = obj_from_bits(*e);
-                                    if let Some(ep) = eo.as_ptr() {
-                                        eprintln!("[DEBUG-CGI]   tuple[{}] = 0x{:016x} type_id={} type_name={}", i, e, object_type_id(ep), type_name(_py, eo));
-                                    } else {
-                                        eprintln!("[DEBUG-CGI]   tuple[{}] = 0x{:016x} (inline)", i, e);
-                                    }
-                                }
+                        if let Some(call_bits) = class_attr_lookup(_py, ptr, ptr, Some(ptr), name_bits)
+                        {
+                            dec_ref_bits(_py, name_bits);
+                            exception_stack_push();
+                            let res = call_callable1(_py, call_bits, key_bits);
+                            dec_ref_bits(_py, call_bits);
+                            eprintln!("[DEBUG-CGI] __class_getitem__ found, res=0x{:016x} type={}", res, type_name(_py, obj_from_bits(res)));
+                            if exception_pending(_py) {
+                                exception_stack_pop(_py);
+                                return MoltObject::none().bits();
                             }
-                        } else {
-                            eprintln!("[DEBUG-CGI] key_bits=0x{:016x} (no ptr)", key_bits);
-                        }
-                        let res = call_callable1(_py, call_bits, key_bits);
-                        dec_ref_bits(_py, call_bits);
-                        if exception_pending(_py) {
                             exception_stack_pop(_py);
-                            return MoltObject::none().bits();
+                            return res;
                         }
-                        exception_stack_pop(_py);
-                        return res;
+                        dec_ref_bits(_py, name_bits);
                     }
-                    dec_ref_bits(_py, name_bits);
+                    // Default __class_getitem__: create a GenericAlias
+                    // directly.  This matches CPython >= 3.12 where every
+                    // type supports subscript via a default that returns
+                    // types.GenericAlias(cls, params).
+                    eprintln!("[DEBUG-CGI] fallback GenericAlias for obj_bits=0x{:016x}", obj_bits);
+                    return crate::builtins::types::molt_generic_alias_new(obj_bits, key_bits);
                 }
                 if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__getitem__") {
                     if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {

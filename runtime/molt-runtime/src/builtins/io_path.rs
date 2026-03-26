@@ -3,7 +3,6 @@
 //! Split from io.rs to reduce file size. Contains all `molt_path_*`,
 //! `molt_glob*`, `molt_os_*`, and `molt_getcwd` extern functions.
 
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
