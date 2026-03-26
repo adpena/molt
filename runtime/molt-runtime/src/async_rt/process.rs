@@ -1,4 +1,4 @@
-use super::generators::asyncio_clear_pending_exception;
+use super::generators_async::asyncio_clear_pending_exception;
 use super::process_task_state;
 use super::{await_waiters_take, wake_task_ptr};
 use crate::*;

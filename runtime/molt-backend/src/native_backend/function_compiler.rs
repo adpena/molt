@@ -745,8 +745,9 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
+                        // Use unbox_int_or_bool: Python booleans are ints (True+True==2).
+                        let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
+                        let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
                         let sum = builder.ins().iadd(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, sum, &nbc);
                         let fits_inline = int_value_fits_inline(&mut builder, sum);
@@ -853,8 +854,9 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
+                        // Use unbox_int_or_bool: Python booleans are ints.
+                        let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
+                        let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
                         let sum = builder.ins().iadd(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, sum, &nbc);
                         let fits_inline = int_value_fits_inline(&mut builder, sum);
