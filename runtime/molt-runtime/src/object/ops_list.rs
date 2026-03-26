@@ -5,9 +5,10 @@ use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
 use std::cmp::Ordering;
-use super::ops::{
+use super::ops::{eq_bool_from_bits, is_truthy, repeat_sequence};
+use super::ops_compare::{
     CompareBoolOutcome, CompareOp, CompareOutcome, compare_builtin_bool, compare_objects,
-    compare_type_error, eq_bool_from_bits, is_truthy, repeat_sequence, rich_compare_bool,
+    compare_type_error, rich_compare_bool,
 };
 
 struct SortItem {
