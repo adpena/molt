@@ -930,8 +930,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let method_name = if op.operands.len() > 1 {
                     let mv = self.resolve(op.operands[1]);
                     self.ensure_i64(mv)
+                } else if let Some(method_str) = op.attrs.get("method")
+                    .and_then(|v| if let AttrValue::Str(s) = v { Some(s.as_str()) } else { None })
+                {
+                    // Method name stored in attrs (from SSA s_value), not as an operand.
+                    let name_val = self.intern_string_const(method_str);
+                    self.ensure_i64(name_val)
+                } else if let Some(name_str) = op.attrs.get("name")
+                    .and_then(|v| if let AttrValue::Str(s) = v { Some(s.as_str()) } else { None })
+                {
+                    let name_val = self.intern_string_const(name_str);
+                    self.ensure_i64(name_val)
                 } else {
-                    i64_ty.const_int(0, false)
+                    i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
                 };
 
                 // Build positional args (operands[2..])
@@ -1059,8 +1070,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     } else if args_start <= op.operands.len() && !op.operands.is_empty() {
                         let bv = self.resolve(op.operands[0]);
                         self.ensure_i64(bv)
+                    } else if let Some(s_val) = op.attrs.get("s_value")
+                        .and_then(|v| if let AttrValue::Str(s) = v { Some(s.as_str()) } else { None })
+                    {
+                        let name_val = self.intern_string_const(s_val);
+                        self.ensure_i64(name_val)
                     } else {
-                        i64_ty.const_int(0, false)
+                        i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
                     };
 
                     let n_args = op.operands.len().saturating_sub(args_start) as u64;

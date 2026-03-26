@@ -26264,7 +26264,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 # Track the alias so @<alias>.overload is recognised.
                 if alias.asname:
                     self._typing_import_aliases.add(alias.asname)
-                continue
+                # Fall through — typing names have runtime significance.
             if module_name == "_intrinsics":
                 # _intrinsics is resolved entirely at compile time.
                 continue
@@ -26309,7 +26309,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.future_annotations = True
             return None
         if module_name in {"typing", "typing_extensions"}:
-            return None
+            # Typing names with runtime significance (TypeVar, Generic,
+            # Protocol, Any, cast, etc.) must be loaded from the actual
+            # typing module.  Fall through to the normal import path.
+            pass
         if module_name == "_intrinsics":
             # All require_intrinsic / load_intrinsic calls are resolved at
             # compile time (see the _require_intrinsic handler in visit_Call).
