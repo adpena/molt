@@ -8896,7 +8896,8 @@ impl SimpleBackend {
                         brif_block(&mut builder, cond, target_block, &[], fallthrough, &[]);
                     }
                     switch_to_block_tracking(&mut builder, fallthrough, &mut is_block_filled);
-                    builder.seal_block(fallthrough);
+                    // Defer sealing to seal_all_blocks() — early sealing breaks
+                    // SSA variable propagation for loop counters through fallthrough blocks.
                     // check_exception's fallthrough is always a fresh empty block —
                     // force-clear is_block_filled so subsequent ops (add, loop_index_next)
                     // are never incorrectly skipped by the whitelist guard.
