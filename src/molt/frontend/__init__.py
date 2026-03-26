@@ -5675,16 +5675,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             # for direct calls — return None so the caller falls back to the
             # generic CALL_BIND / CALL_INDIRECT path which handles them at runtime.
             return None, func_obj
-        args = self._emit_call_args(node.args)
+        # Check for vararg/kwarg BEFORE emitting call args; emitting args
+        # has side effects (IR ops) that conflict with the CALL_BIND fallback
+        # which emits its own arg builder.
         info = self.func_default_specs.get(func_symbol)
         if info is None:
             func_name = self.func_symbol_names.get(func_symbol)
             if func_name is not None:
                 info = self._lookup_func_defaults(None, func_name)
         if info is not None and info.get("has_vararg"):
-            # Functions with *args / **kwargs cannot be resolved at compile
-            # time via the direct path — fall back to CALL_BIND.
             return None, func_obj
+        args = self._emit_call_args(node.args)
         if info is None:
             return args, func_obj
         total_params = info.get("params")
@@ -26307,7 +26308,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if alias.name == "annotations":
                     self.future_annotations = True
             return None
-        if module_name == "typing_extensions":
+        if module_name in {"typing", "typing_extensions"}:
             return None
         if module_name == "_intrinsics":
             # All require_intrinsic / load_intrinsic calls are resolved at

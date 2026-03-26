@@ -9456,7 +9456,6 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                             exception_stack_push();
                             let res = call_callable1(_py, call_bits, key_bits);
                             dec_ref_bits(_py, call_bits);
-                            eprintln!("[DEBUG-CGI] __class_getitem__ found, res=0x{:016x} type={}", res, type_name(_py, obj_from_bits(res)));
                             if exception_pending(_py) {
                                 exception_stack_pop(_py);
                                 return MoltObject::none().bits();
@@ -9470,7 +9469,6 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     // directly.  This matches CPython >= 3.12 where every
                     // type supports subscript via a default that returns
                     // types.GenericAlias(cls, params).
-                    eprintln!("[DEBUG-CGI] fallback GenericAlias for obj_bits=0x{:016x}", obj_bits);
                     return crate::builtins::types::molt_generic_alias_new(obj_bits, key_bits);
                 }
                 if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__getitem__") {
