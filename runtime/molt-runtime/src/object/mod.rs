@@ -413,7 +413,12 @@ pub(crate) const HEADER_FLAG_NURSERY: u32 = 1 << 18;
 
 /// Maximum total_size (header + payload) eligible for nursery allocation.
 /// Objects larger than this always go through the global allocator.
-const NURSERY_ALLOC_MAX: usize = 256;
+// Nursery disabled pending write-barrier fix for type objects stored in
+// persistent containers.  The nursery causes SIGSEGV when tuple-of-types
+// (e.g., dict[str, int]) are nursery-allocated and then passed to
+// __class_getitem__ which stores references that outlive the nursery.
+// TODO: re-enable once proper write barrier is implemented.
+const NURSERY_ALLOC_MAX: usize = 0;
 
 // ---------------------------------------------------------------------------
 // Cold header pool — stores rarely-used per-object metadata (poll_fn, state,
