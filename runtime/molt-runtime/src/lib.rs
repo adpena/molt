@@ -69,6 +69,8 @@ mod logging_bridge;
 mod stringprep_bridge;
 #[cfg(feature = "stdlib_xml")]
 mod xml_bridge;
+#[cfg(feature = "stdlib_ipaddress")]
+mod ipaddress_bridge;
 // Re-export extracted crates so their symbols are available at link time.
 #[cfg(feature = "stdlib_serial")]
 pub use molt_runtime_serial;
@@ -98,6 +100,8 @@ pub use molt_runtime_http;
 pub use molt_runtime_stringprep;
 #[cfg(feature = "stdlib_xml")]
 pub use molt_runtime_xml;
+#[cfg(feature = "stdlib_ipaddress")]
+pub use molt_runtime_ipaddress;
 #[cfg(feature = "stdlib_tk")]
 mod gui;
 #[cfg(feature = "stdlib_tk")]
@@ -391,7 +395,10 @@ pub(crate) use crate::builtins::io::{
     DecodeFailure, close_payload, file_handle_detached_message, file_handle_enter,
     file_handle_exit, file_handle_is_closed, path_from_bits,
 };
+#[cfg(not(feature = "stdlib_ipaddress"))]
 pub use crate::builtins::ipaddress::*;
+#[cfg(feature = "stdlib_ipaddress")]
+pub use molt_runtime_ipaddress::ipaddress::*;
 #[cfg(not(feature = "stdlib_itertools"))]
 pub use crate::builtins::itertools::*;
 #[cfg(feature = "stdlib_itertools")]
