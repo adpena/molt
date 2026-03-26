@@ -312,6 +312,7 @@ pub use molt_runtime_math::fractions::*;
 pub use crate::builtins::functions::*;
 pub use crate::builtins::functions_email::*;
 pub use crate::builtins::functions_http::*;
+pub use crate::builtins::functions_logging::*;
 pub use crate::builtins::functions_pickle::*;
 pub use crate::builtins::functions_zipfile::*;
 pub use crate::builtins::functools::*;
