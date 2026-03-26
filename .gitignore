@@ -80,3 +80,4 @@ packaging/out/
 type_facts.json
 *.profraw
 .claire/
+runtime/molt-runtime/src/object/ops_builtins.rs
