@@ -459,6 +459,7 @@ pub use crate::object::ops_heapq::*;
 pub use crate::object::ops_iter::*;
 pub use crate::object::ops_arith::*;
 pub use crate::object::ops_compare::*;
+pub use crate::object::ops_convert::*;
 pub use crate::object::ops_list::*;
 pub use crate::object::ops_set::*;
 pub use crate::object::ops_string::*;
