@@ -47,6 +47,10 @@ mod constants;
 mod crypto_bridge;
 #[cfg(feature = "stdlib_math")]
 mod math_bridge;
+#[cfg(feature = "stdlib_collections")]
+mod collections_bridge;
+#[cfg(feature = "stdlib_path")]
+mod path_bridge;
 #[cfg(feature = "stdlib_regex")]
 mod regex_bridge;
 #[cfg(feature = "stdlib_text")]
@@ -66,6 +70,10 @@ pub use molt_runtime_crypto;
 pub use molt_runtime_compression;
 #[cfg(feature = "stdlib_math")]
 pub use molt_runtime_math;
+#[cfg(feature = "stdlib_collections")]
+pub use molt_runtime_collections;
+#[cfg(feature = "stdlib_path")]
+pub use molt_runtime_path;
 #[cfg(feature = "stdlib_regex")]
 pub use molt_runtime_regex;
 #[cfg(feature = "stdlib_text")]
@@ -193,7 +201,10 @@ pub(crate) use crate::async_rt::{
     molt_asyncio_task_registry_live, molt_asyncio_task_registry_live_set,
 };
 pub use crate::builtins::abc::*;
+#[cfg(not(feature = "stdlib_collections"))]
 pub use crate::builtins::argparse::*;
+#[cfg(feature = "stdlib_collections")]
+pub use molt_runtime_collections::argparse::*;
 pub use crate::builtins::array_mod::*;
 #[cfg(feature = "stdlib_ast")]
 pub use crate::builtins::ast::*;
@@ -232,7 +243,10 @@ pub use crate::builtins::cmath_mod::*;
 pub use molt_runtime_math::cmath_mod::*;
 pub use crate::builtins::codecs::*;
 pub use crate::builtins::codecs_ext::*;
+#[cfg(not(feature = "stdlib_collections"))]
 pub use crate::builtins::collections_ext::*;
+#[cfg(feature = "stdlib_collections")]
+pub use molt_runtime_collections::collections_ext::*;
 #[cfg(not(feature = "stdlib_math"))]
 pub use crate::builtins::colorsys::*;
 #[cfg(feature = "stdlib_math")]
@@ -275,7 +289,10 @@ pub use crate::builtins::datetime::*;
 #[cfg(feature = "stdlib_serial")]
 pub use molt_runtime_serial::datetime::*;
 pub use crate::builtins::dbm_dumb::*;
+#[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::decimal::*;
+#[cfg(feature = "stdlib_serial")]
+pub use molt_runtime_serial::decimal::*;
 pub use crate::builtins::difflib::*;
 pub use crate::builtins::enum_ext::*;
 pub(crate) use crate::builtins::exceptions::{
@@ -314,12 +331,18 @@ pub use crate::builtins::fractions::*;
 #[cfg(feature = "stdlib_math")]
 pub use molt_runtime_math::fractions::*;
 pub use crate::builtins::functions::*;
+#[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::functions_email::*;
+#[cfg(feature = "stdlib_serial")]
+pub use molt_runtime_serial::email::*;
 pub use crate::builtins::functions_http::*;
 pub use crate::builtins::functions_logging::*;
 pub use crate::builtins::functions_pickle::*;
 pub use crate::builtins::functions_stat::*;
+#[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::functions_zipfile::*;
+#[cfg(feature = "stdlib_serial")]
+pub use molt_runtime_serial::zipfile::*;
 pub use crate::builtins::functools::*;
 #[cfg(feature = "stdlib_fs_extra")]
 pub use crate::builtins::glob_mod::*;
@@ -364,8 +387,14 @@ pub(crate) use crate::builtins::numbers::{
     round_float_ndigits, round_half_even, split_maxsplit_from_obj, to_bigint, to_f64, to_i64,
 };
 pub use crate::builtins::operator::*;
+#[cfg(not(feature = "stdlib_path"))]
 pub use crate::builtins::os_ext::*;
+#[cfg(feature = "stdlib_path")]
+pub use molt_runtime_path::os_ext::*;
+#[cfg(not(feature = "stdlib_path"))]
 pub use crate::builtins::pathlib::*;
+#[cfg(feature = "stdlib_path")]
+pub use molt_runtime_path::pathlib::*;
 pub use crate::builtins::platform::*;
 pub use crate::builtins::platform_mod::*;
 pub use crate::builtins::pprint_ext::*;
