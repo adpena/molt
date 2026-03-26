@@ -9452,7 +9452,15 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     {
                         dec_ref_bits(_py, name_bits);
                         exception_stack_push();
+                        eprintln!("[DEBUG-CGI] key_bits=0x{:016x} key_type={}", key_bits, type_name(_py, obj_from_bits(key_bits)));
+                        if let Some(kp) = obj_from_bits(key_bits).as_ptr() {
+                            eprintln!("[DEBUG-CGI] key type_id={}", object_type_id(kp));
+                        }
                         let res = call_callable1(_py, call_bits, key_bits);
+                        eprintln!("[DEBUG-CGI] res=0x{:016x} res_type={}", res, type_name(_py, obj_from_bits(res)));
+                        if let Some(rp) = obj_from_bits(res).as_ptr() {
+                            eprintln!("[DEBUG-CGI] res type_id={}", object_type_id(rp));
+                        }
                         dec_ref_bits(_py, call_bits);
                         if exception_pending(_py) {
                             exception_stack_pop(_py);

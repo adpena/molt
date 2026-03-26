@@ -1,0 +1,11 @@
+[package]
+name = "molt-runtime-ipaddress"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "IP address intrinsics for the Molt runtime (ipaddress module)"
+
+[dependencies]
+molt-runtime-core = { path = "../molt-runtime-core" }
+molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
+num-bigint = "0.4"
