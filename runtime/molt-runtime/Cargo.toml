@@ -19,7 +19,7 @@ stdlib_full = [
     "stdlib_crypto", "stdlib_compression", "stdlib_serialization",
     "stdlib_archive", "stdlib_ast", "stdlib_fs_extra", "stdlib_unicode_names",
     "stdlib_tk", "stdlib_net", "stdlib_asyncio", "stdlib_email",
-    "stdlib_math", "stdlib_decimal", "stdlib_regex", "stdlib_serial", "stdlib_logging", "stdlib_concurrent",
+    "stdlib_math", "stdlib_decimal", "stdlib_regex", "stdlib_collections", "stdlib_path", "stdlib_serial", "stdlib_logging", "stdlib_concurrent",
     "stdlib_dbm", "stdlib_importlib_extra", "stdlib_csv",
     "stdlib_signal", "stdlib_select", "stdlib_text",
     "builtin_set", "builtin_complex", "builtin_memoryview",
@@ -57,6 +57,8 @@ stdlib_logging = []
 stdlib_concurrent = []
 stdlib_dbm = []
 stdlib_importlib_extra = []
+stdlib_path = ["dep:molt-runtime-path"]
+stdlib_collections = ["dep:molt-runtime-collections"]
 stdlib_regex = ["dep:molt-runtime-regex"]
 stdlib_text = ["dep:molt-runtime-text"]
 stdlib_itertools = ["dep:molt-runtime-itertools"]
@@ -93,6 +95,8 @@ molt-runtime-compression = { path = "../molt-runtime-compression", optional = tr
 molt-runtime-net = { path = "../molt-runtime-net", optional = true }
 molt-runtime-asyncio = { path = "../molt-runtime-asyncio", optional = true }
 molt-runtime-math = { path = "../molt-runtime-math", optional = true }
+molt-runtime-path = { path = "../molt-runtime-path", optional = true }
+molt-runtime-collections = { path = "../molt-runtime-collections", optional = true }
 molt-runtime-regex = { path = "../molt-runtime-regex", optional = true }
 molt-runtime-text = { path = "../molt-runtime-text", optional = true }
 molt-runtime-itertools = { path = "../molt-runtime-itertools", optional = true }
