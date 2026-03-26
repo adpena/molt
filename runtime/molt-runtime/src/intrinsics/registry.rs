@@ -125,39 +125,33 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
     #[cfg(target_arch = "wasm32")]
     {
         let manifest = parse_manifest();
-        let total = INTRINSICS.len();
-        if let Some(ref m) = manifest {
-            eprintln!("MOLT_INTRINSICS: manifest-filtered ({} of {total})", m.len());
-        } else {
-            eprintln!("MOLT_INTRINSICS: eager registration ({total} intrinsics)");
-        }
-        let mut count = 0u32;
-        let mut skipped = 0u32;
-        for spec in INTRINSICS {
+        // Lazy-only registration: the registry dict starts empty.
+        // Functions are resolved on first access via the lazy resolver
+        // (molt_lazy_resolve_intrinsic). This prevents the linker from
+        // marking all 2388 intrinsic functions as reachable at init time,
+        // enabling dead stripping to remove unused runtime code.
+        //
+        // For WASM with a manifest, we still do eager registration since
+        // the manifest already filters to only referenced functions.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let manifest = parse_manifest();
             if let Some(ref m) = manifest {
-                if !m.contains(spec.name) {
-                    skipped += 1;
-                    continue;
+                let mut count = 0u32;
+                for spec in INTRINSICS {
+                    if !m.contains(spec.name) { continue; }
+                    let Some(fn_ptr) = resolve_symbol(spec.symbol) else { continue; };
+                    let Some(func_bits) = build_intrinsic_func(_py, fn_ptr, spec.arity) else { continue; };
+                    set_intrinsic_entry(_py, registry_ptr, spec.name, func_bits);
+                    if let Some(alias) = alias_name(spec.name) {
+                        set_intrinsic_entry(_py, registry_ptr, &alias, func_bits);
+                    }
+                    dec_ref_bits(_py, func_bits);
+                    count += 1;
                 }
             }
-            let Some(fn_ptr) = resolve_symbol(spec.symbol) else {
-                continue;
-            };
-            let Some(func_bits) = build_intrinsic_func(_py, fn_ptr, spec.arity) else {
-                continue;
-            };
-            set_intrinsic_entry(_py, registry_ptr, spec.name, func_bits);
-            if let Some(alias) = alias_name(spec.name) {
-                set_intrinsic_entry(_py, registry_ptr, &alias, func_bits);
-            }
-            dec_ref_bits(_py, func_bits);
-            count += 1;
         }
-        if manifest.is_some() {
-            eprintln!("MOLT_INTRINSICS: done ({count} resolved, {skipped} skipped)");
-        } else {
-            eprintln!("MOLT_INTRINSICS: done ({count} resolved)");
-        }
+        // On native, skip eager registration entirely — lazy resolver handles it.
     }
 
     dec_ref_bits(_py, registry_bits);

@@ -2398,6 +2398,28 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
 ];
 
 pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Use dlsym to find #[unsafe(no_mangle)] symbols at runtime.
+        // This avoids a 2388-arm match statement that prevents dead stripping.
+        use std::ffi::CString;
+        let c_name = CString::new(symbol).ok()?;
+        let ptr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c_name.as_ptr()) };
+        if ptr.is_null() {
+            None
+        } else {
+            Some(ptr as usize as u64)
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        resolve_symbol_match(symbol)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn resolve_symbol_match(symbol: &str) -> Option<u64> {
+
     // Try per-module resolvers. Each is #[inline(never)] + #[cold]
     // so --gc-sections can strip unreferenced module resolvers.
     if let Some(v) = resolve_core_symbol(symbol) { return Some(v); }
