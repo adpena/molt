@@ -56,6 +56,7 @@ pub(crate) mod ops_heapq;
 pub(crate) mod ops_iter;
 pub(crate) mod ops_set;
 pub(crate) mod ops_string;
+pub(crate) mod ops_vec;
 pub(crate) mod refcount;
 #[allow(dead_code)]
 pub mod string_intern;
