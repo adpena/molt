@@ -590,8 +590,19 @@ fn switch_to_block_tracking(
     block: Block,
     is_block_filled: &mut bool,
 ) {
+    // Guard: if the block already has a terminator instruction, Cranelift's
+    // `switch_to_block` will panic with "you cannot switch to a block which
+    // is already filled".  This happens in complex control flow (e.g. stdlib
+    // modules with nested try/except + if/else) where multiple paths converge
+    // on the same block and a previous path already sealed it with a branch.
+    // In that case we must NOT switch to it — just mark as filled so
+    // subsequent ops create a fresh block or skip dead code.
+    if block_has_terminator(builder, block) {
+        *is_block_filled = true;
+        return;
+    }
     builder.switch_to_block(block);
-    *is_block_filled = block_has_terminator(builder, block);
+    *is_block_filled = false;
 }
 
 #[cfg(feature = "native-backend")]
