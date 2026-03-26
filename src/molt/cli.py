@@ -12527,14 +12527,18 @@ static int molt_finish() {
         molt_raise(exc);
         molt_dec_ref(exc);
         molt_runtime_shutdown();
-        return 1;
+        /* Bypass TLS/atexit destructor cleanup — runtime teardown already
+           released all resources.  Returning normally would let Rust's
+           thread-local destructors and mimalloc's atexit handler run,
+           which can deadlock or crash on macOS/Linux. */
+        _Exit(1);
     }
     const char* profile = getenv("MOLT_PROFILE");
     if (profile != NULL && profile[0] != '\\0' && strcmp(profile, "0") != 0) {
         molt_profile_dump();
     }
     molt_runtime_shutdown();
-    return 0;
+    _Exit(0);
 }
 
 #ifdef _WIN32
