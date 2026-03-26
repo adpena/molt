@@ -14,6 +14,7 @@ pub fn init_vtable() {}
 // Itertools-specific + runtime C API imports
 // ---------------------------------------------------------------------------
 
+#[allow(improper_ctypes)]
 unsafe extern "C" {
     // Itertools-specific helpers (from molt-runtime/itertools_bridge.rs):
     fn molt_itertools_alloc_instance_for_class(class_bits: u64) -> u64;
