@@ -1,5 +1,6 @@
 pub(crate) mod abc;
 pub(crate) mod annotations;
+#[cfg(not(feature = "stdlib_collections"))]
 pub(crate) mod argparse;
 pub(crate) mod array_mod;
 #[cfg(feature = "stdlib_ast")]
@@ -24,6 +25,7 @@ pub(crate) mod classes;
 pub(crate) mod cmath_mod;
 pub(crate) mod codecs;
 pub(crate) mod codecs_ext;
+#[cfg(not(feature = "stdlib_collections"))]
 pub(crate) mod collections_ext;
 #[cfg(not(feature = "stdlib_math"))]
 pub(crate) mod colorsys;
@@ -43,6 +45,7 @@ pub(crate) mod csv;
 #[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod datetime;
 pub(crate) mod dbm_dumb;
+#[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod decimal;
 pub(crate) mod difflib;
 pub(crate) mod enum_ext;
@@ -53,11 +56,13 @@ pub(crate) mod fnmatch;
 pub(crate) mod fractions;
 pub(crate) mod frames;
 pub(crate) mod functions;
+#[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod functions_email;
 pub(crate) mod functions_http;
 pub(crate) mod functions_logging;
 pub(crate) mod functions_pickle;
 pub(crate) mod functions_stat;
+#[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod functions_zipfile;
 pub(crate) mod functools;
 #[cfg(feature = "stdlib_fs_extra")]
@@ -91,7 +96,9 @@ pub(crate) mod methods;
 pub(crate) mod modules;
 pub(crate) mod numbers;
 pub(crate) mod operator;
+#[cfg(not(feature = "stdlib_path"))]
 pub(crate) mod os_ext;
+#[cfg(not(feature = "stdlib_path"))]
 pub(crate) mod pathlib;
 pub(crate) mod platform;
 pub(crate) mod platform_mod;
