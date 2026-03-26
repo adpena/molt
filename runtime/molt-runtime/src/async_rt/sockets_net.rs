@@ -30,12 +30,16 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use super::sockets::{
-    decode_sockaddr, errno_from_rc, host_from_bits, iter_values_from_bits,
-    libc_socket, port_from_bits, service_from_bits, sock_addr_from_storage,
-    sockaddr_from_bits, sockaddr_to_bits, socket_close_raw_windows,
-    socket_register_peer_pair, socket_timeout, socket_wait_ready,
-    socketpair_windows_loopback_raw, wasm_socket_meta_insert, with_socket_mut,
+    host_from_bits, iter_values_from_bits, libc_socket, port_from_bits,
+    service_from_bits, sock_addr_from_storage, sockaddr_from_bits, sockaddr_to_bits,
+    socket_timeout, socket_wait_ready, with_socket_mut,
 };
+#[cfg(target_arch = "wasm32")]
+use super::sockets::{decode_sockaddr, errno_from_rc, wasm_socket_meta_insert};
+#[cfg(all(molt_has_net_io, not(unix)))]
+use super::sockets::socket_register_peer_pair;
+#[cfg(all(molt_has_net_io, windows))]
+use super::sockets::{socket_close_raw_windows, socketpair_windows_loopback_raw};
 
 #[cfg(molt_has_net_io)]
 /// # Safety
