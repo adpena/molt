@@ -28,6 +28,21 @@ if _existing_modules is None:
 else:
     modules = _existing_modules
 TYPE_CHECKING = False
+# Register _intrinsics in sys.modules so runtime-loaded .py files
+# can do 'from _intrinsics import require_intrinsic'.
+# When Molt compiles a module, this import is resolved at compile time.
+# But stdlib .py files loaded at runtime need the real module.
+try:
+    import types as _types_mod
+    _intrinsics_mod = _types_mod.ModuleType('_intrinsics')
+    _intrinsics_mod.require_intrinsic = _require_intrinsic
+    _intrinsics_mod.load_intrinsic = _require_intrinsic
+    if isinstance(modules, dict):
+        modules['_intrinsics'] = _intrinsics_mod
+    del _types_mod, _intrinsics_mod
+except Exception:
+    pass
+
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
