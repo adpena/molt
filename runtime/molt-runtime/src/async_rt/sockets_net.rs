@@ -4,7 +4,6 @@
 //!
 //! Split from sockets.rs to reduce file size.
 
-use super::channels::has_capability;
 use crate::PyToken;
 use crate::*;
 
@@ -13,24 +12,17 @@ use crate::libc_compat as libc;
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
 #[cfg(molt_has_net_io)]
-use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use socket2::{Domain, Socket};
 use std::ffi::{CStr, CString};
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-#[cfg(molt_has_net_io)]
-use std::net::{SocketAddr, ToSocketAddrs};
-#[cfg(unix)]
-use std::os::fd::BorrowedFd;
-use std::os::raw::{c_int, c_void};
-#[cfg(unix)]
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+use std::os::raw::c_int;
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, BorrowedSocket, FromRawSocket, IntoRawSocket, RawSocket};
-use std::sync::Mutex;
 use std::time::Duration;
 
 use super::sockets::{
-    host_from_bits, iter_values_from_bits, libc_socket, port_from_bits,
+    host_from_bits, iter_values_from_bits, libc_socket,
     service_from_bits, sock_addr_from_storage, sockaddr_from_bits, sockaddr_to_bits,
     socket_timeout, socket_wait_ready, with_socket_mut,
 };

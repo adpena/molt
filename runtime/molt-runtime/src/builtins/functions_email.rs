@@ -6,13 +6,12 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
-    TYPE_ID_LIST, TYPE_ID_STRING, TYPE_ID_TUPLE,
-    alloc_bytes, alloc_list_with_capacity, alloc_string, alloc_tuple,
+    alloc_list_with_capacity, alloc_string, alloc_tuple,
     attr_name_bits_from_bytes, bytes_like_slice,
     call_class_init_with_args, dec_ref_bits, exception_pending,
     is_truthy, missing_bits, molt_getattr_builtin,
-    obj_from_bits, object_type_id,
-    raise_exception, seq_vec_ref, string_obj_to_owned,
+    obj_from_bits,
+    raise_exception, string_obj_to_owned,
     to_i64,
 };
 

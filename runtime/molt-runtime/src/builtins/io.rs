@@ -9,7 +9,6 @@ use crate::object::{
     MoltFileBackend, MoltMemoryBackend, MoltTextBackend, NEWLINE_KIND_CR, NEWLINE_KIND_CRLF,
     NEWLINE_KIND_LF,
 };
-use crate::randomness::fill_os_random;
 use crate::*;
 use num_bigint::{BigInt, Sign};
 use num_traits::{ToPrimitive, Zero};
