@@ -9570,9 +9570,21 @@ impl SimpleBackend {
                         // replace structured loop_continue/loop_end with
                         // store_var + jump to a state label.  In that case the
                         // back-edge bypasses any dedicated loop block we create.
-                        let has_structured_backedge = (op_idx + 1..ops.len()).any(|i| {
-                            matches!(ops[i].kind.as_str(), "loop_continue" | "loop_end")
-                        });
+                        // Scope-aware: skip over inner loops by tracking depth.
+                        let has_structured_backedge = {
+                            let mut depth = 0i32;
+                            let mut found = false;
+                            for i in (op_idx + 1)..ops.len() {
+                                match ops[i].kind.as_str() {
+                                    "loop_start" | "loop_index_start" => depth += 1,
+                                    "loop_end" if depth > 0 => { depth -= 1; }
+                                    "loop_end" => { found = true; break; }
+                                    "loop_continue" if depth == 0 => { found = true; break; }
+                                    _ => {}
+                                }
+                            }
+                            found
+                        };
 
                         // Try to find the phi variable for the counter via
                         // the store_var/load_var pattern from TIR optimization.
