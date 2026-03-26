@@ -55,6 +55,7 @@ pub(crate) mod frames;
 pub(crate) mod functions;
 pub(crate) mod functions_email;
 pub(crate) mod functions_http;
+pub(crate) mod functions_logging;
 pub(crate) mod functions_pickle;
 pub(crate) mod functions_zipfile;
 pub(crate) mod functools;
