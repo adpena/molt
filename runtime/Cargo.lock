@@ -2680,10 +2680,12 @@ dependencies = [
  "molt-runtime-compression",
  "molt-runtime-core",
  "molt-runtime-crypto",
+ "molt-runtime-itertools",
  "molt-runtime-math",
  "molt-runtime-net",
  "molt-runtime-regex",
  "molt-runtime-serial",
+ "molt-runtime-text",
  "molt-runtime-tk",
  "num-bigint",
  "num-integer",
@@ -2769,6 +2771,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-runtime-itertools"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+]
+
+[[package]]
 name = "molt-runtime-math"
 version = "0.1.0"
 dependencies = [
@@ -2797,6 +2807,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-runtime-path"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+]
+
+[[package]]
 name = "molt-runtime-regex"
 version = "0.1.0"
 dependencies = [
@@ -2809,12 +2828,23 @@ name = "molt-runtime-serial"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "libm",
  "memchr",
  "molt-lang-obj-model",
  "molt-runtime-core",
  "num-bigint",
  "num-traits",
  "serde_json",
+]
+
+[[package]]
+name = "molt-runtime-text"
+version = "0.1.0"
+dependencies = [
+ "memchr",
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+ "unicode_names2",
 ]
 
 [[package]]

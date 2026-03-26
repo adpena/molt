@@ -1,4 +1,3 @@
-#[allow(dead_code, unused_imports)]
 // unicodedata module intrinsics.
 // Uses unicode_names2 for name<->character lookups and Rust's built-in
 // Unicode property tables (char::is_uppercase, etc.) for categories.
