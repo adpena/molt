@@ -2,7 +2,6 @@ use molt_obj_model::MoltObject;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
-use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -13,16 +12,15 @@ use crate::builtins::exceptions::exception_kind_bits;
 use super::functions::{alloc_qs_dict, alloc_qsl_list, alloc_string_bits, alloc_string_tuple, iter_next_pair};
 use crate::builtins::platform::env_state_get;
 use crate::{
-    TYPE_ID_BYTES, TYPE_ID_MODULE, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_STRING, TYPE_ID_TUPLE,
+    TYPE_ID_MODULE, TYPE_ID_LIST, TYPE_ID_TUPLE,
     alloc_bytes, alloc_dict_with_pairs, alloc_list_with_capacity, alloc_string, alloc_tuple,
     attr_name_bits_from_bytes, bytes_like_slice,
     call_callable0, call_callable1, call_callable2, call_class_init_with_args,
-    clear_exception, dec_ref_bits, exception_pending,
-    format_obj, inc_ref_bits, is_truthy, missing_bits,
+    clear_exception, dec_ref_bits, exception_pending, inc_ref_bits, is_truthy, missing_bits,
     molt_exception_last, molt_getattr_builtin, molt_is_callable, molt_iter,
     molt_list_insert, obj_from_bits, object_type_id,
     raise_exception, seq_vec_ref, string_obj_to_owned,
-    to_i64, type_name,
+    to_i64,
 };
 
 struct MoltUrllibResponse {
