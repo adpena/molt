@@ -3814,8 +3814,11 @@ impl SimpleBackend {
                     // two molt_index dispatches.
                     let mut done_idx = None;
                     let mut val_idx = None;
-                    // Scan a small window ahead for INDEX ops that reference our pair.
-                    let scan_limit = (op_idx + 8).min(ops.len());
+                    // Scan ahead for INDEX ops that reference our pair.  Use a
+                    // wider window (16 ops) to bridge exception-handling
+                    // boilerplate (check_exception, inc_ref, etc.) that can
+                    // separate iter_next from its index consumers.
+                    let scan_limit = (op_idx + 16).min(ops.len());
                     for peek in (op_idx + 1)..scan_limit {
                         if skip_ops.contains(&peek) {
                             continue;
