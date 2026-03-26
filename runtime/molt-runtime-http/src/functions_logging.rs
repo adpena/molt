@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use molt_obj_model::MoltObject;
 
-use molt_runtime_core::prelude::*;
 use molt_runtime_core::obj_from_bits;
 
 use crate::functions_http::{alloc_string_bits, urllib_request_attr_optional};
@@ -11,7 +10,6 @@ use crate::bridge::{
     call_class_init_with_args, clear_exception, dec_ref_bits, dict_get_in_place,
     exception_pending, inc_ref_bits, missing_bits, molt_getattr_builtin, object_type_id,
     raise_exception, resolve_global_bits, seq_vec_ref, string_obj_to_owned, to_f64, to_i64,
-    ExceptionSentinel,
 };
 
 #[unsafe(no_mangle)]
@@ -583,7 +581,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                     let out_bits = unsafe {
                         call_class_init_with_args(
                             _py,
-                            file_handler_class_ptr,
+                            MoltObject::from_ptr(file_handler_class_ptr).bits(),
                             &[filename_bits, mode_bits],
                         )
                     };

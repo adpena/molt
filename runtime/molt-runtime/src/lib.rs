@@ -61,6 +61,8 @@ mod serial_bridge;
 mod itertools_bridge;
 #[cfg(feature = "stdlib_difflib")]
 mod difflib_bridge;
+#[cfg(feature = "stdlib_http")]
+mod http_bridge;
 #[cfg(feature = "stdlib_logging_ext")]
 mod logging_bridge;
 // Re-export extracted crates so their symbols are available at link time.
@@ -86,6 +88,8 @@ pub use molt_runtime_text;
 pub use molt_runtime_difflib;
 #[cfg(feature = "stdlib_logging_ext")]
 pub use molt_runtime_logging;
+#[cfg(feature = "stdlib_http")]
+pub use molt_runtime_http;
 #[cfg(feature = "stdlib_tk")]
 mod gui;
 #[cfg(feature = "stdlib_tk")]
@@ -301,7 +305,6 @@ pub use crate::builtins::dbm_dumb::*;
 pub use crate::builtins::decimal::*;
 #[cfg(feature = "stdlib_serial")]
 pub use molt_runtime_serial::decimal::*;
-#[cfg(not(feature = "stdlib_difflib"))]
 #[cfg(not(feature = "stdlib_difflib"))]
 pub use crate::builtins::difflib::*;
 #[cfg(feature = "stdlib_difflib")]
