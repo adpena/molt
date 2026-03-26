@@ -83,6 +83,7 @@ pub(crate) mod operator;
 pub(crate) mod os_ext;
 pub(crate) mod pathlib;
 pub(crate) mod platform;
+pub(crate) mod platform_importlib;
 pub(crate) mod platform_mod;
 pub(crate) mod pprint_ext;
 pub(crate) mod punycode;
