@@ -44,6 +44,85 @@ struct MoltEmailMessage {
     multipart_subtype: Option<String>,
 }
 
+struct MoltUrllibResponse {
+    body: Vec<u8>,
+    pos: usize,
+    closed: bool,
+    url: String,
+    code: i64,
+    reason: String,
+    headers: Vec<(String, String)>,
+    header_joined: HashMap<String, String>,
+    headers_dict_cache: Option<u64>,
+    headers_list_cache: Option<u64>,
+}
+
+struct UrllibHttpRequest {
+    host: String,
+    port: u16,
+    path: String,
+    method: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+    timeout: Option<f64>,
+}
+
+#[derive(Clone)]
+struct MoltHttpClientConnection {
+    host: String,
+    port: u16,
+    timeout: Option<f64>,
+    method: Option<String>,
+    url: Option<String>,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+    buffer: Vec<Vec<u8>>,
+    skip_host: bool,
+    skip_accept_encoding: bool,
+}
+
+struct MoltHttpClientConnectionRuntime {
+    next_handle: u64,
+    connections: HashMap<u64, MoltHttpClientConnection>,
+}
+
+#[derive(Clone, Default)]
+struct MoltHttpMessage {
+    headers: Vec<(String, String)>,
+    index: HashMap<String, Vec<usize>>,
+    items_list_cache: Option<u64>,
+}
+
+struct MoltHttpMessageRuntime {
+    next_handle: u64,
+    messages: HashMap<u64, MoltHttpMessage>,
+}
+
+#[derive(Clone)]
+struct MoltCookieEntry {
+    name: String,
+    value: String,
+    domain: String,
+    path: String,
+}
+
+#[derive(Clone, Default)]
+struct MoltCookieJar {
+    cookies: Vec<MoltCookieEntry>,
+}
+
+struct MoltSocketServerPending {
+    request: Vec<u8>,
+    response: Option<Vec<u8>>,
+}
+
+struct MoltSocketServerRuntime {
+    next_request_id: u64,
+    pending_by_server: HashMap<u64, VecDeque<u64>>,
+    pending_requests: HashMap<u64, MoltSocketServerPending>,
+    request_server: HashMap<u64, u64>,
+    closed_servers: HashSet<u64>,
+}
 
 const THIS_ENCODED: &str = concat!(
     "Gur Mra bs Clguba, ol Gvz Crgref\n\n",
@@ -411,6 +490,14 @@ fn email_quopri_decode_hex_pair(hi: char, lo: char) -> Option<char> {
     Some(value as char)
 }
 
+static URLLIB_RESPONSE_REGISTRY: OnceLock<Mutex<HashMap<u64, MoltUrllibResponse>>> =
+    OnceLock::new();
+static URLLIB_RESPONSE_NEXT: AtomicU64 = AtomicU64::new(1);
+static HTTP_CLIENT_CONNECTION_RUNTIME: OnceLock<Mutex<MoltHttpClientConnectionRuntime>> =
+    OnceLock::new();
+static HTTP_MESSAGE_RUNTIME: OnceLock<Mutex<MoltHttpMessageRuntime>> = OnceLock::new();
+static COOKIEJAR_REGISTRY: OnceLock<Mutex<HashMap<u64, MoltCookieJar>>> = OnceLock::new();
+static COOKIEJAR_NEXT: AtomicU64 = AtomicU64::new(1);
 static EMAIL_MESSAGE_REGISTRY: OnceLock<Mutex<HashMap<u64, MoltEmailMessage>>> = OnceLock::new();
 static EMAIL_MESSAGE_NEXT: AtomicU64 = AtomicU64::new(1);
 fn email_message_registry() -> &'static Mutex<HashMap<u64, MoltEmailMessage>> {
@@ -471,6 +558,7 @@ fn email_message_id_from_bits(_py: &crate::PyToken<'_>, message_bits: u64) -> Re
     };
     Ok(id)
 }
+static SOCKETSERVER_RUNTIME: OnceLock<Mutex<MoltSocketServerRuntime>> = OnceLock::new();
 
 const RE_IGNORECASE: i64 = 2;
 const RE_DOTALL: i64 = 16;
@@ -1586,46 +1674,6 @@ pub extern "C" fn molt_enum_init_member(member_bits: u64, name_bits: u64, value_
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pickle_encode_protocol0(parts_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let parts_obj = obj_from_bits(parts_bits);
-        let Some(parts_ptr) = parts_obj.as_ptr() else {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "pickle opcode chunks must be a sequence",
-            );
-        };
-        let parts_type = unsafe { object_type_id(parts_ptr) };
-        if parts_type != TYPE_ID_LIST && parts_type != TYPE_ID_TUPLE {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "pickle opcode chunks must be a sequence",
-            );
-        }
-        let elems = unsafe { seq_vec_ref(parts_ptr) };
-        let mut joined = String::new();
-        for &elem_bits in elems.iter() {
-            let Some(chunk) = string_obj_to_owned(obj_from_bits(elem_bits)) else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "pickle opcode chunks must contain str values",
-                );
-            };
-            joined.push_str(&chunk);
-        }
-        let bytes_ptr = crate::alloc_bytes(_py, joined.as_bytes());
-        if bytes_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(bytes_ptr).bits()
-        }
-    })
-}
-
 #[derive(Clone, Copy, Debug)]
 enum PickleGlobal {
     CodecsEncode,
@@ -2211,218 +2259,234 @@ fn pickle_apply_reduce(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pickle_dumps_protocol01(obj_bits: u64, protocol_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(protocol) = to_i64(obj_from_bits(protocol_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "pickle protocol must be int");
-        };
-        if protocol != 0 && protocol != 1 {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "only pickle protocols 0 and 1 are supported",
-            );
-        }
-        let mut out = String::new();
-        if let Err(err_bits) = pickle_dump_obj(_py, obj_bits, protocol, &mut out) {
-            return err_bits;
-        }
-        out.push('.');
-        let out_ptr = crate::alloc_bytes(_py, out.as_bytes());
-        if out_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(out_ptr).bits()
-        }
-    })
+const PICKLE_PROTO_3: i64 = 3;
+const PICKLE_PROTO_4: i64 = 4;
+const PICKLE_PROTO_5: i64 = 5;
+
+const PICKLE_OP_PROTO: u8 = 0x80;
+const PICKLE_OP_STOP: u8 = b'.';
+const PICKLE_OP_POP: u8 = b'0';
+const PICKLE_OP_POP_MARK: u8 = b'1';
+const PICKLE_OP_MARK: u8 = b'(';
+const PICKLE_OP_NONE: u8 = b'N';
+const PICKLE_OP_NEWTRUE: u8 = 0x88;
+const PICKLE_OP_NEWFALSE: u8 = 0x89;
+const PICKLE_OP_INT: u8 = b'I';
+const PICKLE_OP_LONG: u8 = b'L';
+const PICKLE_OP_BININT: u8 = b'J';
+const PICKLE_OP_BININT1: u8 = b'K';
+const PICKLE_OP_BININT2: u8 = b'M';
+const PICKLE_OP_LONG1: u8 = 0x8a;
+const PICKLE_OP_LONG4: u8 = 0x8b;
+const PICKLE_OP_FLOAT: u8 = b'F';
+const PICKLE_OP_BINFLOAT: u8 = b'G';
+const PICKLE_OP_STRING: u8 = b'S';
+const PICKLE_OP_BINUNICODE: u8 = b'X';
+const PICKLE_OP_SHORT_BINUNICODE: u8 = 0x8c;
+const PICKLE_OP_UNICODE: u8 = b'V';
+const PICKLE_OP_BINBYTES: u8 = b'B';
+const PICKLE_OP_SHORT_BINBYTES: u8 = b'C';
+const PICKLE_OP_BINBYTES8: u8 = 0x8e;
+const PICKLE_OP_BYTEARRAY8: u8 = 0x96;
+const PICKLE_OP_EMPTY_TUPLE: u8 = b')';
+const PICKLE_OP_TUPLE: u8 = b't';
+const PICKLE_OP_TUPLE1: u8 = 0x85;
+const PICKLE_OP_TUPLE2: u8 = 0x86;
+const PICKLE_OP_TUPLE3: u8 = 0x87;
+const PICKLE_OP_EMPTY_LIST: u8 = b']';
+const PICKLE_OP_LIST: u8 = b'l';
+const PICKLE_OP_APPEND: u8 = b'a';
+const PICKLE_OP_APPENDS: u8 = b'e';
+const PICKLE_OP_EMPTY_DICT: u8 = b'}';
+const PICKLE_OP_DICT: u8 = b'd';
+const PICKLE_OP_SETITEM: u8 = b's';
+const PICKLE_OP_SETITEMS: u8 = b'u';
+const PICKLE_OP_EMPTY_SET: u8 = 0x8f;
+const PICKLE_OP_ADDITEMS: u8 = 0x90;
+const PICKLE_OP_FROZENSET: u8 = 0x91;
+const PICKLE_OP_GLOBAL: u8 = b'c';
+const PICKLE_OP_STACK_GLOBAL: u8 = 0x93;
+const PICKLE_OP_REDUCE: u8 = b'R';
+const PICKLE_OP_BUILD: u8 = b'b';
+const PICKLE_OP_NEWOBJ: u8 = 0x81;
+const PICKLE_OP_NEWOBJ_EX: u8 = 0x92;
+const PICKLE_OP_PUT: u8 = b'p';
+const PICKLE_OP_BINPUT: u8 = b'q';
+const PICKLE_OP_LONG_BINPUT: u8 = b'r';
+const PICKLE_OP_GET: u8 = b'g';
+const PICKLE_OP_BINGET: u8 = b'h';
+const PICKLE_OP_LONG_BINGET: u8 = b'j';
+const PICKLE_OP_MEMOIZE: u8 = 0x94;
+const PICKLE_OP_PERSID: u8 = b'P';
+const PICKLE_OP_BINPERSID: u8 = b'Q';
+const PICKLE_OP_EXT1: u8 = 0x82;
+const PICKLE_OP_EXT2: u8 = 0x83;
+const PICKLE_OP_EXT4: u8 = 0x84;
+const PICKLE_OP_FRAME: u8 = 0x95;
+const PICKLE_OP_NEXT_BUFFER: u8 = 0x97;
+const PICKLE_OP_READONLY_BUFFER: u8 = 0x98;
+
+const PICKLE_RECURSION_LIMIT: usize = 1_000;
+
+#[derive(Clone, Debug)]
+enum PickleVmItem {
+    Value(u64),
+    Global(PickleGlobal),
+    Mark,
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pickle_loads_protocol01(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(text) = string_obj_to_owned(obj_from_bits(data_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "pickle data must be str");
-        };
-        let bytes = text.as_bytes();
-        let mut idx: usize = 0;
-        let mut stack: Vec<PickleStackItem> = Vec::new();
-        let mut memo: HashMap<i64, PickleStackItem> = HashMap::new();
-        while idx < bytes.len() {
-            let op = bytes[idx] as char;
-            idx += 1;
-            match op {
-                '.' => break,
-                'N' => stack.push(PickleStackItem::Value(MoltObject::none().bits())),
-                'I' => {
-                    let line = match pickle_read_line(_py, &text, &mut idx) {
-                        Ok(value) => value,
-                        Err(err_bits) => return err_bits,
-                    };
-                    if line == "01" {
-                        stack.push(PickleStackItem::Value(MoltObject::from_bool(true).bits()));
-                    } else if line == "00" {
-                        stack.push(PickleStackItem::Value(MoltObject::from_bool(false).bits()));
-                    } else {
-                        let int_bits = match pickle_parse_int_bits(_py, line) {
-                            Ok(value) => value,
-                            Err(err_bits) => return err_bits,
-                        };
-                        stack.push(PickleStackItem::Value(int_bits));
-                    }
-                }
-                'L' => {
-                    let line = match pickle_read_line(_py, &text, &mut idx) {
-                        Ok(value) => value,
-                        Err(err_bits) => return err_bits,
-                    };
-                    let int_bits = match pickle_parse_long_line_bits(_py, line) {
-                        Ok(value) => value,
-                        Err(err_bits) => return err_bits,
-                    };
-                    stack.push(PickleStackItem::Value(int_bits));
-                }
-                'F' => {
-                    let line = match pickle_read_line(_py, &text, &mut idx) {
-                        Ok(value) => value,
-                        Err(err_bits) => return err_bits,
-                    };
-                    let float_bits = match pickle_parse_float_bits(_py, line) {
-                        Ok(value) => value,
-                        Err(err_bits) => return err_bits,
-                    };
-                    stack.push(PickleStackItem::Value(float_bits));
-                }
-                'S' => {
-                    let line = match pickle_read_line(_py, &text, &mut idx) {
-                        Ok(value) => value,
-                        Err(err_bits) => return err_bits,
-                    };
-                    let parsed = match pickle_parse_string_literal(line) {
-                        Ok(value) => value,
-                        Err(message) => return pickle_raise(_py, message),
-                    };
-                    let out_ptr = alloc_string(_py, parsed.as_bytes());
-                    if out_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    stack.push(PickleStackItem::Value(MoltObject::from_ptr(out_ptr).bits()));
-                }
-                'V' => {
-                    let line = match pickle_read_line(_py, &text, &mut idx) {
-                        Ok(value) => value,
-                        Err(err_bits) => return err_bits,
-                    };
-                    let out_ptr = alloc_string(_py, line.as_bytes());
-                    if out_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    stack.push(PickleStackItem::Value(MoltObject::from_ptr(out_ptr).bits()));
-                }
-                '(' => stack.push(PickleStackItem::Mark),
-                't' => {
-                    let items = match pickle_pop_mark_items(_py, &mut stack) {
-                        Ok(value) => value,
-                        Err(err_bits) => return err_bits,
-                    };
-                    let values = match pickle_items_to_value_bits(_py, items.as_slice()) {
-                        Ok(value) => value,
-                        Err(err_bits) => return err_bits,
-                    };
-                    let tuple_ptr = alloc_tuple(_py, values.as_slice());
-                    if tuple_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    stack.push(PickleStackItem::Value(
-                        MoltObject::from_ptr(tuple_ptr).bits(),
-                    ));
-                }
-                'l' => {
-                    let items = match pickle_pop_mark_items(_py, &mut stack) {
-                        Ok(value) => value,
-                        Err(err_bits) => return err_bits,
-                    };
-                    let values = match pickle_items_to_value_bits(_py, items.as_slice()) {
-                        Ok(value) => value,
-                        Err(err_bits) => return err_bits,
-                    };
-                    let list_ptr = alloc_list_with_capacity(_py, values.as_slice(), values.len());
-                    if list_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    stack.push(PickleStackItem::Value(
-                        MoltObject::from_ptr(list_ptr).bits(),
-                    ));
-                }
-                'd' => {
-                    let items = match pickle_pop_mark_items(_py, &mut stack) {
-                        Ok(value) => value,
-                        Err(err_bits) => return err_bits,
-                    };
-                    let values = match pickle_items_to_value_bits(_py, items.as_slice()) {
-                        Ok(value) => value,
-                        Err(err_bits) => return err_bits,
-                    };
-                    if values.len() % 2 != 0 {
-                        return pickle_raise(_py, "pickle.loads: dict has odd number of items");
-                    }
-                    let dict_ptr = alloc_dict_with_pairs(_py, values.as_slice());
-                    if dict_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    stack.push(PickleStackItem::Value(
-                        MoltObject::from_ptr(dict_ptr).bits(),
-                    ));
-                }
-                'a' => {
-                    let item_bits =
-                        match pickle_pop_value(_py, &mut stack, "pickle.loads: stack underflow") {
-                            Ok(value) => value,
-                            Err(err_bits) => return err_bits,
-                        };
-                    let target_bits =
-                        match pickle_pop_value(_py, &mut stack, "pickle.loads: stack underflow") {
-                            Ok(value) => value,
-                            Err(err_bits) => return err_bits,
-                        };
-                    let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
-                        return pickle_raise(_py, "pickle.loads: append target is not list");
-                    };
-                    if unsafe { object_type_id(target_ptr) } != TYPE_ID_LIST {
-                        return pickle_raise(_py, "pickle.loads: append target is not list");
-                    }
-                    let _ = crate::molt_list_append(target_bits, item_bits);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    stack.push(PickleStackItem::Value(target_bits));
-                }
-                's' => {
-                    let value_bits =
-                        match pickle_pop_value(_py, &mut stack, "pickle.loads: stack underflow") {
-                            Ok(value) => value,
-                            Err(err_bits) => return err_bits,
-                        };
-                    let key_bits =
-                        match pickle_pop_value(_py, &mut stack, "pickle.loads: stack underflow") {
-                            Ok(value) => value,
-                            Err(err_bits) => return err_bits,
-                        };
-                    let target_bits =
-                        match pickle_pop_value(_py, &mut stack, "pickle.loads: stack underflow") {
-                            Ok(value) => value,
-                            Err(err_bits) => return err_bits,
-                        };
-                    let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
-                        return pickle_raise(_py, "pickle.loads: setitem target is not dict");
-                    };
-                    if unsafe { object_type_id(target_ptr) } != TYPE_ID_DICT {
-                        return pickle_raise(_py, "pickle.loads: setitem target is not dict");
-                    }
-                    unsafe {
-                        crate::dict_set_in_place(_py, target_ptr, key_bits, value_bits);
-                    }
-                    if exception_pending(_py) {
+struct PickleDumpState {
+    protocol: i64,
+    out: Vec<u8>,
+    memo: HashMap<u64, u32>,
+    next_memo: u32,
+    depth: usize,
+    persistent_id_bits: Option<u64>,
+    buffer_callback_bits: Option<u64>,
+    dispatch_table_bits: Option<u64>,
+}
+
+impl PickleDumpState {
+    fn new(
+        protocol: i64,
+        persistent_id_bits: Option<u64>,
+        buffer_callback_bits: Option<u64>,
+        dispatch_table_bits: Option<u64>,
+    ) -> Self {
+        Self {
+            protocol,
+            out: Vec::with_capacity(256),
+            memo: HashMap::new(),
+            next_memo: 0,
+            depth: 0,
+            persistent_id_bits,
+            buffer_callback_bits,
+            dispatch_table_bits,
+        }
+    }
+
+    fn push(&mut self, op: u8) {
+        self.out.push(op);
+    }
+
+    fn extend(&mut self, bytes: &[u8]) {
+        self.out.extend_from_slice(bytes);
+    }
+}
+
+fn pickle_option_callable_bits(
+    _py: &crate::PyToken<'_>,
+    maybe_bits: u64,
+    name: &str,
+) -> Result<Option<u64>, u64> {
+    if obj_from_bits(maybe_bits).is_none() {
+        return Ok(None);
+    }
+    if !is_truthy(_py, obj_from_bits(molt_is_callable(maybe_bits))) {
+        let message = format!("pickle {name} must be callable");
+        return Err(raise_exception::<u64>(_py, "TypeError", &message));
+    }
+    Ok(Some(maybe_bits))
+}
+
+fn pickle_input_to_bytes(_py: &crate::PyToken<'_>, data_bits: u64) -> Result<Vec<u8>, u64> {
+    if let Some(ptr) = obj_from_bits(data_bits).as_ptr()
+        && let Some(raw) = unsafe { bytes_like_slice(ptr) }
+    {
+        return Ok(raw.to_vec());
+    }
+    if let Some(text) = string_obj_to_owned(obj_from_bits(data_bits)) {
+        return Ok(text.into_bytes());
+    }
+    Err(raise_exception::<u64>(
+        _py,
+        "TypeError",
+        "pickle data must be bytes, bytearray, or str",
+    ))
+}
+
+fn pickle_read_u8(data: &[u8], idx: &mut usize, _py: &crate::PyToken<'_>) -> Result<u8, u64> {
+    if *idx >= data.len() {
+        return Err(pickle_raise(_py, "pickle.loads: unexpected end of stream"));
+    }
+    let byte = data[*idx];
+    *idx += 1;
+    Ok(byte)
+}
+
+fn pickle_read_exact<'a>(
+    data: &'a [u8],
+    idx: &mut usize,
+    n: usize,
+    _py: &crate::PyToken<'_>,
+) -> Result<&'a [u8], u64> {
+    if data.len().saturating_sub(*idx) < n {
+        return Err(pickle_raise(_py, "pickle.loads: unexpected end of stream"));
+    }
+    let start = *idx;
+    let end = start + n;
+    *idx = end;
+    Ok(&data[start..end])
+}
+
+fn pickle_read_line_bytes<'a>(
+    data: &'a [u8],
+    idx: &mut usize,
+    _py: &crate::PyToken<'_>,
+) -> Result<&'a [u8], u64> {
+    if *idx > data.len() {
+        return Err(pickle_raise(_py, "pickle.loads: unexpected end of stream"));
+    }
+    let start = *idx;
+    let Some(rel_end) = data[start..].iter().position(|b| *b == b'\n') else {
+        return Err(pickle_raise(_py, "pickle.loads: unexpected end of stream"));
+    };
+    let end = start + rel_end;
+    *idx = end + 1;
+    Ok(&data[start..end])
+}
+
+fn pickle_read_u16_le(data: &[u8], idx: &mut usize, _py: &crate::PyToken<'_>) -> Result<u16, u64> {
+    let raw = pickle_read_exact(data, idx, 2, _py)?;
+    Ok(u16::from_le_bytes([raw[0], raw[1]]))
+}
+
+fn pickle_read_u32_le(data: &[u8], idx: &mut usize, _py: &crate::PyToken<'_>) -> Result<u32, u64> {
+    let raw = pickle_read_exact(data, idx, 4, _py)?;
+    Ok(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
+}
+
+fn pickle_read_u64_le(data: &[u8], idx: &mut usize, _py: &crate::PyToken<'_>) -> Result<u64, u64> {
+    let raw = pickle_read_exact(data, idx, 8, _py)?;
+    Ok(u64::from_le_bytes([
+        raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+    ]))
+}
+
+fn pickle_parse_long_bytes_bits(_py: &crate::PyToken<'_>, raw: &[u8]) -> Result<u64, u64> {
+    if raw.is_empty() {
+        return Ok(MoltObject::from_int(0).bits());
+    }
+    if raw.len() > 8 {
+        return Err(pickle_raise(
+            _py,
+            "pickle.loads: LONG payload exceeds Molt int range",
+        ));
+    }
+    let negative = (raw[raw.len() - 1] & 0x80) != 0;
+    let mut bytes = if negative { [0xff; 8] } else { [0u8; 8] };
+    bytes[..raw.len()].copy_from_slice(raw);
+    Ok(MoltObject::from_int(i64::from_le_bytes(bytes)).bits())
+}
+
+fn pickle_read_f64_be(data: &[u8], idx: &mut usize, _py: &crate::PyToken<'_>) -> Result<f64, u64> {
+    let raw = pickle_read_exact(data, idx, 8, _py)?;
+    Ok(f64::from_bits(u64::from_be_bytes([
+        raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+    ])))
+}
+
+fn pickle_decode_utf8(_py: &crate::PyToken<'_>, raw: &[u8], ctx: &str) -> Result<String, u64> {
     String::from_utf8(raw.to_vec()).map_err(|_| {
         let msg = format!("pickle.loads: invalid UTF-8 while decoding {ctx}");
         pickle_raise(_py, &msg)
@@ -2461,6 +2525,17 @@ fn pickle_emit_memo_put(state: &mut PickleDumpState, index: u32) {
         state.push(PICKLE_OP_MEMOIZE);
         return;
     }
+    if index <= u8::MAX as u32 {
+        state.push(PICKLE_OP_BINPUT);
+        state.push(index as u8);
+    } else {
+        state.push(PICKLE_OP_LONG_BINPUT);
+        pickle_emit_u32_le(state, index);
+    }
+}
+
+fn pickle_emit_memo_get(state: &mut PickleDumpState, index: u32) {
+    if index <= u8::MAX as u32 {
         state.push(PICKLE_OP_BINGET);
         state.push(index as u8);
     } else {
@@ -2571,6 +2646,2904 @@ fn pickle_emit_global_ref(
     _py: &crate::PyToken<'_>,
     state: &mut PickleDumpState,
     obj_bits: u64,
+) -> Result<bool, u64> {
+    let Some(module_bits) = pickle_attr_optional(_py, obj_bits, b"__module__")? else {
+        return Ok(false);
+    };
+    let Some(name_bits) = pickle_attr_optional(_py, obj_bits, b"__name__")? else {
+        dec_ref_bits(_py, module_bits);
+        return Ok(false);
+    };
+    let Some(module_name) = string_obj_to_owned(obj_from_bits(module_bits)) else {
+        dec_ref_bits(_py, module_bits);
+        dec_ref_bits(_py, name_bits);
+        return Ok(false);
+    };
+    let Some(attr_name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+        dec_ref_bits(_py, module_bits);
+        dec_ref_bits(_py, name_bits);
+        return Ok(false);
+    };
+    dec_ref_bits(_py, module_bits);
+    dec_ref_bits(_py, name_bits);
+    if state.protocol >= 2
+        && let Some(code) = pickle_lookup_extension_code(_py, &module_name, &attr_name)?
+    {
+        if code <= u8::MAX as i64 {
+            state.push(PICKLE_OP_EXT1);
+            state.push(code as u8);
+            return Ok(true);
+        }
+        if code <= u16::MAX as i64 {
+            state.push(PICKLE_OP_EXT2);
+            state.extend(&(code as u16).to_le_bytes());
+            return Ok(true);
+        }
+        if code <= u32::MAX as i64 {
+            state.push(PICKLE_OP_EXT4);
+            state.extend(&(code as u32).to_le_bytes());
+            return Ok(true);
+        }
+    }
+    if state.protocol >= PICKLE_PROTO_4 {
+        pickle_dump_unicode_binary(_py, state, module_name.as_str())?;
+        pickle_dump_unicode_binary(_py, state, attr_name.as_str())?;
+        state.push(PICKLE_OP_STACK_GLOBAL);
+        return Ok(true);
+    }
+    pickle_emit_global_opcode(state, module_name.as_str(), attr_name.as_str());
+    Ok(true)
+}
+
+fn pickle_dump_unicode_binary(
+    _py: &crate::PyToken<'_>,
+    state: &mut PickleDumpState,
+    text: &str,
+) -> Result<(), u64> {
+    let raw = text.as_bytes();
+    if raw.len() <= u8::MAX as usize && state.protocol >= PICKLE_PROTO_4 {
+        state.push(PICKLE_OP_SHORT_BINUNICODE);
+        state.push(raw.len() as u8);
+        state.extend(raw);
+        return Ok(());
+    }
+    if raw.len() <= u32::MAX as usize {
+        state.push(PICKLE_OP_BINUNICODE);
+        pickle_emit_u32_le(state, raw.len() as u32);
+        state.extend(raw);
+        return Ok(());
+    }
+    state.push(0x8d);
+    pickle_emit_u64_le(state, raw.len() as u64);
+    state.extend(raw);
+    Ok(())
+}
+
+fn pickle_dump_bytes_binary(
+    _py: &crate::PyToken<'_>,
+    state: &mut PickleDumpState,
+    raw: &[u8],
+) -> Result<(), u64> {
+    if raw.len() <= u8::MAX as usize {
+        state.push(PICKLE_OP_SHORT_BINBYTES);
+        state.push(raw.len() as u8);
+        state.extend(raw);
+        return Ok(());
+    }
+    if raw.len() <= u32::MAX as usize {
+        state.push(PICKLE_OP_BINBYTES);
+        pickle_emit_u32_le(state, raw.len() as u32);
+        state.extend(raw);
+        return Ok(());
+    }
+    state.push(PICKLE_OP_BINBYTES8);
+    pickle_emit_u64_le(state, raw.len() as u64);
+    state.extend(raw);
+    Ok(())
+}
+
+fn pickle_dump_bytearray_binary(
+    _py: &crate::PyToken<'_>,
+    state: &mut PickleDumpState,
+    raw: &[u8],
+) -> Result<(), u64> {
+    if state.protocol >= PICKLE_PROTO_5 {
+        state.push(PICKLE_OP_BYTEARRAY8);
+        pickle_emit_u64_le(state, raw.len() as u64);
+        state.extend(raw);
+        return Ok(());
+    }
+    // Protocols 2-4: bytearray(bytes(...)) reduce path.
+    pickle_emit_global_opcode(state, "builtins", "bytearray");
+    let bytes_ptr = crate::alloc_bytes(_py, raw);
+    if bytes_ptr.is_null() {
+        return Err(MoltObject::none().bits());
+    }
+    let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
+    let dumped = pickle_dump_obj_binary(_py, state, bytes_bits, true);
+    dec_ref_bits(_py, bytes_bits);
+    dumped?;
+    state.push(PICKLE_OP_TUPLE1);
+    state.push(PICKLE_OP_REDUCE);
+    Ok(())
+}
+
+fn pickle_long_bytes_from_i64(value: i64) -> Vec<u8> {
+    let mut raw = value.to_le_bytes().to_vec();
+    while raw.len() > 1 {
+        let last = raw[raw.len() - 1];
+        let prev = raw[raw.len() - 2];
+        let drop_zero = last == 0x00 && (prev & 0x80) == 0;
+        let drop_ff = last == 0xff && (prev & 0x80) != 0;
+        if drop_zero || drop_ff {
+            raw.pop();
+        } else {
+            break;
+        }
+    }
+    raw
+}
+
+fn pickle_dump_int_binary(state: &mut PickleDumpState, value: i64) {
+    if (0..=u8::MAX as i64).contains(&value) {
+        state.push(PICKLE_OP_BININT1);
+        state.push(value as u8);
+        return;
+    }
+    if (0..=u16::MAX as i64).contains(&value) {
+        state.push(PICKLE_OP_BININT2);
+        state.extend(&(value as u16).to_le_bytes());
+        return;
+    }
+    if (i32::MIN as i64..=i32::MAX as i64).contains(&value) {
+        state.push(PICKLE_OP_BININT);
+        state.extend(&(value as i32).to_le_bytes());
+        return;
+    }
+    let raw = pickle_long_bytes_from_i64(value);
+    if raw.len() <= u8::MAX as usize {
+        state.push(PICKLE_OP_LONG1);
+        state.push(raw.len() as u8);
+        state.extend(raw.as_slice());
+    } else {
+        state.push(PICKLE_OP_LONG4);
+        pickle_emit_u32_le(state, raw.len() as u32);
+        state.extend(raw.as_slice());
+    }
+}
+
+fn pickle_dump_float_binary(state: &mut PickleDumpState, value: f64) {
+    state.push(PICKLE_OP_BINFLOAT);
+    state.extend(&value.to_bits().to_be_bytes());
+}
+
+fn pickle_dump_maybe_persistent(
+    _py: &crate::PyToken<'_>,
+    state: &mut PickleDumpState,
+    obj_bits: u64,
+) -> Result<bool, u64> {
+    let Some(callback_bits) = state.persistent_id_bits else {
+        return Ok(false);
+    };
+    let pid_bits = unsafe { call_callable1(_py, callback_bits, obj_bits) };
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    if obj_from_bits(pid_bits).is_none() {
+        return Ok(false);
+    }
+    if state.protocol == 0
+        && let Some(pid_text) = string_obj_to_owned(obj_from_bits(pid_bits))
+    {
+        state.push(PICKLE_OP_PERSID);
+        state.extend(pid_text.as_bytes());
+        state.push(b'\n');
+        return Ok(true);
+    }
+    pickle_dump_obj_binary(_py, state, pid_bits, false)?;
+    state.push(PICKLE_OP_BINPERSID);
+    Ok(true)
+}
+
+fn pickle_buffer_value_to_bytes(
+    _py: &crate::PyToken<'_>,
+    value_bits: u64,
+    context: &str,
+) -> Result<u64, u64> {
+    if let Some(ptr) = obj_from_bits(value_bits).as_ptr()
+        && let Some(raw) = unsafe { bytes_like_slice(ptr) }
+    {
+        let out_ptr = crate::alloc_bytes(_py, raw);
+        if out_ptr.is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        return Ok(MoltObject::from_ptr(out_ptr).bits());
+    }
+    let msg = format!("pickle.loads: {context} must provide a bytes-like payload");
+    Err(pickle_raise(_py, &msg))
+}
+
+fn pickle_buffer_value_to_memoryview(
+    _py: &crate::PyToken<'_>,
+    value_bits: u64,
+    context: &str,
+) -> Result<u64, u64> {
+    let view_bits = crate::molt_memoryview_new(value_bits);
+    if exception_pending(_py) {
+        let msg = format!("pickle.loads: {context} must provide a bytes-like payload");
+        return Err(pickle_raise(_py, &msg));
+    }
+    Ok(view_bits)
+}
+
+fn pickle_external_buffer_to_memoryview(
+    _py: &crate::PyToken<'_>,
+    item_bits: u64,
+) -> Result<u64, u64> {
+    if let Ok(bits) = pickle_buffer_value_to_memoryview(_py, item_bits, "out-of-band buffer") {
+        return Ok(bits);
+    }
+    if let Some(raw_method_bits) = pickle_attr_optional(_py, item_bits, b"raw")? {
+        let raw_bits = unsafe { call_callable0(_py, raw_method_bits) };
+        dec_ref_bits(_py, raw_method_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        return pickle_buffer_value_to_memoryview(_py, raw_bits, "out-of-band buffer");
+    }
+    Err(pickle_raise(
+        _py,
+        "pickle.loads: out-of-band buffer must be bytes-like or expose raw()",
+    ))
+}
+
+fn pickle_next_external_buffer_bits(
+    _py: &crate::PyToken<'_>,
+    buffers_iter_bits: Option<u64>,
+) -> Result<u64, u64> {
+    let Some(iter_bits) = buffers_iter_bits else {
+        return Err(pickle_raise(
+            _py,
+            "pickle.loads: NEXT_BUFFER requires buffers argument",
+        ));
+    };
+    let (item_bits, done) = iter_next_pair(_py, iter_bits)?;
+    if done {
+        return Err(pickle_raise(
+            _py,
+            "pickle.loads: not enough out-of-band buffers",
+        ));
+    }
+    pickle_external_buffer_to_memoryview(_py, item_bits)
+}
+
+fn pickle_dump_maybe_out_of_band_buffer(
+    _py: &crate::PyToken<'_>,
+    state: &mut PickleDumpState,
+    obj_bits: u64,
+    readonly: bool,
+) -> Result<bool, u64> {
+    let Some(callback_bits) = state.buffer_callback_bits else {
+        return Ok(false);
+    };
+    if state.protocol < PICKLE_PROTO_5 {
+        return Ok(false);
+    }
+    let callback_result_bits = unsafe { call_callable1(_py, callback_bits, obj_bits) };
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let in_band = is_truthy(_py, obj_from_bits(callback_result_bits));
+    if !obj_from_bits(callback_result_bits).is_none() {
+        dec_ref_bits(_py, callback_result_bits);
+    }
+    if in_band {
+        return Ok(false);
+    }
+    state.push(PICKLE_OP_NEXT_BUFFER);
+    if readonly {
+        state.push(PICKLE_OP_READONLY_BUFFER);
+    }
+    // Do NOT memo out-of-band buffers — each reference must emit its own
+    // NEXT_BUFFER opcode so every buffer slot is consumed during loads.
+    Ok(true)
+}
+
+fn pickle_extract_picklebuffer_payload(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> Result<Option<(u64, bool)>, u64> {
+    let marker_bits = match pickle_attr_optional(_py, obj_bits, b"__molt_pickle_buffer__")? {
+        Some(bits) => bits,
+        None => return Ok(None),
+    };
+    let is_marker = is_truthy(_py, obj_from_bits(marker_bits));
+    dec_ref_bits(_py, marker_bits);
+    if !is_marker {
+        return Ok(None);
+    }
+    let raw_method_bits = pickle_attr_required(_py, obj_bits, b"raw")?;
+    let raw_bits = unsafe { call_callable0(_py, raw_method_bits) };
+    dec_ref_bits(_py, raw_method_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let readonly = if let Some(raw_ptr) = obj_from_bits(raw_bits).as_ptr() {
+        let raw_type = unsafe { object_type_id(raw_ptr) };
+        if raw_type == crate::TYPE_ID_BYTEARRAY {
+            false
+        } else if raw_type == crate::TYPE_ID_MEMORYVIEW {
+            unsafe { crate::memoryview_readonly(raw_ptr) }
+        } else {
+            true
+        }
+    } else {
+        true
+    };
+    let payload_bits = pickle_buffer_value_to_bytes(_py, raw_bits, "PickleBuffer.raw() payload");
+    if !obj_from_bits(raw_bits).is_none() {
+        dec_ref_bits(_py, raw_bits);
+    }
+    payload_bits.map(|bits| Some((bits, readonly)))
+}
+
+fn pickle_dispatch_reducer_from_table(
+    _py: &crate::PyToken<'_>,
+    dispatch_table_bits: u64,
+    obj_bits: u64,
+) -> Result<Option<u64>, u64> {
+    let Some(ptr) = obj_from_bits(dispatch_table_bits).as_ptr() else {
+        return Ok(None);
+    };
+    if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
+        return Ok(None);
+    }
+    let type_bits = type_of_bits(_py, obj_bits);
+    let reducer_bits = unsafe { dict_get_in_place(_py, ptr, type_bits) };
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let Some(reducer_bits) = reducer_bits else {
+        return Ok(None);
+    };
+    let out_bits = unsafe { call_callable1(_py, reducer_bits, obj_bits) };
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    Ok(Some(out_bits))
+}
+
+fn pickle_reduce_value(
+    _py: &crate::PyToken<'_>,
+    state: &mut PickleDumpState,
+    obj_bits: u64,
+) -> Result<Option<u64>, u64> {
+    if let Some(dispatch_bits) = state.dispatch_table_bits
+        && let Some(reduced) = pickle_dispatch_reducer_from_table(_py, dispatch_bits, obj_bits)?
+    {
+        return Ok(Some(reduced));
+    }
+    if let Some(reduce_ex_bits) = pickle_attr_optional(_py, obj_bits, b"__reduce_ex__")? {
+        let out_bits = unsafe {
+            call_callable1(
+                _py,
+                reduce_ex_bits,
+                MoltObject::from_int(state.protocol).bits(),
+            )
+        };
+        dec_ref_bits(_py, reduce_ex_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        return Ok(Some(out_bits));
+    }
+    if let Some(reduce_bits) = pickle_attr_optional(_py, obj_bits, b"__reduce__")? {
+        let out_bits = unsafe { call_callable0(_py, reduce_bits) };
+        dec_ref_bits(_py, reduce_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        return Ok(Some(out_bits));
+    }
+    Ok(None)
+}
+
+fn pickle_dump_items_from_iterable(
+    _py: &crate::PyToken<'_>,
+    state: &mut PickleDumpState,
+    values_bits: u64,
+    dict_items: bool,
+    iterator_error_prefix: &str,
+) -> Result<(), u64> {
+    let iter_bits = molt_iter(values_bits);
+    if exception_pending(_py) {
+        clear_exception(_py);
+        let value_type = type_name(_py, obj_from_bits(values_bits));
+        let msg = format!("{iterator_error_prefix}{value_type}");
+        return Err(pickle_raise(_py, &msg));
+    }
+    state.push(PICKLE_OP_MARK);
+    loop {
+        let (item_bits, done) = iter_next_pair(_py, iter_bits)?;
+        if done {
+            break;
+        }
+        if dict_items {
+            let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
+                return Err(raise_exception(
+                    _py,
+                    "TypeError",
+                    "dict items iterator must return 2-tuples",
+                ));
+            };
+            if unsafe { object_type_id(item_ptr) } != TYPE_ID_TUPLE {
+                return Err(raise_exception(
+                    _py,
+                    "TypeError",
+                    "dict items iterator must return 2-tuples",
+                ));
+            }
+            let fields = unsafe { seq_vec_ref(item_ptr) };
+            if fields.len() != 2 {
+                return Err(raise_exception(
+                    _py,
+                    "TypeError",
+                    "dict items iterator must return 2-tuples",
+                ));
+            }
+            pickle_dump_obj_binary(_py, state, fields[0], true)?;
+            pickle_dump_obj_binary(_py, state, fields[1], true)?;
+        } else {
+            pickle_dump_obj_binary(_py, state, item_bits, true)?;
+        }
+    }
+    if dict_items {
+        state.push(PICKLE_OP_SETITEMS);
+    } else {
+        state.push(PICKLE_OP_APPENDS);
+    }
+    Ok(())
+}
+
+fn pickle_dump_reduce_value(
+    _py: &crate::PyToken<'_>,
+    state: &mut PickleDumpState,
+    reduce_bits: u64,
+    obj_bits: Option<u64>,
+) -> Result<(), u64> {
+    let Some(ptr) = obj_from_bits(reduce_bits).as_ptr() else {
+        return Err(pickle_raise(
+            _py,
+            "__reduce__ must return a string or tuple",
+        ));
+    };
+    let reduce_type = unsafe { object_type_id(ptr) };
+    if reduce_type == TYPE_ID_STRING {
+        let Some(global_name) = string_obj_to_owned(obj_from_bits(reduce_bits)) else {
+            return Err(pickle_raise(
+                _py,
+                "__reduce__ must return a string or tuple",
+            ));
+        };
+        let Some(obj_bits) = obj_bits else {
+            return Err(pickle_raise(
+                _py,
+                "__reduce__ must return a string or tuple",
+            ));
+        };
+        let Some(module_bits) = pickle_attr_optional(_py, obj_bits, b"__module__")? else {
+            return Err(pickle_raise(
+                _py,
+                "__reduce__ must return a string or tuple",
+            ));
+        };
+        let Some(module_name) = string_obj_to_owned(obj_from_bits(module_bits)) else {
+            dec_ref_bits(_py, module_bits);
+            return Err(pickle_raise(
+                _py,
+                "__reduce__ must return a string or tuple",
+            ));
+        };
+        dec_ref_bits(_py, module_bits);
+        let resolved_bits =
+            pickle_resolve_global_bits(_py, module_name.as_str(), global_name.as_str())?;
+        let matches = resolved_bits == obj_bits;
+        if !obj_from_bits(resolved_bits).is_none() {
+            dec_ref_bits(_py, resolved_bits);
+        }
+        if !matches {
+            let obj_type = type_name(_py, obj_from_bits(obj_bits));
+            let msg = format!(
+                "Can't pickle {obj_type}: it's not the same object as {}.{}",
+                module_name, global_name
+            );
+            return Err(pickle_raise(_py, &msg));
+        }
+        if state.protocol >= PICKLE_PROTO_4 {
+            pickle_dump_unicode_binary(_py, state, module_name.as_str())?;
+            pickle_dump_unicode_binary(_py, state, global_name.as_str())?;
+            state.push(PICKLE_OP_STACK_GLOBAL);
+        } else {
+            pickle_emit_global_opcode(state, module_name.as_str(), global_name.as_str());
+        }
+        let _ = pickle_memo_store_if_absent(state, obj_bits);
+        return Ok(());
+    }
+    if reduce_type != TYPE_ID_TUPLE {
+        return Err(pickle_raise(
+            _py,
+            "__reduce__ must return a string or tuple",
+        ));
+    }
+    let fields = unsafe { seq_vec_ref(ptr) };
+    if !(2..=6).contains(&fields.len()) {
+        return Err(pickle_raise(
+            _py,
+            "tuple returned by __reduce__ must contain 2 through 6 elements",
+        ));
+    }
+    let callable_bits = fields[0];
+    let callable_check = molt_is_callable(callable_bits);
+    if !is_truthy(_py, obj_from_bits(callable_check)) {
+        return Err(pickle_raise(
+            _py,
+            "first item of the tuple returned by __reduce__ must be callable",
+        ));
+    }
+    let args_bits = fields[1];
+    let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
+        return Err(pickle_raise(
+            _py,
+            "second item of the tuple returned by __reduce__ must be a tuple",
+        ));
+    };
+    if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
+        return Err(pickle_raise(
+            _py,
+            "second item of the tuple returned by __reduce__ must be a tuple",
+        ));
+    }
+    if fields.len() >= 4 && !obj_from_bits(fields[3]).is_none() {
+        let iter_bits = molt_iter(fields[3]);
+        if exception_pending(_py) {
+            clear_exception(_py);
+            let value_type = type_name(_py, obj_from_bits(fields[3]));
+            let msg = format!(
+                "fourth element of the tuple returned by __reduce__ must be an iterator, not {value_type}"
+            );
+            return Err(pickle_raise(_py, &msg));
+        }
+        if !obj_from_bits(iter_bits).is_none() {
+            dec_ref_bits(_py, iter_bits);
+        }
+    }
+    if fields.len() >= 5 && !obj_from_bits(fields[4]).is_none() {
+        let iter_bits = molt_iter(fields[4]);
+        if exception_pending(_py) {
+            clear_exception(_py);
+            let value_type = type_name(_py, obj_from_bits(fields[4]));
+            let msg = format!(
+                "fifth element of the tuple returned by __reduce__ must be an iterator, not {value_type}"
+            );
+            return Err(pickle_raise(_py, &msg));
+        }
+        if !obj_from_bits(iter_bits).is_none() {
+            dec_ref_bits(_py, iter_bits);
+        }
+    }
+    if fields.len() >= 6 && !obj_from_bits(fields[5]).is_none() {
+        let setter_check = molt_is_callable(fields[5]);
+        if !is_truthy(_py, obj_from_bits(setter_check)) {
+            let value_type = type_name(_py, obj_from_bits(fields[5]));
+            let msg = format!(
+                "sixth element of the tuple returned by __reduce__ must be a function, not {value_type}"
+            );
+            return Err(pickle_raise(_py, &msg));
+        }
+    }
+    pickle_dump_obj_binary(_py, state, callable_bits, true)?;
+    pickle_dump_obj_binary(_py, state, args_bits, true)?;
+    state.push(PICKLE_OP_REDUCE);
+    if let Some(bits) = obj_bits {
+        let _ = pickle_memo_store_if_absent(state, bits);
+    }
+    let state_bits = if fields.len() >= 3 {
+        Some(fields[2])
+    } else {
+        None
+    };
+    let state_setter_bits = if fields.len() >= 6 {
+        Some(fields[5])
+    } else {
+        None
+    };
+    if let Some(state_bits) = state_bits
+        && !obj_from_bits(state_bits).is_none()
+    {
+        if let Some(state_setter_bits) = state_setter_bits {
+            if !obj_from_bits(state_setter_bits).is_none() {
+                let Some(obj_bits) = obj_bits else {
+                    return Err(pickle_raise(
+                        _py,
+                        "pickle reducer state_setter requires object context",
+                    ));
+                };
+                pickle_dump_obj_binary(_py, state, state_setter_bits, true)?;
+                pickle_dump_obj_binary(_py, state, obj_bits, true)?;
+                pickle_dump_obj_binary(_py, state, state_bits, true)?;
+                state.push(PICKLE_OP_TUPLE2);
+                state.push(PICKLE_OP_REDUCE);
+                state.push(PICKLE_OP_POP);
+            } else {
+                pickle_dump_obj_binary(_py, state, state_bits, true)?;
+                state.push(PICKLE_OP_BUILD);
+            }
+        } else {
+            pickle_dump_obj_binary(_py, state, state_bits, true)?;
+            state.push(PICKLE_OP_BUILD);
+        }
+    }
+    if fields.len() >= 4 && !obj_from_bits(fields[3]).is_none() {
+        pickle_dump_items_from_iterable(
+            _py,
+            state,
+            fields[3],
+            false,
+            "fourth element of the tuple returned by __reduce__ must be an iterator, not ",
+        )?;
+    }
+    if fields.len() >= 5 && !obj_from_bits(fields[4]).is_none() {
+        pickle_dump_items_from_iterable(
+            _py,
+            state,
+            fields[4],
+            true,
+            "fifth element of the tuple returned by __reduce__ must be an iterator, not ",
+        )?;
+    }
+    Ok(())
+}
+
+fn pickle_empty_tuple_bits(_py: &crate::PyToken<'_>) -> Result<u64, u64> {
+    let tuple_ptr = alloc_tuple(_py, &[]);
+    if tuple_ptr.is_null() {
+        Err(MoltObject::none().bits())
+    } else {
+        Ok(MoltObject::from_ptr(tuple_ptr).bits())
+    }
+}
+
+fn pickle_require_tuple_bits(
+    _py: &crate::PyToken<'_>,
+    bits: u64,
+    context: &str,
+) -> Result<(), u64> {
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        let msg = format!("pickle.dumps: {context} must be tuple");
+        return Err(pickle_raise(_py, &msg));
+    };
+    if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
+        let msg = format!("pickle.dumps: {context} must be tuple");
+        return Err(pickle_raise(_py, &msg));
+    }
+    Ok(())
+}
+
+fn pickle_require_dict_bits(_py: &crate::PyToken<'_>, bits: u64, context: &str) -> Result<(), u64> {
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        let msg = format!("pickle.dumps: {context} must be dict");
+        return Err(pickle_raise(_py, &msg));
+    };
+    if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
+        let msg = format!("pickle.dumps: {context} must be dict");
+        return Err(pickle_raise(_py, &msg));
+    }
+    Ok(())
+}
+
+fn pickle_default_newobj_args(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> Result<(u64, Option<u64>), u64> {
+    if let Some(getnewargs_ex_bits) = pickle_attr_optional(_py, obj_bits, b"__getnewargs_ex__")? {
+        let out_bits = unsafe { call_callable0(_py, getnewargs_ex_bits) };
+        dec_ref_bits(_py, getnewargs_ex_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        let Some(tuple_ptr) = obj_from_bits(out_bits).as_ptr() else {
+            if !obj_from_bits(out_bits).is_none() {
+                dec_ref_bits(_py, out_bits);
+            }
+            return Err(pickle_raise(
+                _py,
+                "pickle.dumps: __getnewargs_ex__ must return tuple(size=2)",
+            ));
+        };
+        if unsafe { object_type_id(tuple_ptr) } != TYPE_ID_TUPLE {
+            dec_ref_bits(_py, out_bits);
+            return Err(pickle_raise(
+                _py,
+                "pickle.dumps: __getnewargs_ex__ must return tuple(size=2)",
+            ));
+        }
+        let fields = unsafe { seq_vec_ref(tuple_ptr).to_vec() };
+        if fields.len() != 2 {
+            dec_ref_bits(_py, out_bits);
+            return Err(pickle_raise(
+                _py,
+                "pickle.dumps: __getnewargs_ex__ must return tuple(size=2)",
+            ));
+        }
+        let args_bits = fields[0];
+        let kwargs_bits = fields[1];
+        pickle_require_tuple_bits(_py, args_bits, "__getnewargs_ex__ args")?;
+        pickle_require_dict_bits(_py, kwargs_bits, "__getnewargs_ex__ kwargs")?;
+        inc_ref_bits(_py, args_bits);
+        inc_ref_bits(_py, kwargs_bits);
+        dec_ref_bits(_py, out_bits);
+        return Ok((args_bits, Some(kwargs_bits)));
+    }
+
+    if let Some(getnewargs_bits) = pickle_attr_optional(_py, obj_bits, b"__getnewargs__")? {
+        let args_bits = unsafe { call_callable0(_py, getnewargs_bits) };
+        dec_ref_bits(_py, getnewargs_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        if let Err(err_bits) = pickle_require_tuple_bits(_py, args_bits, "__getnewargs__ value") {
+            if !obj_from_bits(args_bits).is_none() {
+                dec_ref_bits(_py, args_bits);
+            }
+            return Err(err_bits);
+        }
+        return Ok((args_bits, None));
+    }
+
+    Ok((pickle_empty_tuple_bits(_py)?, None))
+}
+
+fn pickle_dataclass_state_bits(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Result<Option<u64>, u64> {
+    let desc_ptr = unsafe { crate::dataclass_desc_ptr(ptr) };
+    if desc_ptr.is_null() {
+        return Ok(None);
+    }
+
+    if unsafe { (*desc_ptr).slots } {
+        let slot_state_ptr = alloc_dict_with_pairs(_py, &[]);
+        if slot_state_ptr.is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        let slot_state_bits = MoltObject::from_ptr(slot_state_ptr).bits();
+        let mut wrote_any = false;
+        let field_values = unsafe { crate::dataclass_fields_ref(ptr) };
+        let field_names = unsafe { &(*desc_ptr).field_names };
+        for (name, value_bits) in field_names.iter().zip(field_values.iter().copied()) {
+            let Some(name_bits) = alloc_string_bits(_py, name) else {
+                dec_ref_bits(_py, slot_state_bits);
+                return Err(MoltObject::none().bits());
+            };
+            unsafe {
+                crate::dict_set_in_place(_py, slot_state_ptr, name_bits, value_bits);
+            }
+            dec_ref_bits(_py, name_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, slot_state_bits);
+                return Err(MoltObject::none().bits());
+            }
+            wrote_any = true;
+        }
+        if !wrote_any {
+            dec_ref_bits(_py, slot_state_bits);
+            return Ok(None);
+        }
+        let tuple_ptr = alloc_tuple(_py, &[MoltObject::none().bits(), slot_state_bits]);
+        dec_ref_bits(_py, slot_state_bits);
+        if tuple_ptr.is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        return Ok(Some(MoltObject::from_ptr(tuple_ptr).bits()));
+    }
+
+    if !unsafe { (*desc_ptr).slots } {
+        let dict_bits = unsafe { crate::dataclass_dict_bits(ptr) };
+        if dict_bits != 0
+            && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+            && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
+            && !unsafe { crate::dict_order(dict_ptr).is_empty() }
+        {
+            inc_ref_bits(_py, dict_bits);
+            return Ok(Some(dict_bits));
+        }
+    }
+
+    let state_ptr = alloc_dict_with_pairs(_py, &[]);
+    if state_ptr.is_null() {
+        return Err(MoltObject::none().bits());
+    }
+    let state_bits = MoltObject::from_ptr(state_ptr).bits();
+    let mut wrote_any = false;
+
+    let field_values = unsafe { crate::dataclass_fields_ref(ptr) };
+    let field_names = unsafe { &(*desc_ptr).field_names };
+    for (name, value_bits) in field_names.iter().zip(field_values.iter().copied()) {
+        let Some(name_bits) = alloc_string_bits(_py, name) else {
+            dec_ref_bits(_py, state_bits);
+            return Err(MoltObject::none().bits());
+        };
+        unsafe {
+            crate::dict_set_in_place(_py, state_ptr, name_bits, value_bits);
+        }
+        dec_ref_bits(_py, name_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, state_bits);
+            return Err(MoltObject::none().bits());
+        }
+        wrote_any = true;
+    }
+
+    let extra_bits = unsafe { crate::dataclass_dict_bits(ptr) };
+    if extra_bits != 0
+        && let Some(extra_ptr) = obj_from_bits(extra_bits).as_ptr()
+        && unsafe { object_type_id(extra_ptr) } == TYPE_ID_DICT
+    {
+        let pairs = unsafe { crate::dict_order(extra_ptr).to_vec() };
+        let mut idx = 0usize;
+        while idx + 1 < pairs.len() {
+            unsafe {
+                crate::dict_set_in_place(_py, state_ptr, pairs[idx], pairs[idx + 1]);
+            }
+            if exception_pending(_py) {
+                dec_ref_bits(_py, state_bits);
+                return Err(MoltObject::none().bits());
+            }
+            wrote_any = true;
+            idx += 2;
+        }
+    }
+
+    if !wrote_any {
+        dec_ref_bits(_py, state_bits);
+        return Ok(None);
+    }
+    Ok(Some(state_bits))
+}
+
+fn pickle_object_slot_state_bits(
+    _py: &crate::PyToken<'_>,
+    ptr: *mut u8,
+) -> Result<Option<u64>, u64> {
+    let class_bits = unsafe { object_class_bits(ptr) };
+    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        return Ok(None);
+    };
+    if unsafe { object_type_id(class_ptr) } != crate::TYPE_ID_TYPE {
+        return Ok(None);
+    }
+
+    let class_dict_bits = unsafe { crate::class_dict_bits(class_ptr) };
+    let Some(class_dict_ptr) = obj_from_bits(class_dict_bits).as_ptr() else {
+        return Ok(None);
+    };
+    if unsafe { object_type_id(class_dict_ptr) } != TYPE_ID_DICT {
+        return Ok(None);
+    }
+
+    let Some(offsets_name_bits) = attr_name_bits_from_bytes(_py, b"__molt_field_offsets__") else {
+        return Err(MoltObject::none().bits());
+    };
+    let offsets_bits = unsafe { dict_get_in_place(_py, class_dict_ptr, offsets_name_bits) };
+    dec_ref_bits(_py, offsets_name_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let Some(offsets_bits) = offsets_bits else {
+        return Ok(None);
+    };
+    let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr() else {
+        return Ok(None);
+    };
+    if unsafe { object_type_id(offsets_ptr) } != TYPE_ID_DICT {
+        return Ok(None);
+    }
+
+    let slot_state_ptr = alloc_dict_with_pairs(_py, &[]);
+    if slot_state_ptr.is_null() {
+        return Err(MoltObject::none().bits());
+    }
+    let slot_state_bits = MoltObject::from_ptr(slot_state_ptr).bits();
+    let mut wrote_any = false;
+    let pairs = unsafe { crate::dict_order(offsets_ptr).to_vec() };
+    let mut idx = 0usize;
+    while idx + 1 < pairs.len() {
+        let name_bits = pairs[idx];
+        let offset_bits = pairs[idx + 1];
+        idx += 2;
+        let Some(offset) = to_i64(obj_from_bits(offset_bits)) else {
+            continue;
+        };
+        if offset < 0 {
+            continue;
+        }
+        let value_bits = unsafe { crate::object_field_get_ptr_raw(_py, ptr, offset as usize) };
+        if exception_pending(_py) {
+            dec_ref_bits(_py, slot_state_bits);
+            return Err(MoltObject::none().bits());
+        }
+        if value_bits == missing_bits(_py) {
+            dec_ref_bits(_py, value_bits);
+            continue;
+        }
+        unsafe {
+            crate::dict_set_in_place(_py, slot_state_ptr, name_bits, value_bits);
+        }
+        dec_ref_bits(_py, value_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, slot_state_bits);
+            return Err(MoltObject::none().bits());
+        }
+        wrote_any = true;
+    }
+    if !wrote_any {
+        dec_ref_bits(_py, slot_state_bits);
+        return Ok(None);
+    }
+    Ok(Some(slot_state_bits))
+}
+
+fn pickle_object_state_bits(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    ptr: *mut u8,
+) -> Result<Option<u64>, u64> {
+    let mut dict_state_bits: Option<u64> = None;
+    // Try the fast path first: trailing __dict__ slot.
+    let dict_bits = unsafe { crate::instance_dict_bits(ptr) };
+    if dict_bits != 0
+        && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+        && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
+        && !unsafe { crate::dict_order(dict_ptr).is_empty() }
+    {
+        inc_ref_bits(_py, dict_bits);
+        dict_state_bits = Some(dict_bits);
+    }
+    // Fall back to getattr(__dict__) when the trailing slot is empty/missing.
+    // The compiler may store attributes in a dict accessible only through getattr.
+    if dict_state_bits.is_none()
+        && !exception_pending(_py)
+        && let Some(dict_name_bits) = attr_name_bits_from_bytes(_py, b"__dict__")
+    {
+        let missing = missing_bits(_py);
+        let attr_dict_bits = molt_getattr_builtin(obj_bits, dict_name_bits, missing);
+        dec_ref_bits(_py, dict_name_bits);
+        if !exception_pending(_py)
+            && attr_dict_bits != missing
+            && let Some(dict_ptr) = obj_from_bits(attr_dict_bits).as_ptr()
+            && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
+            && !unsafe { crate::dict_order(dict_ptr).is_empty() }
+        {
+            // attr_dict_bits already carries a reference from getattr.
+            dict_state_bits = Some(attr_dict_bits);
+        } else if attr_dict_bits != missing && !obj_from_bits(attr_dict_bits).is_none() {
+            dec_ref_bits(_py, attr_dict_bits);
+        }
+        // Clear AttributeError if __dict__ wasn't found.
+        if exception_pending(_py) {
+            clear_exception(_py);
+        }
+    }
+
+    let slot_state_bits = pickle_object_slot_state_bits(_py, ptr)?;
+    let Some(slot_state_bits) = slot_state_bits else {
+        return Ok(dict_state_bits);
+    };
+
+    let dict_or_none_bits = dict_state_bits.unwrap_or(MoltObject::none().bits());
+    let tuple_ptr = alloc_tuple(_py, &[dict_or_none_bits, slot_state_bits]);
+    if let Some(bits) = dict_state_bits {
+        dec_ref_bits(_py, bits);
+    }
+    dec_ref_bits(_py, slot_state_bits);
+    if tuple_ptr.is_null() {
+        return Err(MoltObject::none().bits());
+    }
+    Ok(Some(MoltObject::from_ptr(tuple_ptr).bits()))
+}
+
+fn pickle_default_instance_state(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    ptr: *mut u8,
+    type_id: u32,
+) -> Result<Option<u64>, u64> {
+    if let Some(getstate_bits) = pickle_attr_optional(_py, obj_bits, b"__getstate__")? {
+        let state_bits = unsafe { call_callable0(_py, getstate_bits) };
+        dec_ref_bits(_py, getstate_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        return Ok(Some(state_bits));
+    }
+    if type_id == crate::TYPE_ID_DATACLASS {
+        return pickle_dataclass_state_bits(_py, ptr);
+    }
+    if type_id == crate::TYPE_ID_OBJECT {
+        return pickle_object_state_bits(_py, obj_bits, ptr);
+    }
+    Ok(None)
+}
+
+fn pickle_dump_default_instance(
+    _py: &crate::PyToken<'_>,
+    state: &mut PickleDumpState,
+    obj_bits: u64,
+    ptr: *mut u8,
+    type_id: u32,
+) -> Result<bool, u64> {
+    if type_id != crate::TYPE_ID_OBJECT && type_id != crate::TYPE_ID_DATACLASS {
+        return Ok(false);
+    }
+    let cls_bits = unsafe { object_class_bits(ptr) };
+    if cls_bits == 0 || obj_from_bits(cls_bits).as_ptr().is_none() {
+        return Ok(false);
+    }
+
+    let (args_bits, kwargs_bits) = pickle_default_newobj_args(_py, obj_bits)?;
+    let result = (|| -> Result<(), u64> {
+        let mut kwargs_effective = kwargs_bits;
+        if let Some(bits) = kwargs_effective {
+            let Some(dict_ptr) = obj_from_bits(bits).as_ptr() else {
+                return Err(pickle_raise(_py, "pickle.dumps: kwargs must be dict"));
+            };
+            if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+                return Err(pickle_raise(_py, "pickle.dumps: kwargs must be dict"));
+            }
+            if unsafe { crate::dict_order(dict_ptr).is_empty() } {
+                kwargs_effective = None;
+            }
+        }
+
+        if let Some(kwargs_bits) = kwargs_effective {
+            if state.protocol >= PICKLE_PROTO_4 {
+                pickle_dump_obj_binary(_py, state, cls_bits, true)?;
+                pickle_dump_obj_binary(_py, state, args_bits, true)?;
+                pickle_dump_obj_binary(_py, state, kwargs_bits, true)?;
+                state.push(PICKLE_OP_NEWOBJ_EX);
+            } else {
+                pickle_emit_global_opcode(state, "copyreg", "__newobj_ex__");
+                pickle_dump_obj_binary(_py, state, cls_bits, true)?;
+                pickle_dump_obj_binary(_py, state, args_bits, true)?;
+                pickle_dump_obj_binary(_py, state, kwargs_bits, true)?;
+                state.push(PICKLE_OP_TUPLE3);
+                state.push(PICKLE_OP_REDUCE);
+            }
+        } else {
+            pickle_dump_obj_binary(_py, state, cls_bits, true)?;
+            pickle_dump_obj_binary(_py, state, args_bits, true)?;
+            state.push(PICKLE_OP_NEWOBJ);
+        }
+
+        let _ = pickle_memo_store_if_absent(state, obj_bits);
+        if let Some(state_bits) = pickle_default_instance_state(_py, obj_bits, ptr, type_id)? {
+            if !obj_from_bits(state_bits).is_none() {
+                pickle_dump_obj_binary(_py, state, state_bits, true)?;
+                state.push(PICKLE_OP_BUILD);
+            }
+            if !obj_from_bits(state_bits).is_none() {
+                dec_ref_bits(_py, state_bits);
+            }
+        }
+        Ok(())
+    })();
+
+    if !obj_from_bits(args_bits).is_none() {
+        dec_ref_bits(_py, args_bits);
+    }
+    if let Some(bits) = kwargs_bits
+        && !obj_from_bits(bits).is_none()
+    {
+        dec_ref_bits(_py, bits);
+    }
+    result.map(|()| true)
+}
+
+fn pickle_dump_obj_binary(
+    _py: &crate::PyToken<'_>,
+    state: &mut PickleDumpState,
+    obj_bits: u64,
+    allow_persistent_id: bool,
+) -> Result<(), u64> {
+    if state.depth >= PICKLE_RECURSION_LIMIT {
+        return Err(pickle_raise(
+            _py,
+            "pickle.dumps: maximum recursion depth exceeded",
+        ));
+    }
+    state.depth += 1;
+    let result = (|| -> Result<(), u64> {
+        if allow_persistent_id && pickle_dump_maybe_persistent(_py, state, obj_bits)? {
+            return Ok(());
+        }
+        if let Some(index) = pickle_memo_lookup(state, obj_bits) {
+            pickle_emit_memo_get(state, index);
+            return Ok(());
+        }
+        let obj = obj_from_bits(obj_bits);
+        if obj.is_none() {
+            state.push(PICKLE_OP_NONE);
+            return Ok(());
+        }
+        if let Some(value) = obj.as_bool() {
+            state.push(if value {
+                PICKLE_OP_NEWTRUE
+            } else {
+                PICKLE_OP_NEWFALSE
+            });
+            return Ok(());
+        }
+        if let Some(value) = obj.as_int() {
+            pickle_dump_int_binary(state, value);
+            return Ok(());
+        }
+        if let Some(value) = obj.as_float() {
+            pickle_dump_float_binary(state, value);
+            return Ok(());
+        }
+        let Some(ptr) = obj.as_ptr() else {
+            let type_name = type_name(_py, obj);
+            let msg = format!("pickle.dumps: unsupported type: {type_name}");
+            return Err(pickle_raise(_py, &msg));
+        };
+        let type_id = unsafe { object_type_id(ptr) };
+        if type_id == TYPE_ID_STRING {
+            let text = string_obj_to_owned(obj)
+                .ok_or_else(|| pickle_raise(_py, "pickle.dumps: string conversion failed"))?;
+            pickle_dump_unicode_binary(_py, state, text.as_str())?;
+            let _ = pickle_memo_store_if_absent(state, obj_bits);
+            return Ok(());
+        }
+        if type_id == crate::TYPE_ID_BYTES {
+            let raw = unsafe { bytes_like_slice(ptr) }
+                .ok_or_else(|| pickle_raise(_py, "pickle.dumps: bytes conversion failed"))?;
+            if state.protocol < PICKLE_PROTO_3 {
+                pickle_emit_global_opcode(state, "_codecs", "encode");
+                let latin1 = pickle_decode_latin1(raw);
+                pickle_dump_unicode_binary(_py, state, &latin1)?;
+                pickle_dump_unicode_binary(_py, state, "latin1")?;
+                state.push(PICKLE_OP_TUPLE2);
+                state.push(PICKLE_OP_REDUCE);
+            } else {
+                pickle_dump_bytes_binary(_py, state, raw)?;
+            }
+            let _ = pickle_memo_store_if_absent(state, obj_bits);
+            return Ok(());
+        }
+        if type_id == crate::TYPE_ID_BYTEARRAY {
+            let raw = unsafe { bytes_like_slice(ptr) }
+                .ok_or_else(|| pickle_raise(_py, "pickle.dumps: bytearray conversion failed"))?;
+            pickle_dump_bytearray_binary(_py, state, raw)?;
+            let _ = pickle_memo_store_if_absent(state, obj_bits);
+            return Ok(());
+        }
+        if let Some((payload_bits, readonly)) = pickle_extract_picklebuffer_payload(_py, obj_bits)?
+        {
+            if pickle_dump_maybe_out_of_band_buffer(_py, state, obj_bits, readonly)? {
+                if !obj_from_bits(payload_bits).is_none() {
+                    dec_ref_bits(_py, payload_bits);
+                }
+                return Ok(());
+            }
+            let Some(payload_ptr) = obj_from_bits(payload_bits).as_ptr() else {
+                return Err(pickle_raise(
+                    _py,
+                    "pickle.dumps: PickleBuffer.raw() must be bytes-like",
+                ));
+            };
+            let raw = unsafe { bytes_like_slice(payload_ptr) }.ok_or_else(|| {
+                pickle_raise(_py, "pickle.dumps: PickleBuffer.raw() must be bytes-like")
+            })?;
+            if readonly {
+                pickle_dump_bytes_binary(_py, state, raw)?;
+            } else {
+                pickle_dump_bytearray_binary(_py, state, raw)?;
+            }
+            if !obj_from_bits(payload_bits).is_none() {
+                dec_ref_bits(_py, payload_bits);
+            }
+            let _ = pickle_memo_store_if_absent(state, obj_bits);
+            return Ok(());
+        }
+        if type_id == TYPE_ID_TUPLE {
+            let values = unsafe { seq_vec_ref(ptr).to_vec() };
+            match values.len() {
+                0 => state.push(PICKLE_OP_EMPTY_TUPLE),
+                1 => {
+                    pickle_dump_obj_binary(_py, state, values[0], true)?;
+                    state.push(PICKLE_OP_TUPLE1);
+                }
+                2 => {
+                    pickle_dump_obj_binary(_py, state, values[0], true)?;
+                    pickle_dump_obj_binary(_py, state, values[1], true)?;
+                    state.push(PICKLE_OP_TUPLE2);
+                }
+                3 => {
+                    pickle_dump_obj_binary(_py, state, values[0], true)?;
+                    pickle_dump_obj_binary(_py, state, values[1], true)?;
+                    pickle_dump_obj_binary(_py, state, values[2], true)?;
+                    state.push(PICKLE_OP_TUPLE3);
+                }
+                _ => {
+                    state.push(PICKLE_OP_MARK);
+                    for entry in values {
+                        pickle_dump_obj_binary(_py, state, entry, true)?;
+                    }
+                    state.push(PICKLE_OP_TUPLE);
+                }
+            }
+            let _ = pickle_memo_store_if_absent(state, obj_bits);
+            return Ok(());
+        }
+        if type_id == TYPE_ID_LIST {
+            state.push(PICKLE_OP_EMPTY_LIST);
+            let _ = pickle_memo_store_if_absent(state, obj_bits);
+            let values = unsafe { seq_vec_ref(ptr).to_vec() };
+            if !values.is_empty() {
+                state.push(PICKLE_OP_MARK);
+                for entry in values {
+                    pickle_dump_obj_binary(_py, state, entry, true)?;
+                }
+                state.push(PICKLE_OP_APPENDS);
+            }
+            return Ok(());
+        }
+        if type_id == TYPE_ID_DICT {
+            state.push(PICKLE_OP_EMPTY_DICT);
+            let _ = pickle_memo_store_if_absent(state, obj_bits);
+            let pairs = unsafe { crate::dict_order(ptr).to_vec() };
+            if !pairs.is_empty() {
+                state.push(PICKLE_OP_MARK);
+                let mut idx = 0usize;
+                while idx + 1 < pairs.len() {
+                    pickle_dump_obj_binary(_py, state, pairs[idx], true)?;
+                    pickle_dump_obj_binary(_py, state, pairs[idx + 1], true)?;
+                    idx += 2;
+                }
+                state.push(PICKLE_OP_SETITEMS);
+            }
+            return Ok(());
+        }
+        if type_id == crate::TYPE_ID_SET {
+            if state.protocol >= PICKLE_PROTO_4 {
+                state.push(PICKLE_OP_EMPTY_SET);
+                let _ = pickle_memo_store_if_absent(state, obj_bits);
+                let values = unsafe { crate::set_order(ptr).to_vec() };
+                if !values.is_empty() {
+                    state.push(PICKLE_OP_MARK);
+                    for entry in values {
+                        pickle_dump_obj_binary(_py, state, entry, true)?;
+                    }
+                    state.push(PICKLE_OP_ADDITEMS);
+                }
+                return Ok(());
+            }
+            pickle_emit_global_opcode(state, "builtins", "set");
+            state.push(PICKLE_OP_EMPTY_LIST);
+            let values = unsafe { crate::set_order(ptr).to_vec() };
+            let _ = pickle_memo_store_if_absent(state, obj_bits);
+            if !values.is_empty() {
+                state.push(PICKLE_OP_MARK);
+                for entry in values {
+                    pickle_dump_obj_binary(_py, state, entry, true)?;
+                }
+                state.push(PICKLE_OP_APPENDS);
+            }
+            state.push(PICKLE_OP_TUPLE1);
+            state.push(PICKLE_OP_REDUCE);
+            return Ok(());
+        }
+        if type_id == crate::TYPE_ID_FROZENSET {
+            if state.protocol >= PICKLE_PROTO_4 {
+                state.push(PICKLE_OP_MARK);
+                let values = unsafe { crate::set_order(ptr).to_vec() };
+                for entry in values {
+                    pickle_dump_obj_binary(_py, state, entry, true)?;
+                }
+                state.push(PICKLE_OP_FROZENSET);
+                let _ = pickle_memo_store_if_absent(state, obj_bits);
+                return Ok(());
+            }
+            pickle_emit_global_opcode(state, "builtins", "frozenset");
+            state.push(PICKLE_OP_EMPTY_LIST);
+            let values = unsafe { crate::set_order(ptr).to_vec() };
+            if !values.is_empty() {
+                state.push(PICKLE_OP_MARK);
+                for entry in values {
+                    pickle_dump_obj_binary(_py, state, entry, true)?;
+                }
+                state.push(PICKLE_OP_APPENDS);
+            }
+            state.push(PICKLE_OP_TUPLE1);
+            state.push(PICKLE_OP_REDUCE);
+            let _ = pickle_memo_store_if_absent(state, obj_bits);
+            return Ok(());
+        }
+        if type_id == crate::TYPE_ID_SLICE {
+            pickle_emit_global_opcode(state, "builtins", "slice");
+            pickle_dump_obj_binary(_py, state, unsafe { crate::slice_start_bits(ptr) }, true)?;
+            pickle_dump_obj_binary(_py, state, unsafe { crate::slice_stop_bits(ptr) }, true)?;
+            pickle_dump_obj_binary(_py, state, unsafe { crate::slice_step_bits(ptr) }, true)?;
+            state.push(PICKLE_OP_TUPLE3);
+            state.push(PICKLE_OP_REDUCE);
+            let _ = pickle_memo_store_if_absent(state, obj_bits);
+            return Ok(());
+        }
+        if pickle_emit_global_ref(_py, state, obj_bits)? {
+            let _ = pickle_memo_store_if_absent(state, obj_bits);
+            return Ok(());
+        }
+        if let Some(reduce_bits) = pickle_reduce_value(_py, state, obj_bits)? {
+            let dumped = pickle_dump_reduce_value(_py, state, reduce_bits, Some(obj_bits));
+            if !obj_from_bits(reduce_bits).is_none() {
+                dec_ref_bits(_py, reduce_bits);
+            }
+            return dumped;
+        }
+        if pickle_dump_default_instance(_py, state, obj_bits, ptr, type_id)? {
+            return Ok(());
+        }
+        let type_name = type_name(_py, obj_from_bits(obj_bits));
+        let message = format!("cannot pickle '{type_name}' object");
+        Err(raise_exception::<u64>(_py, "TypeError", &message))
+    })();
+    state.depth = state.depth.saturating_sub(1);
+    result
+}
+
+fn pickle_apply_dict_state(
+    _py: &crate::PyToken<'_>,
+    inst_bits: u64,
+    dict_state_bits: u64,
+) -> Result<(), u64> {
+    if obj_from_bits(dict_state_bits).is_none() {
+        return Ok(());
+    }
+    let Some(state_ptr) = obj_from_bits(dict_state_bits).as_ptr() else {
+        return Err(pickle_raise(_py, "pickle.loads: BUILD state must be dict"));
+    };
+    if unsafe { object_type_id(state_ptr) } != TYPE_ID_DICT {
+        return Err(pickle_raise(_py, "pickle.loads: BUILD state must be dict"));
+    }
+
+    // Use setattr for each state entry. This correctly routes values to typed
+    // field slots (TYPE_ID_OBJECT), dataclass descriptor fields
+    // (TYPE_ID_DATACLASS), or __dict__ for fully dynamic instances.
+    let pairs = unsafe { crate::dict_order(state_ptr).to_vec() };
+    let mut idx = 0usize;
+    while idx + 1 < pairs.len() {
+        let key_bits = pairs[idx];
+        let value_bits = pairs[idx + 1];
+        idx += 2;
+        let _ = crate::molt_object_setattr(inst_bits, key_bits, value_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+    }
+    Ok(())
+}
+
+fn pickle_vm_item_to_bits(_py: &crate::PyToken<'_>, item: &PickleVmItem) -> Result<u64, u64> {
+    match item {
+        PickleVmItem::Value(bits) => Ok(*bits),
+        PickleVmItem::Global(global) => pickle_global_callable_bits(_py, *global),
+        PickleVmItem::Mark => Err(pickle_raise(_py, "pickle.loads: mark not found")),
+    }
+}
+
+fn pickle_vm_pop_mark_items(
+    _py: &crate::PyToken<'_>,
+    stack: &mut Vec<PickleVmItem>,
+) -> Result<Vec<PickleVmItem>, u64> {
+    let mut out: Vec<PickleVmItem> = Vec::new();
+    while let Some(item) = stack.pop() {
+        if matches!(item, PickleVmItem::Mark) {
+            out.reverse();
+            return Ok(out);
+        }
+        out.push(item);
+    }
+    Err(pickle_raise(_py, "pickle.loads: mark not found"))
+}
+
+fn pickle_vm_pop_value(
+    _py: &crate::PyToken<'_>,
+    stack: &mut Vec<PickleVmItem>,
+) -> Result<u64, u64> {
+    let item = stack
+        .pop()
+        .ok_or_else(|| pickle_raise(_py, "pickle.loads: stack underflow"))?;
+    pickle_vm_item_to_bits(_py, &item)
+}
+
+fn pickle_decode_8bit_string(
+    _py: &crate::PyToken<'_>,
+    raw: &[u8],
+    encoding: &str,
+    _errors: &str,
+) -> Result<u64, u64> {
+    if encoding.eq_ignore_ascii_case("bytes") {
+        let ptr = crate::alloc_bytes(_py, raw);
+        if ptr.is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        return Ok(MoltObject::from_ptr(ptr).bits());
+    }
+    let decoded = if encoding.eq_ignore_ascii_case("latin1")
+        || encoding.eq_ignore_ascii_case("latin-1")
+    {
+        raw.iter().map(|&b| char::from(b)).collect::<String>()
+    } else {
+        String::from_utf8(raw.to_vec())
+            .map_err(|_| pickle_raise(_py, "pickle.loads: unable to decode 8-bit string payload"))?
+    };
+    let ptr = alloc_string(_py, decoded.as_bytes());
+    if ptr.is_null() {
+        Err(MoltObject::none().bits())
+    } else {
+        Ok(MoltObject::from_ptr(ptr).bits())
+    }
+}
+
+fn pickle_resolve_global_bits(
+    _py: &crate::PyToken<'_>,
+    module: &str,
+    name: &str,
+) -> Result<u64, u64> {
+    let Some(module_bits) = alloc_string_bits(_py, module) else {
+        return Err(MoltObject::none().bits());
+    };
+    let imported_bits = crate::molt_module_import(module_bits);
+    dec_ref_bits(_py, module_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let Some(name_bits) = alloc_string_bits(_py, name) else {
+        if !obj_from_bits(imported_bits).is_none() {
+            dec_ref_bits(_py, imported_bits);
+        }
+        return Err(MoltObject::none().bits());
+    };
+    let value_bits = crate::molt_object_getattribute(imported_bits, name_bits);
+    dec_ref_bits(_py, name_bits);
+    if !obj_from_bits(imported_bits).is_none() {
+        dec_ref_bits(_py, imported_bits);
+    }
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    Ok(value_bits)
+}
+
+fn pickle_resolve_global_with_hook(
+    _py: &crate::PyToken<'_>,
+    module: &str,
+    name: &str,
+    find_class_bits: Option<u64>,
+) -> Result<u64, u64> {
+    if let Some(callback_bits) = find_class_bits {
+        let Some(module_bits) = alloc_string_bits(_py, module) else {
+            return Err(MoltObject::none().bits());
+        };
+        let Some(name_bits) = alloc_string_bits(_py, name) else {
+            dec_ref_bits(_py, module_bits);
+            return Err(MoltObject::none().bits());
+        };
+        let out_bits = unsafe { call_callable2(_py, callback_bits, module_bits, name_bits) };
+        dec_ref_bits(_py, module_bits);
+        dec_ref_bits(_py, name_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        return Ok(out_bits);
+    }
+    pickle_resolve_global_bits(_py, module, name)
+}
+
+fn pickle_lookup_extension_bits(
+    _py: &crate::PyToken<'_>,
+    code: i64,
+    find_class_bits: Option<u64>,
+) -> Result<u64, u64> {
+    let copyreg_bits = pickle_resolve_global_bits(_py, "copyreg", "_inverted_registry")?;
+    let Some(dict_ptr) = obj_from_bits(copyreg_bits).as_ptr() else {
+        dec_ref_bits(_py, copyreg_bits);
+        return Err(pickle_raise(
+            _py,
+            "pickle.loads: extension registry unavailable",
+        ));
+    };
+    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+        dec_ref_bits(_py, copyreg_bits);
+        return Err(pickle_raise(
+            _py,
+            "pickle.loads: extension registry unavailable",
+        ));
+    }
+    let code_bits = MoltObject::from_int(code).bits();
+    let entry_bits = unsafe { dict_get_in_place(_py, dict_ptr, code_bits) };
+    if exception_pending(_py) {
+        dec_ref_bits(_py, copyreg_bits);
+        return Err(MoltObject::none().bits());
+    }
+    let Some(entry_bits) = entry_bits else {
+        dec_ref_bits(_py, copyreg_bits);
+        return Err(pickle_raise(_py, "pickle.loads: unknown extension code"));
+    };
+    let Some(entry_ptr) = obj_from_bits(entry_bits).as_ptr() else {
+        dec_ref_bits(_py, copyreg_bits);
+        return Err(pickle_raise(_py, "pickle.loads: invalid extension entry"));
+    };
+    if unsafe { object_type_id(entry_ptr) } != TYPE_ID_TUPLE {
+        dec_ref_bits(_py, copyreg_bits);
+        return Err(pickle_raise(_py, "pickle.loads: invalid extension entry"));
+    }
+    let fields = unsafe { seq_vec_ref(entry_ptr) };
+    if fields.len() != 2 {
+        dec_ref_bits(_py, copyreg_bits);
+        return Err(pickle_raise(_py, "pickle.loads: invalid extension entry"));
+    }
+    let Some(module) = string_obj_to_owned(obj_from_bits(fields[0])) else {
+        dec_ref_bits(_py, copyreg_bits);
+        return Err(pickle_raise(_py, "pickle.loads: invalid extension entry"));
+    };
+    let Some(name) = string_obj_to_owned(obj_from_bits(fields[1])) else {
+        dec_ref_bits(_py, copyreg_bits);
+        return Err(pickle_raise(_py, "pickle.loads: invalid extension entry"));
+    };
+    dec_ref_bits(_py, copyreg_bits);
+    pickle_resolve_global_with_hook(_py, &module, &name, find_class_bits)
+}
+
+fn pickle_apply_newobj(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+    args_bits: u64,
+    kwargs_bits: Option<u64>,
+) -> Result<u64, u64> {
+    let new_bits = pickle_attr_required(_py, cls_bits, b"__new__")?;
+    let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
+        dec_ref_bits(_py, new_bits);
+        return Err(pickle_raise(_py, "pickle.loads: NEWOBJ args must be tuple"));
+    };
+    if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
+        dec_ref_bits(_py, new_bits);
+        return Err(pickle_raise(_py, "pickle.loads: NEWOBJ args must be tuple"));
+    }
+    let args = unsafe { seq_vec_ref(args_ptr).to_vec() };
+    let kw_len = if let Some(kw_bits) = kwargs_bits {
+        let Some(kw_ptr) = obj_from_bits(kw_bits).as_ptr() else {
+            dec_ref_bits(_py, new_bits);
+            return Err(pickle_raise(
+                _py,
+                "pickle.loads: NEWOBJ_EX kwargs must be dict",
+            ));
+        };
+        if unsafe { object_type_id(kw_ptr) } != TYPE_ID_DICT {
+            dec_ref_bits(_py, new_bits);
+            return Err(pickle_raise(
+                _py,
+                "pickle.loads: NEWOBJ_EX kwargs must be dict",
+            ));
+        }
+        unsafe { crate::dict_order(kw_ptr).len() / 2 }
+    } else {
+        0
+    };
+    let builder_bits = crate::molt_callargs_new((args.len() + 1) as u64, kw_len as u64);
+    let _ = unsafe { crate::molt_callargs_push_pos(builder_bits, cls_bits) };
+    if exception_pending(_py) {
+        dec_ref_bits(_py, new_bits);
+        return Err(MoltObject::none().bits());
+    }
+    for arg in args {
+        let _ = unsafe { crate::molt_callargs_push_pos(builder_bits, arg) };
+        if exception_pending(_py) {
+            dec_ref_bits(_py, new_bits);
+            return Err(MoltObject::none().bits());
+        }
+    }
+    if let Some(kw_bits) = kwargs_bits {
+        let kw_ptr = obj_from_bits(kw_bits).as_ptr().expect("checked above");
+        let pairs = unsafe { crate::dict_order(kw_ptr).to_vec() };
+        let mut idx = 0usize;
+        while idx + 1 < pairs.len() {
+            let key_bits = pairs[idx];
+            let val_bits = pairs[idx + 1];
+            let _ = unsafe { crate::molt_callargs_push_kw(builder_bits, key_bits, val_bits) };
+            if exception_pending(_py) {
+                dec_ref_bits(_py, new_bits);
+                return Err(MoltObject::none().bits());
+            }
+            idx += 2;
+        }
+    }
+    let out_bits = crate::molt_call_bind(new_bits, builder_bits);
+    dec_ref_bits(_py, new_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    // Initialize typed field slots to the missing sentinel so that
+    // uninitialized fields (from __new__ without __init__) are properly
+    // recognized as absent by hasattr/getattr.
+    pickle_init_missing_fields(_py, out_bits);
+    Ok(out_bits)
+}
+
+/// Initialize all typed field slots (and dataclass field values) to the missing
+/// sentinel. Called after NEWOBJ to ensure fields not populated by BUILD are
+/// correctly absent.
+fn pickle_init_missing_fields(_py: &crate::PyToken<'_>, inst_bits: u64) {
+    let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
+        return;
+    };
+    let type_id = unsafe { object_type_id(inst_ptr) };
+    let missing = missing_bits(_py);
+
+    if type_id == crate::TYPE_ID_OBJECT {
+        // Initialize typed field offsets to missing.
+        let class_bits = unsafe { object_class_bits(inst_ptr) };
+        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+            return;
+        };
+        if unsafe { object_type_id(class_ptr) } != crate::TYPE_ID_TYPE {
+            return;
+        }
+        let cd_bits = unsafe { crate::class_dict_bits(class_ptr) };
+        let Some(cd_ptr) = obj_from_bits(cd_bits).as_ptr() else {
+            return;
+        };
+        if unsafe { object_type_id(cd_ptr) } != TYPE_ID_DICT {
+            return;
+        }
+        let Some(offsets_name) = attr_name_bits_from_bytes(_py, b"__molt_field_offsets__") else {
+            return;
+        };
+        let offsets_bits = unsafe { crate::dict_get_in_place(_py, cd_ptr, offsets_name) };
+        dec_ref_bits(_py, offsets_name);
+        if exception_pending(_py) {
+            clear_exception(_py);
+            return;
+        }
+        let Some(offsets_bits) = offsets_bits else {
+            return;
+        };
+        let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr() else {
+            return;
+        };
+        if unsafe { object_type_id(offsets_ptr) } != TYPE_ID_DICT {
+            return;
+        }
+        let pairs = unsafe { crate::dict_order(offsets_ptr).to_vec() };
+        let mut idx = 0usize;
+        while idx + 1 < pairs.len() {
+            let offset_bits = pairs[idx + 1];
+            idx += 2;
+            if let Some(offset) = to_i64(obj_from_bits(offset_bits)).filter(|&v| v >= 0) {
+                unsafe {
+                    let slot = inst_ptr.add(offset as usize) as *mut u64;
+                    let old = *slot;
+                    if old != missing {
+                        inc_ref_bits(_py, missing);
+                        if obj_from_bits(old).as_ptr().is_some() {
+                            dec_ref_bits(_py, old);
+                        }
+                        *slot = missing;
+                    }
+                }
+            }
+        }
+    } else if type_id == crate::TYPE_ID_DATACLASS {
+        // Initialize dataclass field values to missing.
+        let desc_ptr = unsafe { crate::dataclass_desc_ptr(inst_ptr) };
+        if desc_ptr.is_null() {
+            return;
+        }
+        let fields = unsafe { crate::dataclass_fields_mut(inst_ptr) };
+        for val in fields.iter_mut() {
+            if *val != missing {
+                inc_ref_bits(_py, missing);
+                if obj_from_bits(*val).as_ptr().is_some() {
+                    dec_ref_bits(_py, *val);
+                }
+                *val = missing;
+            }
+        }
+    }
+}
+
+fn pickle_apply_build(
+    _py: &crate::PyToken<'_>,
+    inst_bits: u64,
+    state_bits: u64,
+) -> Result<u64, u64> {
+    if obj_from_bits(state_bits).is_none() {
+        return Ok(inst_bits);
+    }
+    if let Some(setstate_bits) = pickle_attr_optional(_py, inst_bits, b"__setstate__")? {
+        let _ = unsafe { call_callable1(_py, setstate_bits, state_bits) };
+        dec_ref_bits(_py, setstate_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+        return Ok(inst_bits);
+    }
+    let mut dict_state_bits = state_bits;
+    let mut slot_state_bits: Option<u64> = None;
+    if let Some(state_ptr) = obj_from_bits(state_bits).as_ptr()
+        && unsafe { object_type_id(state_ptr) } == TYPE_ID_TUPLE
+    {
+        let fields = unsafe { seq_vec_ref(state_ptr) };
+        if fields.len() == 2 {
+            dict_state_bits = fields[0];
+            slot_state_bits = Some(fields[1]);
+        }
+    }
+    pickle_apply_dict_state(_py, inst_bits, dict_state_bits)?;
+    if let Some(slot_bits) = slot_state_bits
+        && !obj_from_bits(slot_bits).is_none()
+    {
+        let Some(slot_ptr) = obj_from_bits(slot_bits).as_ptr() else {
+            return Err(pickle_raise(
+                _py,
+                "pickle.loads: BUILD slot state must be dict",
+            ));
+        };
+        if unsafe { object_type_id(slot_ptr) } != TYPE_ID_DICT {
+            return Err(pickle_raise(
+                _py,
+                "pickle.loads: BUILD slot state must be dict",
+            ));
+        }
+        let pairs = unsafe { crate::dict_order(slot_ptr).to_vec() };
+        let mut idx = 0usize;
+        while idx + 1 < pairs.len() {
+            let key_bits = pairs[idx];
+            let value_bits = pairs[idx + 1];
+            let _ = crate::molt_object_setattr(inst_bits, key_bits, value_bits);
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
+            }
+            idx += 2;
+        }
+    }
+    Ok(inst_bits)
+}
+
+fn pickle_apply_reduce_vm(
+    _py: &crate::PyToken<'_>,
+    callable: PickleVmItem,
+    args_bits: u64,
+) -> Result<u64, u64> {
+    let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
+        return Err(pickle_raise(_py, "pickle.loads: reduce args must be tuple"));
+    };
+    if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
+        return Err(pickle_raise(_py, "pickle.loads: reduce args must be tuple"));
+    }
+    let args = unsafe { seq_vec_ref(args_ptr).to_vec() };
+    let out_bits = match callable {
+        PickleVmItem::Mark => {
+            return Err(pickle_raise(_py, "pickle.loads: mark cannot be called"));
+        }
+        PickleVmItem::Global(PickleGlobal::CodecsEncode) => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(pickle_raise(
+                    _py,
+                    "pickle.loads: _codecs.encode expects 1 or 2 arguments",
+                ));
+            }
+            let Some(text) = string_obj_to_owned(obj_from_bits(args[0])) else {
+                return Err(pickle_raise(
+                    _py,
+                    "pickle.loads: _codecs.encode text must be str",
+                ));
+            };
+            let encoding = if args.len() == 1 {
+                "utf-8".to_string()
+            } else {
+                let Some(enc) = string_obj_to_owned(obj_from_bits(args[1])) else {
+                    return Err(pickle_raise(
+                        _py,
+                        "pickle.loads: _codecs.encode encoding must be str",
+                    ));
+                };
+                enc
+            };
+            pickle_encode_text(_py, &text, &encoding)?
+        }
+        PickleVmItem::Global(global) => {
+            let callable_bits = pickle_global_callable_bits(_py, global)?;
+            let out_bits = pickle_call_with_args(_py, callable_bits, args.as_slice());
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
+            }
+            out_bits
+        }
+        PickleVmItem::Value(callable_bits) => {
+            let out_bits = pickle_call_with_args(_py, callable_bits, args.as_slice());
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
+            }
+            out_bits
+        }
+    };
+    Ok(out_bits)
+}
+
+fn pickle_apply_reduce_bits(
+    _py: &crate::PyToken<'_>,
+    callable_bits: u64,
+    args_bits: u64,
+) -> Result<u64, u64> {
+    let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
+        return Err(pickle_raise(_py, "pickle.loads: reduce args must be tuple"));
+    };
+    if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
+        return Err(pickle_raise(_py, "pickle.loads: reduce args must be tuple"));
+    }
+    let args = unsafe { seq_vec_ref(args_ptr).to_vec() };
+    let out_bits = pickle_call_with_args(_py, callable_bits, args.as_slice());
+    if exception_pending(_py) {
+        Err(MoltObject::none().bits())
+    } else {
+        Ok(out_bits)
+    }
+}
+
+fn pickle_memo_set(
+    _py: &crate::PyToken<'_>,
+    memo: &mut Vec<Option<PickleVmItem>>,
+    index: usize,
+    item: PickleVmItem,
+) {
+    if memo.len() <= index {
+        memo.resize(index + 1, None);
+    }
+    memo[index] = Some(item);
+}
+
+fn pickle_memo_get(
+    _py: &crate::PyToken<'_>,
+    memo: &[Option<PickleVmItem>],
+    index: usize,
+) -> Result<PickleVmItem, u64> {
+    if let Some(Some(item)) = memo.get(index) {
+        return Ok(item.clone());
+    }
+    let msg = format!("pickle.loads: memo key {} missing", index);
+    Err(pickle_raise(_py, &msg))
+}
+
+    protocol_bits: u64,
+    _fix_imports_bits: u64,
+    persistent_id_bits: u64,
+    buffer_callback_bits: u64,
+    dispatch_table_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(protocol) = to_i64(obj_from_bits(protocol_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pickle protocol must be int");
+        };
+        if !(-1..=PICKLE_PROTO_5).contains(&protocol) {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "pickle protocol must be in range -1..5",
+            );
+        }
+        let actual_protocol = if protocol < 0 {
+            PICKLE_PROTO_5
+        } else {
+            protocol
+        };
+        if actual_protocol <= 1 {
+            return molt_pickle_dumps_protocol01(
+                obj_bits,
+                MoltObject::from_int(actual_protocol).bits(),
+            );
+        }
+        let persistent_id =
+            match pickle_option_callable_bits(_py, persistent_id_bits, "persistent_id") {
+                Ok(bits) => bits,
+                Err(err_bits) => return err_bits,
+            };
+        let buffer_callback =
+            match pickle_option_callable_bits(_py, buffer_callback_bits, "buffer_callback") {
+                Ok(bits) => bits,
+                Err(err_bits) => return err_bits,
+            };
+        let dispatch_table = if obj_from_bits(dispatch_table_bits).is_none() {
+            None
+        } else {
+            Some(dispatch_table_bits)
+        };
+        let mut state = PickleDumpState::new(
+            actual_protocol,
+            persistent_id,
+            buffer_callback,
+            dispatch_table,
+        );
+        if state.buffer_callback_bits.is_some() && actual_protocol < PICKLE_PROTO_5 {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "buffer_callback requires protocol 5 or higher",
+            );
+        }
+        pickle_emit_proto_header(&mut state);
+        if let Err(err_bits) = pickle_dump_obj_binary(_py, &mut state, obj_bits, true) {
+            return err_bits;
+        }
+        state.push(PICKLE_OP_STOP);
+        let out_ptr = crate::alloc_bytes(_py, state.out.as_slice());
+        if out_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+    _fix_imports_bits: u64,
+    encoding_bits: u64,
+    errors_bits: u64,
+    persistent_load_bits: u64,
+    find_class_bits: u64,
+    buffers_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let encoding = if let Some(text) = string_obj_to_owned(obj_from_bits(encoding_bits)) {
+            text
+        } else {
+            return raise_exception::<_>(_py, "TypeError", "pickle encoding must be str");
+        };
+        let errors = if let Some(text) = string_obj_to_owned(obj_from_bits(errors_bits)) {
+            text
+        } else {
+            return raise_exception::<_>(_py, "TypeError", "pickle errors must be str");
+        };
+        let persistent_load =
+            match pickle_option_callable_bits(_py, persistent_load_bits, "persistent_load") {
+                Ok(bits) => bits,
+                Err(err_bits) => return err_bits,
+            };
+        let find_class = match pickle_option_callable_bits(_py, find_class_bits, "find_class") {
+            Ok(bits) => bits,
+            Err(err_bits) => return err_bits,
+        };
+        let data = match pickle_input_to_bytes(_py, data_bits) {
+            Ok(bytes) => bytes,
+            Err(err_bits) => return err_bits,
+        };
+        let buffers_iter = if obj_from_bits(buffers_bits).is_none() {
+            None
+        } else {
+            let iter_bits = molt_iter(buffers_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            Some(iter_bits)
+        };
+        if data.first().is_none_or(|op| *op != PICKLE_OP_PROTO) {
+            let text = match String::from_utf8(data) {
+                Ok(value) => value,
+                Err(_) => {
+                    return raise_exception::<_>(
+                        _py,
+                        "RuntimeError",
+                        "pickle.loads: protocol 0/1 payload must be UTF-8",
+                    );
+                }
+            };
+            let text_ptr = alloc_string(_py, text.as_bytes());
+            if text_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let text_bits = MoltObject::from_ptr(text_ptr).bits();
+            let out_bits = molt_pickle_loads_protocol01(text_bits);
+            dec_ref_bits(_py, text_bits);
+            return out_bits;
+        }
+
+        let mut idx: usize = 0;
+        let mut stack: Vec<PickleVmItem> = Vec::new();
+        let mut memo: Vec<Option<PickleVmItem>> = Vec::new();
+        while idx < data.len() {
+            let op = match pickle_read_u8(data.as_slice(), &mut idx, _py) {
+                Ok(value) => value,
+                Err(err_bits) => return err_bits,
+            };
+            match op {
+                PICKLE_OP_STOP => break,
+                PICKLE_OP_POP => {
+                    if stack.pop().is_none() {
+                        return pickle_raise(_py, "pickle.loads: stack underflow");
+                    }
+                }
+                PICKLE_OP_POP_MARK => {
+                    let mut found_mark = false;
+                    while let Some(item) = stack.pop() {
+                        if matches!(item, PickleVmItem::Mark) {
+                            found_mark = true;
+                            break;
+                        }
+                    }
+                    if !found_mark {
+                        return pickle_raise(_py, "pickle.loads: mark not found");
+                    }
+                }
+                PICKLE_OP_PROTO => {
+                    let version = match pickle_read_u8(data.as_slice(), &mut idx, _py) {
+                        Ok(value) => value,
+                        Err(err_bits) => return err_bits,
+                    };
+                    if version > PICKLE_PROTO_5 as u8 {
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "unsupported pickle protocol",
+                        );
+                    }
+                }
+                PICKLE_OP_FRAME => {
+                    if pickle_read_u64_le(data.as_slice(), &mut idx, _py).is_err() {
+                        return MoltObject::none().bits();
+                    }
+                }
+                PICKLE_OP_NEXT_BUFFER => {
+                    let bits = match pickle_next_external_buffer_bits(_py, buffers_iter) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    stack.push(PickleVmItem::Value(bits));
+                }
+                PICKLE_OP_READONLY_BUFFER => {
+                    let value_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let view_bits =
+                        match pickle_buffer_value_to_memoryview(_py, value_bits, "READONLY_BUFFER")
+                        {
+                            Ok(v) => v,
+                            Err(err_bits) => return err_bits,
+                        };
+                    let readonly_bits = if let Some(toreadonly_bits) =
+                        match pickle_attr_optional(_py, view_bits, b"toreadonly") {
+                            Ok(bits) => bits,
+                            Err(err_bits) => return err_bits,
+                        } {
+                        let out_bits = unsafe { call_callable0(_py, toreadonly_bits) };
+                        dec_ref_bits(_py, toreadonly_bits);
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
+                        out_bits
+                    } else {
+                        view_bits
+                    };
+                    stack.push(PickleVmItem::Value(readonly_bits));
+                }
+                PICKLE_OP_MARK => stack.push(PickleVmItem::Mark),
+                PICKLE_OP_NONE => stack.push(PickleVmItem::Value(MoltObject::none().bits())),
+                PICKLE_OP_NEWTRUE => {
+                    stack.push(PickleVmItem::Value(MoltObject::from_bool(true).bits()))
+                }
+                PICKLE_OP_NEWFALSE => {
+                    stack.push(PickleVmItem::Value(MoltObject::from_bool(false).bits()))
+                }
+                PICKLE_OP_INT => {
+                    let line = match pickle_read_line_bytes(data.as_slice(), &mut idx, _py) {
+                        Ok(value) => value,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let line_text = match std::str::from_utf8(line) {
+                        Ok(text) => text,
+                        Err(_) => return pickle_raise(_py, "pickle.loads: invalid INT payload"),
+                    };
+                    let bits = match pickle_parse_int_bits(_py, line_text) {
+                        Ok(value) => value,
+                        Err(err_bits) => return err_bits,
+                    };
+                    stack.push(PickleVmItem::Value(bits));
+                }
+                PICKLE_OP_BININT => {
+                    let raw = match pickle_read_exact(data.as_slice(), &mut idx, 4, _py) {
+                        Ok(value) => value,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let value = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                    stack.push(PickleVmItem::Value(
+                        MoltObject::from_int(value as i64).bits(),
+                    ));
+                }
+                PICKLE_OP_BININT1 => {
+                    let value = match pickle_read_u8(data.as_slice(), &mut idx, _py) {
+                        Ok(v) => v as i64,
+                        Err(err_bits) => return err_bits,
+                    };
+                    stack.push(PickleVmItem::Value(MoltObject::from_int(value).bits()));
+                }
+                PICKLE_OP_BININT2 => {
+                    let value = match pickle_read_u16_le(data.as_slice(), &mut idx, _py) {
+                        Ok(v) => v as i64,
+                        Err(err_bits) => return err_bits,
+                    };
+                    stack.push(PickleVmItem::Value(MoltObject::from_int(value).bits()));
+                }
+                PICKLE_OP_LONG => {
+                    let line = match pickle_read_line_bytes(data.as_slice(), &mut idx, _py) {
+                        Ok(value) => value,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let line_text = match std::str::from_utf8(line) {
+                        Ok(text) => text,
+                        Err(_) => return pickle_raise(_py, "pickle.loads: invalid LONG payload"),
+                    };
+                    let bits = match pickle_parse_long_line_bits(_py, line_text) {
+                        Ok(value) => value,
+                        Err(err_bits) => return err_bits,
+                    };
+                    stack.push(PickleVmItem::Value(bits));
+                }
+                PICKLE_OP_LONG1 | PICKLE_OP_LONG4 => {
+                    let size = if op == PICKLE_OP_LONG1 {
+                        match pickle_read_u8(data.as_slice(), &mut idx, _py) {
+                            Ok(v) => v as usize,
+                            Err(err_bits) => return err_bits,
+                        }
+                    } else {
+                        match pickle_read_u32_le(data.as_slice(), &mut idx, _py) {
+                            Ok(v) => v as usize,
+                            Err(err_bits) => return err_bits,
+                        }
+                    };
+                    let raw = match pickle_read_exact(data.as_slice(), &mut idx, size, _py) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let bits = match pickle_parse_long_bytes_bits(_py, raw) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    stack.push(PickleVmItem::Value(bits));
+                }
+                PICKLE_OP_FLOAT => {
+                    let line = match pickle_read_line_bytes(data.as_slice(), &mut idx, _py) {
+                        Ok(value) => value,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let line_text = match std::str::from_utf8(line) {
+                        Ok(text) => text,
+                        Err(_) => return pickle_raise(_py, "pickle.loads: invalid FLOAT payload"),
+                    };
+                    let bits = match pickle_parse_float_bits(_py, line_text) {
+                        Ok(value) => value,
+                        Err(err_bits) => return err_bits,
+                    };
+                    stack.push(PickleVmItem::Value(bits));
+                }
+                PICKLE_OP_BINFLOAT => {
+                    let value = match pickle_read_f64_be(data.as_slice(), &mut idx, _py) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    stack.push(PickleVmItem::Value(MoltObject::from_float(value).bits()));
+                }
+                PICKLE_OP_STRING => {
+                    let line = match pickle_read_line_bytes(data.as_slice(), &mut idx, _py) {
+                        Ok(value) => value,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let text = match std::str::from_utf8(line) {
+                        Ok(v) => v,
+                        Err(_) => return pickle_raise(_py, "pickle.loads: invalid STRING payload"),
+                    };
+                    let parsed = match pickle_parse_string_literal(text) {
+                        Ok(v) => v,
+                        Err(message) => return pickle_raise(_py, message),
+                    };
+                    let ptr = alloc_string(_py, parsed.as_bytes());
+                    if ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    stack.push(PickleVmItem::Value(MoltObject::from_ptr(ptr).bits()));
+                }
+                PICKLE_OP_UNICODE => {
+                    let line = match pickle_read_line_bytes(data.as_slice(), &mut idx, _py) {
+                        Ok(value) => value,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let text = match pickle_decode_utf8(_py, line, "UNICODE payload") {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let ptr = alloc_string(_py, text.as_bytes());
+                    if ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    stack.push(PickleVmItem::Value(MoltObject::from_ptr(ptr).bits()));
+                }
+                PICKLE_OP_BINUNICODE | PICKLE_OP_SHORT_BINUNICODE => {
+                    let size = if op == PICKLE_OP_SHORT_BINUNICODE {
+                        match pickle_read_u8(data.as_slice(), &mut idx, _py) {
+                            Ok(v) => v as usize,
+                            Err(err_bits) => return err_bits,
+                        }
+                    } else {
+                        match pickle_read_u32_le(data.as_slice(), &mut idx, _py) {
+                            Ok(v) => v as usize,
+                            Err(err_bits) => return err_bits,
+                        }
+                    };
+                    let raw = match pickle_read_exact(data.as_slice(), &mut idx, size, _py) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let text = match pickle_decode_utf8(_py, raw, "BINUNICODE payload") {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let ptr = alloc_string(_py, text.as_bytes());
+                    if ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    stack.push(PickleVmItem::Value(MoltObject::from_ptr(ptr).bits()));
+                }
+                PICKLE_OP_SHORT_BINBYTES | PICKLE_OP_BINBYTES | PICKLE_OP_BINBYTES8 => {
+                    let size = match op {
+                        PICKLE_OP_SHORT_BINBYTES => {
+                            match pickle_read_u8(data.as_slice(), &mut idx, _py) {
+                                Ok(v) => v as usize,
+                                Err(err_bits) => return err_bits,
+                            }
+                        }
+                        PICKLE_OP_BINBYTES => {
+                            match pickle_read_u32_le(data.as_slice(), &mut idx, _py) {
+                                Ok(v) => v as usize,
+                                Err(err_bits) => return err_bits,
+                            }
+                        }
+                        _ => match pickle_read_u64_le(data.as_slice(), &mut idx, _py) {
+                            Ok(v) => v as usize,
+                            Err(err_bits) => return err_bits,
+                        },
+                    };
+                    let raw = match pickle_read_exact(data.as_slice(), &mut idx, size, _py) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let ptr = crate::alloc_bytes(_py, raw);
+                    if ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    stack.push(PickleVmItem::Value(MoltObject::from_ptr(ptr).bits()));
+                }
+                PICKLE_OP_BYTEARRAY8 => {
+                    let size = match pickle_read_u64_le(data.as_slice(), &mut idx, _py) {
+                        Ok(v) => v as usize,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let raw = match pickle_read_exact(data.as_slice(), &mut idx, size, _py) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let bytes_ptr = crate::alloc_bytes(_py, raw);
+                    if bytes_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
+                    let out_bits =
+                        pickle_call_with_args(_py, builtin_classes(_py).bytearray, &[bytes_bits]);
+                    dec_ref_bits(_py, bytes_bits);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    stack.push(PickleVmItem::Value(out_bits));
+                }
+                PICKLE_OP_EMPTY_TUPLE => {
+                    let ptr = alloc_tuple(_py, &[]);
+                    if ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    stack.push(PickleVmItem::Value(MoltObject::from_ptr(ptr).bits()));
+                }
+                PICKLE_OP_TUPLE1 | PICKLE_OP_TUPLE2 | PICKLE_OP_TUPLE3 => {
+                    let needed = if op == PICKLE_OP_TUPLE1 {
+                        1
+                    } else if op == PICKLE_OP_TUPLE2 {
+                        2
+                    } else {
+                        3
+                    };
+                    let mut items: Vec<u64> = Vec::with_capacity(needed);
+                    for _ in 0..needed {
+                        let bits = match pickle_vm_pop_value(_py, &mut stack) {
+                            Ok(v) => v,
+                            Err(err_bits) => return err_bits,
+                        };
+                        items.push(bits);
+                    }
+                    items.reverse();
+                    let ptr = alloc_tuple(_py, items.as_slice());
+                    if ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    stack.push(PickleVmItem::Value(MoltObject::from_ptr(ptr).bits()));
+                }
+                PICKLE_OP_TUPLE => {
+                    let items = match pickle_vm_pop_mark_items(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let mut values: Vec<u64> = Vec::with_capacity(items.len());
+                    for item in items {
+                        let bits = match pickle_vm_item_to_bits(_py, &item) {
+                            Ok(v) => v,
+                            Err(err_bits) => return err_bits,
+                        };
+                        values.push(bits);
+                    }
+                    let ptr = alloc_tuple(_py, values.as_slice());
+                    if ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    stack.push(PickleVmItem::Value(MoltObject::from_ptr(ptr).bits()));
+                }
+                PICKLE_OP_EMPTY_LIST => {
+                    let ptr = alloc_list_with_capacity(_py, &[], 0);
+                    if ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    stack.push(PickleVmItem::Value(MoltObject::from_ptr(ptr).bits()));
+                }
+                PICKLE_OP_LIST => {
+                    let items = match pickle_vm_pop_mark_items(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let mut values: Vec<u64> = Vec::with_capacity(items.len());
+                    for item in items {
+                        let bits = match pickle_vm_item_to_bits(_py, &item) {
+                            Ok(v) => v,
+                            Err(err_bits) => return err_bits,
+                        };
+                        values.push(bits);
+                    }
+                    let ptr = alloc_list_with_capacity(_py, values.as_slice(), values.len());
+                    if ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    stack.push(PickleVmItem::Value(MoltObject::from_ptr(ptr).bits()));
+                }
+                PICKLE_OP_APPEND => {
+                    let item_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let list_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let _ = crate::molt_list_append(list_bits, item_bits);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    stack.push(PickleVmItem::Value(list_bits));
+                }
+                PICKLE_OP_APPENDS => {
+                    let items = match pickle_vm_pop_mark_items(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let list_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    for item in items {
+                        let bits = match pickle_vm_item_to_bits(_py, &item) {
+                            Ok(v) => v,
+                            Err(err_bits) => return err_bits,
+                        };
+                        let _ = crate::molt_list_append(list_bits, bits);
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
+                    }
+                    stack.push(PickleVmItem::Value(list_bits));
+                }
+                PICKLE_OP_EMPTY_DICT => {
+                    let ptr = alloc_dict_with_pairs(_py, &[]);
+                    if ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    stack.push(PickleVmItem::Value(MoltObject::from_ptr(ptr).bits()));
+                }
+                PICKLE_OP_DICT => {
+                    let items = match pickle_vm_pop_mark_items(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let mut values: Vec<u64> = Vec::with_capacity(items.len());
+                    for item in items {
+                        let bits = match pickle_vm_item_to_bits(_py, &item) {
+                            Ok(v) => v,
+                            Err(err_bits) => return err_bits,
+                        };
+                        values.push(bits);
+                    }
+                    if !values.len().is_multiple_of(2) {
+                        return pickle_raise(_py, "pickle.loads: dict has odd number of items");
+                    }
+                    let ptr = alloc_dict_with_pairs(_py, values.as_slice());
+                    if ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    stack.push(PickleVmItem::Value(MoltObject::from_ptr(ptr).bits()));
+                }
+                PICKLE_OP_SETITEM => {
+                    let value_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let key_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let dict_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                        return pickle_raise(_py, "pickle.loads: setitem target is not dict");
+                    };
+                    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+                        return pickle_raise(_py, "pickle.loads: setitem target is not dict");
+                    }
+                    unsafe {
+                        crate::dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
+                    }
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    stack.push(PickleVmItem::Value(dict_bits));
+                }
+                PICKLE_OP_SETITEMS => {
+                    let items = match pickle_vm_pop_mark_items(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let dict_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                        return pickle_raise(_py, "pickle.loads: setitems target is not dict");
+                    };
+                    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+                        return pickle_raise(_py, "pickle.loads: setitems target is not dict");
+                    }
+                    let mut values: Vec<u64> = Vec::with_capacity(items.len());
+                    for item in items {
+                        let bits = match pickle_vm_item_to_bits(_py, &item) {
+                            Ok(v) => v,
+                            Err(err_bits) => return err_bits,
+                        };
+                        values.push(bits);
+                    }
+                    if !values.len().is_multiple_of(2) {
+                        return pickle_raise(
+                            _py,
+                            "pickle.loads: setitems has odd number of values",
+                        );
+                    }
+                    let mut pair_idx = 0usize;
+                    while pair_idx + 1 < values.len() {
+                        unsafe {
+                            crate::dict_set_in_place(
+                                _py,
+                                dict_ptr,
+                                values[pair_idx],
+                                values[pair_idx + 1],
+                            );
+                        }
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
+                        pair_idx += 2;
+                    }
+                    stack.push(PickleVmItem::Value(dict_bits));
+                }
+                PICKLE_OP_EMPTY_SET => {
+                    let bits = crate::molt_set_new(0);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    stack.push(PickleVmItem::Value(bits));
+                }
+                PICKLE_OP_ADDITEMS => {
+                    let items = match pickle_vm_pop_mark_items(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let set_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let Some(set_ptr) = obj_from_bits(set_bits).as_ptr() else {
+                        return pickle_raise(_py, "pickle.loads: additems target is not set");
+                    };
+                    for item in items {
+                        let bits = match pickle_vm_item_to_bits(_py, &item) {
+                            Ok(v) => v,
+                            Err(err_bits) => return err_bits,
+                        };
+                        unsafe {
+                            crate::set_add_in_place(_py, set_ptr, bits);
+                        }
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
+                    }
+                    stack.push(PickleVmItem::Value(set_bits));
+                }
+                PICKLE_OP_FROZENSET => {
+                    let items = match pickle_vm_pop_mark_items(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let mut values: Vec<u64> = Vec::with_capacity(items.len());
+                    for item in items {
+                        let bits = match pickle_vm_item_to_bits(_py, &item) {
+                            Ok(v) => v,
+                            Err(err_bits) => return err_bits,
+                        };
+                        values.push(bits);
+                    }
+                    let list_ptr = alloc_list_with_capacity(_py, values.as_slice(), values.len());
+                    if list_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    let list_bits = MoltObject::from_ptr(list_ptr).bits();
+                    let tuple_ptr = alloc_tuple(_py, &[list_bits]);
+                    dec_ref_bits(_py, list_bits);
+                    if tuple_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    let args_bits = MoltObject::from_ptr(tuple_ptr).bits();
+                    let out_bits =
+                        pickle_apply_reduce_bits(_py, builtin_classes(_py).frozenset, args_bits);
+                    dec_ref_bits(_py, args_bits);
+                    match out_bits {
+                        Ok(bits) => stack.push(PickleVmItem::Value(bits)),
+                        Err(err_bits) => return err_bits,
+                    }
+                }
+                PICKLE_OP_GLOBAL => {
+                    let module = match pickle_read_line_bytes(data.as_slice(), &mut idx, _py) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let name = match pickle_read_line_bytes(data.as_slice(), &mut idx, _py) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let module_text = match pickle_decode_utf8(_py, module, "GLOBAL module") {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let name_text = match pickle_decode_utf8(_py, name, "GLOBAL name") {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    if let Some(global) = pickle_resolve_global(&module_text, &name_text) {
+                        stack.push(PickleVmItem::Global(global));
+                    } else {
+                        match pickle_resolve_global_with_hook(
+                            _py,
+                            &module_text,
+                            &name_text,
+                            find_class,
+                        ) {
+                            Ok(bits) => stack.push(PickleVmItem::Value(bits)),
+                            Err(err_bits) => return err_bits,
+                        }
+                    }
+                }
+                PICKLE_OP_STACK_GLOBAL => {
+                    let name_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let module_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let Some(module) = string_obj_to_owned(obj_from_bits(module_bits)) else {
+                        return pickle_raise(_py, "pickle.loads: STACK_GLOBAL module must be str");
+                    };
+                    let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+                        return pickle_raise(_py, "pickle.loads: STACK_GLOBAL name must be str");
+                    };
+                    if let Some(global) = pickle_resolve_global(&module, &name) {
+                        stack.push(PickleVmItem::Global(global));
+                    } else {
+                        match pickle_resolve_global_with_hook(_py, &module, &name, find_class) {
+                            Ok(bits) => stack.push(PickleVmItem::Value(bits)),
+                            Err(err_bits) => return err_bits,
+                        }
+                    }
+                }
+                PICKLE_OP_REDUCE => {
+                    let args_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let callable_item = match stack.pop() {
+                        Some(v) => v,
+                        None => return pickle_raise(_py, "pickle.loads: stack underflow"),
+                    };
+                    match pickle_apply_reduce_vm(_py, callable_item, args_bits) {
+                        Ok(bits) => stack.push(PickleVmItem::Value(bits)),
+                        Err(err_bits) => return err_bits,
+                    }
+                }
+                PICKLE_OP_NEWOBJ => {
+                    let args_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let cls_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    match pickle_apply_newobj(_py, cls_bits, args_bits, None) {
+                        Ok(bits) => stack.push(PickleVmItem::Value(bits)),
+                        Err(err_bits) => return err_bits,
+                    }
+                }
+                PICKLE_OP_NEWOBJ_EX => {
+                    let kwargs_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let args_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let cls_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    match pickle_apply_newobj(_py, cls_bits, args_bits, Some(kwargs_bits)) {
+                        Ok(bits) => stack.push(PickleVmItem::Value(bits)),
+                        Err(err_bits) => return err_bits,
+                    }
+                }
+                PICKLE_OP_BUILD => {
+                    let state_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let inst_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    match pickle_apply_build(_py, inst_bits, state_bits) {
+                        Ok(bits) => stack.push(PickleVmItem::Value(bits)),
+                        Err(err_bits) => return err_bits,
+                    }
+                }
+                PICKLE_OP_PUT => {
+                    let line = match pickle_read_line_bytes(data.as_slice(), &mut idx, _py) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let text = match std::str::from_utf8(line) {
+                        Ok(v) => v,
+                        Err(_) => return pickle_raise(_py, "pickle.loads: invalid PUT payload"),
+                    };
+                    let index = match text.parse::<usize>() {
+                        Ok(v) => v,
+                        Err(_) => return pickle_raise(_py, "pickle.loads: invalid memo key"),
+                    };
+                    let item = match stack.last() {
+                        Some(v) => v.clone(),
+                        None => return pickle_raise(_py, "pickle.loads: stack underflow"),
+                    };
+                    pickle_memo_set(_py, &mut memo, index, item);
+                }
+                PICKLE_OP_BINPUT => {
+                    let index = match pickle_read_u8(data.as_slice(), &mut idx, _py) {
+                        Ok(v) => v as usize,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let item = match stack.last() {
+                        Some(v) => v.clone(),
+                        None => return pickle_raise(_py, "pickle.loads: stack underflow"),
+                    };
+                    pickle_memo_set(_py, &mut memo, index, item);
+                }
+                PICKLE_OP_LONG_BINPUT => {
+                    let index = match pickle_read_u32_le(data.as_slice(), &mut idx, _py) {
+                        Ok(v) => v as usize,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let item = match stack.last() {
+                        Some(v) => v.clone(),
+                        None => return pickle_raise(_py, "pickle.loads: stack underflow"),
+                    };
+                    pickle_memo_set(_py, &mut memo, index, item);
+                }
+                PICKLE_OP_MEMOIZE => {
+                    let item = match stack.last() {
+                        Some(v) => v.clone(),
+                        None => return pickle_raise(_py, "pickle.loads: stack underflow"),
+                    };
+                    memo.push(Some(item));
+                }
+                PICKLE_OP_GET => {
+                    let line = match pickle_read_line_bytes(data.as_slice(), &mut idx, _py) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let text = match std::str::from_utf8(line) {
+                        Ok(v) => v,
+                        Err(_) => return pickle_raise(_py, "pickle.loads: invalid GET payload"),
+                    };
+                    let index = match text.parse::<usize>() {
+                        Ok(v) => v,
+                        Err(_) => return pickle_raise(_py, "pickle.loads: invalid memo key"),
+                    };
+                    match pickle_memo_get(_py, memo.as_slice(), index) {
+                        Ok(item) => stack.push(item),
+                        Err(err_bits) => return err_bits,
+                    }
+                }
+                PICKLE_OP_BINGET => {
+                    let index = match pickle_read_u8(data.as_slice(), &mut idx, _py) {
+                        Ok(v) => v as usize,
+                        Err(err_bits) => return err_bits,
+                    };
+                    match pickle_memo_get(_py, memo.as_slice(), index) {
+                        Ok(item) => stack.push(item),
+                        Err(err_bits) => return err_bits,
+                    }
+                }
+                PICKLE_OP_LONG_BINGET => {
+                    let index = match pickle_read_u32_le(data.as_slice(), &mut idx, _py) {
+                        Ok(v) => v as usize,
+                        Err(err_bits) => return err_bits,
+                    };
+                    match pickle_memo_get(_py, memo.as_slice(), index) {
+                        Ok(item) => stack.push(item),
+                        Err(err_bits) => return err_bits,
+                    }
+                }
+                PICKLE_OP_PERSID => {
+                    let pid_line = match pickle_read_line_bytes(data.as_slice(), &mut idx, _py) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let pid_text = match pickle_decode_utf8(_py, pid_line, "PERSID payload") {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let Some(pid_bits) = alloc_string_bits(_py, pid_text.as_str()) else {
+                        return MoltObject::none().bits();
+                    };
+                    let Some(persistent_load_bits) = persistent_load else {
+                        dec_ref_bits(_py, pid_bits);
+                        return pickle_raise(
+                            _py,
+                            "pickle.loads: persistent IDs require persistent_load",
+                        );
+                    };
+                    let value_bits = unsafe { call_callable1(_py, persistent_load_bits, pid_bits) };
+                    dec_ref_bits(_py, pid_bits);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    stack.push(PickleVmItem::Value(value_bits));
+                }
+                PICKLE_OP_BINPERSID => {
+                    let pid_bits = match pickle_vm_pop_value(_py, &mut stack) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let Some(persistent_load_bits) = persistent_load else {
+                        return pickle_raise(
+                            _py,
+                            "pickle.loads: persistent IDs require persistent_load",
+                        );
+                    };
+                    let value_bits = unsafe { call_callable1(_py, persistent_load_bits, pid_bits) };
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    stack.push(PickleVmItem::Value(value_bits));
+                }
+                PICKLE_OP_EXT1 | PICKLE_OP_EXT2 | PICKLE_OP_EXT4 => {
+                    let code = if op == PICKLE_OP_EXT1 {
+                        match pickle_read_u8(data.as_slice(), &mut idx, _py) {
+                            Ok(v) => v as i64,
+                            Err(err_bits) => return err_bits,
+                        }
+                    } else if op == PICKLE_OP_EXT2 {
+                        match pickle_read_u16_le(data.as_slice(), &mut idx, _py) {
+                            Ok(v) => v as i64,
+                            Err(err_bits) => return err_bits,
+                        }
+                    } else {
+                        match pickle_read_u32_le(data.as_slice(), &mut idx, _py) {
+                            Ok(v) => v as i64,
+                            Err(err_bits) => return err_bits,
+                        }
+                    };
+                    match pickle_lookup_extension_bits(_py, code, find_class) {
+                        Ok(bits) => stack.push(PickleVmItem::Value(bits)),
+                        Err(err_bits) => return err_bits,
+                    }
+                }
+                // Python 2 string opcodes.
+                b'U' => {
+                    let size = match pickle_read_u8(data.as_slice(), &mut idx, _py) {
+                        Ok(v) => v as usize,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let raw = match pickle_read_exact(data.as_slice(), &mut idx, size, _py) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let bits = match pickle_decode_8bit_string(_py, raw, &encoding, &errors) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    stack.push(PickleVmItem::Value(bits));
+                }
+                b'T' => {
+                    let size = match pickle_read_u32_le(data.as_slice(), &mut idx, _py) {
+                        Ok(v) => v as usize,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let raw = match pickle_read_exact(data.as_slice(), &mut idx, size, _py) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    let bits = match pickle_decode_8bit_string(_py, raw, &encoding, &errors) {
+                        Ok(v) => v,
+                        Err(err_bits) => return err_bits,
+                    };
+                    stack.push(PickleVmItem::Value(bits));
+                }
+                _ => {
+                    let msg = format!("pickle.loads: unsupported opcode 0x{op:02x}");
+                    return pickle_raise(_py, msg.as_str());
+                }
+            }
+        }
+        let Some(item) = stack.last() else {
+            return pickle_raise(_py, "pickle.loads: pickle stack empty");
+        };
+        match pickle_vm_item_to_bits(_py, item) {
+            Ok(bits) => bits,
+            Err(err_bits) => err_bits,
+        }
+    })
+}
+
+fn shlex_is_safe(s: &str) -> bool {
+    s.bytes().all(|b| {
+        matches!(
             b,
             b'a'..=b'z'
                 | b'A'..=b'Z'
@@ -7260,6 +10233,2023 @@ fn textwrap_wrap_chunks(
             lines.push(format!("{indent}{}", cur_line.concat()));
             continue;
         }
+
+        let placeholder_len = textwrap_char_len(&options.placeholder);
+        loop {
+            let can_append_placeholder = cur_line
+                .last()
+                .map(|last| {
+                    !textwrap_chunk_is_whitespace(last) && cur_len + placeholder_len <= width
+                })
+                .unwrap_or(false);
+            if can_append_placeholder {
+                cur_line.push(options.placeholder.clone());
+                lines.push(format!("{indent}{}", cur_line.concat()));
+                break;
+            }
+            if let Some(last) = cur_line.pop() {
+                cur_len -= textwrap_char_len(&last);
+                continue;
+            }
+            if let Some(prev_line) = lines.last_mut() {
+                let trimmed = prev_line.trim_end_matches(char::is_whitespace).to_string();
+                if textwrap_char_len(&trimmed) + placeholder_len <= options.width {
+                    *prev_line = trimmed + &options.placeholder;
+                    return Ok(lines);
+                }
+            }
+            let placeholder_lstrip = options.placeholder.trim_start_matches(char::is_whitespace);
+            lines.push(format!("{indent}{placeholder_lstrip}"));
+            break;
+        }
+        break;
+    }
+
+    Ok(lines)
+}
+
+fn textwrap_wrap_impl(text: &str, options: &TextWrapOptions) -> Result<Vec<String>, String> {
+    let munged = textwrap_munge_whitespace(text, options);
+    let mut chunks = textwrap_split_chunks(&munged, options.break_on_hyphens);
+    if options.fix_sentence_endings {
+        textwrap_fix_sentence_endings(&mut chunks);
+    }
+    textwrap_wrap_chunks(chunks, options)
+}
+
+fn textwrap_line_is_space(line: &str) -> bool {
+    !line.is_empty() && line.chars().all(char::is_whitespace)
+}
+
+fn textwrap_splitlines_keepends(text: &str) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut line_start = 0usize;
+    let mut iter = text.char_indices().peekable();
+    while let Some((idx, ch)) = iter.next() {
+        let mut end = idx + ch.len_utf8();
+        let is_break = match ch {
+            '\n' | '\x0b' | '\x0c' | '\x1c' | '\x1d' | '\x1e' | '\u{85}' | '\u{2028}'
+            | '\u{2029}' => true,
+            '\r' => {
+                if let Some((next_idx, next_ch)) = iter.peek().copied()
+                    && next_ch == '\n'
+                {
+                    end = next_idx + next_ch.len_utf8();
+                    iter.next();
+                }
+                true
+            }
+            _ => false,
+        };
+        if is_break {
+            out.push(text[line_start..end].to_string());
+            line_start = end;
+        }
+    }
+    if line_start < text.len() {
+        out.push(text[line_start..].to_string());
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn textwrap_parse_options_ex(
+    _py: &crate::PyToken<'_>,
+    width_bits: u64,
+    initial_indent_bits: u64,
+    subsequent_indent_bits: u64,
+    expand_tabs_bits: u64,
+    replace_whitespace_bits: u64,
+    fix_sentence_endings_bits: u64,
+    break_long_words_bits: u64,
+    drop_whitespace_bits: u64,
+    break_on_hyphens_bits: u64,
+    tabsize_bits: u64,
+    max_lines_placeholder_bits: u64,
+) -> Result<TextWrapOptions, u64> {
+    let Some(width) = to_i64(obj_from_bits(width_bits)) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "width must be int",
+        ));
+    };
+    let Some(initial_indent) = string_obj_to_owned(obj_from_bits(initial_indent_bits)) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "initial_indent must be str",
+        ));
+    };
+    let Some(subsequent_indent) = string_obj_to_owned(obj_from_bits(subsequent_indent_bits)) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "subsequent_indent must be str",
+        ));
+    };
+    let Some(tabsize) = to_i64(obj_from_bits(tabsize_bits)) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "tabsize must be int",
+        ));
+    };
+    let Some(max_lines_placeholder_ptr) = obj_from_bits(max_lines_placeholder_bits).as_ptr() else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "max_lines_placeholder must be tuple(max_lines, placeholder)",
+        ));
+    };
+    if unsafe { object_type_id(max_lines_placeholder_ptr) } != TYPE_ID_TUPLE {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "max_lines_placeholder must be tuple(max_lines, placeholder)",
+        ));
+    }
+    let max_lines_placeholder = unsafe { seq_vec_ref(max_lines_placeholder_ptr) };
+    if max_lines_placeholder.len() != 2 {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "max_lines_placeholder must be tuple(max_lines, placeholder)",
+        ));
+    }
+    let max_lines_bits = max_lines_placeholder[0];
+    let placeholder_bits = max_lines_placeholder[1];
+
+    let max_lines = if obj_from_bits(max_lines_bits).is_none() {
+        None
+    } else {
+        let Some(value) = to_i64(obj_from_bits(max_lines_bits)) else {
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "max_lines must be int or None",
+            ));
+        };
+        Some(value)
+    };
+    let Some(placeholder) = string_obj_to_owned(obj_from_bits(placeholder_bits)) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "placeholder must be str",
+        ));
+    };
+    Ok(TextWrapOptions {
+        width,
+        initial_indent,
+        subsequent_indent,
+        expand_tabs: is_truthy(_py, obj_from_bits(expand_tabs_bits)),
+        replace_whitespace: is_truthy(_py, obj_from_bits(replace_whitespace_bits)),
+        fix_sentence_endings: is_truthy(_py, obj_from_bits(fix_sentence_endings_bits)),
+        break_long_words: is_truthy(_py, obj_from_bits(break_long_words_bits)),
+        drop_whitespace: is_truthy(_py, obj_from_bits(drop_whitespace_bits)),
+        break_on_hyphens: is_truthy(_py, obj_from_bits(break_on_hyphens_bits)),
+        tabsize,
+        max_lines,
+        placeholder,
+    })
+}
+
+fn textwrap_indent_with_predicate(
+    _py: &crate::PyToken<'_>,
+    text: &str,
+    prefix: &str,
+    predicate_bits: Option<u64>,
+) -> u64 {
+    let mut out = String::with_capacity(text.len().saturating_add(prefix.len() * 4));
+    for line in textwrap_splitlines_keepends(text) {
+        let should_prefix = if let Some(predicate) = predicate_bits {
+            let Some(line_bits) = alloc_string_bits(_py, &line) else {
+                return MoltObject::none().bits();
+            };
+            let result_bits = unsafe { call_callable1(_py, predicate, line_bits) };
+            dec_ref_bits(_py, line_bits);
+            if exception_pending(_py) {
+                if !obj_from_bits(result_bits).is_none() {
+                    dec_ref_bits(_py, result_bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let truthy = is_truthy(_py, obj_from_bits(result_bits));
+            if !obj_from_bits(result_bits).is_none() {
+                dec_ref_bits(_py, result_bits);
+            }
+            truthy
+        } else {
+            !textwrap_line_is_space(&line)
+        };
+        if should_prefix {
+            out.push_str(prefix);
+        }
+        out.push_str(&line);
+    }
+    let out_ptr = alloc_string(_py, out.as_bytes());
+    if out_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(out_ptr).bits()
+    }
+}
+
+// ─── textwrap.dedent ────────────────────────────────────────────────────────
+
+fn textwrap_dedent_impl(text: &str) -> String {
+    // CPython textwrap.dedent: remove common leading whitespace from all lines.
+    let mut margin: Option<&str> = None;
+    let lines: Vec<&str> = text.split('\n').collect();
+    for &line in &lines {
+        let stripped = line.trim_start();
+        if stripped.is_empty() {
+            continue;
+        }
+        let indent = &line[..line.len() - stripped.len()];
+        if let Some(m) = margin {
+            // Find common prefix between margin and indent
+            let common_len = m
+                .chars()
+                .zip(indent.chars())
+                .take_while(|(a, b)| a == b)
+                .count();
+            // Need byte length of common prefix
+            let byte_len = m
+                .char_indices()
+                .nth(common_len)
+                .map(|(i, _)| i)
+                .unwrap_or(m.len());
+            margin = Some(&m[..byte_len]);
+        } else {
+            margin = Some(indent);
+        }
+    }
+    let margin = margin.unwrap_or("");
+    if margin.is_empty() {
+        return text.to_string();
+    }
+    let margin_len = margin.len();
+    let mut result = String::with_capacity(text.len());
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            result.push('\n');
+        }
+        if line.trim_start().is_empty() {
+            // Whitespace-only line: strip all leading whitespace
+            result.push_str(line.trim_start());
+        } else if line.len() >= margin_len && &line[..margin_len] == margin {
+            result.push_str(&line[margin_len..]);
+        } else {
+            result.push_str(line);
+        }
+    }
+    result
+}
+
+    width_bits: u64,
+    placeholder_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(width) = to_i64(obj_from_bits(width_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "width must be int");
+        };
+        let placeholder = if obj_from_bits(placeholder_bits).is_none() {
+            " [...]".to_string()
+        } else {
+            string_obj_to_owned(obj_from_bits(placeholder_bits))
+                .unwrap_or_else(|| " [...]".to_string())
+        };
+        // Collapse whitespace and truncate
+        let collapsed: String = text.split_whitespace().collect::<Vec<&str>>().join(" ");
+        if (collapsed.len() as i64) <= width {
+            let out_ptr = alloc_string(_py, collapsed.as_bytes());
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(out_ptr).bits();
+        }
+        let ph_len = placeholder.len() as i64;
+        let max_text = width - ph_len;
+        if max_text < 0 {
+            let out_ptr = alloc_string(_py, placeholder.as_bytes());
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(out_ptr).bits();
+        }
+        // Find last space before max_text
+        let mut truncate_at = max_text as usize;
+        if truncate_at < collapsed.len() {
+            // Find last space at or before truncate_at
+            if let Some(pos) = collapsed[..truncate_at].rfind(' ') {
+                truncate_at = pos;
+            }
+        }
+        let result = format!("{}{}", &collapsed[..truncate_at].trim_end(), placeholder);
+        let out_ptr = alloc_string(_py, result.as_bytes());
+        if out_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+// ─── logging filter intrinsics ──────────────────────────────────────────────
+
+// ─── logging file handler intrinsics ────────────────────────────────────────
+
+    filename_bits: u64,
+    mode_bits: u64,
+    encoding_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(msg) = string_obj_to_owned(obj_from_bits(msg_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "msg must be str");
+        };
+        let Some(filename) = string_obj_to_owned(obj_from_bits(filename_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "filename must be str");
+        };
+        let mode = string_obj_to_owned(obj_from_bits(mode_bits)).unwrap_or_else(|| "a".to_string());
+        let _encoding = string_obj_to_owned(obj_from_bits(encoding_bits));
+
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        let open_result = if mode.contains('w') {
+            OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&filename)
+        } else {
+            OpenOptions::new().append(true).create(true).open(&filename)
+        };
+        match open_result {
+            Ok(mut f) => {
+                let _ = f.write_all(msg.as_bytes());
+                let _ = f.write_all(b"\n");
+            }
+            Err(e) => {
+                return raise_exception::<_>(
+                    _py,
+                    "IOError",
+                    &format!("cannot open {}: {}", filename, e),
+                );
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
+
+// ─── copy.replace intrinsic ─────────────────────────────────────────────────
+
+// ─── pprint format/isreadable/isrecursive with context ──────────────────────
+
+    max_depth_bits: u64,
+    level_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        use std::collections::HashSet;
+        let max_depth = crate::builtins::pprint_ext::i64_from_bits_default(max_depth_bits, -1);
+        let level = crate::builtins::pprint_ext::i64_from_bits_default(level_bits, 0);
+        let mut seen = HashSet::new();
+        let (repr, readable, recursive) = crate::builtins::pprint_ext::safe_repr_inner(
+            _py, obj_bits, &mut seen, level, max_depth, -1,
+        );
+        // Return a tuple (repr_str, readable_bool, recursive_bool)
+        let repr_ptr = alloc_string(_py, repr.as_bytes());
+        if repr_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let repr_bits = MoltObject::from_ptr(repr_ptr).bits();
+        let readable_bits = MoltObject::from_int(if readable { 1 } else { 0 }).bits();
+        let recursive_bits = MoltObject::from_int(if recursive { 1 } else { 0 }).bits();
+        let tup_ptr = crate::alloc_tuple(_py, &[repr_bits, readable_bits, recursive_bits]);
+        if tup_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(tup_ptr).bits()
+    })
+}
+
+#[derive(Clone)]
+struct PkgutilModuleInfo {
+    module_finder: String,
+    name: String,
+    ispkg: bool,
+}
+
+fn pkgutil_join(base: &str, name: &str) -> String {
+    if base.is_empty() {
+        return name.to_string();
+    }
+    Path::new(base).join(name).to_string_lossy().into_owned()
+}
+
+fn pkgutil_iter_modules_in_path(path: &str, prefix: &str) -> Vec<PkgutilModuleInfo> {
+    let entries = match fs::read_dir(path) {
+        Ok(read_dir) => read_dir,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut names: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+
+    let mut yielded: HashSet<String> = HashSet::new();
+    let mut results: Vec<PkgutilModuleInfo> = Vec::new();
+    for entry in names {
+        if entry == "__pycache__" {
+            continue;
+        }
+        let full = pkgutil_join(path, &entry);
+        if !entry.contains('.') {
+            if let Ok(dir_entries) = fs::read_dir(&full) {
+                let mut ispkg = false;
+                for item in dir_entries.flatten() {
+                    if item.file_name().to_string_lossy() == "__init__.py" {
+                        ispkg = true;
+                        break;
+                    }
+                }
+                if ispkg && yielded.insert(entry.clone()) {
+                    results.push(PkgutilModuleInfo {
+                        module_finder: path.to_string(),
+                        name: format!("{prefix}{entry}"),
+                        ispkg: true,
+                    });
+                }
+            }
+            continue;
+        }
+        if !entry.ends_with(".py") {
+            continue;
+        }
+        let modname = &entry[..entry.len().saturating_sub(3)];
+        if modname.is_empty() || modname == "__init__" || modname.contains('.') {
+            continue;
+        }
+        if yielded.insert(modname.to_string()) {
+            results.push(PkgutilModuleInfo {
+                module_finder: path.to_string(),
+                name: format!("{prefix}{modname}"),
+                ispkg: false,
+            });
+        }
+    }
+    results
+}
+
+fn pkgutil_iter_modules_impl(paths: &[String], prefix: &str) -> Vec<PkgutilModuleInfo> {
+    let mut yielded: HashSet<String> = HashSet::new();
+    let mut out: Vec<PkgutilModuleInfo> = Vec::new();
+    for path in paths {
+        for info in pkgutil_iter_modules_in_path(path, prefix) {
+            if yielded.insert(info.name.clone()) {
+                out.push(info);
+            }
+        }
+    }
+    out
+}
+
+fn pkgutil_walk_packages_impl(paths: &[String], prefix: &str) -> Vec<PkgutilModuleInfo> {
+    let mut out: Vec<PkgutilModuleInfo> = Vec::new();
+    let infos = pkgutil_iter_modules_impl(paths, prefix);
+    for info in infos {
+        out.push(info.clone());
+        if !info.ispkg {
+            continue;
+        }
+        let mut pkg_name = info.name.clone();
+        if !prefix.is_empty() && pkg_name.starts_with(prefix) {
+            pkg_name = pkg_name[prefix.len()..].to_string();
+        }
+        let subdir = pkgutil_join(&info.module_finder, &pkg_name);
+        let subprefix = format!("{}.", info.name);
+        let nested = pkgutil_walk_packages_impl(&[subdir], &subprefix);
+        out.extend(nested);
+    }
+    out
+}
+
+fn alloc_pkgutil_module_info_list(_py: &crate::PyToken<'_>, values: &[PkgutilModuleInfo]) -> u64 {
+    let mut tuple_bits: Vec<u64> = Vec::with_capacity(values.len());
+    for entry in values {
+        let finder_ptr = alloc_string(_py, entry.module_finder.as_bytes());
+        if finder_ptr.is_null() {
+            for bits in tuple_bits {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let name_ptr = alloc_string(_py, entry.name.as_bytes());
+        if name_ptr.is_null() {
+            let finder_bits = MoltObject::from_ptr(finder_ptr).bits();
+            dec_ref_bits(_py, finder_bits);
+            for bits in tuple_bits {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let finder_bits = MoltObject::from_ptr(finder_ptr).bits();
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let ispkg_bits = MoltObject::from_bool(entry.ispkg).bits();
+        let tuple_ptr = alloc_tuple(_py, &[finder_bits, name_bits, ispkg_bits]);
+        dec_ref_bits(_py, finder_bits);
+        dec_ref_bits(_py, name_bits);
+        if tuple_ptr.is_null() {
+            for bits in tuple_bits {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        tuple_bits.push(MoltObject::from_ptr(tuple_ptr).bits());
+    }
+    let list_ptr = alloc_list_with_capacity(_py, tuple_bits.as_slice(), tuple_bits.len());
+    for bits in tuple_bits {
+        dec_ref_bits(_py, bits);
+    }
+    if list_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(list_ptr).bits()
+    }
+}
+
+fn compileall_compile_file_impl(fullname: &str) -> bool {
+    let mut handle = match fs::File::open(fullname) {
+        Ok(handle) => handle,
+        Err(_) => return false,
+    };
+    let mut one = [0u8; 1];
+    handle.read(&mut one).is_ok()
+}
+
+fn compileall_compile_dir_impl(dir: &str, maxlevels: i64) -> bool {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return false,
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    let mut success = true;
+    for entry in names {
+        if entry == "__pycache__" {
+            continue;
+        }
+        let full = pkgutil_join(dir, &entry);
+        if entry.ends_with(".py") {
+            if !compileall_compile_file_impl(&full) {
+                success = false;
+            }
+            continue;
+        }
+        if maxlevels <= 0 {
+            continue;
+        }
+        if fs::read_dir(&full).is_err() {
+            continue;
+        }
+        if !compileall_compile_dir_impl(&full, maxlevels - 1) {
+            success = false;
+        }
+    }
+    success
+}
+
+static EMAIL_MSGID_NEXT: AtomicU64 = AtomicU64::new(1);
+
+fn email_message_default() -> MoltEmailMessage {
+    MoltEmailMessage {
+        headers: Vec::new(),
+        body: String::new(),
+        content_type: "text/plain".to_string(),
+        filename: None,
+        parts: Vec::new(),
+        multipart_subtype: None,
+    }
+}
+
+fn email_header_get(headers: &[(String, String)], name: &str) -> Option<String> {
+    for (header_name, value) in headers.iter().rev() {
+        if header_name.eq_ignore_ascii_case(name) {
+            return Some(value.clone());
+        }
+    }
+    None
+}
+
+fn email_fold_header(name: &str, value: &str) -> String {
+    let prefix = format!("{name}: ");
+    if prefix.len() + value.len() <= 78 {
+        return format!("{prefix}{value}");
+    }
+    let mut out = prefix;
+    let mut remaining = value.trim();
+    let mut first = true;
+    while !remaining.is_empty() {
+        let max_len = if first { 72 } else { 74 };
+        let take = remaining
+            .char_indices()
+            .take_while(|(idx, _)| *idx < max_len)
+            .last()
+            .map(|(idx, ch)| idx + ch.len_utf8())
+            .unwrap_or_else(|| remaining.len().min(max_len));
+        let (chunk, rest) = remaining.split_at(take);
+        if !first {
+            out.push(' ');
+        }
+        out.push_str(chunk.trim_end());
+        if !rest.is_empty() {
+            out.push('\n');
+            first = false;
+        }
+        remaining = rest.trim_start();
+    }
+    out
+}
+
+fn email_serialize_message(message: &MoltEmailMessage) -> String {
+    let mut out = String::new();
+    for (name, value) in &message.headers {
+        out.push_str(&email_fold_header(name, value));
+        out.push('\n');
+    }
+    if message.parts.is_empty() {
+        out.push_str(&format!("Content-Type: {}\n", message.content_type));
+        if let Some(filename) = &message.filename {
+            out.push_str(&format!(
+                "Content-Disposition: attachment; filename=\"{}\"\n",
+                filename
+            ));
+        }
+        out.push('\n');
+        out.push_str(&message.body);
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        return out;
+    }
+    let subtype = message
+        .multipart_subtype
+        .as_deref()
+        .unwrap_or("mixed")
+        .to_string();
+    let boundary = "==MOLT_BOUNDARY==";
+    out.push_str(&format!(
+        "Content-Type: multipart/{}; boundary=\"{}\"\n\n",
+        subtype, boundary
+    ));
+    for part in &message.parts {
+        out.push_str(&format!("--{}\n", boundary));
+        out.push_str(&format!("Content-Type: {}\n", part.content_type));
+        if let Some(filename) = &part.filename {
+            out.push_str(&format!(
+                "Content-Disposition: attachment; filename=\"{}\"\n",
+                filename
+            ));
+        }
+        out.push('\n');
+        out.push_str(&part.body);
+        if !part.body.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out.push_str(&format!("--{}--\n", boundary));
+    out
+}
+
+fn email_parse_simple_message(raw: &str) -> MoltEmailMessage {
+    let mut message = email_message_default();
+    let normalized = raw.replace("\r\n", "\n");
+    let mut split = normalized.splitn(2, "\n\n");
+    let header_block = split.next().unwrap_or_default();
+    let body_block = split.next().unwrap_or_default();
+    let mut last_header: Option<usize> = None;
+    for line in header_block.lines() {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            if let Some(idx) = last_header
+                && let Some((_, value)) = message.headers.get_mut(idx)
+            {
+                value.push(' ');
+                value.push_str(line.trim());
+            }
+            continue;
+        }
+        let Some(colon) = line.find(':') else {
+            continue;
+        };
+        let name = line[..colon].trim().to_string();
+        let value = line[colon + 1..].trim().to_string();
+        if name.eq_ignore_ascii_case("content-type") {
+            let base = value
+                .split(';')
+                .next()
+                .unwrap_or(value.as_str())
+                .trim()
+                .to_string();
+            message.content_type = if base.is_empty() {
+                "text/plain".to_string()
+            } else {
+                base
+            };
+            continue;
+        }
+        message.headers.push((name, value));
+        last_header = Some(message.headers.len().saturating_sub(1));
+    }
+    message.body = body_block.to_string();
+    message
+}
+
+fn email_month_number(token: &str) -> Option<i64> {
+    match token.to_ascii_lowercase().as_str() {
+        "jan" => Some(1),
+        "feb" => Some(2),
+        "mar" => Some(3),
+        "apr" => Some(4),
+        "may" => Some(5),
+        "jun" => Some(6),
+        "jul" => Some(7),
+        "aug" => Some(8),
+        "sep" => Some(9),
+        "oct" => Some(10),
+        "nov" => Some(11),
+        "dec" => Some(12),
+        _ => None,
+    }
+}
+
+fn email_month_name(month: i64) -> &'static str {
+    match month {
+        1 => "Jan",
+        2 => "Feb",
+        3 => "Mar",
+        4 => "Apr",
+        5 => "May",
+        6 => "Jun",
+        7 => "Jul",
+        8 => "Aug",
+        9 => "Sep",
+        10 => "Oct",
+        11 => "Nov",
+        12 => "Dec",
+        _ => "Jan",
+    }
+}
+
+fn email_weekday_mon0(year: i64, month: i64, day: i64) -> i64 {
+    // Sakamoto algorithm (returns 0=Sunday..6=Saturday).
+    let t = [0i64, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    let mut y = year;
+    if month < 3 {
+        y -= 1;
+    }
+    let m_index = usize::try_from(month.saturating_sub(1))
+        .unwrap_or(0)
+        .min(t.len().saturating_sub(1));
+    let sun0 = (y + y / 4 - y / 100 + y / 400 + t[m_index] + day).rem_euclid(7);
+    // Convert Sunday=0..Saturday=6 to Monday=0..Sunday=6.
+    (sun0 + 6).rem_euclid(7)
+}
+
+fn email_weekday_name_mon0(mon0: i64) -> &'static str {
+    match mon0 {
+        0 => "Mon",
+        1 => "Tue",
+        2 => "Wed",
+        3 => "Thu",
+        4 => "Fri",
+        5 => "Sat",
+        6 => "Sun",
+        _ => "Mon",
+    }
+}
+
+fn email_parse_datetime_like(value: &str) -> Option<(i64, i64, i64, i64, i64, i64, i64)> {
+    let mut text = value.trim();
+    if let Some(comma) = text.find(',') {
+        text = text[comma + 1..].trim();
+    }
+    let parts: Vec<&str> = text.split_whitespace().collect();
+    if parts.len() < 5 {
+        return None;
+    }
+    let day = parts[0].parse::<i64>().ok()?;
+    let month = email_month_number(parts[1])?;
+    let year = parts[2].parse::<i64>().ok()?;
+    let mut time_iter = parts[3].split(':');
+    let hour = time_iter.next()?.parse::<i64>().ok()?;
+    let minute = time_iter.next()?.parse::<i64>().ok()?;
+    let second = time_iter.next()?.parse::<i64>().ok()?;
+    let tz = parts[4];
+    if tz.len() != 5 {
+        return None;
+    }
+    let sign = match &tz[0..1] {
+        "+" => 1i64,
+        "-" => -1i64,
+        _ => return None,
+    };
+    let tz_hours = tz[1..3].parse::<i64>().ok()?;
+    let tz_minutes = tz[3..5].parse::<i64>().ok()?;
+    let offset = sign * (tz_hours * 3600 + tz_minutes * 60);
+    Some((year, month, day, hour, minute, second, offset))
+}
+
+fn email_utils_format_datetime_impl(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+) -> String {
+    let wday = email_weekday_mon0(year, month, day);
+    format!(
+        "{}, {:02} {} {:04} {:02}:{:02}:{:02} +0000",
+        email_weekday_name_mon0(wday),
+        day,
+        email_month_name(month),
+        year,
+        hour,
+        minute,
+        second
+    )
+}
+
+fn email_utils_parse_addresses(values: &[String]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for value in values {
+        for token in value.split(',') {
+            let entry = token.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            if let (Some(start), Some(end)) = (entry.rfind('<'), entry.rfind('>'))
+                && start < end
+            {
+                let name = entry[..start].trim().trim_matches('"').to_string();
+                let addr = entry[start + 1..end].trim().to_string();
+                out.push((name, addr));
+                continue;
+            }
+            out.push((String::new(), entry.to_string()));
+        }
+    }
+    out
+}
+
+fn email_header_encode_word_impl(text: &str, charset: Option<&str>) -> Result<String, String> {
+    let active = charset.unwrap_or("utf-8");
+    let lower = active.to_ascii_lowercase();
+    if text.is_ascii() && (charset.is_none() || lower == "ascii" || lower == "us-ascii") {
+        return Ok(text.to_string());
+    }
+    match lower.as_str() {
+        "utf-8" | "utf8" => {
+            let encoded = urllib_base64_encode(text.as_bytes());
+            Ok(format!("=?utf-8?b?{}?=", encoded))
+        }
+        "ascii" | "us-ascii" => {
+            if text.is_ascii() {
+                Ok(text.to_string())
+            } else {
+                Err("non-ASCII header text with ASCII charset".to_string())
+            }
+        }
+        _ => Err("unsupported email header charset".to_string()),
+    }
+}
+
+fn email_address_addr_spec_impl(username: &str, domain: &str) -> String {
+    if !username.is_empty() && !domain.is_empty() {
+        format!("{username}@{domain}")
+    } else if !domain.is_empty() {
+        format!("@{domain}")
+    } else {
+        username.to_string()
+    }
+}
+
+fn email_address_format_impl(display_name: &str, username: &str, domain: &str) -> String {
+    let addr_spec = email_address_addr_spec_impl(username, domain);
+    if !display_name.is_empty() && !addr_spec.is_empty() {
+        format!("{display_name} <{addr_spec}>")
+    } else if !display_name.is_empty() {
+        display_name.to_string()
+    } else {
+        addr_spec
+    }
+}
+
+fn email_get_int_attr(_py: &crate::PyToken<'_>, obj_bits: u64, name: &[u8]) -> Result<i64, u64> {
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+        return Err(MoltObject::none().bits());
+    };
+    let missing = missing_bits(_py);
+    let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+    dec_ref_bits(_py, name_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    if value_bits == missing {
+        let name_text = std::str::from_utf8(name).unwrap_or("attribute");
+        return Err(raise_exception::<u64>(
+            _py,
+            "AttributeError",
+            &format!("datetime object missing {name_text}"),
+        ));
+    }
+    let Some(value) = to_i64(obj_from_bits(value_bits)) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "datetime field must be int",
+        ));
+    };
+    Ok(value)
+}
+
+    name_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let id = match email_message_id_from_bits(_py, message_bits) {
+            Ok(id) => id,
+            Err(err) => return err,
+        };
+        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "header name must be str");
+        };
+        let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "header value must be str");
+        };
+        let mut registry = email_message_registry()
+            .lock()
+            .expect("email message registry lock poisoned");
+        let Some(message) = registry.get_mut(&id) else {
+            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+        };
+        message.headers.push((name, value));
+        MoltObject::none().bits()
+    })
+}
+
+    content_bits: u64,
+    subtype_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let id = match email_message_id_from_bits(_py, message_bits) {
+            Ok(id) => id,
+            Err(err) => return err,
+        };
+        let Some(content) = string_obj_to_owned(obj_from_bits(content_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "alternative content must be str");
+        };
+        let Some(subtype) = string_obj_to_owned(obj_from_bits(subtype_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "alternative subtype must be str");
+        };
+        let mut registry = email_message_registry()
+            .lock()
+            .expect("email message registry lock poisoned");
+        let Some(message) = registry.get_mut(&id) else {
+            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+        };
+        if message.parts.is_empty() {
+            let mut first = email_message_default();
+            first.content_type = "text/plain".to_string();
+            first.body = message.body.clone();
+            message.parts.push(first);
+            message.body.clear();
+        }
+        let mut alt = email_message_default();
+        alt.content_type = format!("text/{}", subtype);
+        alt.body = content;
+        message.parts.push(alt);
+        message.content_type = "multipart/alternative".to_string();
+        message.multipart_subtype = Some("alternative".to_string());
+        MoltObject::none().bits()
+    })
+}
+
+    data_bits: u64,
+    maintype_bits: u64,
+    subtype_bits: u64,
+    filename_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let id = match email_message_id_from_bits(_py, message_bits) {
+            Ok(id) => id,
+            Err(err) => return err,
+        };
+        let payload = if let Some(ptr) = obj_from_bits(data_bits).as_ptr() {
+            if let Some(bytes) = unsafe { bytes_like_slice(ptr) } {
+                String::from_utf8_lossy(bytes).into_owned()
+            } else if let Some(text) = string_obj_to_owned(obj_from_bits(data_bits)) {
+                text
+            } else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "attachment payload must be bytes-like or str",
+                );
+            }
+        } else if let Some(text) = string_obj_to_owned(obj_from_bits(data_bits)) {
+            text
+        } else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "attachment payload must be bytes-like or str",
+            );
+        };
+        let Some(maintype) = string_obj_to_owned(obj_from_bits(maintype_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "maintype must be str");
+        };
+        let Some(subtype) = string_obj_to_owned(obj_from_bits(subtype_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "subtype must be str");
+        };
+        let filename = if obj_from_bits(filename_bits).is_none() {
+            None
+        } else {
+            let Some(value) = string_obj_to_owned(obj_from_bits(filename_bits)) else {
+                return raise_exception::<_>(_py, "TypeError", "filename must be str or None");
+            };
+            Some(value)
+        };
+        let mut registry = email_message_registry()
+            .lock()
+            .expect("email message registry lock poisoned");
+        let Some(message) = registry.get_mut(&id) else {
+            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+        };
+        if message.parts.is_empty() {
+            let mut first = email_message_default();
+            first.content_type = "text/plain".to_string();
+            first.body = message.body.clone();
+            message.parts.push(first);
+            message.body.clear();
+        }
+        let mut part = email_message_default();
+        part.content_type = format!("{}/{}", maintype, subtype);
+        part.body = payload;
+        part.filename = filename;
+        message.parts.push(part);
+        message.content_type = "multipart/mixed".to_string();
+        message.multipart_subtype = Some("mixed".to_string());
+        MoltObject::none().bits()
+    })
+}
+
+    username_bits: u64,
+    domain_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(display_name) = string_obj_to_owned(obj_from_bits(display_name_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "display_name must be str");
+        };
+        let Some(username) = string_obj_to_owned(obj_from_bits(username_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "username must be str");
+        };
+        let Some(domain) = string_obj_to_owned(obj_from_bits(domain_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "domain must be str");
+        };
+        let out =
+            email_address_format_impl(display_name.as_str(), username.as_str(), domain.as_str());
+        let out_ptr = alloc_string(_py, out.as_bytes());
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(out_ptr).bits()
+    })
+}
+
+    whitespace_bits: u64,
+    posix_bits: u64,
+    comments_bits: u64,
+    whitespace_split_bits: u64,
+    commenters_bits: u64,
+    punctuation_chars_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "shlex.split argument must be str");
+        };
+        let Some(whitespace) = string_obj_to_owned(obj_from_bits(whitespace_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "shlex.split whitespace must be str");
+        };
+        let Some(commenters) = string_obj_to_owned(obj_from_bits(commenters_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "shlex.split commenters must be str");
+        };
+        let Some(punctuation_chars) = string_obj_to_owned(obj_from_bits(punctuation_chars_bits))
+        else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "shlex.split punctuation_chars must be str",
+            );
+        };
+        let posix = is_truthy(_py, obj_from_bits(posix_bits));
+        let comments = is_truthy(_py, obj_from_bits(comments_bits));
+        let whitespace_split = is_truthy(_py, obj_from_bits(whitespace_split_bits));
+        let parts = match shlex_split_impl(
+            &text,
+            &whitespace,
+            posix,
+            comments,
+            &commenters,
+            whitespace_split,
+            &punctuation_chars,
+        ) {
+            Ok(parts) => parts,
+            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+        };
+        alloc_string_list(_py, &parts)
+    })
+}
+
+    quotetabs_bits: u64,
+    header_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let byte = match quopri_expect_single_byte(_py, c_bits, "needsquoting") {
+            Ok(byte) => byte,
+            Err(bits) => return bits,
+        };
+        let quotetabs = is_truthy(_py, obj_from_bits(quotetabs_bits));
+        let header = is_truthy(_py, obj_from_bits(header_bits));
+        MoltObject::from_bool(quopri_needs_quoting(byte, quotetabs, header)).bits()
+    })
+}
+
+    charset_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let header_bytes = match quopri_expect_bytes_like(
+            _py,
+            header_bytes_bits,
+            "email.quoprimime.header_encode",
+        ) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let charset = match email_quopri_expect_string(_py, charset_bits, "header_encode charset") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if header_bytes.is_empty() {
+            return email_quopri_alloc_str(_py, "");
+        }
+        let mut encoded = String::with_capacity(header_bytes.len() * 3);
+        for byte in header_bytes {
+            email_quopri_push_header_mapped(byte, &mut encoded);
+        }
+        let out = format!("=?{charset}?q?{encoded}?=");
+        email_quopri_alloc_str(_py, out.as_str())
+    })
+}
+
+    maxlinelen_bits: u64,
+    eol_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let body = match email_quopri_expect_string(_py, body_bits, "body_encode body") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let maxlinelen = match to_i64(obj_from_bits(maxlinelen_bits)) {
+            Some(value) => value,
+            None => return raise_exception::<_>(_py, "TypeError", "maxlinelen must be int"),
+        };
+        if maxlinelen < 4 {
+            return raise_exception::<_>(_py, "ValueError", "maxlinelen must be at least 4");
+        }
+        let eol = match email_quopri_expect_string(_py, eol_bits, "body_encode eol") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if body.is_empty() {
+            return email_quopri_alloc_str(_py, body.as_str());
+        }
+
+        let mut quoted = String::with_capacity(body.len() + 8);
+        for ch in body.chars() {
+            let code = ch as u32;
+            if code <= 255 {
+                let byte = code as u8;
+                if matches!(byte, b'\r' | b'\n') {
+                    quoted.push(ch);
+                } else {
+                    email_quopri_push_body_mapped(byte, &mut quoted);
+                }
+            } else {
+                quoted.push(ch);
+            }
+        }
+
+        let soft_break = format!("={eol}");
+        let maxlinelen1 = (maxlinelen as usize) - 1;
+        let mut encoded_lines: Vec<String> = Vec::new();
+        for line in email_quopri_splitlines(quoted.as_str()) {
+            let chars: Vec<char> = line.chars().collect();
+            let mut start = 0usize;
+            let laststart = (chars.len() as isize) - 1 - (maxlinelen as isize);
+            while (start as isize) <= laststart {
+                let stop = start + maxlinelen1;
+                if chars[stop - 2] == '=' {
+                    encoded_lines.push(chars[start..stop - 1].iter().collect());
+                    start = stop - 2;
+                } else if chars[stop - 1] == '=' {
+                    encoded_lines.push(chars[start..stop].iter().collect());
+                    start = stop - 1;
+                } else {
+                    let mut segment: String = chars[start..stop].iter().collect();
+                    segment.push('=');
+                    encoded_lines.push(segment);
+                    start = stop;
+                }
+            }
+
+            if !chars.is_empty() && matches!(chars[chars.len() - 1], ' ' | '\t') {
+                let room = (start as isize) - laststart;
+                let mut q = String::new();
+                if room >= 3 {
+                    email_quopri_push_escape(chars[chars.len() - 1] as u8, &mut q);
+                } else if room == 2 {
+                    q.push(chars[chars.len() - 1]);
+                    q.push_str(soft_break.as_str());
+                } else {
+                    q.push_str(soft_break.as_str());
+                    email_quopri_push_escape(chars[chars.len() - 1] as u8, &mut q);
+                }
+                let mut segment: String = chars[start..chars.len() - 1].iter().collect();
+                segment.push_str(q.as_str());
+                encoded_lines.push(segment);
+            } else {
+                encoded_lines.push(chars[start..].iter().collect());
+            }
+        }
+
+        if matches!(quoted.chars().last(), Some('\r' | '\n')) {
+            encoded_lines.push(String::new());
+        }
+
+        let out = encoded_lines.join(eol.as_str());
+        email_quopri_alloc_str(_py, out.as_str())
+    })
+}
+
+fn opcode_num_popped_312(opcode: i64, oparg: i64) -> Option<i64> {
+    match opcode {
+        0 => Some(0),                 // CACHE
+        1 => Some(1),                 // POP_TOP
+        2 => Some(0),                 // PUSH_NULL
+        3 => Some(1),                 // INTERPRETER_EXIT
+        4 => Some(1 + 1),             // END_FOR
+        5 => Some(2),                 // END_SEND
+        9 => Some(0),                 // NOP
+        11 => Some(1),                // UNARY_NEGATIVE
+        12 => Some(1),                // UNARY_NOT
+        15 => Some(1),                // UNARY_INVERT
+        17 => Some(0),                // RESERVED
+        25 => Some(2),                // BINARY_SUBSCR
+        26 => Some(3),                // BINARY_SLICE
+        27 => Some(4),                // STORE_SLICE
+        30 => Some(1),                // GET_LEN
+        31 => Some(1),                // MATCH_MAPPING
+        32 => Some(1),                // MATCH_SEQUENCE
+        33 => Some(2),                // MATCH_KEYS
+        35 => Some(1),                // PUSH_EXC_INFO
+        36 => Some(2),                // CHECK_EXC_MATCH
+        37 => Some(2),                // CHECK_EG_MATCH
+        49 => Some(4),                // WITH_EXCEPT_START
+        50 => Some(1),                // GET_AITER
+        51 => Some(1),                // GET_ANEXT
+        52 => Some(1),                // BEFORE_ASYNC_WITH
+        53 => Some(1),                // BEFORE_WITH
+        54 => Some(2),                // END_ASYNC_FOR
+        55 => Some(3),                // CLEANUP_THROW
+        60 => Some(3),                // STORE_SUBSCR
+        61 => Some(2),                // DELETE_SUBSCR
+        68 => Some(1),                // GET_ITER
+        69 => Some(1),                // GET_YIELD_FROM_ITER
+        71 => Some(0),                // LOAD_BUILD_CLASS
+        74 => Some(0),                // LOAD_ASSERTION_ERROR
+        75 => Some(0),                // RETURN_GENERATOR
+        83 => Some(1),                // RETURN_VALUE
+        85 => Some(0),                // SETUP_ANNOTATIONS
+        87 => Some(0),                // LOAD_LOCALS
+        89 => Some(1),                // POP_EXCEPT
+        90 => Some(1),                // STORE_NAME
+        91 => Some(0),                // DELETE_NAME
+        92 => Some(1),                // UNPACK_SEQUENCE
+        93 => Some(1),                // FOR_ITER
+        94 => Some(1),                // UNPACK_EX
+        95 => Some(2),                // STORE_ATTR
+        96 => Some(1),                // DELETE_ATTR
+        97 => Some(1),                // STORE_GLOBAL
+        98 => Some(0),                // DELETE_GLOBAL
+        99 => Some((oparg - 2) + 2),  // SWAP
+        100 => Some(0),               // LOAD_CONST
+        101 => Some(0),               // LOAD_NAME
+        102 => Some(oparg),           // BUILD_TUPLE
+        103 => Some(oparg),           // BUILD_LIST
+        104 => Some(oparg),           // BUILD_SET
+        105 => Some(oparg * 2),       // BUILD_MAP
+        106 => Some(1),               // LOAD_ATTR
+        107 => Some(2),               // COMPARE_OP
+        108 => Some(2),               // IMPORT_NAME
+        109 => Some(1),               // IMPORT_FROM
+        110 => Some(0),               // JUMP_FORWARD
+        114 => Some(1),               // POP_JUMP_IF_FALSE
+        115 => Some(1),               // POP_JUMP_IF_TRUE
+        116 => Some(0),               // LOAD_GLOBAL
+        117 => Some(2),               // IS_OP
+        118 => Some(2),               // CONTAINS_OP
+        119 => Some(oparg + 1),       // RERAISE
+        120 => Some((oparg - 1) + 1), // COPY
+        121 => Some(0),               // RETURN_CONST
+        122 => Some(2),               // BINARY_OP
+        123 => Some(2),               // SEND
+        124 => Some(0),               // LOAD_FAST
+        125 => Some(1),               // STORE_FAST
+        126 => Some(0),               // DELETE_FAST
+        127 => Some(0),               // LOAD_FAST_CHECK
+        128 => Some(1),               // POP_JUMP_IF_NOT_NONE
+        129 => Some(1),               // POP_JUMP_IF_NONE
+        130 => Some(oparg),           // RAISE_VARARGS
+        131 => Some(1),               // GET_AWAITABLE
+        132 => Some(
+            (if (oparg & 0x01) != 0 { 1 } else { 0 })
+                + (if (oparg & 0x02) != 0 { 1 } else { 0 })
+                + (if (oparg & 0x04) != 0 { 1 } else { 0 })
+                + (if (oparg & 0x08) != 0 { 1 } else { 0 })
+                + 1,
+        ), // MAKE_FUNCTION
+        133 => Some((if oparg == 3 { 1 } else { 0 }) + 2), // BUILD_SLICE
+        134 => Some(0),               // JUMP_BACKWARD_NO_INTERRUPT
+        135 => Some(0),               // MAKE_CELL
+        136 => Some(0),               // LOAD_CLOSURE
+        137 => Some(0),               // LOAD_DEREF
+        138 => Some(1),               // STORE_DEREF
+        139 => Some(0),               // DELETE_DEREF
+        140 => Some(0),               // JUMP_BACKWARD
+        141 => Some(3),               // LOAD_SUPER_ATTR
+        142 => Some((if (oparg & 1) != 0 { 1 } else { 0 }) + 3), // CALL_FUNCTION_EX
+        143 => Some(0),               // LOAD_FAST_AND_CLEAR
+        144 => Some(0),               // EXTENDED_ARG
+        145 => Some((oparg - 1) + 2), // LIST_APPEND
+        146 => Some((oparg - 1) + 2), // SET_ADD
+        147 => Some(2),               // MAP_ADD
+        149 => Some(0),               // COPY_FREE_VARS
+        150 => Some(1),               // YIELD_VALUE
+        151 => Some(0),               // RESUME
+        152 => Some(3),               // MATCH_CLASS
+        155 => Some((if (oparg & 0x04) == 0x04 { 1 } else { 0 }) + 1), // FORMAT_VALUE
+        156 => Some(oparg + 1),       // BUILD_CONST_KEY_MAP
+        157 => Some(oparg),           // BUILD_STRING
+        162 => Some((oparg - 1) + 2), // LIST_EXTEND
+        163 => Some((oparg - 1) + 2), // SET_UPDATE
+        164 => Some(1),               // DICT_MERGE
+        165 => Some(1),               // DICT_UPDATE
+        171 => Some(oparg + 2),       // CALL
+        172 => Some(0),               // KW_NAMES
+        173 => Some(1),               // CALL_INTRINSIC_1
+        174 => Some(2),               // CALL_INTRINSIC_2
+        175 => Some(1),               // LOAD_FROM_DICT_OR_GLOBALS
+        176 => Some(1),               // LOAD_FROM_DICT_OR_DEREF
+        237 => Some(3),               // INSTRUMENTED_LOAD_SUPER_ATTR
+        238 => Some(0),               // INSTRUMENTED_POP_JUMP_IF_NONE
+        239 => Some(0),               // INSTRUMENTED_POP_JUMP_IF_NOT_NONE
+        240 => Some(0),               // INSTRUMENTED_RESUME
+        241 => Some(0),               // INSTRUMENTED_CALL
+        242 => Some(1),               // INSTRUMENTED_RETURN_VALUE
+        243 => Some(1),               // INSTRUMENTED_YIELD_VALUE
+        244 => Some(0),               // INSTRUMENTED_CALL_FUNCTION_EX
+        245 => Some(0),               // INSTRUMENTED_JUMP_FORWARD
+        246 => Some(0),               // INSTRUMENTED_JUMP_BACKWARD
+        247 => Some(0),               // INSTRUMENTED_RETURN_CONST
+        248 => Some(0),               // INSTRUMENTED_FOR_ITER
+        249 => Some(0),               // INSTRUMENTED_POP_JUMP_IF_FALSE
+        250 => Some(0),               // INSTRUMENTED_POP_JUMP_IF_TRUE
+        251 => Some(2),               // INSTRUMENTED_END_FOR
+        252 => Some(2),               // INSTRUMENTED_END_SEND
+        253 => Some(0),               // INSTRUMENTED_INSTRUCTION
+        _ => None,
+    }
+}
+
+fn opcode_num_pushed_312(opcode: i64, oparg: i64) -> Option<i64> {
+    match opcode {
+        0 => Some(0),                                            // CACHE
+        1 => Some(0),                                            // POP_TOP
+        2 => Some(1),                                            // PUSH_NULL
+        3 => Some(0),                                            // INTERPRETER_EXIT
+        4 => Some(0),                                            // END_FOR
+        5 => Some(1),                                            // END_SEND
+        9 => Some(0),                                            // NOP
+        11 => Some(1),                                           // UNARY_NEGATIVE
+        12 => Some(1),                                           // UNARY_NOT
+        15 => Some(1),                                           // UNARY_INVERT
+        17 => Some(0),                                           // RESERVED
+        25 => Some(1),                                           // BINARY_SUBSCR
+        26 => Some(1),                                           // BINARY_SLICE
+        27 => Some(0),                                           // STORE_SLICE
+        30 => Some(2),                                           // GET_LEN
+        31 => Some(2),                                           // MATCH_MAPPING
+        32 => Some(2),                                           // MATCH_SEQUENCE
+        33 => Some(3),                                           // MATCH_KEYS
+        35 => Some(2),                                           // PUSH_EXC_INFO
+        36 => Some(2),                                           // CHECK_EXC_MATCH
+        37 => Some(2),                                           // CHECK_EG_MATCH
+        49 => Some(5),                                           // WITH_EXCEPT_START
+        50 => Some(1),                                           // GET_AITER
+        51 => Some(2),                                           // GET_ANEXT
+        52 => Some(2),                                           // BEFORE_ASYNC_WITH
+        53 => Some(2),                                           // BEFORE_WITH
+        54 => Some(0),                                           // END_ASYNC_FOR
+        55 => Some(2),                                           // CLEANUP_THROW
+        60 => Some(0),                                           // STORE_SUBSCR
+        61 => Some(0),                                           // DELETE_SUBSCR
+        68 => Some(1),                                           // GET_ITER
+        69 => Some(1),                                           // GET_YIELD_FROM_ITER
+        71 => Some(1),                                           // LOAD_BUILD_CLASS
+        74 => Some(1),                                           // LOAD_ASSERTION_ERROR
+        75 => Some(0),                                           // RETURN_GENERATOR
+        83 => Some(0),                                           // RETURN_VALUE
+        85 => Some(0),                                           // SETUP_ANNOTATIONS
+        87 => Some(1),                                           // LOAD_LOCALS
+        89 => Some(0),                                           // POP_EXCEPT
+        90 => Some(0),                                           // STORE_NAME
+        91 => Some(0),                                           // DELETE_NAME
+        92 => Some(oparg),                                       // UNPACK_SEQUENCE
+        93 => Some(2),                                           // FOR_ITER
+        94 => Some((oparg & 0xFF) + (oparg >> 8) + 1),           // UNPACK_EX
+        95 => Some(0),                                           // STORE_ATTR
+        96 => Some(0),                                           // DELETE_ATTR
+        97 => Some(0),                                           // STORE_GLOBAL
+        98 => Some(0),                                           // DELETE_GLOBAL
+        99 => Some((oparg - 2) + 2),                             // SWAP
+        100 => Some(1),                                          // LOAD_CONST
+        101 => Some(1),                                          // LOAD_NAME
+        102 => Some(1),                                          // BUILD_TUPLE
+        103 => Some(1),                                          // BUILD_LIST
+        104 => Some(1),                                          // BUILD_SET
+        105 => Some(1),                                          // BUILD_MAP
+        106 => Some((if (oparg & 1) != 0 { 1 } else { 0 }) + 1), // LOAD_ATTR
+        107 => Some(1),                                          // COMPARE_OP
+        108 => Some(1),                                          // IMPORT_NAME
+        109 => Some(2),                                          // IMPORT_FROM
+        110 => Some(0),                                          // JUMP_FORWARD
+        114 => Some(0),                                          // POP_JUMP_IF_FALSE
+        115 => Some(0),                                          // POP_JUMP_IF_TRUE
+        116 => Some((if (oparg & 1) != 0 { 1 } else { 0 }) + 1), // LOAD_GLOBAL
+        117 => Some(1),                                          // IS_OP
+        118 => Some(1),                                          // CONTAINS_OP
+        119 => Some(oparg),                                      // RERAISE
+        120 => Some((oparg - 1) + 2),                            // COPY
+        121 => Some(0),                                          // RETURN_CONST
+        122 => Some(1),                                          // BINARY_OP
+        123 => Some(2),                                          // SEND
+        124 => Some(1),                                          // LOAD_FAST
+        125 => Some(0),                                          // STORE_FAST
+        126 => Some(0),                                          // DELETE_FAST
+        127 => Some(1),                                          // LOAD_FAST_CHECK
+        128 => Some(0),                                          // POP_JUMP_IF_NOT_NONE
+        129 => Some(0),                                          // POP_JUMP_IF_NONE
+        130 => Some(0),                                          // RAISE_VARARGS
+        131 => Some(1),                                          // GET_AWAITABLE
+        132 => Some(1),                                          // MAKE_FUNCTION
+        133 => Some(1),                                          // BUILD_SLICE
+        134 => Some(0),                                          // JUMP_BACKWARD_NO_INTERRUPT
+        135 => Some(0),                                          // MAKE_CELL
+        136 => Some(1),                                          // LOAD_CLOSURE
+        137 => Some(1),                                          // LOAD_DEREF
+        138 => Some(0),                                          // STORE_DEREF
+        139 => Some(0),                                          // DELETE_DEREF
+        140 => Some(0),                                          // JUMP_BACKWARD
+        141 => Some((if (oparg & 1) != 0 { 1 } else { 0 }) + 1), // LOAD_SUPER_ATTR
+        142 => Some(1),                                          // CALL_FUNCTION_EX
+        143 => Some(1),                                          // LOAD_FAST_AND_CLEAR
+        144 => Some(0),                                          // EXTENDED_ARG
+        145 => Some((oparg - 1) + 1),                            // LIST_APPEND
+        146 => Some((oparg - 1) + 1),                            // SET_ADD
+        147 => Some(0),                                          // MAP_ADD
+        149 => Some(0),                                          // COPY_FREE_VARS
+        150 => Some(1),                                          // YIELD_VALUE
+        151 => Some(0),                                          // RESUME
+        152 => Some(1),                                          // MATCH_CLASS
+        155 => Some(1),                                          // FORMAT_VALUE
+        156 => Some(1),                                          // BUILD_CONST_KEY_MAP
+        157 => Some(1),                                          // BUILD_STRING
+        162 => Some((oparg - 1) + 1),                            // LIST_EXTEND
+        163 => Some((oparg - 1) + 1),                            // SET_UPDATE
+        164 => Some(0),                                          // DICT_MERGE
+        165 => Some(0),                                          // DICT_UPDATE
+        171 => Some(1),                                          // CALL
+        172 => Some(0),                                          // KW_NAMES
+        173 => Some(1),                                          // CALL_INTRINSIC_1
+        174 => Some(1),                                          // CALL_INTRINSIC_2
+        175 => Some(1),                                          // LOAD_FROM_DICT_OR_GLOBALS
+        176 => Some(1),                                          // LOAD_FROM_DICT_OR_DEREF
+        237 => Some((if (oparg & 1) != 0 { 1 } else { 0 }) + 1), // INSTRUMENTED_LOAD_SUPER_ATTR
+        238 => Some(0),                                          // INSTRUMENTED_POP_JUMP_IF_NONE
+        239 => Some(0), // INSTRUMENTED_POP_JUMP_IF_NOT_NONE
+        240 => Some(0), // INSTRUMENTED_RESUME
+        241 => Some(0), // INSTRUMENTED_CALL
+        242 => Some(0), // INSTRUMENTED_RETURN_VALUE
+        243 => Some(1), // INSTRUMENTED_YIELD_VALUE
+        244 => Some(0), // INSTRUMENTED_CALL_FUNCTION_EX
+        245 => Some(0), // INSTRUMENTED_JUMP_FORWARD
+        246 => Some(0), // INSTRUMENTED_JUMP_BACKWARD
+        247 => Some(0), // INSTRUMENTED_RETURN_CONST
+        248 => Some(0), // INSTRUMENTED_FOR_ITER
+        249 => Some(0), // INSTRUMENTED_POP_JUMP_IF_FALSE
+        250 => Some(0), // INSTRUMENTED_POP_JUMP_IF_TRUE
+        251 => Some(0), // INSTRUMENTED_END_FOR
+        252 => Some(1), // INSTRUMENTED_END_SEND
+        253 => Some(0), // INSTRUMENTED_INSTRUCTION
+        _ => None,
+    }
+}
+
+fn opcode_is_noarg_pseudo_312(opcode: i64) -> bool {
+    matches!(opcode, 256..=259)
+}
+
+fn opcode_stack_effect_pseudo_312(opcode: i64) -> Option<i64> {
+    match opcode {
+        256 => Some(1),  // SETUP_FINALLY (max jump/non-jump)
+        257 => Some(2),  // SETUP_CLEANUP (max jump/non-jump)
+        258 => Some(1),  // SETUP_WITH (max jump/non-jump)
+        259 => Some(0),  // POP_BLOCK
+        260 => Some(0),  // JUMP
+        261 => Some(0),  // JUMP_NO_INTERRUPT
+        262 => Some(1),  // LOAD_METHOD
+        263 => Some(-1), // LOAD_SUPER_METHOD
+        264 => Some(-1), // LOAD_ZERO_SUPER_METHOD
+        265 => Some(-1), // LOAD_ZERO_SUPER_ATTR
+        266 => Some(-1), // STORE_FAST_MAYBE_NULL
+        _ => None,
+    }
+}
+
+#[inline]
+fn opcode_is_noarg_312(opcode: i64) -> bool {
+    opcode < 90 || opcode_is_noarg_pseudo_312(opcode)
+}
+
+#[inline]
+fn opcode_stack_effect_core_312(opcode: i64, oparg: i64) -> Option<i64> {
+    if let Some(effect) = opcode_stack_effect_pseudo_312(opcode) {
+        return Some(effect);
+    }
+    let popped = opcode_num_popped_312(opcode, oparg)?;
+    let pushed = opcode_num_pushed_312(opcode, oparg)?;
+    if popped < 0 || pushed < 0 {
+        return None;
+    }
+    pushed.checked_sub(popped)
+}
+
+fn token_payload_json_value_to_bits(
+    _py: &crate::PyToken<'_>,
+    value: &JsonValue,
+) -> Result<u64, u64> {
+    match value {
+        JsonValue::Null => Ok(MoltObject::none().bits()),
+        JsonValue::Bool(flag) => Ok(MoltObject::from_bool(*flag).bits()),
+        JsonValue::Number(number) => {
+            if let Some(integer) = number.as_i64() {
+                return Ok(MoltObject::from_int(integer).bits());
+            }
+            if let Some(integer) = number.as_u64() {
+                let Ok(integer_i64) = i64::try_from(integer) else {
+                    return Err(raise_exception::<u64>(
+                        _py,
+                        "RuntimeError",
+                        "token payload number is out of range",
+                    ));
+                };
+                return Ok(MoltObject::from_int(integer_i64).bits());
+            }
+            if let Some(float_value) = number.as_f64() {
+                return Ok(MoltObject::from_float(float_value).bits());
+            }
+            Err(raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "token payload number is invalid",
+            ))
+        }
+        JsonValue::String(text) => {
+            let ptr = alloc_string(_py, text.as_bytes());
+            if ptr.is_null() {
+                Err(MoltObject::none().bits())
+            } else {
+                Ok(MoltObject::from_ptr(ptr).bits())
+            }
+        }
+        JsonValue::Array(items) => {
+            let mut item_bits: Vec<u64> = Vec::with_capacity(items.len());
+            for item in items {
+                let bits = match token_payload_json_value_to_bits(_py, item) {
+                    Ok(bits) => bits,
+                    Err(err_bits) => {
+                        for owned in item_bits {
+                            dec_ref_bits(_py, owned);
+                        }
+                        return Err(err_bits);
+                    }
+                };
+                item_bits.push(bits);
+            }
+            let list_ptr = alloc_list_with_capacity(_py, item_bits.as_slice(), item_bits.len());
+            for bits in item_bits {
+                dec_ref_bits(_py, bits);
+            }
+            if list_ptr.is_null() {
+                Err(MoltObject::none().bits())
+            } else {
+                Ok(MoltObject::from_ptr(list_ptr).bits())
+            }
+        }
+        JsonValue::Object(entries) => {
+            let mut pairs: Vec<u64> = Vec::with_capacity(entries.len() * 2);
+            let mut owned_bits: Vec<u64> = Vec::with_capacity(entries.len() * 2);
+            for (key, item) in entries {
+                let key_ptr = alloc_string(_py, key.as_bytes());
+                if key_ptr.is_null() {
+                    for owned in owned_bits {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return Err(MoltObject::none().bits());
+                }
+                let key_bits = MoltObject::from_ptr(key_ptr).bits();
+                let value_bits = match token_payload_json_value_to_bits(_py, item) {
+                    Ok(bits) => bits,
+                    Err(err_bits) => {
+                        dec_ref_bits(_py, key_bits);
+                        for owned in owned_bits {
+                            dec_ref_bits(_py, owned);
+                        }
+                        return Err(err_bits);
+                    }
+                };
+                pairs.push(key_bits);
+                pairs.push(value_bits);
+                owned_bits.push(key_bits);
+                owned_bits.push(value_bits);
+            }
+            let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+            for bits in owned_bits {
+                dec_ref_bits(_py, bits);
+            }
+            if dict_ptr.is_null() {
+                Err(MoltObject::none().bits())
+            } else {
+                Ok(MoltObject::from_ptr(dict_ptr).bits())
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ArgparseOptionalKind {
+    Value,
+    StoreTrue,
+}
+
+#[derive(Clone)]
+struct ArgparseOptionalSpec {
+    flag: String,
+    dest: String,
+    kind: ArgparseOptionalKind,
+    required: bool,
+    default: JsonValue,
+}
+
+#[derive(Clone)]
+struct ArgparseSubparsersSpec {
+    dest: String,
+    required: bool,
+    parsers: HashMap<String, ArgparseSpec>,
+}
+
+#[derive(Clone)]
+struct ArgparseSpec {
+    optionals: Vec<ArgparseOptionalSpec>,
+    positionals: Vec<String>,
+    subparsers: Option<ArgparseSubparsersSpec>,
+}
+
+fn argparse_choice_list(parsers: &HashMap<String, ArgparseSpec>) -> String {
+    let mut keys: Vec<&str> = parsers.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    keys.join(", ")
+}
+
+fn argparse_decode_spec(value: &JsonValue) -> Result<ArgparseSpec, String> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "argparse spec must be a JSON object".to_string())?;
+
+    let mut optionals: Vec<ArgparseOptionalSpec> = Vec::new();
+    if let Some(raw_optionals) = obj.get("optionals") {
+        let items = raw_optionals
+            .as_array()
+            .ok_or_else(|| "argparse optionals must be a JSON array".to_string())?;
+        for item in items {
+            let item_obj = item
+                .as_object()
+                .ok_or_else(|| "argparse optional spec must be object".to_string())?;
+            let flag = item_obj
+                .get("flag")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| "argparse optional spec missing string flag".to_string())?
+                .to_string();
+            let dest = item_obj
+                .get("dest")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| "argparse optional spec missing string dest".to_string())?
+                .to_string();
+            let kind = item_obj
+                .get("kind")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| "argparse optional spec missing string kind".to_string())?;
+            let parsed_kind = match kind {
+                "value" => ArgparseOptionalKind::Value,
+                "store_true" => ArgparseOptionalKind::StoreTrue,
+                _ => return Err(format!("unsupported argparse optional kind: {kind}")),
+            };
+            let required = item_obj
+                .get("required")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false);
+            let default = item_obj.get("default").cloned().unwrap_or_else(|| {
+                if parsed_kind == ArgparseOptionalKind::StoreTrue {
+                    JsonValue::Bool(false)
+                } else {
+                    JsonValue::Null
+                }
+            });
+            optionals.push(ArgparseOptionalSpec {
+                flag,
+                dest,
+                kind: parsed_kind,
+                required,
+                default,
+            });
+        }
+    }
+
+    let mut positionals: Vec<String> = Vec::new();
+    if let Some(raw_positionals) = obj.get("positionals") {
+        let items = raw_positionals
+            .as_array()
+            .ok_or_else(|| "argparse positionals must be a JSON array".to_string())?;
+        for item in items {
+            let item_obj = item
+                .as_object()
+                .ok_or_else(|| "argparse positional spec must be object".to_string())?;
+            let dest = item_obj
+                .get("dest")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| "argparse positional spec missing string dest".to_string())?
+                .to_string();
+            positionals.push(dest);
+        }
+    }
+
+    let subparsers = if let Some(raw_subparsers) = obj.get("subparsers") {
+        let sp_obj = raw_subparsers
+            .as_object()
+            .ok_or_else(|| "argparse subparsers spec must be object".to_string())?;
+        let dest = sp_obj
+            .get("dest")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| "argparse subparsers spec missing string dest".to_string())?
+            .to_string();
+        let required = sp_obj
+            .get("required")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false);
+        let parsers_obj = sp_obj
+            .get("parsers")
+            .and_then(JsonValue::as_object)
+            .ok_or_else(|| "argparse subparsers spec missing parsers object".to_string())?;
+        let mut parsers: HashMap<String, ArgparseSpec> = HashMap::new();
+        for (name, parser_spec) in parsers_obj {
+            let parsed = argparse_decode_spec(parser_spec)?;
+            parsers.insert(name.clone(), parsed);
+        }
+        Some(ArgparseSubparsersSpec {
+            dest,
+            required,
+            parsers,
+        })
+    } else {
+        None
+    };
+
+    Ok(ArgparseSpec {
+        optionals,
+        positionals,
+        subparsers,
+    })
+}
+
+fn argparse_parse_with_spec(
+    spec: &ArgparseSpec,
+    argv: &[String],
+) -> Result<JsonMap<String, JsonValue>, String> {
+    let mut out: JsonMap<String, JsonValue> = JsonMap::new();
+    let mut optional_dest_seen: HashSet<String> = HashSet::new();
+    for opt in &spec.optionals {
+        out.insert(opt.dest.clone(), opt.default.clone());
+    }
+
+    let mut pos_index = 0usize;
+    let mut index = 0usize;
+
+    while index < argv.len() {
+        let token = &argv[index];
+        if token.starts_with('-') && token != "-" {
+            let Some(opt) = spec.optionals.iter().find(|entry| entry.flag == *token) else {
+                return Err(format!("unrecognized arguments: {token}"));
+            };
+            optional_dest_seen.insert(opt.dest.clone());
+            match opt.kind {
+                ArgparseOptionalKind::StoreTrue => {
+                    out.insert(opt.dest.clone(), JsonValue::Bool(true));
+                    index += 1;
+                }
+                ArgparseOptionalKind::Value => {
+                    if index + 1 >= argv.len() {
+                        return Err(format!("argument {}: expected one argument", opt.flag));
+                    }
+                    let value = argv[index + 1].clone();
+                    out.insert(opt.dest.clone(), JsonValue::String(value));
+                    index += 2;
+                }
+            }
+            continue;
+        }
+
+        if pos_index < spec.positionals.len() {
+            let dest = spec.positionals[pos_index].clone();
+            out.insert(dest, JsonValue::String(token.clone()));
+            pos_index += 1;
+            index += 1;
+            continue;
+        }
+
+        if let Some(subparsers) = &spec.subparsers {
+            if let Some(child_spec) = subparsers.parsers.get(token) {
+                out.insert(subparsers.dest.clone(), JsonValue::String(token.clone()));
+                let child = argparse_parse_with_spec(child_spec, &argv[index + 1..])?;
+                for (key, value) in child {
+                    out.insert(key, value);
+                }
+                break;
+            }
+            let choices = argparse_choice_list(&subparsers.parsers);
+            return Err(format!(
+                "argument {}: invalid choice: '{}' (choose from {})",
+                subparsers.dest, token, choices
+            ));
+        }
+
+        return Err(format!("unrecognized arguments: {token}"));
+    }
+
+    if pos_index < spec.positionals.len() {
+        let missing = spec.positionals[pos_index..].join(", ");
+        return Err(format!("the following arguments are required: {missing}"));
+    }
+
+    for opt in &spec.optionals {
+        if opt.required && !optional_dest_seen.contains(&opt.dest) {
+            return Err(format!(
+                "the following arguments are required: {}",
+                opt.flag
+            ));
+        }
+    }
+
+    if let Some(subparsers) = &spec.subparsers
+        && subparsers.required
+        && !out.contains_key(&subparsers.dest)
+    {
+        return Err(format!(
+            "the following arguments are required: {}",
+            subparsers.dest
+        ));
+    }
+
+    Ok(out)
+}
+
+fn bisect_normalize_bounds(
+    _py: &crate::PyToken<'_>,
+    seq_bits: u64,
+    lo_bits: u64,
+    hi_bits: u64,
+) -> Result<(i64, i64), u64> {
+    let lo_err = format!(
+        "'{}' object cannot be interpreted as an integer",
+        type_name(_py, obj_from_bits(lo_bits))
+    );
+    let Some(lo) = index_i64_with_overflow(_py, lo_bits, lo_err.as_str(), None) else {
+        return Err(MoltObject::none().bits());
+    };
+    if lo < 0 {
+        return Err(raise_exception::<_>(
+            _py,
+            "ValueError",
+            "lo must be non-negative",
+        ));
+    }
+
+    let seq_len_bits = crate::molt_len(seq_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let Some(seq_len) = to_i64(obj_from_bits(seq_len_bits)) else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "object has no usable length for bisect",
+        ));
+    };
+    if !obj_from_bits(seq_len_bits).is_none() {
+        dec_ref_bits(_py, seq_len_bits);
+    }
+
+    let hi = if obj_from_bits(hi_bits).is_none() {
+        seq_len
+    } else {
+        let hi_err = format!(
+            "'{}' object cannot be interpreted as an integer",
+            type_name(_py, obj_from_bits(hi_bits))
+        );
+        let Some(value) = index_i64_with_overflow(_py, hi_bits, hi_err.as_str(), None) else {
+            return Err(MoltObject::none().bits());
+        };
+        value
+    };
+    Ok((lo, hi))
+}
+
+fn bisect_find_index(
+    _py: &crate::PyToken<'_>,
+    seq_bits: u64,
+    x_bits: u64,
+    mut lo: i64,
+    mut hi: i64,
+    key_bits: u64,
+    left: bool,
+) -> Result<i64, u64> {
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        let mid_bits = MoltObject::from_int(mid).bits();
+        let item_bits = molt_getitem_method(seq_bits, mid_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+
+        let mut key_result_bits = item_bits;
+        let mut release_key = false;
+        if !obj_from_bits(key_bits).is_none() {
+            key_result_bits = unsafe { call_callable1(_py, key_bits, item_bits) };
+            if exception_pending(_py) {
+                if !obj_from_bits(item_bits).is_none() {
+                    dec_ref_bits(_py, item_bits);
+                }
+                return Err(MoltObject::none().bits());
+            }
+            release_key = true;
+        }
+
+        let lt_bits = if left {
+            crate::molt_lt(key_result_bits, x_bits)
+        } else {
+            crate::molt_lt(x_bits, key_result_bits)
         };
         if exception_pending(_py) {
             if release_key && !obj_from_bits(key_result_bits).is_none() {
@@ -7321,9 +12311,6 @@ fn bisect_insert_at(
     Ok(())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bisect_left(
-    seq_bits: u64,
     x_bits: u64,
     lo_bits: u64,
     hi_bits: u64,
@@ -7342,9 +12329,6 @@ pub extern "C" fn molt_bisect_left(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bisect_right(
-    seq_bits: u64,
     x_bits: u64,
     lo_bits: u64,
     hi_bits: u64,
@@ -7363,9 +12347,6 @@ pub extern "C" fn molt_bisect_right(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bisect_insort_left(
-    seq_bits: u64,
     x_bits: u64,
     lo_bits: u64,
     hi_bits: u64,
@@ -7404,9 +12385,6 @@ pub extern "C" fn molt_bisect_insort_left(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bisect_insort_right(
-    seq_bits: u64,
     x_bits: u64,
     lo_bits: u64,
     hi_bits: u64,
@@ -7445,202 +12423,6 @@ pub extern "C" fn molt_bisect_insort_right(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stat_constants() -> u64 {
-    crate::with_gil_entry!(_py, {
-        fn stat_target_minor(_py: &crate::PyToken<'_>) -> i64 {
-            let state = crate::runtime_state(_py);
-            if let Some(info) = state.sys_version_info.lock().unwrap().as_ref()
-                && info.major == 3
-            {
-                return info.minor;
-            }
-            if let Ok(raw) = std::env::var("MOLT_PYTHON_VERSION")
-                && let Some((major_raw, minor_raw)) = raw.split_once('.')
-                && major_raw.trim() == "3"
-                && let Ok(minor) = minor_raw.trim().parse::<i64>()
-            {
-                return minor;
-            }
-            if let Ok(raw) = std::env::var("MOLT_SYS_VERSION_INFO") {
-                let mut parts = raw.split(',');
-                if let (Some(major_raw), Some(minor_raw)) = (parts.next(), parts.next())
-                    && major_raw.trim() == "3"
-                    && let Ok(minor) = minor_raw.trim().parse::<i64>()
-                {
-                    return minor;
-                }
-            }
-            12
-        }
-
-        let has_313_constants = stat_target_minor(_py) >= 13;
-        const S_IFMT_MASK: i64 = 0o170000;
-        const S_IFSOCK: i64 = 0o140000;
-        const S_IFLNK: i64 = 0o120000;
-        const S_IFREG: i64 = 0o100000;
-        const S_IFBLK: i64 = 0o060000;
-        const S_IFDIR: i64 = 0o040000;
-        const S_IFCHR: i64 = 0o020000;
-        const S_IFIFO: i64 = 0o010000;
-        const S_IFDOOR: i64 = 0;
-        const S_IFPORT: i64 = 0;
-        #[cfg(any(
-            target_os = "macos",
-            target_os = "freebsd",
-            target_os = "netbsd",
-            target_os = "openbsd"
-        ))]
-        const S_IFWHT: i64 = 0o160000;
-        #[cfg(not(any(
-            target_os = "macos",
-            target_os = "freebsd",
-            target_os = "netbsd",
-            target_os = "openbsd"
-        )))]
-        const S_IFWHT: i64 = 0;
-        const S_ISUID: i64 = 0o004000;
-        const S_ISGID: i64 = 0o002000;
-        const S_ISVTX: i64 = 0o001000;
-        const S_IRUSR: i64 = 0o000400;
-        const S_IWUSR: i64 = 0o000200;
-        const S_IXUSR: i64 = 0o000100;
-        const S_IRGRP: i64 = 0o000040;
-        const S_IWGRP: i64 = 0o000020;
-        const S_IXGRP: i64 = 0o000010;
-        const S_IROTH: i64 = 0o000004;
-        const S_IWOTH: i64 = 0o000002;
-        const S_IXOTH: i64 = 0o000001;
-        const ST_MODE: i64 = 0;
-        const ST_INO: i64 = 1;
-        const ST_DEV: i64 = 2;
-        const ST_NLINK: i64 = 3;
-        const ST_UID: i64 = 4;
-        const ST_GID: i64 = 5;
-        const ST_SIZE: i64 = 6;
-        const ST_ATIME: i64 = 7;
-        const ST_MTIME: i64 = 8;
-        const ST_CTIME: i64 = 9;
-        const UF_NODUMP: i64 = 0x00000001;
-        const UF_IMMUTABLE: i64 = 0x00000002;
-        const UF_APPEND: i64 = 0x00000004;
-        const UF_OPAQUE: i64 = 0x00000008;
-        const UF_NOUNLINK: i64 = 0x00000010;
-        const UF_SETTABLE: i64 = 0x0000ffff;
-        const UF_COMPRESSED: i64 = 0x00000020;
-        const UF_TRACKED: i64 = 0x00000040;
-        const UF_DATAVAULT: i64 = 0x00000080;
-        const UF_HIDDEN: i64 = 0x00008000;
-        const SF_ARCHIVED: i64 = 0x00010000;
-        const SF_IMMUTABLE: i64 = 0x00020000;
-        const SF_APPEND: i64 = 0x00040000;
-        const SF_SETTABLE: i64 = 0x3fff0000;
-        const SF_RESTRICTED: i64 = 0x00080000;
-        const SF_NOUNLINK: i64 = 0x00100000;
-        const SF_SNAPSHOT: i64 = 0x00200000;
-        const SF_FIRMLINK: i64 = 0x00800000;
-        const SF_DATALESS: i64 = 0x40000000;
-        const SF_SUPPORTED: i64 = 0x009f0000;
-        const SF_SYNTHETIC: i64 = 0xc0000000;
-        const FILE_ATTRIBUTE_ARCHIVE: i64 = 32;
-        const FILE_ATTRIBUTE_COMPRESSED: i64 = 2048;
-        const FILE_ATTRIBUTE_DEVICE: i64 = 64;
-        const FILE_ATTRIBUTE_DIRECTORY: i64 = 16;
-        const FILE_ATTRIBUTE_ENCRYPTED: i64 = 16384;
-        const FILE_ATTRIBUTE_HIDDEN: i64 = 2;
-        const FILE_ATTRIBUTE_INTEGRITY_STREAM: i64 = 32768;
-        const FILE_ATTRIBUTE_NORMAL: i64 = 128;
-        const FILE_ATTRIBUTE_NOT_CONTENT_INDEXED: i64 = 8192;
-        const FILE_ATTRIBUTE_NO_SCRUB_DATA: i64 = 131072;
-        const FILE_ATTRIBUTE_OFFLINE: i64 = 4096;
-        const FILE_ATTRIBUTE_READONLY: i64 = 1;
-        const FILE_ATTRIBUTE_REPARSE_POINT: i64 = 1024;
-        const FILE_ATTRIBUTE_SPARSE_FILE: i64 = 512;
-        const FILE_ATTRIBUTE_SYSTEM: i64 = 4;
-        const FILE_ATTRIBUTE_TEMPORARY: i64 = 256;
-        const FILE_ATTRIBUTE_VIRTUAL: i64 = 65536;
-        let payload = [
-            MoltObject::from_int(S_IFMT_MASK).bits(),
-            MoltObject::from_int(S_IFSOCK).bits(),
-            MoltObject::from_int(S_IFLNK).bits(),
-            MoltObject::from_int(S_IFREG).bits(),
-            MoltObject::from_int(S_IFBLK).bits(),
-            MoltObject::from_int(S_IFDIR).bits(),
-            MoltObject::from_int(S_IFCHR).bits(),
-            MoltObject::from_int(S_IFIFO).bits(),
-            MoltObject::from_int(S_IFDOOR).bits(),
-            MoltObject::from_int(S_IFPORT).bits(),
-            MoltObject::from_int(S_IFWHT).bits(),
-            MoltObject::from_int(S_ISUID).bits(),
-            MoltObject::from_int(S_ISGID).bits(),
-            MoltObject::from_int(S_ISVTX).bits(),
-            MoltObject::from_int(S_IRUSR).bits(),
-            MoltObject::from_int(S_IWUSR).bits(),
-            MoltObject::from_int(S_IXUSR).bits(),
-            MoltObject::from_int(S_IRGRP).bits(),
-            MoltObject::from_int(S_IWGRP).bits(),
-            MoltObject::from_int(S_IXGRP).bits(),
-            MoltObject::from_int(S_IROTH).bits(),
-            MoltObject::from_int(S_IWOTH).bits(),
-            MoltObject::from_int(S_IXOTH).bits(),
-            MoltObject::from_int(ST_MODE).bits(),
-            MoltObject::from_int(ST_INO).bits(),
-            MoltObject::from_int(ST_DEV).bits(),
-            MoltObject::from_int(ST_NLINK).bits(),
-            MoltObject::from_int(ST_UID).bits(),
-            MoltObject::from_int(ST_GID).bits(),
-            MoltObject::from_int(ST_SIZE).bits(),
-            MoltObject::from_int(ST_ATIME).bits(),
-            MoltObject::from_int(ST_MTIME).bits(),
-            MoltObject::from_int(ST_CTIME).bits(),
-            MoltObject::from_int(UF_NODUMP).bits(),
-            MoltObject::from_int(UF_IMMUTABLE).bits(),
-            MoltObject::from_int(UF_APPEND).bits(),
-            MoltObject::from_int(UF_OPAQUE).bits(),
-            MoltObject::from_int(UF_NOUNLINK).bits(),
-            MoltObject::from_int(UF_COMPRESSED).bits(),
-            MoltObject::from_int(UF_HIDDEN).bits(),
-            MoltObject::from_int(SF_ARCHIVED).bits(),
-            MoltObject::from_int(SF_IMMUTABLE).bits(),
-            MoltObject::from_int(SF_APPEND).bits(),
-            MoltObject::from_int(SF_NOUNLINK).bits(),
-            MoltObject::from_int(SF_SNAPSHOT).bits(),
-            MoltObject::from_int(if has_313_constants { UF_SETTABLE } else { 0 }).bits(),
-            MoltObject::from_int(if has_313_constants { UF_TRACKED } else { 0 }).bits(),
-            MoltObject::from_int(if has_313_constants { UF_DATAVAULT } else { 0 }).bits(),
-            MoltObject::from_int(if has_313_constants { SF_SETTABLE } else { 0 }).bits(),
-            MoltObject::from_int(if has_313_constants { SF_RESTRICTED } else { 0 }).bits(),
-            MoltObject::from_int(if has_313_constants { SF_FIRMLINK } else { 0 }).bits(),
-            MoltObject::from_int(if has_313_constants { SF_DATALESS } else { 0 }).bits(),
-            MoltObject::from_int(if has_313_constants { SF_SUPPORTED } else { 0 }).bits(),
-            MoltObject::from_int(if has_313_constants { SF_SYNTHETIC } else { 0 }).bits(),
-            MoltObject::from_int(FILE_ATTRIBUTE_ARCHIVE).bits(),
-            MoltObject::from_int(FILE_ATTRIBUTE_COMPRESSED).bits(),
-            MoltObject::from_int(FILE_ATTRIBUTE_DEVICE).bits(),
-            MoltObject::from_int(FILE_ATTRIBUTE_DIRECTORY).bits(),
-            MoltObject::from_int(FILE_ATTRIBUTE_ENCRYPTED).bits(),
-            MoltObject::from_int(FILE_ATTRIBUTE_HIDDEN).bits(),
-            MoltObject::from_int(FILE_ATTRIBUTE_INTEGRITY_STREAM).bits(),
-            MoltObject::from_int(FILE_ATTRIBUTE_NORMAL).bits(),
-            MoltObject::from_int(FILE_ATTRIBUTE_NOT_CONTENT_INDEXED).bits(),
-            MoltObject::from_int(FILE_ATTRIBUTE_NO_SCRUB_DATA).bits(),
-            MoltObject::from_int(FILE_ATTRIBUTE_OFFLINE).bits(),
-            MoltObject::from_int(FILE_ATTRIBUTE_READONLY).bits(),
-            MoltObject::from_int(FILE_ATTRIBUTE_REPARSE_POINT).bits(),
-            MoltObject::from_int(FILE_ATTRIBUTE_SPARSE_FILE).bits(),
-            MoltObject::from_int(FILE_ATTRIBUTE_SYSTEM).bits(),
-            MoltObject::from_int(FILE_ATTRIBUTE_TEMPORARY).bits(),
-            MoltObject::from_int(FILE_ATTRIBUTE_VIRTUAL).bits(),
-        ];
-        let tuple_ptr = alloc_tuple(_py, &payload);
-        if tuple_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(tuple_ptr).bits()
-        }
-    })
-}
-
 fn parse_stat_mode(_py: &crate::PyToken<'_>, mode_bits: u64) -> Result<i64, u64> {
     let Some(mode) = to_i64(obj_from_bits(mode_bits)) else {
         return Err(raise_exception::<_>(_py, "TypeError", "mode must be int"));
@@ -7648,288 +12430,6 @@ fn parse_stat_mode(_py: &crate::PyToken<'_>, mode_bits: u64) -> Result<i64, u64>
     Ok(mode)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stat_ifmt(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        const S_IFMT_MASK: i64 = 0o170000;
-        let mode = match parse_stat_mode(_py, mode_bits) {
-            Ok(mode) => mode,
-            Err(bits) => return bits,
-        };
-        MoltObject::from_int(mode & S_IFMT_MASK).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stat_imode(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        const S_IMODE_MASK: i64 = 0o7777;
-        let mode = match parse_stat_mode(_py, mode_bits) {
-            Ok(mode) => mode,
-            Err(bits) => return bits,
-        };
-        MoltObject::from_int(mode & S_IMODE_MASK).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stat_isdir(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let mode = match parse_stat_mode(_py, mode_bits) {
-            Ok(mode) => mode,
-            Err(bits) => return bits,
-        };
-        MoltObject::from_bool((mode & 0o170000) == 0o040000).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stat_isreg(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let mode = match parse_stat_mode(_py, mode_bits) {
-            Ok(mode) => mode,
-            Err(bits) => return bits,
-        };
-        MoltObject::from_bool((mode & 0o170000) == 0o100000).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stat_ischr(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let mode = match parse_stat_mode(_py, mode_bits) {
-            Ok(mode) => mode,
-            Err(bits) => return bits,
-        };
-        MoltObject::from_bool((mode & 0o170000) == 0o020000).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stat_isblk(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let mode = match parse_stat_mode(_py, mode_bits) {
-            Ok(mode) => mode,
-            Err(bits) => return bits,
-        };
-        MoltObject::from_bool((mode & 0o170000) == 0o060000).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stat_isfifo(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let mode = match parse_stat_mode(_py, mode_bits) {
-            Ok(mode) => mode,
-            Err(bits) => return bits,
-        };
-        MoltObject::from_bool((mode & 0o170000) == 0o010000).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stat_islnk(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let mode = match parse_stat_mode(_py, mode_bits) {
-            Ok(mode) => mode,
-            Err(bits) => return bits,
-        };
-        MoltObject::from_bool((mode & 0o170000) == 0o120000).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stat_issock(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let mode = match parse_stat_mode(_py, mode_bits) {
-            Ok(mode) => mode,
-            Err(bits) => return bits,
-        };
-        MoltObject::from_bool((mode & 0o170000) == 0o140000).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stat_isdoor(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        const S_IFDOOR: i64 = 0;
-        if S_IFDOOR == 0 {
-            return MoltObject::from_bool(false).bits();
-        }
-        let mode = match parse_stat_mode(_py, mode_bits) {
-            Ok(mode) => mode,
-            Err(bits) => return bits,
-        };
-        MoltObject::from_bool((mode & 0o170000) == S_IFDOOR).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stat_isport(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        const S_IFPORT: i64 = 0;
-        if S_IFPORT == 0 {
-            return MoltObject::from_bool(false).bits();
-        }
-        let mode = match parse_stat_mode(_py, mode_bits) {
-            Ok(mode) => mode,
-            Err(bits) => return bits,
-        };
-        MoltObject::from_bool((mode & 0o170000) == S_IFPORT).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stat_iswht(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        #[cfg(any(
-            target_os = "macos",
-            target_os = "freebsd",
-            target_os = "netbsd",
-            target_os = "openbsd"
-        ))]
-        const S_IFWHT: i64 = 0o160000;
-        #[cfg(not(any(
-            target_os = "macos",
-            target_os = "freebsd",
-            target_os = "netbsd",
-            target_os = "openbsd"
-        )))]
-        const S_IFWHT: i64 = 0;
-        if S_IFWHT == 0 {
-            return MoltObject::from_bool(false).bits();
-        }
-        let mode = match parse_stat_mode(_py, mode_bits) {
-            Ok(mode) => mode,
-            Err(bits) => return bits,
-        };
-        MoltObject::from_bool((mode & 0o170000) == S_IFWHT).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stat_filemode(mode_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        const S_IFMT_MASK: i64 = 0o170000;
-        const S_IFSOCK: i64 = 0o140000;
-        const S_IFLNK: i64 = 0o120000;
-        const S_IFREG: i64 = 0o100000;
-        const S_IFBLK: i64 = 0o060000;
-        const S_IFDIR: i64 = 0o040000;
-        const S_IFCHR: i64 = 0o020000;
-        const S_IFIFO: i64 = 0o010000;
-        const S_IFDOOR: i64 = 0;
-        const S_IFPORT: i64 = 0;
-        #[cfg(any(
-            target_os = "macos",
-            target_os = "freebsd",
-            target_os = "netbsd",
-            target_os = "openbsd"
-        ))]
-        const S_IFWHT: i64 = 0o160000;
-        #[cfg(not(any(
-            target_os = "macos",
-            target_os = "freebsd",
-            target_os = "netbsd",
-            target_os = "openbsd"
-        )))]
-        const S_IFWHT: i64 = 0;
-        const S_ISUID: i64 = 0o004000;
-        const S_ISGID: i64 = 0o002000;
-        const S_ISVTX: i64 = 0o001000;
-        const S_IRUSR: i64 = 0o000400;
-        const S_IWUSR: i64 = 0o000200;
-        const S_IXUSR: i64 = 0o000100;
-        const S_IRGRP: i64 = 0o000040;
-        const S_IWGRP: i64 = 0o000020;
-        const S_IXGRP: i64 = 0o000010;
-        const S_IROTH: i64 = 0o000004;
-        const S_IWOTH: i64 = 0o000002;
-        const S_IXOTH: i64 = 0o000001;
-        let mode = match parse_stat_mode(_py, mode_bits) {
-            Ok(mode) => mode,
-            Err(bits) => return bits,
-        };
-        let file_type = mode & S_IFMT_MASK;
-        let mut out = String::with_capacity(10);
-        let type_char = if file_type == S_IFLNK {
-            'l'
-        } else if file_type == S_IFSOCK {
-            's'
-        } else if file_type == S_IFREG {
-            '-'
-        } else if file_type == S_IFBLK {
-            'b'
-        } else if file_type == S_IFDIR {
-            'd'
-        } else if file_type == S_IFCHR {
-            'c'
-        } else if file_type == S_IFIFO {
-            'p'
-        } else if S_IFDOOR != 0 && file_type == S_IFDOOR {
-            'D'
-        } else if S_IFPORT != 0 && file_type == S_IFPORT {
-            'P'
-        } else if S_IFWHT != 0 && file_type == S_IFWHT {
-            'w'
-        } else {
-            '?'
-        };
-        out.push(type_char);
-        out.push(if (mode & S_IRUSR) != 0 { 'r' } else { '-' });
-        out.push(if (mode & S_IWUSR) != 0 { 'w' } else { '-' });
-        out.push(match ((mode & S_IXUSR) != 0, (mode & S_ISUID) != 0) {
-            (true, true) => 's',
-            (false, true) => 'S',
-            (true, false) => 'x',
-            (false, false) => '-',
-        });
-        out.push(if (mode & S_IRGRP) != 0 { 'r' } else { '-' });
-        out.push(if (mode & S_IWGRP) != 0 { 'w' } else { '-' });
-        out.push(match ((mode & S_IXGRP) != 0, (mode & S_ISGID) != 0) {
-            (true, true) => 's',
-            (false, true) => 'S',
-            (true, false) => 'x',
-            (false, false) => '-',
-        });
-        out.push(if (mode & S_IROTH) != 0 { 'r' } else { '-' });
-        out.push(if (mode & S_IWOTH) != 0 { 'w' } else { '-' });
-        out.push(match ((mode & S_IXOTH) != 0, (mode & S_ISVTX) != 0) {
-            (true, true) => 't',
-            (false, true) => 'T',
-            (true, false) => 'x',
-            (false, false) => '-',
-        });
-        let out_ptr = alloc_string(_py, out.as_bytes());
-        if out_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(out_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_textwrap_wrap(text_bits: u64, width_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "text must be str");
-        };
-        let Some(width) = to_i64(obj_from_bits(width_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "width must be int");
-        };
-        let options = textwrap_default_options(width);
-        let lines = match textwrap_wrap_impl(&text, &options) {
-            Ok(lines) => lines,
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
-        };
-        alloc_string_list(_py, &lines)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_textwrap_wrap_ex(
-    text_bits: u64,
     width_bits: u64,
     initial_indent_bits: u64,
     subsequent_indent_bits: u64,
@@ -7971,32 +12471,6 @@ pub extern "C" fn molt_textwrap_wrap_ex(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_textwrap_fill(text_bits: u64, width_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "text must be str");
-        };
-        let Some(width) = to_i64(obj_from_bits(width_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "width must be int");
-        };
-        let options = textwrap_default_options(width);
-        let out = match textwrap_wrap_impl(&text, &options) {
-            Ok(lines) => lines.join("\n"),
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
-        };
-        let out_ptr = alloc_string(_py, out.as_bytes());
-        if out_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(out_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_textwrap_fill_ex(
-    text_bits: u64,
     width_bits: u64,
     initial_indent_bits: u64,
     subsequent_indent_bits: u64,
@@ -8043,22 +12517,6 @@ pub extern "C" fn molt_textwrap_fill_ex(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_textwrap_indent(text_bits: u64, prefix_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "text must be str");
-        };
-        let Some(prefix) = string_obj_to_owned(obj_from_bits(prefix_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "prefix must be str");
-        };
-        textwrap_indent_with_predicate(_py, &text, &prefix, None)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_textwrap_indent_ex(
-    text_bits: u64,
     prefix_bits: u64,
     predicate_bits: u64,
 ) -> u64 {
@@ -8078,79 +12536,6 @@ pub extern "C" fn molt_textwrap_indent_ex(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_quote(string_bits: u64, safe_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "string must be str");
-        };
-        let Some(safe) = string_obj_to_owned(obj_from_bits(safe_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "safe must be str");
-        };
-        let out = urllib_quote_impl(&string, &safe);
-        let out_ptr = alloc_string(_py, out.as_bytes());
-        if out_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(out_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_quote_plus(string_bits: u64, safe_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "string must be str");
-        };
-        let Some(safe) = string_obj_to_owned(obj_from_bits(safe_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "safe must be str");
-        };
-        let out = urllib_quote_impl(&string, &safe).replace("%20", "+");
-        let out_ptr = alloc_string(_py, out.as_bytes());
-        if out_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(out_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_unquote(string_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "string must be str");
-        };
-        let out = urllib_unquote_impl(&string);
-        let out_ptr = alloc_string(_py, out.as_bytes());
-        if out_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(out_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_unquote_plus(string_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "string must be str");
-        };
-        let out = urllib_unquote_impl(&string.replace('+', " "));
-        let out_ptr = alloc_string(_py, out.as_bytes());
-        if out_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(out_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_parse_qsl(
-    qs_bits: u64,
     keep_blank_values_bits: u64,
     strict_parsing_bits: u64,
 ) -> u64 {
@@ -8168,9 +12553,6 @@ pub extern "C" fn molt_urllib_parse_qsl(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_parse_qs(
-    qs_bits: u64,
     keep_blank_values_bits: u64,
     strict_parsing_bits: u64,
 ) -> u64 {
@@ -8196,29 +12578,6 @@ pub extern "C" fn molt_urllib_parse_qs(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_urlencode(query_bits: u64, doseq_bits: u64, safe_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let doseq = is_truthy(_py, obj_from_bits(doseq_bits));
-        let Some(safe) = string_obj_to_owned(obj_from_bits(safe_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "safe must be str");
-        };
-        let out = match urllib_urlencode_impl(_py, query_bits, doseq, &safe) {
-            Ok(out) => out,
-            Err(bits) => return bits,
-        };
-        let out_ptr = alloc_string(_py, out.as_bytes());
-        if out_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(out_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_urlsplit(
-    url_bits: u64,
     scheme_bits: u64,
     allow_fragments_bits: u64,
 ) -> u64 {
@@ -8235,9 +12594,6 @@ pub extern "C" fn molt_urllib_urlsplit(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_urlsplit(
-    url_bits: u64,
     scheme_bits: u64,
     allow_fragments_bits: u64,
 ) -> u64 {
@@ -8254,9 +12610,6 @@ pub extern "C" fn molt_http_client_urlsplit(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_urlparse(
-    url_bits: u64,
     scheme_bits: u64,
     allow_fragments_bits: u64,
 ) -> u64 {
@@ -8273,9 +12626,6 @@ pub extern "C" fn molt_urllib_urlparse(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_urlunsplit(
-    scheme_bits: u64,
     netloc_bits: u64,
     path_bits: u64,
     query_bits: u64,
@@ -8307,9 +12657,6 @@ pub extern "C" fn molt_urllib_urlunsplit(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_urlunparse(
-    scheme_bits: u64,
     netloc_bits: u64,
     path_bits: u64,
     params_bits: u64,
@@ -8349,127 +12696,6 @@ pub extern "C" fn molt_urllib_urlunparse(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_urldefrag(url_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "url must be str");
-        };
-        let (base, fragment) = if let Some((base, fragment)) = url.split_once('#') {
-            (base.to_string(), fragment.to_string())
-        } else {
-            (url, String::new())
-        };
-        alloc_string_tuple(_py, &[base, fragment])
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_urljoin(base_bits: u64, url_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(base) = string_obj_to_owned(obj_from_bits(base_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "base must be str");
-        };
-        let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "url must be str");
-        };
-        if base.is_empty() {
-            let out_ptr = alloc_string(_py, url.as_bytes());
-            if out_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            return MoltObject::from_ptr(out_ptr).bits();
-        }
-        let target = urllib_urlsplit_impl(&url, "", true);
-        let out = if !target[0].is_empty() {
-            url
-        } else {
-            let base_parts = urllib_urlparse_impl(&base, "", true);
-            if url.starts_with("//") {
-                format!("{}:{url}", base_parts[0])
-            } else if !target[1].is_empty() {
-                urllib_unsplit_impl(
-                    &base_parts[0],
-                    &target[1],
-                    &target[2],
-                    &target[3],
-                    &target[4],
-                )
-            } else {
-                let mut path = target[2].clone();
-                if path.is_empty() {
-                    path = base_parts[2].clone();
-                } else if !path.starts_with('/') {
-                    let base_path = &base_parts[2];
-                    let base_dir = match base_path.rsplit_once('/') {
-                        Some((dir, _)) => dir.to_string(),
-                        None => String::new(),
-                    };
-                    if base_dir.is_empty() {
-                        path = format!("/{path}");
-                    } else {
-                        path = format!("{base_dir}/{path}");
-                    }
-                }
-                urllib_unsplit_impl(
-                    &base_parts[0],
-                    &base_parts[1],
-                    &path,
-                    &target[3],
-                    &target[4],
-                )
-            }
-        };
-        let out_ptr = alloc_string(_py, out.as_bytes());
-        if out_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(out_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_cookiejar_new() -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = cookiejar_store_new() else {
-            return raise_exception::<_>(_py, "RuntimeError", "cookie jar allocation failed");
-        };
-        MoltObject::from_int(handle).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_cookiejar_len(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "cookie jar handle is invalid");
-        };
-        let Some(size) = cookiejar_with(handle, |jar| jar.cookies.len()) else {
-            return raise_exception::<_>(_py, "RuntimeError", "cookie jar handle is invalid");
-        };
-        MoltObject::from_int(i64::try_from(size).unwrap_or(i64::MAX)).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_cookiejar_clear(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "cookie jar handle is invalid");
-        };
-        let Some(()) = cookiejar_with_mut(handle, |jar| {
-            jar.cookies.clear();
-        }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "cookie jar handle is invalid");
-        };
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_cookiejar_extract(
-    handle_bits: u64,
     request_url_bits: u64,
     headers_bits: u64,
 ) -> u64 {
@@ -8489,9 +12715,6 @@ pub extern "C" fn molt_http_cookiejar_extract(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_cookiejar_header_for_url(
-    handle_bits: u64,
     request_url_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -8511,23 +12734,6 @@ pub extern "C" fn molt_http_cookiejar_header_for_url(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_cookies_parse(cookie_header_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(cookie_header) = string_obj_to_owned(obj_from_bits(cookie_header_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "cookie header must be str");
-        };
-        let pairs = http_cookies_parse_pairs(&cookie_header);
-        match urllib_http_headers_to_list(_py, &pairs) {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_cookies_render_morsel(
-    name_bits: u64,
     value_bits: u64,
     path_bits: u64,
     secure_bits: u64,
@@ -8555,9 +12761,6 @@ pub extern "C" fn molt_http_cookies_render_morsel(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_error_urlerror_init(
-    self_bits: u64,
     reason_bits: u64,
     filename_bits: u64,
 ) -> u64 {
@@ -8577,23 +12780,6 @@ pub extern "C" fn molt_urllib_error_urlerror_init(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_error_urlerror_str(reason_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let reason_text = crate::format_obj_str(_py, obj_from_bits(reason_bits));
-        let out = format!("<urlopen error {reason_text}>");
-        let out_ptr = alloc_string(_py, out.as_bytes());
-        if out_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(out_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_error_httperror_init(
-    self_bits: u64,
     url_bits: u64,
     code_bits: u64,
     msg_bits: u64,
@@ -8619,24 +12805,6 @@ pub extern "C" fn molt_urllib_error_httperror_init(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_error_httperror_str(code_bits: u64, msg_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let code_text = crate::format_obj_str(_py, obj_from_bits(code_bits));
-        let msg_text = crate::format_obj_str(_py, obj_from_bits(msg_bits));
-        let out = format!("HTTP Error {code_text}: {msg_text}");
-        let out_ptr = alloc_string(_py, out.as_bytes());
-        if out_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(out_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_error_content_too_short_init(
-    self_bits: u64,
     msg_bits: u64,
     content_bits: u64,
 ) -> u64 {
@@ -8653,156 +12821,6 @@ pub extern "C" fn molt_urllib_error_content_too_short_init(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_register(server_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let mut runtime = socketserver_runtime()
-            .lock()
-            .expect("socketserver runtime poisoned");
-        runtime.pending_by_server.entry(server_bits).or_default();
-        runtime.closed_servers.remove(&server_bits);
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_unregister(server_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let mut runtime = socketserver_runtime()
-            .lock()
-            .expect("socketserver runtime poisoned");
-        runtime.closed_servers.insert(server_bits);
-        if let Some(mut ids) = runtime.pending_by_server.remove(&server_bits) {
-            while let Some(request_id) = ids.pop_front() {
-                runtime.pending_requests.remove(&request_id);
-                runtime.request_server.remove(&request_id);
-            }
-        }
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_dispatch_begin(server_bits: u64, request_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let request = match socketserver_extract_bytes(_py, request_bits, "request payload") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let mut runtime = socketserver_runtime()
-            .lock()
-            .expect("socketserver runtime poisoned");
-        if runtime.closed_servers.contains(&server_bits) {
-            return raise_exception::<_>(_py, "OSError", "server closed");
-        }
-        let request_id = runtime.next_request_id;
-        runtime.next_request_id = runtime.next_request_id.saturating_add(1);
-        runtime.pending_requests.insert(
-            request_id,
-            MoltSocketServerPending {
-                request,
-                response: None,
-            },
-        );
-        runtime.request_server.insert(request_id, server_bits);
-        runtime
-            .pending_by_server
-            .entry(server_bits)
-            .or_default()
-            .push_back(request_id);
-        MoltObject::from_int(request_id as i64).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_dispatch_poll(server_bits: u64, request_id_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let request_id = match socketserver_extract_request_id(_py, request_id_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let mut runtime = socketserver_runtime()
-            .lock()
-            .expect("socketserver runtime poisoned");
-        let Some(owner) = runtime.request_server.get(&request_id).copied() else {
-            return MoltObject::none().bits();
-        };
-        if owner != server_bits {
-            return raise_exception::<_>(_py, "RuntimeError", "request id owner mismatch");
-        }
-        let Some(pending) = runtime.pending_requests.get_mut(&request_id) else {
-            runtime.request_server.remove(&request_id);
-            return MoltObject::none().bits();
-        };
-        let Some(response) = pending.response.take() else {
-            return MoltObject::none().bits();
-        };
-        runtime.pending_requests.remove(&request_id);
-        runtime.request_server.remove(&request_id);
-        let ptr = crate::alloc_bytes(_py, &response);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(ptr).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_dispatch_cancel(server_bits: u64, request_id_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let request_id = match socketserver_extract_request_id(_py, request_id_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let mut runtime = socketserver_runtime()
-            .lock()
-            .expect("socketserver runtime poisoned");
-        if let Some(queue) = runtime.pending_by_server.get_mut(&server_bits) {
-            queue.retain(|candidate| *candidate != request_id);
-        }
-        runtime.pending_requests.remove(&request_id);
-        runtime.request_server.remove(&request_id);
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_get_request_poll(server_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let mut runtime = socketserver_runtime()
-            .lock()
-            .expect("socketserver runtime poisoned");
-        if runtime.closed_servers.contains(&server_bits) {
-            return raise_exception::<_>(_py, "OSError", "server closed");
-        }
-        let Some(queue) = runtime.pending_by_server.get_mut(&server_bits) else {
-            return MoltObject::none().bits();
-        };
-        let Some(request_id) = queue.pop_front() else {
-            return MoltObject::none().bits();
-        };
-        let Some(pending) = runtime.pending_requests.get(&request_id) else {
-            runtime.request_server.remove(&request_id);
-            return MoltObject::none().bits();
-        };
-        let request_ptr = crate::alloc_bytes(_py, &pending.request);
-        if request_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let request_bits = MoltObject::from_ptr(request_ptr).bits();
-        let request_id_bits = MoltObject::from_int(request_id as i64).bits();
-        let tuple_ptr = alloc_tuple(_py, &[request_id_bits, request_bits]);
-        dec_ref_bits(_py, request_bits);
-        if tuple_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(tuple_ptr).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_set_response(
-    server_bits: u64,
     request_id_bits: u64,
     response_bits: u64,
 ) -> u64 {
@@ -8833,9 +12851,6 @@ pub extern "C" fn molt_socketserver_set_response(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_serve_forever(
-    server_bits: u64,
     poll_interval_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -8934,293 +12949,6 @@ pub extern "C" fn molt_socketserver_serve_forever(
         }
         if let Err(bits) = socketserver_call_service_actions(_py, server_bits) {
             return bits;
-        }
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(get_request_name_bits) = attr_name_bits_from_bytes(_py, b"get_request") else {
-            return MoltObject::none().bits();
-        };
-        let missing = missing_bits(_py);
-        let get_request_bits = molt_getattr_builtin(server_bits, get_request_name_bits, missing);
-        dec_ref_bits(_py, get_request_name_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if get_request_bits == missing
-            || !is_truthy(_py, obj_from_bits(molt_is_callable(get_request_bits)))
-        {
-            if get_request_bits != missing {
-                dec_ref_bits(_py, get_request_bits);
-            }
-            return raise_exception::<_>(
-                _py,
-                "RuntimeError",
-                "socketserver server is missing get_request",
-            );
-        }
-        let request_tuple_bits = unsafe { call_callable0(_py, get_request_bits) };
-        dec_ref_bits(_py, get_request_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        let (request_bits, client_address_bits, request_id) =
-            match socketserver_extract_handle_request_tuple(_py, request_tuple_bits) {
-                Ok(parts) => parts,
-                Err(bits) => {
-                    dec_ref_bits(_py, request_tuple_bits);
-                    return bits;
-                }
-            };
-
-        let mut deferred_exception_bits: Option<u64> = None;
-        let mut should_process = true;
-
-        if let Some(verify_request_bits) =
-            match urllib_request_attr_optional(_py, server_bits, b"verify_request") {
-                Ok(bits) => bits,
-                Err(bits) => {
-                    dec_ref_bits(_py, request_tuple_bits);
-                    return bits;
-                }
-            }
-        {
-            if !is_truthy(_py, obj_from_bits(molt_is_callable(verify_request_bits))) {
-                dec_ref_bits(_py, verify_request_bits);
-                dec_ref_bits(_py, request_tuple_bits);
-                return raise_exception::<_>(
-                    _py,
-                    "RuntimeError",
-                    "socketserver server verify_request must be callable",
-                );
-            }
-            let verify_bits = unsafe {
-                call_callable2(_py, verify_request_bits, request_bits, client_address_bits)
-            };
-            dec_ref_bits(_py, verify_request_bits);
-            if exception_pending(_py) {
-                dec_ref_bits(_py, request_tuple_bits);
-                return MoltObject::none().bits();
-            }
-            should_process = is_truthy(_py, obj_from_bits(verify_bits));
-            dec_ref_bits(_py, verify_bits);
-        }
-
-        if should_process {
-            let Some(process_request_name_bits) =
-                attr_name_bits_from_bytes(_py, b"process_request")
-            else {
-                dec_ref_bits(_py, request_tuple_bits);
-                return MoltObject::none().bits();
-            };
-            let process_request_bits =
-                molt_getattr_builtin(server_bits, process_request_name_bits, missing);
-            dec_ref_bits(_py, process_request_name_bits);
-            if exception_pending(_py) {
-                dec_ref_bits(_py, request_tuple_bits);
-                return MoltObject::none().bits();
-            }
-            if process_request_bits == missing
-                || !is_truthy(_py, obj_from_bits(molt_is_callable(process_request_bits)))
-            {
-                if process_request_bits != missing {
-                    dec_ref_bits(_py, process_request_bits);
-                }
-                dec_ref_bits(_py, request_tuple_bits);
-                return raise_exception::<_>(
-                    _py,
-                    "RuntimeError",
-                    "socketserver server is missing process_request",
-                );
-            }
-            let _ = unsafe {
-                call_callable2(_py, process_request_bits, request_bits, client_address_bits)
-            };
-            dec_ref_bits(_py, process_request_bits);
-            if exception_pending(_py) {
-                let kind = urllib_request_pending_exception_kind_name(_py).unwrap_or_default();
-                let handled_kind = !kind.is_empty()
-                    && kind != "SystemExit"
-                    && kind != "KeyboardInterrupt"
-                    && kind != "GeneratorExit"
-                    && kind != "BaseExceptionGroup";
-                if handled_kind {
-                    clear_exception(_py);
-                    let Some(handle_error_name_bits) =
-                        attr_name_bits_from_bytes(_py, b"handle_error")
-                    else {
-                        dec_ref_bits(_py, request_tuple_bits);
-                        return MoltObject::none().bits();
-                    };
-                    let handle_error_bits =
-                        molt_getattr_builtin(server_bits, handle_error_name_bits, missing);
-                    dec_ref_bits(_py, handle_error_name_bits);
-                    if exception_pending(_py) {
-                        dec_ref_bits(_py, request_tuple_bits);
-                        return MoltObject::none().bits();
-                    }
-                    if handle_error_bits != missing {
-                        let _ = unsafe {
-                            call_callable2(
-                                _py,
-                                handle_error_bits,
-                                request_bits,
-                                client_address_bits,
-                            )
-                        };
-                        dec_ref_bits(_py, handle_error_bits);
-                        if exception_pending(_py) {
-                            let exc_bits = molt_exception_last();
-                            clear_exception(_py);
-                            deferred_exception_bits = Some(exc_bits);
-                        }
-                    }
-                } else {
-                    let exc_bits = molt_exception_last();
-                    clear_exception(_py);
-                    deferred_exception_bits = Some(exc_bits);
-                }
-            }
-        }
-
-        let Some(close_request_name_bits) = attr_name_bits_from_bytes(_py, b"close_request") else {
-            if let Some(exc_bits) = deferred_exception_bits.take() {
-                dec_ref_bits(_py, exc_bits);
-            }
-            dec_ref_bits(_py, request_tuple_bits);
-            return MoltObject::none().bits();
-        };
-        let close_request_bits =
-            molt_getattr_builtin(server_bits, close_request_name_bits, missing);
-        dec_ref_bits(_py, close_request_name_bits);
-        if exception_pending(_py) {
-            if let Some(exc_bits) = deferred_exception_bits.take() {
-                dec_ref_bits(_py, exc_bits);
-            }
-            dec_ref_bits(_py, request_tuple_bits);
-            return MoltObject::none().bits();
-        }
-        if close_request_bits != missing
-            && is_truthy(_py, obj_from_bits(molt_is_callable(close_request_bits)))
-        {
-            let _ = unsafe { call_callable1(_py, close_request_bits, request_bits) };
-            dec_ref_bits(_py, close_request_bits);
-            if exception_pending(_py) {
-                if let Some(exc_bits) = deferred_exception_bits.take() {
-                    dec_ref_bits(_py, exc_bits);
-                }
-                dec_ref_bits(_py, request_tuple_bits);
-                return MoltObject::none().bits();
-            }
-        } else if close_request_bits != missing {
-            dec_ref_bits(_py, close_request_bits);
-        }
-
-        if request_id >= 0 {
-            let Some(response_bytes_name_bits) = attr_name_bits_from_bytes(_py, b"response_bytes")
-            else {
-                if let Some(exc_bits) = deferred_exception_bits.take() {
-                    let out = crate::molt_raise(exc_bits);
-                    dec_ref_bits(_py, request_tuple_bits);
-                    return out;
-                }
-                dec_ref_bits(_py, request_tuple_bits);
-                return MoltObject::none().bits();
-            };
-            let response_bytes_bits =
-                molt_getattr_builtin(request_bits, response_bytes_name_bits, missing);
-            dec_ref_bits(_py, response_bytes_name_bits);
-            if exception_pending(_py) {
-                if let Some(exc_bits) = deferred_exception_bits.take() {
-                    dec_ref_bits(_py, exc_bits);
-                }
-                dec_ref_bits(_py, request_tuple_bits);
-                return MoltObject::none().bits();
-            }
-            if response_bytes_bits != missing
-                && is_truthy(_py, obj_from_bits(molt_is_callable(response_bytes_bits)))
-            {
-                let response_bits = unsafe { call_callable0(_py, response_bytes_bits) };
-                dec_ref_bits(_py, response_bytes_bits);
-                if exception_pending(_py) {
-                    if let Some(exc_bits) = deferred_exception_bits.take() {
-                        dec_ref_bits(_py, exc_bits);
-                    }
-                    dec_ref_bits(_py, request_tuple_bits);
-                    return MoltObject::none().bits();
-                }
-                let response =
-                    match socketserver_extract_bytes(_py, response_bits, "response payload") {
-                        Ok(value) => value,
-                        Err(bits) => {
-                            dec_ref_bits(_py, response_bits);
-                            if let Some(exc_bits) = deferred_exception_bits.take() {
-                                dec_ref_bits(_py, exc_bits);
-                            }
-                            dec_ref_bits(_py, request_tuple_bits);
-                            return bits;
-                        }
-                    };
-                dec_ref_bits(_py, response_bits);
-                let mut runtime = socketserver_runtime()
-                    .lock()
-                    .expect("socketserver runtime poisoned");
-                let request_id_u64 = request_id as u64;
-                let Some(owner) = runtime.request_server.get(&request_id_u64).copied() else {
-                    dec_ref_bits(_py, request_tuple_bits);
-                    if let Some(exc_bits) = deferred_exception_bits.take() {
-                        return crate::molt_raise(exc_bits);
-                    }
-                    return MoltObject::none().bits();
-                };
-                if owner != server_bits {
-                    if let Some(exc_bits) = deferred_exception_bits.take() {
-                        dec_ref_bits(_py, exc_bits);
-                    }
-                    dec_ref_bits(_py, request_tuple_bits);
-                    return raise_exception::<_>(_py, "RuntimeError", "request id owner mismatch");
-                }
-                let Some(pending) = runtime.pending_requests.get_mut(&request_id_u64) else {
-                    runtime.request_server.remove(&request_id_u64);
-                    dec_ref_bits(_py, request_tuple_bits);
-                    if let Some(exc_bits) = deferred_exception_bits.take() {
-                        return crate::molt_raise(exc_bits);
-                    }
-                    return MoltObject::none().bits();
-                };
-                pending.response = Some(response);
-            } else if response_bytes_bits != missing {
-                dec_ref_bits(_py, response_bytes_bits);
-            }
-        }
-
-        dec_ref_bits(_py, request_tuple_bits);
-        if let Some(exc_bits) = deferred_exception_bits.take() {
-            return crate::molt_raise(exc_bits);
-        }
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_shutdown(server_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        if !urllib_request_set_attr(
-            _py,
-            server_bits,
-            b"_molt_shutdown_request",
-            MoltObject::from_bool(true).bits(),
-        ) || !urllib_request_set_attr(
-            _py,
-            server_bits,
-            b"_closed",
-            MoltObject::from_bool(true).bits(),
-        ) {
-            return MoltObject::none().bits();
         }
         MoltObject::none().bits()
     })
@@ -9397,39 +13125,6 @@ fn http_server_compute_close_connection_impl(
     Ok(request_version != HTTP_SERVER_HTTP11)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_read_request(handler_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        match http_server_read_request_impl(_py, handler_bits) {
-            Ok(state) => MoltObject::from_int(state).bits(),
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_compute_close_connection(handler_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        match http_server_compute_close_connection_impl(_py, handler_bits) {
-            Ok(close) => MoltObject::from_bool(close).bits(),
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_handle_one_request(handler_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        match http_server_handle_one_request_impl(_py, handler_bits) {
-            Ok(keep_running) => MoltObject::from_bool(keep_running).bits(),
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_send_response(
-    handler_bits: u64,
     code_bits: u64,
     message_bits: u64,
 ) -> u64 {
@@ -9449,9 +13144,6 @@ pub extern "C" fn molt_http_server_send_response(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_send_response_only(
-    handler_bits: u64,
     code_bits: u64,
     message_bits: u64,
 ) -> u64 {
@@ -9471,9 +13163,6 @@ pub extern "C" fn molt_http_server_send_response_only(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_send_header(
-    handler_bits: u64,
     keyword_bits: u64,
     value_bits: u64,
 ) -> u64 {
@@ -9487,19 +13176,6 @@ pub extern "C" fn molt_http_server_send_header(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_end_headers(handler_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        match http_server_end_headers_impl(_py, handler_bits) {
-            Ok(()) => MoltObject::none().bits(),
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_send_error(
-    handler_bits: u64,
     code_bits: u64,
     message_bits: u64,
 ) -> u64 {
@@ -9519,9 +13195,6 @@ pub extern "C" fn molt_http_server_send_error(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_version_string(
-    server_version_bits: u64,
     sys_version_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -9539,106 +13212,6 @@ pub extern "C" fn molt_http_server_version_string(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_date_time_string(timestamp_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let out = match http_server_date_time_string_from_bits(_py, timestamp_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let Some(bits) = alloc_string_bits(_py, &out) else {
-            return MoltObject::none().bits();
-        };
-        bits
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_status_reason(code_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(code) = to_i64(obj_from_bits(code_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "status code must be int");
-        };
-        let phrase = http_server_reason_phrase(code);
-        let ptr = alloc_string(_py, phrase.as_bytes());
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(ptr).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_status_constants() -> u64 {
-    crate::with_gil_entry!(_py, {
-        let entries = http_status_constants();
-        let mut pairs: Vec<u64> = Vec::with_capacity(entries.len() * 2);
-        let mut owned_bits: Vec<u64> = Vec::with_capacity(entries.len() * 2);
-        for (name, code) in entries.iter().copied() {
-            let key_ptr = alloc_string(_py, name.as_bytes());
-            if key_ptr.is_null() {
-                for bits in owned_bits {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let key_bits = MoltObject::from_ptr(key_ptr).bits();
-            let value_bits = MoltObject::from_int(code).bits();
-            pairs.push(key_bits);
-            pairs.push(value_bits);
-            owned_bits.push(key_bits);
-            owned_bits.push(value_bits);
-        }
-        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
-        for bits in owned_bits {
-            dec_ref_bits(_py, bits);
-        }
-        if dict_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(dict_ptr).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_status_responses() -> u64 {
-    crate::with_gil_entry!(_py, {
-        let entries = http_status_constants();
-        let mut seen_codes: HashSet<i64> = HashSet::new();
-        let mut pairs: Vec<u64> = Vec::new();
-        let mut owned_bits: Vec<u64> = Vec::new();
-        for (_, code) in entries.iter().copied() {
-            if !seen_codes.insert(code) {
-                continue;
-            }
-            let key_bits = MoltObject::from_int(code).bits();
-            let value_ptr = alloc_string(_py, http_server_reason_phrase(code).as_bytes());
-            if value_ptr.is_null() {
-                for bits in owned_bits {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let value_bits = MoltObject::from_ptr(value_ptr).bits();
-            pairs.push(key_bits);
-            pairs.push(value_bits);
-            owned_bits.push(key_bits);
-            owned_bits.push(value_bits);
-        }
-        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
-        for bits in owned_bits {
-            dec_ref_bits(_py, bits);
-        }
-        if dict_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(dict_ptr).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_request_init(
-    self_bits: u64,
     url_bits: u64,
     data_bits: u64,
     headers_bits: u64,
@@ -9670,495 +13243,6 @@ pub extern "C" fn molt_urllib_request_request_init(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_opener_init(self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let list_ptr = alloc_list_with_capacity(_py, &[], 0);
-        if list_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let handlers_bits = MoltObject::from_ptr(list_ptr).bits();
-        if !urllib_request_set_attr(_py, self_bits, b"_molt_handlers", handlers_bits)
-            || !urllib_request_set_cursor(_py, self_bits, 0)
-        {
-            return MoltObject::none().bits();
-        }
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_add_handler(opener_bits: u64, handler_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let list_bits = match urllib_request_ensure_handlers_list(_py, opener_bits) {
-            Ok(bits) => bits,
-            Err(bits) => return bits,
-        };
-        if !urllib_request_set_attr(_py, handler_bits, b"parent", opener_bits) {
-            return MoltObject::none().bits();
-        }
-        let new_order = match urllib_request_handler_order(_py, handler_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let Some(list_ptr) = obj_from_bits(list_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "opener handler registry is invalid");
-        };
-        let existing: Vec<u64> = unsafe { seq_vec_ref(list_ptr).to_vec() };
-        let mut insert_at = existing.len();
-        for (idx, existing_bits) in existing.iter().copied().enumerate() {
-            let existing_order = match urllib_request_handler_order(_py, existing_bits) {
-                Ok(value) => value,
-                Err(bits) => return bits,
-            };
-            if new_order < existing_order {
-                insert_at = idx;
-                break;
-            }
-        }
-        let index_bits = MoltObject::from_int(insert_at as i64).bits();
-        let _ = molt_list_insert(list_bits, index_bits, handler_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let mut owned_request_refs: Vec<u64> = Vec::new();
-        let out_bits = (|| -> u64 {
-            let mut active_request_bits = request_bits;
-            let mut full_url = {
-                let Some(full_url_bits) =
-                    (match urllib_request_attr_optional(_py, active_request_bits, b"full_url") {
-                        Ok(bits) => bits,
-                        Err(bits) => return bits,
-                    })
-                else {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "request object is missing full_url",
-                    );
-                };
-                let Some(text) = string_obj_to_owned(obj_from_bits(full_url_bits)) else {
-                    dec_ref_bits(_py, full_url_bits);
-                    return raise_exception::<_>(_py, "TypeError", "request.full_url must be str");
-                };
-                dec_ref_bits(_py, full_url_bits);
-                text
-            };
-            let mut scheme = urllib_split_scheme(&full_url, "").0;
-
-            let previous_cursor = match urllib_request_get_cursor(_py, opener_bits) {
-                Ok(value) => value.max(0),
-                Err(bits) => return bits,
-            };
-            let list_bits = match urllib_request_ensure_handlers_list(_py, opener_bits) {
-                Ok(bits) => bits,
-                Err(bits) => return bits,
-            };
-            let Some(list_ptr) = obj_from_bits(list_bits).as_ptr() else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "opener handler registry is invalid",
-                );
-            };
-            let handlers: Vec<u64> = unsafe { seq_vec_ref(list_ptr).to_vec() };
-            let start_idx = (previous_cursor as usize).min(handlers.len());
-
-            let request_method_name = format!("{}_request", scheme);
-            for (idx, handler_bits) in handlers.iter().copied().enumerate().skip(start_idx) {
-                let Some(method_bits) = (match urllib_request_attr_optional(
-                    _py,
-                    handler_bits,
-                    request_method_name.as_bytes(),
-                ) {
-                    Ok(bits) => bits,
-                    Err(bits) => return bits,
-                }) else {
-                    continue;
-                };
-                if !is_truthy(_py, obj_from_bits(molt_is_callable(method_bits))) {
-                    dec_ref_bits(_py, method_bits);
-                    continue;
-                }
-                if !urllib_request_set_cursor(_py, opener_bits, (idx + 1) as i64) {
-                    dec_ref_bits(_py, method_bits);
-                    return MoltObject::none().bits();
-                }
-                let out_bits = unsafe { call_callable1(_py, method_bits, active_request_bits) };
-                dec_ref_bits(_py, method_bits);
-                if !urllib_request_set_cursor(_py, opener_bits, previous_cursor) {
-                    if !obj_from_bits(out_bits).is_none() {
-                        dec_ref_bits(_py, out_bits);
-                    }
-                    return MoltObject::none().bits();
-                }
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                if !obj_from_bits(out_bits).is_none() {
-                    active_request_bits = out_bits;
-                    owned_request_refs.push(out_bits);
-                } else {
-                    dec_ref_bits(_py, out_bits);
-                }
-            }
-
-            full_url = {
-                let Some(full_url_bits) =
-                    (match urllib_request_attr_optional(_py, active_request_bits, b"full_url") {
-                        Ok(bits) => bits,
-                        Err(bits) => return bits,
-                    })
-                else {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "request object is missing full_url",
-                    );
-                };
-                let Some(text) = string_obj_to_owned(obj_from_bits(full_url_bits)) else {
-                    dec_ref_bits(_py, full_url_bits);
-                    return raise_exception::<_>(_py, "TypeError", "request.full_url must be str");
-                };
-                dec_ref_bits(_py, full_url_bits);
-                text
-            };
-            scheme = urllib_split_scheme(&full_url, "").0;
-
-            let method_name = format!("{}_open", scheme);
-            for (idx, handler_bits) in handlers.iter().copied().enumerate().skip(start_idx) {
-                let Some(method_bits) = (match urllib_request_attr_optional(
-                    _py,
-                    handler_bits,
-                    method_name.as_bytes(),
-                ) {
-                    Ok(bits) => bits,
-                    Err(bits) => return bits,
-                }) else {
-                    continue;
-                };
-                if !is_truthy(_py, obj_from_bits(molt_is_callable(method_bits))) {
-                    dec_ref_bits(_py, method_bits);
-                    continue;
-                }
-                if !urllib_request_set_cursor(_py, opener_bits, (idx + 1) as i64) {
-                    dec_ref_bits(_py, method_bits);
-                    return MoltObject::none().bits();
-                }
-                let out_bits = unsafe { call_callable1(_py, method_bits, active_request_bits) };
-                dec_ref_bits(_py, method_bits);
-                if !urllib_request_set_cursor(_py, opener_bits, previous_cursor) {
-                    return MoltObject::none().bits();
-                }
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                if !obj_from_bits(out_bits).is_none() {
-                    return out_bits;
-                }
-            }
-            if !urllib_request_set_cursor(_py, opener_bits, previous_cursor) {
-                return MoltObject::none().bits();
-            }
-
-            let allow_data_fallback = match urllib_request_attr_optional(
-                _py,
-                opener_bits,
-                b"_molt_allow_data_fallback",
-            ) {
-                Ok(Some(bits)) => {
-                    let value = is_truthy(_py, obj_from_bits(bits));
-                    dec_ref_bits(_py, bits);
-                    value
-                }
-                Ok(None) => false,
-                Err(bits) => return bits,
-            };
-
-            let mut response_bits = if scheme == "data" && allow_data_fallback {
-                let payload = match urllib_request_decode_data_url(&full_url) {
-                    Ok(value) => value,
-                    Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
-                };
-                let Some(handle) = urllib_response_store(urllib_response_from_parts(
-                    payload,
-                    full_url.clone(),
-                    // CPython's data: handler returns an addinfourl without HTTP status metadata.
-                    -1,
-                    String::new(),
-                    vec![("Content-Type".to_string(), "text/plain".to_string())],
-                )) else {
-                    return MoltObject::none().bits();
-                };
-                urllib_http_make_response_bits(_py, handle)
-            } else if scheme == "http" || scheme == "https" {
-                let split = urllib_urlsplit_impl(&full_url, "", true);
-                let netloc = split[1].clone();
-                if netloc.is_empty() {
-                    return urllib_raise_url_error(_py, "no host given");
-                }
-                let default_port = if scheme == "https" { 443 } else { 80 };
-                let (target_host, _target_port) =
-                    urllib_http_parse_host_port(&netloc, default_port);
-                if target_host.is_empty() {
-                    return urllib_raise_url_error(_py, "no host given");
-                }
-                let timeout = match urllib_http_request_timeout(_py, active_request_bits) {
-                    Ok(value) => value,
-                    Err(bits) => return bits,
-                };
-                let (mut method, mut body) =
-                    match urllib_http_extract_method_and_body(_py, active_request_bits) {
-                        Ok(value) => value,
-                        Err(bits) => return bits,
-                    };
-                let mut base_headers =
-                    match urllib_http_extract_request_headers(_py, active_request_bits) {
-                        Ok(value) => value,
-                        Err(bits) => return bits,
-                    };
-                let proxy = match urllib_http_find_proxy_for_scheme(
-                    _py,
-                    opener_bits,
-                    &scheme,
-                    &target_host,
-                ) {
-                    Ok(value) => value,
-                    Err(bits) => return bits,
-                };
-                let mut proxy_auth_header: Option<String> = None;
-                let mut proxy_auth_attempted = false;
-                let mut current_url = full_url.clone();
-                let mut redirects = 0usize;
-                let cookiejar_handles = match urllib_cookiejar_handles_from_handlers(_py, &handlers)
-                {
-                    Ok(value) => value,
-                    Err(bits) => return bits,
-                };
-                loop {
-                    let parts = urllib_urlsplit_impl(&current_url, "", true);
-                    let netloc_now = parts[1].clone();
-                    let mut path = parts[2].clone();
-                    if path.is_empty() {
-                        path = "/".to_string();
-                    }
-                    if !parts[3].is_empty() {
-                        path.push('?');
-                        path.push_str(&parts[3]);
-                    }
-                    let (host_now, port_now) =
-                        urllib_http_parse_host_port(&netloc_now, default_port);
-                    if host_now.is_empty() {
-                        return urllib_raise_url_error(_py, "no host given");
-                    }
-                    let mut effective_headers = base_headers.clone();
-                    urllib_cookiejar_apply_header_for_url(
-                        _py,
-                        &cookiejar_handles,
-                        &current_url,
-                        &mut effective_headers,
-                    );
-                    if let Some(proxy_auth_value) = proxy_auth_header.as_ref() {
-                        let mut replaced = false;
-                        for (name, value) in &mut effective_headers {
-                            if name.eq_ignore_ascii_case("Proxy-Authorization") {
-                                *value = proxy_auth_value.clone();
-                                replaced = true;
-                                break;
-                            }
-                        }
-                        if !replaced {
-                            effective_headers.push((
-                                "Proxy-Authorization".to_string(),
-                                proxy_auth_value.clone(),
-                            ));
-                        }
-                    }
-                    let req = if let Some(proxy_url) = proxy.as_deref() {
-                        let proxy_parts = urllib_urlsplit_impl(proxy_url, "", true);
-                        let proxy_netloc = proxy_parts[1].clone();
-                        let (proxy_host, proxy_port) =
-                            urllib_http_parse_host_port(&proxy_netloc, 80);
-                        if proxy_host.is_empty() {
-                            return urllib_raise_url_error(_py, "proxy URL is invalid");
-                        }
-                        if scheme == "https" {
-                            return urllib_raise_url_error(_py, "https proxies are not supported");
-                        }
-                        UrllibHttpRequest {
-                            host: proxy_host,
-                            port: proxy_port,
-                            path: current_url.clone(),
-                            method: method.clone(),
-                            headers: {
-                                let mut out = Vec::new();
-                                out.append(&mut effective_headers);
-                                out
-                            },
-                            body: body.clone(),
-                            timeout,
-                        }
-                    } else {
-                        UrllibHttpRequest {
-                            host: host_now.clone(),
-                            port: port_now,
-                            path: path.clone(),
-                            method: method.clone(),
-                            headers: {
-                                let mut out = Vec::new();
-                                out.append(&mut effective_headers);
-                                out
-                            },
-                            body: body.clone(),
-                            timeout,
-                        }
-                    };
-                    let host_header = if port_now == default_port {
-                        host_now.clone()
-                    } else {
-                        format!("{host_now}:{port_now}")
-                    };
-                    let (code, reason, resp_headers, resp_body) =
-                        match urllib_http_try_inmemory_dispatch(_py, &req, &req.path, &host_header)
-                        {
-                            Ok(Some(value)) => value,
-                            Ok(None) => {
-                                match urllib_http_send_request(&req, &req.path, &host_header) {
-                                    Ok(value) => value,
-                                    Err(err) => {
-                                        if err.kind() == ErrorKind::TimedOut
-                                            || err.kind() == ErrorKind::WouldBlock
-                                        {
-                                            return urllib_http_timeout_error(_py);
-                                        }
-                                        return urllib_raise_url_error(_py, &err.to_string());
-                                    }
-                                }
-                            }
-                            Err(bits) => return bits,
-                        };
-                    urllib_cookiejar_store_headers_for_url(
-                        &cookiejar_handles,
-                        &current_url,
-                        &resp_headers,
-                    );
-                    if code == 407 && proxy.is_some() {
-                        if proxy_auth_attempted {
-                            return urllib_raise_url_error(_py, "proxy authentication required");
-                        }
-                        let proxy_url = proxy.as_deref().unwrap_or_default();
-                        let challenge =
-                            urllib_http_find_header(&resp_headers, "Proxy-Authenticate")
-                                .unwrap_or_default();
-                        let realm = urllib_http_parse_basic_realm(challenge);
-                        let creds = match urllib_proxy_find_basic_credentials(
-                            _py,
-                            &handlers,
-                            proxy_url,
-                            realm.as_deref(),
-                        ) {
-                            Ok(value) => value,
-                            Err(bits) => return bits,
-                        };
-                        let Some((username, password)) = creds else {
-                            return urllib_raise_url_error(_py, "proxy authentication required");
-                        };
-                        let token =
-                            urllib_base64_encode(format!("{username}:{password}").as_bytes());
-                        proxy_auth_header = Some(format!("Basic {token}"));
-                        proxy_auth_attempted = true;
-                        continue;
-                    }
-                    let location =
-                        urllib_http_find_header(&resp_headers, "Location").map(str::to_string);
-                    if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308)
-                        && location.is_some()
-                    {
-                        if redirects >= 10 {
-                            return urllib_raise_url_error(_py, "redirect loop");
-                        }
-                        redirects += 1;
-                        let next =
-                            urllib_http_join_url(&current_url, location.as_deref().unwrap_or(""));
-                        current_url = next;
-                        if code == 303 || ((code == 301 || code == 302) && method != "HEAD") {
-                            method = "GET".to_string();
-                            body.clear();
-                            base_headers.retain(|(name, _)| {
-                                !name.eq_ignore_ascii_case("Content-Length")
-                                    && !name.eq_ignore_ascii_case("Content-Type")
-                            });
-                        }
-                        continue;
-                    }
-                    let Some(handle) = urllib_response_store(urllib_response_from_parts(
-                        resp_body,
-                        current_url.clone(),
-                        code,
-                        reason,
-                        resp_headers,
-                    )) else {
-                        return MoltObject::none().bits();
-                    };
-                    break urllib_http_make_response_bits(_py, handle);
-                }
-            } else {
-                return MoltObject::none().bits();
-            };
-
-            let response_method_name = format!("{}_response", scheme);
-            for handler_bits in handlers {
-                let Some(method_bits) = (match urllib_request_attr_optional(
-                    _py,
-                    handler_bits,
-                    response_method_name.as_bytes(),
-                ) {
-                    Ok(bits) => bits,
-                    Err(bits) => return bits,
-                }) else {
-                    continue;
-                };
-                if !is_truthy(_py, obj_from_bits(molt_is_callable(method_bits))) {
-                    dec_ref_bits(_py, method_bits);
-                    continue;
-                }
-                let out_bits =
-                    unsafe { call_callable2(_py, method_bits, active_request_bits, response_bits) };
-                dec_ref_bits(_py, method_bits);
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                if !obj_from_bits(out_bits).is_none() {
-                    if out_bits == response_bits {
-                        // A handler may return the same response object it was passed.
-                        // Keep the existing owned `response_bits` reference intact.
-                    } else {
-                        dec_ref_bits(_py, response_bits);
-                        response_bits = out_bits;
-                    }
-                } else {
-                    dec_ref_bits(_py, out_bits);
-                }
-            }
-            response_bits
-        })();
-        for bits in owned_request_refs {
-            dec_ref_bits(_py, bits);
-        }
-        out_bits
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_process_http_error(
-    request_bits: u64,
     response_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -10181,36 +13265,6 @@ pub extern "C" fn molt_urllib_request_process_http_error(
         }
         let _ = request_bits;
         response_bits
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_read(handle_bits: u64, size_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        let size_opt = if obj_from_bits(size_bits).is_none() {
-            None
-        } else {
-            to_i64(obj_from_bits(size_bits))
-        };
-        let Some(out) =
-            urllib_response_with_mut(handle, |resp| urllib_response_read_vec(resp, size_opt))
-        else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        match out {
-            Ok(data) => {
-                let ptr = crate::alloc_bytes(_py, data.as_slice());
-                if ptr.is_null() {
-                    MoltObject::none().bits()
-                } else {
-                    MoltObject::from_ptr(ptr).bits()
-                }
-            }
-            Err(msg) => raise_exception::<_>(_py, "ValueError", &msg),
-        }
     })
 }
 
@@ -10264,55 +13318,6 @@ fn urllib_response_readinto_len(
     Ok(read_len)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_readinto(handle_bits: u64, buffer_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        let mut export = crate::BufferExport {
-            ptr: 0,
-            len: 0,
-            readonly: 0,
-            stride: 0,
-            itemsize: 0,
-        };
-        if unsafe { crate::molt_buffer_export(buffer_bits, &mut export) } != 0
-            || export.readonly != 0
-            || export.itemsize != 1
-            || export.stride != 1
-        {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "readinto() argument must be a writable bytes-like object",
-            );
-        }
-        let out_len = export.len as usize;
-        if out_len == 0 {
-            return MoltObject::from_int(0).bits();
-        }
-        let out_buf = unsafe { std::slice::from_raw_parts_mut(export.ptr as *mut u8, out_len) };
-        let Some(out) =
-            urllib_response_with_mut(handle, |resp| urllib_response_readinto_len(resp, out_buf))
-        else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        match out {
-            Ok(read_len) => MoltObject::from_int(read_len as i64).bits(),
-            Err(msg) => raise_exception::<_>(_py, "ValueError", &msg),
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_read1(handle_bits: u64, size_bits: u64) -> u64 {
-    molt_urllib_request_response_read(handle_bits, size_bits)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_readinto1(
-    handle_bits: u64,
     buffer_bits: u64,
 ) -> u64 {
     molt_urllib_request_response_readinto(handle_bits, buffer_bits)
@@ -10371,207 +13376,6 @@ fn urllib_response_seek_pos(
     Ok(as_u128 as usize)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_readline(handle_bits: u64, size_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        let size_opt = if obj_from_bits(size_bits).is_none() {
-            None
-        } else {
-            to_i64(obj_from_bits(size_bits))
-        };
-        let Some(out) =
-            urllib_response_with_mut(handle, |resp| urllib_response_readline_vec(resp, size_opt))
-        else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        match out {
-            Ok(data) => {
-                let ptr = crate::alloc_bytes(_py, data.as_slice());
-                if ptr.is_null() {
-                    MoltObject::none().bits()
-                } else {
-                    MoltObject::from_ptr(ptr).bits()
-                }
-            }
-            Err(msg) => raise_exception::<_>(_py, "ValueError", &msg),
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        let hint_obj = obj_from_bits(hint_bits);
-        let hint = if hint_obj.is_none() {
-            None
-        } else {
-            match to_i64(hint_obj) {
-                Some(value) if value <= 0 => None,
-                Some(value) => Some(usize::try_from(value).unwrap_or(usize::MAX)),
-                None => return raise_exception::<_>(_py, "TypeError", "hint must be int or None"),
-            }
-        };
-        let Some(out) = urllib_response_with_mut(handle, |resp| {
-            if resp.closed {
-                if urllib_response_is_data(resp) {
-                    return Err(raise_exception::<u64>(
-                        _py,
-                        "ValueError",
-                        "I/O operation on closed file.",
-                    ));
-                }
-                let list_ptr = alloc_list_with_capacity(_py, &[], 0);
-                if list_ptr.is_null() {
-                    return Err(MoltObject::none().bits());
-                }
-                return Ok(MoltObject::from_ptr(list_ptr).bits());
-            }
-            let mut lines: Vec<u64> = Vec::new();
-            let mut total = 0usize;
-            loop {
-                let line = match urllib_response_readline_vec(resp, None) {
-                    Ok(data) => data,
-                    Err(msg) => return Err(raise_exception::<u64>(_py, "ValueError", &msg)),
-                };
-                if line.is_empty() {
-                    break;
-                }
-                total = total.saturating_add(line.len());
-                let line_ptr = alloc_bytes(_py, line.as_slice());
-                if line_ptr.is_null() {
-                    for bits in lines {
-                        dec_ref_bits(_py, bits);
-                    }
-                    return Err(MoltObject::none().bits());
-                }
-                lines.push(MoltObject::from_ptr(line_ptr).bits());
-                if let Some(limit) = hint
-                    && total >= limit
-                {
-                    break;
-                }
-            }
-            let list_ptr = alloc_list_with_capacity(_py, lines.as_slice(), lines.len());
-            if list_ptr.is_null() {
-                for bits in lines {
-                    dec_ref_bits(_py, bits);
-                }
-                return Err(MoltObject::none().bits());
-            }
-            for bits in lines {
-                dec_ref_bits(_py, bits);
-            }
-            Ok(MoltObject::from_ptr(list_ptr).bits())
-        }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        match out {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_readable(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        let Some(out) = urllib_response_with(handle, |resp| {
-            if resp.closed && urllib_response_is_data(resp) {
-                return Err("I/O operation on closed file.".to_string());
-            }
-            Ok(true)
-        }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        match out {
-            Ok(value) => MoltObject::from_bool(value).bits(),
-            Err(msg) => raise_exception::<_>(_py, "ValueError", &msg),
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_writable(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        let Some(out) = urllib_response_with(handle, |resp| {
-            if resp.closed && urllib_response_is_data(resp) {
-                return Err("I/O operation on closed file.".to_string());
-            }
-            Ok(urllib_response_is_data(resp))
-        }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        match out {
-            Ok(value) => MoltObject::from_bool(value).bits(),
-            Err(msg) => raise_exception::<_>(_py, "ValueError", &msg),
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_seekable(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        let Some(out) = urllib_response_with(handle, |resp| {
-            if resp.closed && urllib_response_is_data(resp) {
-                return Err("I/O operation on closed file.".to_string());
-            }
-            Ok(urllib_response_is_data(resp))
-        }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        match out {
-            Ok(value) => MoltObject::from_bool(value).bits(),
-            Err(msg) => raise_exception::<_>(_py, "ValueError", &msg),
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_tell(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        let Some(out) = urllib_response_with(handle, |resp| {
-            if !urllib_response_is_data(resp) {
-                return Err(raise_exception::<u64>(_py, "UnsupportedOperation", "seek"));
-            }
-            if resp.closed {
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "ValueError",
-                    "I/O operation on closed file.",
-                ));
-            }
-            Ok(resp.pos)
-        }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        match out {
-            Ok(pos) => MoltObject::from_int(pos as i64).bits(),
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_seek(
-    handle_bits: u64,
     offset_bits: u64,
     whence_bits: u64,
 ) -> u64 {
@@ -10612,101 +13416,6 @@ pub extern "C" fn molt_urllib_request_response_seek(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_close(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        let Some(()) = urllib_response_with_mut(handle, |resp| {
-            resp.closed = true;
-        }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        urllib_response_drop(_py, handle);
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_geturl(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        let Some(out) = urllib_response_with(handle, |resp| {
-            let ptr = alloc_string(_py, resp.url.as_bytes());
-            if ptr.is_null() {
-                Err(MoltObject::none().bits())
-            } else {
-                Ok(MoltObject::from_ptr(ptr).bits())
-            }
-        }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        match out {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_getcode(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        let Some(code) = urllib_response_with(handle, |resp| resp.code) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        if code < 0 {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_int(code).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_getreason(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        let Some(out) = urllib_response_with(handle, |resp| {
-            if resp.reason.is_empty() {
-                return Ok(MoltObject::none().bits());
-            }
-            let ptr = alloc_string(_py, resp.reason.as_bytes());
-            if ptr.is_null() {
-                Err(MoltObject::none().bits())
-            } else {
-                Ok(MoltObject::from_ptr(ptr).bits())
-            }
-        }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        match out {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_getheader(
-    handle_bits: u64,
     name_bits: u64,
     default_bits: u64,
 ) -> u64 {
@@ -10739,42 +13448,6 @@ pub extern "C" fn molt_urllib_request_response_getheader(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_getheaders(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        let Some(out) =
-            urllib_response_with_mut(handle, |resp| urllib_response_headers_dict_bits(_py, resp))
-        else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        match out {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_getheaders_list(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        let Some(out) =
-            urllib_response_with_mut(handle, |resp| urllib_response_headers_list_bits(_py, resp))
-        else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        match out {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        }
-    })
-}
-
 fn urllib_response_message_bits(_py: &crate::PyToken<'_>, handle: i64) -> u64 {
     let Some(headers) = urllib_response_with(handle, |resp| resp.headers.clone()) else {
         return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
@@ -10785,59 +13458,6 @@ fn urllib_response_message_bits(_py: &crate::PyToken<'_>, handle: i64) -> u64 {
     MoltObject::from_int(message_handle).bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_message(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        urllib_response_message_bits(_py, handle)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_parse_header_pairs(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let raw = match socketserver_extract_bytes(_py, data_bits, "header data") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let headers = http_parse_header_pairs(raw.as_slice());
-        match urllib_http_headers_to_list(_py, &headers) {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_new() -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(handle) = http_message_store_new() else {
-            return MoltObject::none().bits();
-        };
-        MoltObject::from_int(handle).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_parse(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let raw = match socketserver_extract_bytes(_py, data_bits, "header data") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let headers = http_parse_header_pairs(raw.as_slice());
-        let Some(handle) = http_message_store(headers) else {
-            return MoltObject::none().bits();
-        };
-        MoltObject::from_int(handle).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_set_raw(
-    handle_bits: u64,
     name_bits: u64,
     value_bits: u64,
 ) -> u64 {
@@ -10857,9 +13477,6 @@ pub extern "C" fn molt_http_message_set_raw(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_get(
-    handle_bits: u64,
     name_bits: u64,
     default_bits: u64,
 ) -> u64 {
@@ -10898,107 +13515,6 @@ pub extern "C" fn molt_http_message_get(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_get_all(handle_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let handle = match http_message_handle_from_bits(_py, handle_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let needle =
-            http_message_header_key(crate::format_obj_str(_py, obj_from_bits(name_bits)).as_str());
-        let Some(out) = http_message_with(handle, |message| {
-            let indices = message
-                .index
-                .get(&needle)
-                .map(Vec::as_slice)
-                .unwrap_or_default();
-            http_message_values_to_list_from_indices(_py, message, indices)
-        }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
-        };
-        match out {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_items(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let handle = match http_message_handle_from_bits(_py, handle_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let Some(out) = http_message_with_mut(handle, |message| {
-            if let Some(cached_bits) = message.items_list_cache
-                && !obj_from_bits(cached_bits).is_none()
-            {
-                inc_ref_bits(_py, cached_bits);
-                return Ok(cached_bits);
-            }
-            let out_bits = urllib_http_headers_to_list(_py, &message.headers)?;
-            inc_ref_bits(_py, out_bits);
-            message.items_list_cache = Some(out_bits);
-            Ok(out_bits)
-        }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
-        };
-        match out {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_contains(handle_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let handle = match http_message_handle_from_bits(_py, handle_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let needle =
-            http_message_header_key(crate::format_obj_str(_py, obj_from_bits(name_bits)).as_str());
-        let Some(found) = http_message_with(handle, |message| message.index.contains_key(&needle))
-        else {
-            return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
-        };
-        MoltObject::from_bool(found).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_len(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let handle = match http_message_handle_from_bits(_py, handle_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let Some(len_value) = http_message_with(handle, |message| message.headers.len()) else {
-            return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
-        };
-        let len_i64 = i64::try_from(len_value).unwrap_or(i64::MAX);
-        MoltObject::from_int(len_i64).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_message_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let handle = match http_message_handle_from_bits(_py, handle_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        http_message_drop(_py, handle);
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_connection_new(
-    host_bits: u64,
     port_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
@@ -11029,9 +13545,6 @@ pub extern "C" fn molt_http_client_connection_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_connection_putrequest(
-    handle_bits: u64,
     method_bits: u64,
     url_bits: u64,
     skip_host_bits: u64,
@@ -11068,9 +13581,6 @@ pub extern "C" fn molt_http_client_connection_putrequest(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_connection_putheader(
-    handle_bits: u64,
     header_bits: u64,
     value_bits: u64,
 ) -> u64 {
@@ -11100,87 +13610,6 @@ pub extern "C" fn molt_http_client_connection_putheader(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_connection_endheaders(handle_bits: u64, body_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let body = if obj_from_bits(body_bits).is_none() {
-            None
-        } else {
-            match socketserver_extract_bytes(_py, body_bits, "message_body") {
-                Ok(value) => Some(value),
-                Err(bits) => return bits,
-            }
-        };
-        let state = http_client_connection_with_mut(handle, |conn| {
-            if conn.method.is_none() || conn.url.is_none() {
-                return Err("request not started");
-            }
-            if conn
-                .buffer
-                .last()
-                .is_none_or(|line| line.as_slice() != b"\r\n")
-            {
-                http_client_apply_default_headers(
-                    &mut conn.headers,
-                    conn.host.as_str(),
-                    conn.port,
-                    conn.skip_host,
-                    conn.skip_accept_encoding,
-                );
-                for (name, value) in &conn.headers {
-                    conn.buffer
-                        .push(format!("{name}: {value}\r\n").into_bytes());
-                }
-                conn.buffer.push(b"\r\n".to_vec());
-            }
-            if let Some(chunk) = body.as_ref() {
-                conn.body.extend_from_slice(chunk.as_slice());
-                conn.buffer.push(chunk.clone());
-            }
-            Ok(conn.buffer.clone())
-        });
-        match state {
-            Some(Ok(buffer)) => http_client_alloc_buffer_list(_py, &buffer),
-            Some(Err(msg)) => raise_exception::<_>(_py, "OSError", msg),
-            None => raise_exception::<_>(_py, "RuntimeError", "connection handle is invalid"),
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_connection_send(handle_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let data = match socketserver_extract_bytes(_py, data_bits, "data") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let state = http_client_connection_with_mut(handle, |conn| {
-            if conn.method.is_none() || conn.url.is_none() {
-                return Err("request not started");
-            }
-            conn.body.extend_from_slice(data.as_slice());
-            conn.buffer.push(data);
-            Ok(conn.buffer.clone())
-        });
-        match state {
-            Some(Ok(buffer)) => http_client_alloc_buffer_list(_py, &buffer),
-            Some(Err(msg)) => raise_exception::<_>(_py, "OSError", msg),
-            None => raise_exception::<_>(_py, "RuntimeError", "connection handle is invalid"),
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_connection_request(
-    handle_bits: u64,
     method_bits: u64,
     url_bits: u64,
     body_bits: u64,
@@ -11239,111 +13668,6 @@ pub extern "C" fn molt_http_client_connection_request(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_connection_getresponse(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let state = http_client_connection_with_mut(handle, |conn| {
-            let Some(method) = conn.method.clone() else {
-                return Err("no request pending");
-            };
-            let Some(url) = conn.url.clone() else {
-                return Err("no request pending");
-            };
-            http_client_apply_default_headers(
-                &mut conn.headers,
-                conn.host.as_str(),
-                conn.port,
-                conn.skip_host,
-                conn.skip_accept_encoding,
-            );
-            Ok((
-                conn.host.clone(),
-                conn.port,
-                conn.timeout,
-                method,
-                url,
-                conn.headers.clone(),
-                conn.body.clone(),
-            ))
-        });
-        let (host, port, timeout, method, url, headers, body) = match state {
-            Some(Ok(value)) => value,
-            Some(Err(msg)) => return raise_exception::<_>(_py, "OSError", msg),
-            None => {
-                return raise_exception::<_>(_py, "RuntimeError", "connection handle is invalid");
-            }
-        };
-        let response_handle = match http_client_execute_request(
-            _py,
-            HttpClientExecuteInput {
-                host,
-                port,
-                timeout,
-                method,
-                url,
-                headers,
-                body,
-                skip_host: true,
-                skip_accept_encoding: true,
-            },
-        ) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let _ = http_client_connection_with_mut(handle, http_client_connection_reset_pending);
-        MoltObject::from_int(response_handle).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_connection_close(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let Some(()) =
-            http_client_connection_with_mut(handle, http_client_connection_reset_pending)
-        else {
-            return raise_exception::<_>(_py, "RuntimeError", "connection handle is invalid");
-        };
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_connection_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        http_client_connection_drop(handle);
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_connection_get_buffer(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let handle = match http_client_connection_handle_from_bits(_py, handle_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let Some(buffer) = http_client_connection_with(handle, |conn| conn.buffer.clone()) else {
-            return raise_exception::<_>(_py, "RuntimeError", "connection handle is invalid");
-        };
-        http_client_alloc_buffer_list(_py, &buffer)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_execute(
-    host_bits: u64,
     port_bits: u64,
     timeout_bits: u64,
     method_bits: u64,
@@ -11408,63 +13732,6 @@ pub extern "C" fn molt_http_client_execute(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_response_read(handle_bits: u64, size_bits: u64) -> u64 {
-    molt_urllib_request_response_read(handle_bits, size_bits)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_response_close(handle_bits: u64) -> u64 {
-    molt_urllib_request_response_close(handle_bits)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_response_drop(handle_bits: u64) -> u64 {
-    molt_urllib_request_response_drop(handle_bits)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_response_getstatus(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let handle = match http_client_response_handle_from_bits(_py, handle_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let Some(code) = urllib_response_with(handle, |resp| resp.code) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        let status = if code < 0 { 0 } else { code };
-        MoltObject::from_int(status).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_response_getreason(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let handle = match http_client_response_handle_from_bits(_py, handle_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let Some(out) = urllib_response_with(handle, |resp| {
-            let ptr = alloc_string(_py, resp.reason.as_bytes());
-            if ptr.is_null() {
-                Err(MoltObject::none().bits())
-            } else {
-                Ok(MoltObject::from_ptr(ptr).bits())
-            }
-        }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        match out {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_response_getheader(
-    handle_bits: u64,
     name_bits: u64,
     default_bits: u64,
 ) -> u64 {
@@ -11500,284 +13767,6 @@ pub extern "C" fn molt_http_client_response_getheader(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_response_getheaders(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let handle = match http_client_response_handle_from_bits(_py, handle_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let Some(out) =
-            urllib_response_with_mut(handle, |resp| urllib_response_headers_list_bits(_py, resp))
-        else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        match out {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_response_message(handle_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let handle = match http_client_response_handle_from_bits(_py, handle_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        urllib_response_message_bits(_py, handle)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pkgutil_iter_modules(path_bits: u64, prefix_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "fs.read") {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
-        }
-        let Some(prefix) = string_obj_to_owned(obj_from_bits(prefix_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "prefix must be str");
-        };
-        let paths = if obj_from_bits(path_bits).is_none() {
-            Vec::new()
-        } else {
-            match iterable_to_string_vec(_py, path_bits) {
-                Ok(paths) => paths,
-                Err(bits) => return bits,
-            }
-        };
-        let out = pkgutil_iter_modules_impl(&paths, &prefix);
-        alloc_pkgutil_module_info_list(_py, &out)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pkgutil_walk_packages(path_bits: u64, prefix_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "fs.read") {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
-        }
-        let Some(prefix) = string_obj_to_owned(obj_from_bits(prefix_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "prefix must be str");
-        };
-        let paths = if obj_from_bits(path_bits).is_none() {
-            Vec::new()
-        } else {
-            match iterable_to_string_vec(_py, path_bits) {
-                Ok(paths) => paths,
-                Err(bits) => return bits,
-            }
-        };
-        let out = pkgutil_walk_packages_impl(&paths, &prefix);
-        alloc_pkgutil_module_info_list(_py, &out)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_copyfile(src_bits: u64, dst_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "fs.read") || !crate::has_capability(_py, "fs.write") {
-            return raise_exception::<_>(
-                _py,
-                "PermissionError",
-                "missing fs.read/fs.write capability",
-            );
-        }
-        let Some(src) = string_obj_to_owned(obj_from_bits(src_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "src must be str");
-        };
-        let Some(dst) = string_obj_to_owned(obj_from_bits(dst_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "dst must be str");
-        };
-        if let Err(err) = fs::copy(&src, &dst) {
-            return raise_os_error_from_io(_py, err);
-        }
-        let out_ptr = alloc_string(_py, dst.as_bytes());
-        if out_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(out_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_which(cmd_bits: u64, path_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "fs.read") || !crate::has_capability(_py, "env.read") {
-            return raise_exception::<_>(
-                _py,
-                "PermissionError",
-                "missing fs.read/env.read capability",
-            );
-        }
-        let Some(cmd) = string_obj_to_owned(obj_from_bits(cmd_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "cmd must be str");
-        };
-        if cmd.is_empty() {
-            return MoltObject::none().bits();
-        }
-        let path = if obj_from_bits(path_bits).is_none() {
-            env_state_get("PATH")
-                .or_else(|| std::env::var("PATH").ok())
-                .unwrap_or_default()
-        } else {
-            let Some(path) = string_obj_to_owned(obj_from_bits(path_bits)) else {
-                return raise_exception::<_>(_py, "TypeError", "path must be str or None");
-            };
-            path
-        };
-
-        #[cfg(windows)]
-        let pathexts: Vec<String> = {
-            let raw = env_state_get("PATHEXT")
-                .or_else(|| std::env::var("PATHEXT").ok())
-                .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
-            raw.split(';')
-                .filter_map(|entry| {
-                    let trimmed = entry.trim();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed.to_string())
-                    }
-                })
-                .collect()
-        };
-
-        let cmd_path = Path::new(&cmd);
-        let has_path_sep =
-            cmd.contains(std::path::MAIN_SEPARATOR) || (cfg!(windows) && cmd.contains('/'));
-
-        let check_candidate = |candidate: PathBuf| -> Option<u64> {
-            #[cfg(windows)]
-            {
-                if path_is_executable(&candidate) {
-                    return Some(alloc_optional_path(_py, &candidate));
-                }
-                let ext_present = candidate
-                    .extension()
-                    .map(|ext| !ext.is_empty())
-                    .unwrap_or(false);
-                if !ext_present {
-                    for ext in &pathexts {
-                        let ext_clean = ext.trim_start_matches('.');
-                        let with_ext = candidate.with_extension(ext_clean);
-                        if path_is_executable(&with_ext) {
-                            return Some(alloc_optional_path(_py, &with_ext));
-                        }
-                    }
-                }
-                None
-            }
-            #[cfg(not(windows))]
-            {
-                if path_is_executable(&candidate) {
-                    Some(alloc_optional_path(_py, &candidate))
-                } else {
-                    None
-                }
-            }
-        };
-
-        if cmd_path.is_absolute() || has_path_sep {
-            if let Some(bits) = check_candidate(PathBuf::from(&cmd)) {
-                return bits;
-            }
-            return MoltObject::none().bits();
-        }
-
-        #[cfg(windows)]
-        let path_sep = ';';
-        #[cfg(not(windows))]
-        let path_sep = ':';
-        for entry in path.split(path_sep) {
-            let dir = if entry.is_empty() { "." } else { entry };
-            let candidate = Path::new(dir).join(&cmd);
-            if let Some(bits) = check_candidate(candidate) {
-                return bits;
-            }
-        }
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_py_compile_compile(file_bits: u64, cfile_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "fs.read") || !crate::has_capability(_py, "fs.write") {
-            return raise_exception::<_>(
-                _py,
-                "PermissionError",
-                "missing fs.read/fs.write capability",
-            );
-        }
-        let Some(file) = string_obj_to_owned(obj_from_bits(file_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "file must be str");
-        };
-        let cfile = if obj_from_bits(cfile_bits).is_none() {
-            format!("{file}c")
-        } else {
-            let Some(cfile) = string_obj_to_owned(obj_from_bits(cfile_bits)) else {
-                return raise_exception::<_>(_py, "TypeError", "cfile must be str or None");
-            };
-            cfile
-        };
-
-        let mut in_file = match fs::File::open(&file) {
-            Ok(handle) => handle,
-            Err(err) => return raise_os_error_from_io(_py, err),
-        };
-        let mut one = [0u8; 1];
-        if let Err(err) = in_file.read(&mut one) {
-            return raise_os_error_from_io(_py, err);
-        }
-        if let Err(err) = fs::File::create(&cfile) {
-            return raise_os_error_from_io(_py, err);
-        }
-        let abs = absolutize_path(&cfile);
-        let out_ptr = alloc_string(_py, abs.as_bytes());
-        if out_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(out_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_compileall_compile_file(fullname_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "fs.read") {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
-        }
-        let Some(fullname) = string_obj_to_owned(obj_from_bits(fullname_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "fullname must be str");
-        };
-        MoltObject::from_bool(compileall_compile_file_impl(&fullname)).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_compileall_compile_dir(dir_bits: u64, maxlevels_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "fs.read") {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
-        }
-        let Some(dir) = string_obj_to_owned(obj_from_bits(dir_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "dir must be str");
-        };
-        let Some(maxlevels) = to_i64(obj_from_bits(maxlevels_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "maxlevels must be int");
-        };
-        MoltObject::from_bool(compileall_compile_dir_impl(&dir, maxlevels)).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_compileall_compile_path(
-    paths_bits: u64,
     skip_curdir_bits: u64,
     maxlevels_bits: u64,
 ) -> u64 {
@@ -12621,9 +14610,6 @@ fn compile_validate_source(
     }
 }
 
-#[unsafe(no_mangle)]
-#[cfg(feature = "stdlib_ast")]
-pub extern "C" fn molt_compile_builtin(
     source_bits: u64,
     filename_bits: u64,
     mode_bits: u64,
@@ -12673,9 +14659,6 @@ pub extern "C" fn molt_compile_builtin(
     })
 }
 
-#[unsafe(no_mangle)]
-#[cfg(feature = "stdlib_ast")]
-pub extern "C" fn molt_codeop_compile(
     source_bits: u64,
     filename_bits: u64,
     mode_bits: u64,
@@ -12730,9 +14713,6 @@ pub extern "C" fn molt_codeop_compile(
     })
 }
 
-#[unsafe(no_mangle)]
-#[cfg(feature = "stdlib_ast")]
-pub extern "C" fn molt_codeop_compile_command(
     source_bits: u64,
     filename_bits: u64,
     mode_bits: u64,
@@ -12849,9 +14829,6 @@ pub extern "C" fn molt_codeop_compile_command(
 // --- Stubs when stdlib_ast is disabled ---
 
 #[cfg(not(feature = "stdlib_ast"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_compile_builtin(
-    _source_bits: u64,
     _filename_bits: u64,
     _mode_bits: u64,
     _flags_bits: u64,
@@ -12864,9 +14841,6 @@ pub extern "C" fn molt_compile_builtin(
 }
 
 #[cfg(not(feature = "stdlib_ast"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codeop_compile(
-    _source_bits: u64,
     _filename_bits: u64,
     _mode_bits: u64,
     _flags_bits: u64,
@@ -12878,9 +14852,6 @@ pub extern "C" fn molt_codeop_compile(
 }
 
 #[cfg(not(feature = "stdlib_ast"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codeop_compile_command(
-    _source_bits: u64,
     _filename_bits: u64,
     _mode_bits: u64,
     _flags_bits: u64,
@@ -12890,64 +14861,6 @@ pub extern "C" fn molt_codeop_compile_command(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_func_new(fn_ptr: u64, trampoline_ptr: u64, arity: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let ptr = alloc_function_obj(_py, fn_ptr, arity);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            unsafe {
-                function_set_trampoline_ptr(ptr, trampoline_ptr);
-            }
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_func_new_builtin(fn_ptr: u64, trampoline_ptr: u64, arity: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let trace = matches!(
-            std::env::var("MOLT_TRACE_BUILTIN_FUNC").ok().as_deref(),
-            Some("1")
-        );
-        let trace_enter_ptr = fn_addr!(molt_trace_enter_slot);
-        if trace {
-            eprintln!(
-                "molt builtin_func new: fn_ptr=0x{fn_ptr:x} tramp_ptr=0x{trampoline_ptr:x} arity={arity}"
-            );
-        }
-        if fn_ptr == 0 || trampoline_ptr == 0 {
-            let msg = format!(
-                "builtin func pointer missing: fn=0x{fn_ptr:x} tramp=0x{trampoline_ptr:x} arity={arity}"
-            );
-            return raise_exception::<_>(_py, "RuntimeError", &msg);
-        }
-        let ptr = alloc_function_obj(_py, fn_ptr, arity);
-        if ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "builtin func alloc failed");
-        }
-        unsafe {
-            function_set_trampoline_ptr(ptr, trampoline_ptr);
-            let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-            object_set_class_bits(_py, ptr, builtin_bits);
-            inc_ref_bits(_py, builtin_bits);
-        }
-        let bits = MoltObject::from_ptr(ptr).bits();
-        if trace && fn_ptr == trace_enter_ptr {
-            eprintln!(
-                "molt builtin_func trace_enter_slot bits=0x{bits:x} ptr=0x{:x}",
-                ptr as usize
-            );
-        }
-        bits
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_func_new_closure(
-    fn_ptr: u64,
     trampoline_ptr: u64,
     arity: u64,
     closure_bits: u64,
@@ -12998,111 +14911,6 @@ pub extern "C" fn molt_func_new_closure(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_function_set_builtin(func_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected function");
-        };
-        unsafe {
-            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-                return raise_exception::<_>(_py, "TypeError", "expected function");
-            }
-            let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-            let old_bits = object_class_bits(func_ptr);
-            if old_bits != builtin_bits {
-                if old_bits != 0 {
-                    dec_ref_bits(_py, old_bits);
-                }
-                object_set_class_bits(_py, func_ptr, builtin_bits);
-                inc_ref_bits(_py, builtin_bits);
-            }
-        }
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_function_get_code(func_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected function");
-        };
-        unsafe {
-            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-                return raise_exception::<_>(_py, "TypeError", "expected function");
-            }
-            let code_bits = ensure_function_code_bits(_py, func_ptr);
-            if obj_from_bits(code_bits).is_none() {
-                return MoltObject::none().bits();
-            }
-            inc_ref_bits(_py, code_bits);
-            code_bits
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_function_get_globals(func_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected function");
-        };
-        unsafe {
-            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-                return raise_exception::<_>(_py, "TypeError", "expected function");
-            }
-            let dict_bits = function_dict_bits(func_ptr);
-            if dict_bits == 0 {
-                return MoltObject::none().bits();
-            }
-            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                return MoltObject::none().bits();
-            };
-            if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                return MoltObject::none().bits();
-            }
-            let Some(module_name_bits) = attr_name_bits_from_bytes(_py, b"__module__") else {
-                return MoltObject::none().bits();
-            };
-            let Some(name_bits) = dict_get_in_place(_py, dict_ptr, module_name_bits) else {
-                return MoltObject::none().bits();
-            };
-            let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
-                Some(val) => val,
-                None => return MoltObject::none().bits(),
-            };
-            let cache = crate::builtins::exceptions::internals::module_cache(_py);
-            let guard = cache.lock().unwrap();
-            let Some(module_bits) = guard.get(&name) else {
-                return MoltObject::none().bits();
-            };
-            let module_bits = *module_bits;
-            inc_ref_bits(_py, module_bits);
-            drop(guard);
-            let Some(module_ptr) = obj_from_bits(module_bits).as_ptr() else {
-                dec_ref_bits(_py, module_bits);
-                return MoltObject::none().bits();
-            };
-            if object_type_id(module_ptr) != TYPE_ID_MODULE {
-                dec_ref_bits(_py, module_bits);
-                return MoltObject::none().bits();
-            }
-            let globals_bits = module_dict_bits(module_ptr);
-            if obj_from_bits(globals_bits).is_none() {
-                dec_ref_bits(_py, module_bits);
-                return MoltObject::none().bits();
-            }
-            inc_ref_bits(_py, globals_bits);
-            dec_ref_bits(_py, module_bits);
-            globals_bits
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_code_new(
-    filename_bits: u64,
     name_bits: u64,
     firstlineno_bits: u64,
     linetable_bits: u64,
@@ -13210,91 +15018,6 @@ pub extern "C" fn molt_code_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bound_method_new(func_bits: u64, self_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let debug_bound = std::env::var_os("MOLT_DEBUG_BOUND_METHOD").is_some();
-        let func_obj = obj_from_bits(func_bits);
-        let Some(func_ptr) = func_obj.as_ptr() else {
-            if debug_bound {
-                let self_obj = obj_from_bits(self_bits);
-                let self_label = self_obj
-                    .as_ptr()
-                    .map(|_| type_name(_py, self_obj).into_owned())
-                    .unwrap_or_else(|| format!("immediate:{:#x}", self_bits));
-                let self_type_id = self_obj
-                    .as_ptr()
-                    .map(|ptr| unsafe { object_type_id(ptr) })
-                    .unwrap_or(0);
-                eprintln!(
-                    "molt_bound_method_new: non-object func_bits={:#x} self={} self_type_id={}",
-                    func_bits, self_label, self_type_id
-                );
-                if let Some(name) = crate::builtins::attr::debug_last_attr_name() {
-                    eprintln!("molt_bound_method_new last_attr={}", name);
-                }
-            }
-            return raise_exception::<_>(_py, "TypeError", "bound method expects function object");
-        };
-        unsafe {
-            // If func_bits is already a BOUND_METHOD, unwrap to its inner function
-            // so we don't fail the TYPE_ID_FUNCTION check below. This happens when
-            // inline int/float/bool attribute fallback passes a bound method through
-            // the builtin_class_method_bits path.
-            if object_type_id(func_ptr) == TYPE_ID_BOUND_METHOD {
-                let inner_func_bits = bound_method_func_bits(func_ptr);
-                return molt_bound_method_new(inner_func_bits, self_bits);
-            }
-            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-                if debug_bound {
-                    let type_label = type_name(_py, func_obj).into_owned();
-                    let self_label = obj_from_bits(self_bits)
-                        .as_ptr()
-                        .map(|_| type_name(_py, obj_from_bits(self_bits)).into_owned())
-                        .unwrap_or_else(|| format!("immediate:{:#x}", self_bits));
-                    eprintln!(
-                        "molt_bound_method_new: expected function got type_id={} type={} self={}",
-                        object_type_id(func_ptr),
-                        type_label,
-                        self_label
-                    );
-                }
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "bound method expects function object",
-                );
-            }
-        }
-        let ptr = alloc_bound_method_obj(_py, func_bits, self_bits);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            let method_bits = {
-                let func_class_bits = unsafe { object_class_bits(func_ptr) };
-                if func_class_bits == builtin_classes(_py).builtin_function_or_method {
-                    func_class_bits
-                } else {
-                    crate::builtins::types::method_class(_py)
-                }
-            };
-            if method_bits != 0 {
-                unsafe {
-                    let old_bits = object_class_bits(ptr);
-                    if old_bits != method_bits {
-                        if old_bits != 0 {
-                            dec_ref_bits(_py, old_bits);
-                        }
-                        object_set_class_bits(_py, ptr, method_bits);
-                        inc_ref_bits(_py, method_bits);
-                    }
-                }
-            }
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
-}
-
 /// # Safety
 /// `self_ptr` must point to a valid closure storage region and `offset` must be
 /// within the allocated payload.
@@ -13331,11 +15054,6 @@ pub unsafe extern "C" fn molt_closure_store(self_ptr: *mut u8, offset: u64, bits
             MoltObject::none().bits()
         })
     }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_csv_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
 }
 
 fn logging_percent_lookup_mapping_value(
@@ -13653,574 +15371,6 @@ fn logging_config_resolve_ext_stream(
     ))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let version_bits = match logging_config_dict_lookup(_py, config_bits, "version") {
-            Ok(Some(bits)) => bits,
-            Ok(None) => {
-                return raise_exception::<_>(_py, "ValueError", "logging config missing version");
-            }
-            Err(bits) => return bits,
-        };
-        let Some(version) = to_i64(obj_from_bits(version_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "logging config version must be int");
-        };
-        if version != 1 {
-            return raise_exception::<_>(_py, "ValueError", "unsupported logging config version");
-        }
-
-        let formatter_class_bits = match pickle_resolve_global_bits(_py, "logging", "Formatter") {
-            Ok(bits) => bits,
-            Err(bits) => return bits,
-        };
-        let stream_handler_class_bits =
-            match pickle_resolve_global_bits(_py, "logging", "StreamHandler") {
-                Ok(bits) => bits,
-                Err(bits) => {
-                    dec_ref_bits(_py, formatter_class_bits);
-                    return bits;
-                }
-            };
-        let file_handler_class_bits =
-            match pickle_resolve_global_bits(_py, "logging", "FileHandler") {
-                Ok(bits) => bits,
-                Err(bits) => {
-                    dec_ref_bits(_py, stream_handler_class_bits);
-                    dec_ref_bits(_py, formatter_class_bits);
-                    return bits;
-                }
-            };
-        let get_logger_bits = match pickle_resolve_global_bits(_py, "logging", "getLogger") {
-            Ok(bits) => bits,
-            Err(bits) => {
-                dec_ref_bits(_py, file_handler_class_bits);
-                dec_ref_bits(_py, stream_handler_class_bits);
-                dec_ref_bits(_py, formatter_class_bits);
-                return bits;
-            }
-        };
-
-        let mut formatter_map: HashMap<String, u64> = HashMap::new();
-        let mut handler_map: HashMap<String, u64> = HashMap::new();
-
-        if let Ok(Some(formatters_bits)) =
-            logging_config_dict_lookup(_py, config_bits, "formatters")
-        {
-            let pairs = match logging_config_dict_items(_py, formatters_bits) {
-                Ok(items) => items,
-                Err(bits) => {
-                    dec_ref_bits(_py, get_logger_bits);
-                    dec_ref_bits(_py, file_handler_class_bits);
-                    dec_ref_bits(_py, stream_handler_class_bits);
-                    dec_ref_bits(_py, formatter_class_bits);
-                    return bits;
-                }
-            };
-            let Some(formatter_class_ptr) = obj_from_bits(formatter_class_bits).as_ptr() else {
-                dec_ref_bits(_py, get_logger_bits);
-                dec_ref_bits(_py, file_handler_class_bits);
-                dec_ref_bits(_py, stream_handler_class_bits);
-                dec_ref_bits(_py, formatter_class_bits);
-                return raise_exception::<_>(_py, "TypeError", "logging.Formatter is invalid");
-            };
-            for (name_bits, cfg_bits) in pairs {
-                let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
-                    Some(value) => value,
-                    None => {
-                        dec_ref_bits(_py, name_bits);
-                        dec_ref_bits(_py, cfg_bits);
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "logging formatter name must be str",
-                        );
-                    }
-                };
-                let fmt_bits = match logging_config_dict_lookup(_py, cfg_bits, "format") {
-                    Ok(Some(bits)) => bits,
-                    Ok(None) => MoltObject::none().bits(),
-                    Err(bits) => {
-                        dec_ref_bits(_py, name_bits);
-                        dec_ref_bits(_py, cfg_bits);
-                        return bits;
-                    }
-                };
-                let formatter_bits =
-                    unsafe { call_class_init_with_args(_py, formatter_class_ptr, &[fmt_bits]) };
-                if exception_pending(_py) {
-                    dec_ref_bits(_py, name_bits);
-                    dec_ref_bits(_py, cfg_bits);
-                    return MoltObject::none().bits();
-                }
-                formatter_map.insert(name, formatter_bits);
-                dec_ref_bits(_py, name_bits);
-                dec_ref_bits(_py, cfg_bits);
-            }
-        } else if exception_pending(_py) {
-            dec_ref_bits(_py, get_logger_bits);
-            dec_ref_bits(_py, file_handler_class_bits);
-            dec_ref_bits(_py, stream_handler_class_bits);
-            dec_ref_bits(_py, formatter_class_bits);
-            return MoltObject::none().bits();
-        }
-
-        if let Ok(Some(handlers_bits)) = logging_config_dict_lookup(_py, config_bits, "handlers") {
-            let pairs = match logging_config_dict_items(_py, handlers_bits) {
-                Ok(items) => items,
-                Err(bits) => {
-                    for (_, formatter_bits) in formatter_map {
-                        dec_ref_bits(_py, formatter_bits);
-                    }
-                    dec_ref_bits(_py, get_logger_bits);
-                    dec_ref_bits(_py, file_handler_class_bits);
-                    dec_ref_bits(_py, stream_handler_class_bits);
-                    dec_ref_bits(_py, formatter_class_bits);
-                    return bits;
-                }
-            };
-            let Some(stream_handler_class_ptr) = obj_from_bits(stream_handler_class_bits).as_ptr()
-            else {
-                for (_, formatter_bits) in formatter_map {
-                    dec_ref_bits(_py, formatter_bits);
-                }
-                dec_ref_bits(_py, get_logger_bits);
-                dec_ref_bits(_py, file_handler_class_bits);
-                dec_ref_bits(_py, stream_handler_class_bits);
-                dec_ref_bits(_py, formatter_class_bits);
-                return raise_exception::<_>(_py, "TypeError", "logging.StreamHandler is invalid");
-            };
-            let Some(file_handler_class_ptr) = obj_from_bits(file_handler_class_bits).as_ptr()
-            else {
-                for (_, formatter_bits) in formatter_map {
-                    dec_ref_bits(_py, formatter_bits);
-                }
-                dec_ref_bits(_py, get_logger_bits);
-                dec_ref_bits(_py, file_handler_class_bits);
-                dec_ref_bits(_py, stream_handler_class_bits);
-                dec_ref_bits(_py, formatter_class_bits);
-                return raise_exception::<_>(_py, "TypeError", "logging.FileHandler is invalid");
-            };
-            for (name_bits, cfg_bits) in pairs {
-                let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
-                    Some(value) => value,
-                    None => {
-                        dec_ref_bits(_py, name_bits);
-                        dec_ref_bits(_py, cfg_bits);
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "logging handler name must be str",
-                        );
-                    }
-                };
-                let class_bits = match logging_config_dict_lookup(_py, cfg_bits, "class") {
-                    Ok(Some(bits)) => bits,
-                    Ok(None) => {
-                        dec_ref_bits(_py, name_bits);
-                        dec_ref_bits(_py, cfg_bits);
-                        return raise_exception::<_>(
-                            _py,
-                            "ValueError",
-                            "logging handler config missing class",
-                        );
-                    }
-                    Err(bits) => {
-                        dec_ref_bits(_py, name_bits);
-                        dec_ref_bits(_py, cfg_bits);
-                        return bits;
-                    }
-                };
-                let class_name = match string_obj_to_owned(obj_from_bits(class_bits)) {
-                    Some(value) => value,
-                    None => {
-                        dec_ref_bits(_py, name_bits);
-                        dec_ref_bits(_py, cfg_bits);
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "logging handler class must be str",
-                        );
-                    }
-                };
-                let handler_bits = if class_name == "logging.StreamHandler" {
-                    let stream_arg_bits = match logging_config_dict_lookup(_py, cfg_bits, "stream")
-                    {
-                        Ok(Some(bits)) => match logging_config_resolve_ext_stream(_py, bits) {
-                            Ok(resolved_bits) => resolved_bits,
-                            Err(err_bits) => {
-                                dec_ref_bits(_py, name_bits);
-                                dec_ref_bits(_py, cfg_bits);
-                                return err_bits;
-                            }
-                        },
-                        Ok(None) => MoltObject::none().bits(),
-                        Err(bits) => {
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            return bits;
-                        }
-                    };
-                    unsafe {
-                        call_class_init_with_args(_py, stream_handler_class_ptr, &[stream_arg_bits])
-                    }
-                } else if class_name == "logging.FileHandler" {
-                    let filename_bits = match logging_config_dict_lookup(_py, cfg_bits, "filename")
-                    {
-                        Ok(Some(bits)) => bits,
-                        Ok(None) => {
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            return raise_exception::<_>(
-                                _py,
-                                "ValueError",
-                                "logging FileHandler config missing filename",
-                            );
-                        }
-                        Err(bits) => {
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            return bits;
-                        }
-                    };
-                    let mode_bits = match logging_config_dict_lookup(_py, cfg_bits, "mode") {
-                        Ok(Some(bits)) => bits,
-                        Ok(None) => match alloc_string_bits(_py, "a") {
-                            Some(bits) => bits,
-                            None => {
-                                dec_ref_bits(_py, name_bits);
-                                dec_ref_bits(_py, cfg_bits);
-                                return MoltObject::none().bits();
-                            }
-                        },
-                        Err(bits) => {
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            return bits;
-                        }
-                    };
-                    let out_bits = unsafe {
-                        call_class_init_with_args(
-                            _py,
-                            file_handler_class_ptr,
-                            &[filename_bits, mode_bits],
-                        )
-                    };
-                    if let Ok(None) = logging_config_dict_lookup(_py, cfg_bits, "mode") {
-                        dec_ref_bits(_py, mode_bits);
-                    }
-                    out_bits
-                } else {
-                    dec_ref_bits(_py, name_bits);
-                    dec_ref_bits(_py, cfg_bits);
-                    return raise_exception::<_>(
-                        _py,
-                        "ValueError",
-                        "unsupported logging handler class for intrinsic dictConfig",
-                    );
-                };
-                if exception_pending(_py) {
-                    dec_ref_bits(_py, name_bits);
-                    dec_ref_bits(_py, cfg_bits);
-                    return MoltObject::none().bits();
-                }
-                if let Ok(Some(level_bits)) = logging_config_dict_lookup(_py, cfg_bits, "level") {
-                    let out_bits = match logging_config_call_method1(
-                        _py,
-                        handler_bits,
-                        b"setLevel",
-                        level_bits,
-                    ) {
-                        Ok(bits) => bits,
-                        Err(bits) => {
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            dec_ref_bits(_py, handler_bits);
-                            return bits;
-                        }
-                    };
-                    if !obj_from_bits(out_bits).is_none() {
-                        dec_ref_bits(_py, out_bits);
-                    }
-                }
-                if let Ok(Some(formatter_name_bits)) =
-                    logging_config_dict_lookup(_py, cfg_bits, "formatter")
-                {
-                    let Some(formatter_name) =
-                        string_obj_to_owned(obj_from_bits(formatter_name_bits))
-                    else {
-                        dec_ref_bits(_py, name_bits);
-                        dec_ref_bits(_py, cfg_bits);
-                        dec_ref_bits(_py, handler_bits);
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "logging formatter reference must be str",
-                        );
-                    };
-                    let Some(formatter_bits) = formatter_map.get(&formatter_name).copied() else {
-                        dec_ref_bits(_py, name_bits);
-                        dec_ref_bits(_py, cfg_bits);
-                        dec_ref_bits(_py, handler_bits);
-                        return raise_exception::<_>(
-                            _py,
-                            "ValueError",
-                            "unknown formatter in logging handler config",
-                        );
-                    };
-                    let out_bits = match logging_config_call_method1(
-                        _py,
-                        handler_bits,
-                        b"setFormatter",
-                        formatter_bits,
-                    ) {
-                        Ok(bits) => bits,
-                        Err(bits) => {
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            dec_ref_bits(_py, handler_bits);
-                            return bits;
-                        }
-                    };
-                    if !obj_from_bits(out_bits).is_none() {
-                        dec_ref_bits(_py, out_bits);
-                    }
-                }
-                handler_map.insert(name, handler_bits);
-                dec_ref_bits(_py, name_bits);
-                dec_ref_bits(_py, cfg_bits);
-            }
-        } else if exception_pending(_py) {
-            for (_, formatter_bits) in formatter_map {
-                dec_ref_bits(_py, formatter_bits);
-            }
-            dec_ref_bits(_py, get_logger_bits);
-            dec_ref_bits(_py, file_handler_class_bits);
-            dec_ref_bits(_py, stream_handler_class_bits);
-            dec_ref_bits(_py, formatter_class_bits);
-            return MoltObject::none().bits();
-        }
-
-        if let Ok(Some(loggers_bits)) = logging_config_dict_lookup(_py, config_bits, "loggers") {
-            let pairs = match logging_config_dict_items(_py, loggers_bits) {
-                Ok(items) => items,
-                Err(bits) => {
-                    for (_, handler_bits) in handler_map {
-                        dec_ref_bits(_py, handler_bits);
-                    }
-                    for (_, formatter_bits) in formatter_map {
-                        dec_ref_bits(_py, formatter_bits);
-                    }
-                    dec_ref_bits(_py, get_logger_bits);
-                    dec_ref_bits(_py, file_handler_class_bits);
-                    dec_ref_bits(_py, stream_handler_class_bits);
-                    dec_ref_bits(_py, formatter_class_bits);
-                    return bits;
-                }
-            };
-            for (name_bits, cfg_bits) in pairs {
-                let logger_bits = unsafe { call_callable1(_py, get_logger_bits, name_bits) };
-                if exception_pending(_py) {
-                    dec_ref_bits(_py, name_bits);
-                    dec_ref_bits(_py, cfg_bits);
-                    return MoltObject::none().bits();
-                }
-                if let Err(bits) = logging_config_clear_logger_handlers(_py, logger_bits) {
-                    dec_ref_bits(_py, logger_bits);
-                    dec_ref_bits(_py, name_bits);
-                    dec_ref_bits(_py, cfg_bits);
-                    return bits;
-                }
-                if let Ok(Some(handler_list_bits)) =
-                    logging_config_dict_lookup(_py, cfg_bits, "handlers")
-                {
-                    let handler_names = match logging_config_name_list(_py, handler_list_bits) {
-                        Ok(value) => value,
-                        Err(bits) => {
-                            dec_ref_bits(_py, logger_bits);
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            return bits;
-                        }
-                    };
-                    for handler_name in handler_names {
-                        let Some(handler_bits) = handler_map.get(&handler_name).copied() else {
-                            dec_ref_bits(_py, logger_bits);
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            return raise_exception::<_>(
-                                _py,
-                                "ValueError",
-                                "unknown handler in logger config",
-                            );
-                        };
-                        let out_bits = match logging_config_call_method1(
-                            _py,
-                            logger_bits,
-                            b"addHandler",
-                            handler_bits,
-                        ) {
-                            Ok(bits) => bits,
-                            Err(bits) => {
-                                dec_ref_bits(_py, logger_bits);
-                                dec_ref_bits(_py, name_bits);
-                                dec_ref_bits(_py, cfg_bits);
-                                return bits;
-                            }
-                        };
-                        if !obj_from_bits(out_bits).is_none() {
-                            dec_ref_bits(_py, out_bits);
-                        }
-                    }
-                }
-                if let Ok(Some(level_bits)) = logging_config_dict_lookup(_py, cfg_bits, "level") {
-                    let out_bits = match logging_config_call_method1(
-                        _py,
-                        logger_bits,
-                        b"setLevel",
-                        level_bits,
-                    ) {
-                        Ok(bits) => bits,
-                        Err(bits) => {
-                            dec_ref_bits(_py, logger_bits);
-                            dec_ref_bits(_py, name_bits);
-                            dec_ref_bits(_py, cfg_bits);
-                            return bits;
-                        }
-                    };
-                    if !obj_from_bits(out_bits).is_none() {
-                        dec_ref_bits(_py, out_bits);
-                    }
-                }
-                dec_ref_bits(_py, logger_bits);
-                dec_ref_bits(_py, name_bits);
-                dec_ref_bits(_py, cfg_bits);
-            }
-        } else if exception_pending(_py) {
-            for (_, handler_bits) in handler_map {
-                dec_ref_bits(_py, handler_bits);
-            }
-            for (_, formatter_bits) in formatter_map {
-                dec_ref_bits(_py, formatter_bits);
-            }
-            dec_ref_bits(_py, get_logger_bits);
-            dec_ref_bits(_py, file_handler_class_bits);
-            dec_ref_bits(_py, stream_handler_class_bits);
-            dec_ref_bits(_py, formatter_class_bits);
-            return MoltObject::none().bits();
-        }
-
-        if let Ok(Some(root_bits)) = logging_config_dict_lookup(_py, config_bits, "root") {
-            let root_logger_bits = unsafe { call_callable0(_py, get_logger_bits) };
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            if let Err(bits) = logging_config_clear_logger_handlers(_py, root_logger_bits) {
-                dec_ref_bits(_py, root_logger_bits);
-                return bits;
-            }
-            if let Ok(Some(handler_list_bits)) =
-                logging_config_dict_lookup(_py, root_bits, "handlers")
-            {
-                let handler_names = match logging_config_name_list(_py, handler_list_bits) {
-                    Ok(value) => value,
-                    Err(bits) => {
-                        dec_ref_bits(_py, root_logger_bits);
-                        return bits;
-                    }
-                };
-                for handler_name in handler_names {
-                    let Some(handler_bits) = handler_map.get(&handler_name).copied() else {
-                        dec_ref_bits(_py, root_logger_bits);
-                        return raise_exception::<_>(
-                            _py,
-                            "ValueError",
-                            "unknown handler in root logger config",
-                        );
-                    };
-                    let out_bits = match logging_config_call_method1(
-                        _py,
-                        root_logger_bits,
-                        b"addHandler",
-                        handler_bits,
-                    ) {
-                        Ok(bits) => bits,
-                        Err(bits) => {
-                            dec_ref_bits(_py, root_logger_bits);
-                            return bits;
-                        }
-                    };
-                    if !obj_from_bits(out_bits).is_none() {
-                        dec_ref_bits(_py, out_bits);
-                    }
-                }
-            }
-            if let Ok(Some(level_bits)) = logging_config_dict_lookup(_py, root_bits, "level") {
-                let out_bits = match logging_config_call_method1(
-                    _py,
-                    root_logger_bits,
-                    b"setLevel",
-                    level_bits,
-                ) {
-                    Ok(bits) => bits,
-                    Err(bits) => {
-                        dec_ref_bits(_py, root_logger_bits);
-                        return bits;
-                    }
-                };
-                if !obj_from_bits(out_bits).is_none() {
-                    dec_ref_bits(_py, out_bits);
-                }
-            }
-            dec_ref_bits(_py, root_logger_bits);
-        } else if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-
-        for (_, handler_bits) in handler_map {
-            dec_ref_bits(_py, handler_bits);
-        }
-        for (_, formatter_bits) in formatter_map {
-            dec_ref_bits(_py, formatter_bits);
-        }
-        dec_ref_bits(_py, get_logger_bits);
-        dec_ref_bits(_py, file_handler_class_bits);
-        dec_ref_bits(_py, stream_handler_class_bits);
-        dec_ref_bits(_py, formatter_class_bits);
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_config_valid_ident(value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(text) = string_obj_to_owned(obj_from_bits(value_bits)) else {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "logging.config.valid_ident expects str",
-            );
-        };
-        let mut chars = text.chars();
-        let Some(first) = chars.next() else {
-            return MoltObject::from_bool(false).bits();
-        };
-        let first_ok = first == '_' || first.is_ascii_alphabetic();
-        if !first_ok {
-            return MoltObject::from_bool(false).bits();
-        }
-        for ch in chars {
-            if ch != '_' && !ch.is_ascii_alphanumeric() {
-                return MoltObject::from_bool(false).bits();
-            }
-        }
-        MoltObject::from_bool(true).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_config_file_config(
-    config_file_bits: u64,
     defaults_bits: u64,
     disable_existing_loggers_bits: u64,
     encoding_bits: u64,
@@ -14237,131 +15387,6 @@ pub extern "C" fn molt_logging_config_file_config(
             "NotImplementedError",
             "logging.config.fileConfig is not implemented in Molt yet",
         )
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_config_listen(port_bits: u64, verify_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let _ = (port_bits, verify_bits);
-        raise_exception::<_>(
-            _py,
-            "NotImplementedError",
-            "logging.config.listen is not implemented in Molt yet",
-        )
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_config_stop_listening() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_percent_style_format(fmt_bits: u64, mapping_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(fmt) = string_obj_to_owned(obj_from_bits(fmt_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "logging format string must be str");
-        };
-        let Some(mapping_ptr) = obj_from_bits(mapping_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "logging mapping must be dict");
-        };
-        if unsafe { object_type_id(mapping_ptr) } != TYPE_ID_DICT {
-            return raise_exception::<_>(_py, "TypeError", "logging mapping must be dict");
-        }
-
-        let chars: Vec<char> = fmt.chars().collect();
-        let mut out = String::with_capacity(fmt.len());
-        let mut idx = 0usize;
-
-        while idx < chars.len() {
-            let ch = chars[idx];
-            if ch != '%' {
-                out.push(ch);
-                idx += 1;
-                continue;
-            }
-            if idx + 1 >= chars.len() {
-                out.push('%');
-                break;
-            }
-            if chars[idx + 1] == '%' {
-                out.push('%');
-                idx += 2;
-                continue;
-            }
-            if chars[idx + 1] != '(' {
-                out.push('%');
-                idx += 1;
-                continue;
-            }
-            let mut close = idx + 2;
-            while close < chars.len() && chars[close] != ')' {
-                close += 1;
-            }
-            if close >= chars.len() || close + 1 >= chars.len() {
-                for ch in &chars[idx..] {
-                    out.push(*ch);
-                }
-                break;
-            }
-
-            let spec = chars[close + 1];
-            let token: String = chars[idx..=close + 1].iter().collect();
-            if !matches!(spec, 's' | 'd' | 'r' | 'f') {
-                out.push_str(token.as_str());
-                idx = close + 2;
-                continue;
-            }
-
-            let key: String = chars[idx + 2..close].iter().collect();
-            let Some(value_bits) =
-                logging_percent_lookup_mapping_value(_py, mapping_ptr, key.as_str())
-            else {
-                out.push_str(token.as_str());
-                idx = close + 2;
-                continue;
-            };
-
-            let Some(rendered) = logging_percent_render_value(_py, spec, value_bits) else {
-                return MoltObject::none().bits();
-            };
-            out.push_str(rendered.as_str());
-            idx = close + 2;
-        }
-
-        let out_ptr = alloc_string(_py, out.as_bytes());
-        if out_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(out_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipfile_crc32(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "zipfile crc32 expects bytes-like");
-        };
-        let Some(bytes) = (unsafe { bytes_like_slice(data_ptr) }) else {
-            return raise_exception::<_>(_py, "TypeError", "zipfile crc32 expects bytes-like");
-        };
-
-        let mut crc = 0xFFFF_FFFFu32;
-        for byte in bytes {
-            crc ^= u32::from(*byte);
-            for _ in 0..8 {
-                if (crc & 1) != 0 {
-                    crc = (crc >> 1) ^ 0xEDB8_8320;
-                } else {
-                    crc >>= 1;
-                }
-            }
-        }
-        crc ^= 0xFFFF_FFFF;
-        MoltObject::from_int(i64::from(crc)).bits()
     })
 }
 
@@ -14420,27 +15445,6 @@ fn imghdr_detect_kind(header: &[u8]) -> Option<&'static str> {
         return Some("exr");
     }
     None
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_imghdr_detect(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
-        };
-        let Some(header) = (unsafe { bytes_like_slice(data_ptr) }) else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
-        };
-        let Some(kind) = imghdr_detect_kind(header) else {
-            return MoltObject::none().bits();
-        };
-        let ptr = alloc_string(_py, kind.as_bytes());
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
 }
 
 const ZIPFILE_CENTRAL_SIG: [u8; 4] = *b"PK\x01\x02";
@@ -14925,86 +15929,6 @@ fn zipfile_normalize_member_path_impl(member: &str) -> Option<String> {
     Some(normalized)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipfile_parse_central_directory(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "zipfile central directory input must be bytes-like",
-            );
-        };
-        let Some(data) = (unsafe { bytes_like_slice(data_ptr) }) else {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "zipfile central directory input must be bytes-like",
-            );
-        };
-        let entries = match zipfile_parse_central_directory_impl(data) {
-            Ok(value) => value,
-            Err(message) => return raise_exception::<_>(_py, "ValueError", message),
-        };
-
-        let mut pairs: Vec<u64> = Vec::with_capacity(entries.len() * 2);
-        let mut owned_bits: Vec<u64> = Vec::with_capacity(entries.len() * 2);
-        for (name, fields) in entries {
-            let Some(name_bits) = alloc_string_bits(_py, name.as_str()) else {
-                for bits in owned_bits {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            };
-
-            let mut item_bits: [u64; 5] = [0; 5];
-            for (idx, field) in fields.iter().enumerate() {
-                let Ok(value) = i64::try_from(*field) else {
-                    dec_ref_bits(_py, name_bits);
-                    for bits in owned_bits {
-                        dec_ref_bits(_py, bits);
-                    }
-                    return raise_exception::<_>(
-                        _py,
-                        "OverflowError",
-                        "zipfile central directory value overflow",
-                    );
-                };
-                item_bits[idx] = MoltObject::from_int(value).bits();
-            }
-            let tuple_ptr = alloc_tuple(_py, &item_bits);
-            if tuple_ptr.is_null() {
-                dec_ref_bits(_py, name_bits);
-                for bits in owned_bits {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
-            pairs.push(name_bits);
-            pairs.push(tuple_bits);
-            owned_bits.push(name_bits);
-            owned_bits.push(tuple_bits);
-        }
-
-        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
-        if dict_ptr.is_null() {
-            for bits in owned_bits {
-                dec_ref_bits(_py, bits);
-            }
-            return MoltObject::none().bits();
-        }
-        let out = MoltObject::from_ptr(dict_ptr).bits();
-        for bits in owned_bits {
-            dec_ref_bits(_py, bits);
-        }
-        out
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipfile_build_zip64_extra(
-    size_bits: u64,
     comp_size_bits: u64,
     offset_bits: u64,
 ) -> u64 {
@@ -15047,81 +15971,6 @@ pub extern "C" fn molt_zipfile_build_zip64_extra(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipfile_path_implied_dirs(names_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let names = match iterable_to_string_vec(_py, names_bits) {
-            Ok(items) => items,
-            Err(err) => return err,
-        };
-        let names_set: HashSet<String> = names.iter().cloned().collect();
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut out: Vec<String> = Vec::new();
-
-        for name in &names {
-            let ancestry = zipfile_ancestry(name.as_str());
-            for parent in ancestry.into_iter().skip(1) {
-                let candidate = format!("{parent}/");
-                if names_set.contains(candidate.as_str()) {
-                    continue;
-                }
-                if seen.insert(candidate.clone()) {
-                    out.push(candidate);
-                }
-            }
-        }
-        alloc_string_list(_py, out.as_slice())
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipfile_path_resolve_dir(name_bits: u64, names_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "zipfile path name must be str");
-        };
-        let names = match iterable_to_string_vec(_py, names_bits) {
-            Ok(items) => items,
-            Err(err) => return err,
-        };
-        let names_set: HashSet<String> = names.into_iter().collect();
-        let mut resolved = name.clone();
-        let dirname = format!("{name}/");
-        if !names_set.contains(name.as_str()) && names_set.contains(dirname.as_str()) {
-            resolved = dirname;
-        }
-        let ptr = alloc_string(_py, resolved.as_bytes());
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipfile_path_is_child(path_at_bits: u64, parent_at_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(path_at) = string_obj_to_owned(obj_from_bits(path_at_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "zipfile path candidate must be str");
-        };
-        let Some(parent_at) = string_obj_to_owned(obj_from_bits(parent_at_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "zipfile path parent must be str");
-        };
-
-        let candidate_parent = zipfile_parent_of(path_at.as_str());
-        let parent_norm = zipfile_trim_trailing_slashes(parent_at.as_str());
-        if candidate_parent == parent_norm {
-            MoltObject::from_bool(true).bits()
-        } else {
-            MoltObject::from_bool(false).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipfile_path_translate_glob(
-    pattern_bits: u64,
     seps_bits: u64,
     py313_plus_bits: u64,
 ) -> u64 {
@@ -15140,24 +15989,6 @@ pub extern "C" fn molt_zipfile_path_translate_glob(
                 Err(msg) => return raise_exception::<_>(_py, "ValueError", msg),
             };
         let ptr = alloc_string(_py, translated.as_bytes());
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipfile_normalize_member_path(member_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(member) = string_obj_to_owned(obj_from_bits(member_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "zipfile member path must be str");
-        };
-        let Some(normalized) = zipfile_normalize_member_path_impl(member.as_str()) else {
-            return MoltObject::none().bits();
-        };
-        let ptr = alloc_string(_py, normalized.as_bytes());
         if ptr.is_null() {
             MoltObject::none().bits()
         } else {
@@ -15321,283 +16152,8 @@ mod tokenize_encoding_tests {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_imghdr_what(data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
-        };
-        let Some(header) = (unsafe { bytes_like_slice(data_ptr) }) else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
-        };
-        let Some(kind) = imghdr_detect_kind(header) else {
-            return MoltObject::none().bits();
-        };
-        let ptr = alloc_string(_py, kind.as_bytes());
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_imghdr_test(kind_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr kind must be str");
-        };
-        let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
-        };
-        let Some(header) = (unsafe { bytes_like_slice(data_ptr) }) else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
-        };
-        let matches = imghdr_detect_kind(header)
-            .map(|detected| detected == kind.as_str())
-            .unwrap_or(false);
-        MoltObject::from_bool(matches).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_wsgiref_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zoneinfo_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipapp_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xmlrpc_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_datetime_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tokenize_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
 /// Tokenize a UTF-8 source string into a list of (type, string, start, end, line) tuples.
 /// Token types: 0=ENDMARKER, 1=NAME, 2=NUMBER, 4=NEWLINE, 54=OP, 64=COMMENT, 65=NL, 67=ENCODING
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tokenize_scan(source_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let source_obj = crate::obj_from_bits(source_bits);
-        let Some(source) = crate::string_obj_to_owned(source_obj) else {
-            return crate::raise_exception::<_>(_py, "TypeError", "source must be str");
-        };
-
-        const ENDMARKER: i64 = 0;
-        const NAME: i64 = 1;
-        const NUMBER: i64 = 2;
-        const NEWLINE: i64 = 4;
-        const OP: i64 = 54;
-        const COMMENT: i64 = 64;
-        const NL: i64 = 65;
-
-        fn is_name_start(ch: u8) -> bool {
-            ch == b'_' || ch.is_ascii_alphabetic()
-        }
-        fn is_name_char(ch: u8) -> bool {
-            is_name_start(ch) || ch.is_ascii_digit()
-        }
-
-        let mut tokens: Vec<u64> = Vec::new();
-        let source_bytes = source.as_bytes();
-        let mut line_no: i64 = 1;
-
-        if !source_bytes.is_empty() {
-            let mut start = 0usize;
-            while start < source_bytes.len() {
-                let line_end = memchr(b'\n', &source_bytes[start..])
-                    .map(|rel| start + rel + 1)
-                    .unwrap_or(source_bytes.len());
-                let line = &source[start..line_end];
-                let line_bytes = line.as_bytes();
-                let line_len = line_bytes.len();
-                let line_bits =
-                    alloc_string_bits(_py, line).unwrap_or_else(|| MoltObject::none().bits());
-
-                // Full-line comment check
-                let trimmed_start = line_bytes.iter().position(|&b| b != b' ' && b != b'\t');
-                if let Some(ts) = trimmed_start
-                    && line_bytes[ts] == b'#'
-                {
-                    let comment = line.trim();
-                    let tok = make_token_tuple(
-                        _py,
-                        COMMENT,
-                        comment,
-                        (line_no, 0),
-                        (line_no, comment.len() as i64),
-                        line_bits,
-                    );
-                    tokens.push(tok);
-                    if line.ends_with('\n') {
-                        let tok = make_token_tuple(
-                            _py,
-                            NL,
-                            "\n",
-                            (line_no, (line_len - 1) as i64),
-                            (line_no, line_len as i64),
-                            line_bits,
-                        );
-                        tokens.push(tok);
-                    }
-                    if line_bits != MoltObject::none().bits() {
-                        dec_ref_bits(_py, line_bits);
-                    }
-                    line_no += 1;
-                    start = line_end;
-                    continue;
-                }
-
-                let mut col: usize = 0;
-                while col < line_len {
-                    let ch = line_bytes[col];
-                    if ch == b' ' || ch == b'\t' || ch == b'\r' || ch == b'\n' {
-                        col += 1;
-                        continue;
-                    }
-                    if ch == b'#' {
-                        let comment = line[col..].trim_end_matches(['\r', '\n']);
-                        let tok = make_token_tuple(
-                            _py,
-                            COMMENT,
-                            comment,
-                            (line_no, col as i64),
-                            (line_no, (col + comment.len()) as i64),
-                            line_bits,
-                        );
-                        tokens.push(tok);
-                        break;
-                    }
-                    if is_name_start(ch) {
-                        let start_col = col;
-                        col += 1;
-                        while col < line_len && is_name_char(line_bytes[col]) {
-                            col += 1;
-                        }
-                        let text = &line[start_col..col];
-                        let tok = make_token_tuple(
-                            _py,
-                            NAME,
-                            text,
-                            (line_no, start_col as i64),
-                            (line_no, col as i64),
-                            line_bits,
-                        );
-                        tokens.push(tok);
-                        continue;
-                    }
-                    if ch.is_ascii_digit() {
-                        let start_col = col;
-                        col += 1;
-                        while col < line_len && line_bytes[col].is_ascii_digit() {
-                            col += 1;
-                        }
-                        let text = &line[start_col..col];
-                        let tok = make_token_tuple(
-                            _py,
-                            NUMBER,
-                            text,
-                            (line_no, start_col as i64),
-                            (line_no, col as i64),
-                            line_bits,
-                        );
-                        tokens.push(tok);
-                        continue;
-                    }
-                    // OP
-                    let ch_str = &line[col..col + 1];
-                    let tok = make_token_tuple(
-                        _py,
-                        OP,
-                        ch_str,
-                        (line_no, col as i64),
-                        (line_no, (col + 1) as i64),
-                        line_bits,
-                    );
-                    tokens.push(tok);
-                    col += 1;
-                }
-
-                if line.ends_with('\n') {
-                    let stripped = line.trim();
-                    let has_content = !stripped.is_empty() && !stripped.starts_with('#');
-                    let tok_type = if has_content { NEWLINE } else { NL };
-                    let tok = make_token_tuple(
-                        _py,
-                        tok_type,
-                        "\n",
-                        (line_no, (line_len - 1) as i64),
-                        (line_no, line_len as i64),
-                        line_bits,
-                    );
-                    tokens.push(tok);
-                }
-                if line_bits != MoltObject::none().bits() {
-                    dec_ref_bits(_py, line_bits);
-                }
-                line_no += 1;
-                if line_end == source_bytes.len() {
-                    break;
-                }
-                start = line_end;
-            }
-        }
-
-        // ENDMARKER
-        let endmarker_line_bits =
-            alloc_string_bits(_py, "").unwrap_or_else(|| MoltObject::none().bits());
-        let tok = make_token_tuple(
-            _py,
-            ENDMARKER,
-            "",
-            (line_no, 0),
-            (line_no, 0),
-            endmarker_line_bits,
-        );
-        tokens.push(tok);
-        if endmarker_line_bits != MoltObject::none().bits() {
-            dec_ref_bits(_py, endmarker_line_bits);
-        }
-
-        let list_ptr = crate::alloc_list(_py, &tokens);
-        for bits in &tokens {
-            crate::dec_ref_bits(_py, *bits);
-        }
-        if list_ptr.is_null() {
-            return crate::raise_exception::<_>(_py, "MemoryError", "out of memory");
-        }
-        MoltObject::from_ptr(list_ptr).bits()
-    })
-}
-
 fn make_token_tuple(
     _py: &crate::PyToken<'_>,
     tok_type: i64,
@@ -15681,132 +16237,3 @@ fn find_encoding_cookie(line: &[u8]) -> Option<&str> {
 /// Detect Python source file encoding from the first two lines.
 /// `first_bits`: first line bytes, `second_bits`: second line bytes
 /// Returns (encoding_name, has_bom) tuple.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_linecache_detect_encoding(first_bits: u64, second_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let first_obj = crate::obj_from_bits(first_bits);
-        let second_obj = crate::obj_from_bits(second_bits);
-
-        let first_bytes = if let Some(ptr) = first_obj.as_ptr() {
-            unsafe { crate::bytes_like_slice(ptr) }.unwrap_or(&[])
-        } else {
-            &[]
-        };
-
-        let second_bytes = if let Some(ptr) = second_obj.as_ptr() {
-            unsafe { crate::bytes_like_slice(ptr) }.unwrap_or(&[])
-        } else {
-            &[]
-        };
-
-        let bom_utf8: &[u8] = &[0xEF, 0xBB, 0xBF];
-        let mut bom_found = false;
-        let mut effective_first = first_bytes;
-        let mut default_enc = "utf-8";
-
-        if effective_first.starts_with(bom_utf8) {
-            bom_found = true;
-            effective_first = &effective_first[3..];
-            default_enc = "utf-8-sig";
-        }
-
-        if effective_first.is_empty() && second_bytes.is_empty() {
-            let enc_ptr = crate::alloc_string(_py, default_enc.as_bytes());
-            let bom_bits = MoltObject::from_bool(bom_found).bits();
-            if enc_ptr.is_null() {
-                return crate::raise_exception::<_>(_py, "MemoryError", "out of memory");
-            }
-            let elems = [MoltObject::from_ptr(enc_ptr).bits(), bom_bits];
-            let tuple_ptr = crate::alloc_tuple(_py, &elems);
-            if tuple_ptr.is_null() {
-                return crate::raise_exception::<_>(_py, "MemoryError", "out of memory");
-            }
-            return MoltObject::from_ptr(tuple_ptr).bits();
-        }
-
-        // Check first line
-        if let Some(encoding) = find_encoding_cookie(effective_first) {
-            let encoding = if bom_found && encoding.eq_ignore_ascii_case("utf-8") {
-                "utf-8-sig"
-            } else {
-                encoding
-            };
-            let enc_ptr = crate::alloc_string(_py, encoding.as_bytes());
-            let bom_bits = MoltObject::from_bool(bom_found).bits();
-            if enc_ptr.is_null() {
-                return crate::raise_exception::<_>(_py, "MemoryError", "out of memory");
-            }
-            let elems = [MoltObject::from_ptr(enc_ptr).bits(), bom_bits];
-            let tuple_ptr = crate::alloc_tuple(_py, &elems);
-            if tuple_ptr.is_null() {
-                return crate::raise_exception::<_>(_py, "MemoryError", "out of memory");
-            }
-            return MoltObject::from_ptr(tuple_ptr).bits();
-        }
-
-        // Check second line
-        if !second_bytes.is_empty()
-            && let Some(encoding) = find_encoding_cookie(second_bytes)
-        {
-            let encoding = if bom_found && encoding.eq_ignore_ascii_case("utf-8") {
-                "utf-8-sig"
-            } else {
-                encoding
-            };
-            let enc_ptr = crate::alloc_string(_py, encoding.as_bytes());
-            let bom_bits = MoltObject::from_bool(bom_found).bits();
-            if enc_ptr.is_null() {
-                return crate::raise_exception::<_>(_py, "MemoryError", "out of memory");
-            }
-            let elems = [MoltObject::from_ptr(enc_ptr).bits(), bom_bits];
-            let tuple_ptr = crate::alloc_tuple(_py, &elems);
-            if tuple_ptr.is_null() {
-                return crate::raise_exception::<_>(_py, "MemoryError", "out of memory");
-            }
-            return MoltObject::from_ptr(tuple_ptr).bits();
-        }
-
-        // Default encoding
-        let enc_ptr = crate::alloc_string(_py, default_enc.as_bytes());
-        let bom_bits = MoltObject::from_bool(bom_found).bits();
-        if enc_ptr.is_null() {
-            return crate::raise_exception::<_>(_py, "MemoryError", "out of memory");
-        }
-        let elems = [MoltObject::from_ptr(enc_ptr).bits(), bom_bits];
-        let tuple_ptr = crate::alloc_tuple(_py, &elems);
-        if tuple_ptr.is_null() {
-            return crate::raise_exception::<_>(_py, "MemoryError", "out of memory");
-        }
-        MoltObject::from_ptr(tuple_ptr).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tomllib_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_trace_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unicodedata_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_subprocess_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_symtable_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_import_smoke_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
-}
