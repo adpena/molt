@@ -381,12 +381,17 @@ pub(crate) fn float_pair_from_obj(
     lhs: MoltObject,
     rhs: MoltObject,
 ) -> Option<(f64, f64)> {
+    // Only coerce to float when at least one operand is actually a float.
+    // Without this guard, bigint + int silently loses precision by converting
+    // the bigint to f64 (e.g. 10**20 + 1 → 1e20 instead of 100000000000000000001).
+    if !lhs.is_float() && !rhs.is_float() {
+        return None;
+    }
     if let (Some(lf), Some(rf)) = (to_f64(lhs), to_f64(rhs)) {
         return Some((lf, rf));
     }
-    if (lhs.is_float() || rhs.is_float())
-        && (bigint_ptr_from_bits(lhs.bits()).is_some()
-            || bigint_ptr_from_bits(rhs.bits()).is_some())
+    if (bigint_ptr_from_bits(lhs.bits()).is_some()
+        || bigint_ptr_from_bits(rhs.bits()).is_some())
     {
         return raise_exception::<Option<(f64, f64)>>(
             _py,

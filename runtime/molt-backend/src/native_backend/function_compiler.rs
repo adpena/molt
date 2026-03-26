@@ -176,6 +176,70 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
         }
     }
 
+    // Post-pass: extend last_use for variables referenced inside loop bodies.
+    // The linear scan above misses loop back-edges: a variable used only at
+    // op N inside a loop body gets last_use = N, but if the loop iterates
+    // again the variable is needed at op N again (which is reached via the
+    // back-edge from loop_continue → loop_start).  Without this extension,
+    // drain_cleanup_tracked at a check_exception site inside the loop body
+    // can dec-ref the variable after the first iteration, freeing it before
+    // the second iteration uses it.
+    //
+    // Fix: for every (loop_start..loop_end) range, extend last_use of all
+    // variables referenced in that range to at least the loop_end index.
+    {
+        let mut loop_stack_post: Vec<usize> = Vec::new(); // stack of loop start indices
+        let mut loop_ranges: Vec<(usize, usize)> = Vec::new();
+        for (idx, op) in func_ir.ops.iter().enumerate() {
+            match op.kind.as_str() {
+                "loop_start" => {
+                    // Only push if the next op is NOT loop_index_start.
+                    // Indexed loops emit LOOP_START + LOOP_INDEX_START;
+                    // the LOOP_INDEX_START is the real loop opener.
+                    let indexed_follows = func_ir
+                        .ops
+                        .get(idx + 1)
+                        .is_some_and(|next| next.kind == "loop_index_start");
+                    if !indexed_follows {
+                        loop_stack_post.push(idx);
+                    }
+                }
+                "loop_index_start" => {
+                    loop_stack_post.push(idx);
+                }
+                "loop_end" => {
+                    if let Some(start) = loop_stack_post.pop() {
+                        loop_ranges.push((start, idx));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (start, end) in &loop_ranges {
+            for idx in *start..=*end {
+                let op = &func_ir.ops[idx];
+                if let Some(args) = &op.args {
+                    for name in args {
+                        if name != "none" {
+                            let entry = last_use.entry(name.clone()).or_insert(*end);
+                            if *entry < *end {
+                                *entry = *end;
+                            }
+                        }
+                    }
+                }
+                if let Some(var) = &op.var {
+                    if var != "none" {
+                        let entry = last_use.entry(var.clone()).or_insert(*end);
+                        if *entry < *end {
+                            *entry = *end;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let mut var_names: Vec<String> = var_names.into_iter().collect();
     var_names.sort();
     let function_exception_label_id = label_positions
@@ -625,6 +689,7 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[ptr, len]);
                     let res = builder.inst_results(call)[0];
                     def_var_named(&mut builder, &vars, out_name, res);
+                    output_is_ptr = true;
                 }
                 "const_bool" => {
                     let val = op.value.unwrap_or(0);
