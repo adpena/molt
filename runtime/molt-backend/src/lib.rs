@@ -735,6 +735,20 @@ fn is_int_tag(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> 
     builder.ins().icmp(IntCC::Equal, masked, tag)
 }
 
+/// Returns true (i8 boolean) when the NaN-boxed value carries either the
+/// inline-int tag or the bool tag.  Used to guard fast_int arithmetic paths
+/// so that bigint pointers (which have the pointer tag) fall through to the
+/// slow `molt_add` / `molt_sub` / etc. call.
+fn is_int_or_bool_tag(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
+    let mask = builder.use_var(nbc.qnan_tag_mask);
+    let masked = builder.ins().band(val, mask);
+    let int_tag = builder.use_var(nbc.qnan_tag_int);
+    let bool_tag = builder.use_var(nbc.qnan_tag_bool);
+    let is_int = builder.ins().icmp(IntCC::Equal, masked, int_tag);
+    let is_bool = builder.ins().icmp(IntCC::Equal, masked, bool_tag);
+    builder.ins().bor(is_int, is_bool)
+}
+
 /// Fused tag-check-and-unbox for a single NaN-boxed value.
 ///
 /// XORs the value against the expected int tag pattern `(QNAN | TAG_INT)`.
