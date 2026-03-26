@@ -453,6 +453,11 @@ pub(crate) use crate::object::memoryview::{
 };
 pub(crate) use crate::object::ops::HashSecret;
 pub use crate::object::ops::*;
+pub use crate::object::ops_arith::*;
+pub use crate::object::ops_builtins::*;
+pub use crate::object::ops_compare::*;
+pub use crate::object::ops_convert::*;
+pub use crate::object::ops_sys::*;
 pub use crate::object::ops_bytes::*;
 pub use crate::object::ops_dict::*;
 pub use crate::object::ops_heapq::*;

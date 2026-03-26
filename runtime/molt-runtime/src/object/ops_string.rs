@@ -20,13 +20,9 @@ use wtf8::{CodePoint, Wtf8};
 use std::sync::Arc;
 
 use super::ops::{
-    bytes_ascii_capitalize, bytes_ascii_lower, bytes_ascii_swapcase, bytes_ascii_title,
-    bytes_ascii_upper, dict_like_bits_from_ptr, format_with_spec, parse_codec_arg,
-    parse_format_spec, repeat_sequence, simd_has_any_ascii_lower, simd_has_any_ascii_upper,
-    simd_is_all_ascii_alnum, simd_is_all_ascii_alpha, simd_is_all_ascii_digit,
-    simd_is_all_ascii_printable, simd_is_all_ascii_whitespace, slice_bounds_from_args,
-    slice_match,
+    bytes_ascii_capitalize, bytes_ascii_lower, bytes_ascii_swapcase, bytes_ascii_title, bytes_ascii_upper, dict_like_bits_from_ptr, format_with_spec, parse_codec_arg, parse_format_spec, simd_has_any_ascii_lower, simd_has_any_ascii_upper, simd_is_all_ascii_alnum, simd_is_all_ascii_alpha, simd_is_all_ascii_digit, simd_is_all_ascii_printable, simd_is_all_ascii_whitespace, slice_bounds_from_args, slice_match,
 };
+use super::ops_arith::{repeat_sequence};
 
 
 #[unsafe(no_mangle)]
