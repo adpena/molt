@@ -14,8 +14,8 @@ resolver = "2"
 
 [profile.release]
 opt-level = 3
-lto = true
-codegen-units = 1
+lto = "thin"
+codegen-units = 4
 panic = "abort"
 strip = "symbols"
 debug = 1
@@ -249,8 +249,8 @@ panic = "abort"
 [profile.release-size]
 inherits = "release"
 opt-level = "z"
-lto = true
-codegen-units = 1
+lto = "thin"
+codegen-units = 4
 panic = "abort"
 strip = true
 
@@ -260,8 +260,8 @@ strip = true
 [profile.wasm-release]
 inherits = "release"
 opt-level = "z"  # minimize binary size for Cloudflare Workers 3MB limit
-lto = true
-codegen-units = 1
+lto = "thin"
+codegen-units = 4
 panic = "abort"
 strip = true
 
