@@ -14,6 +14,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+import tools.linear_seed_backlog as linear_seed_backlog  # noqa: E402
 import tools.linear_workspace as linear_workspace  # noqa: E402
 
 try:  # pragma: no cover - optional dependency
@@ -29,7 +30,8 @@ except Exception:  # pragma: no cover - optional dependency
     dspy = None
 
 
-SEED_HEADER = "Auto-seeded from Molt roadmap/status TODO contracts."
+SEED_HEADER = linear_seed_backlog.SEED_HEADER
+LEGACY_SEED_HEADERS = linear_seed_backlog.LEGACY_SEED_HEADERS
 REQUIRED_METADATA_KEYS = ("area", "milestone", "owner", "priority", "source", "status")
 DEFAULT_SOURCE = "legacy-seed-backfill"
 MANAGED_LABEL_PREFIXES = ("role:", "area:", "risk:", "formal:")
@@ -311,7 +313,7 @@ def _infer_seed_metadata(
     manifest_lookup: dict[str, dict[str, str]],
 ) -> dict[str, str] | None:
     description = str(issue.get("description") or "")
-    if SEED_HEADER not in description:
+    if not any(header in description for header in LEGACY_SEED_HEADERS):
         return None
 
     existing = _extract_metadata_block(description)
@@ -460,11 +462,79 @@ def _project_name_for_issue(issue: dict[str, Any], metadata: dict[str, str]) -> 
         return "Testing & Differential"
     if area_hint in {"agent", "orchestration", "swarm"}:
         return "Tooling & DevEx"
-    if area_hint in {"moltlib"}:
+    if area_hint in {"moltlib", "db", "dataframe", "offload", "http-runtime"}:
         return "Offload & Data Ecosystem"
+    if area_hint in {"tooling", "packaging", "observability", "docs"}:
+        return "Tooling & DevEx"
+    if area_hint in {"compiler", "syntax", "opcode-matrix"}:
+        return "Compiler & Frontend"
+    if area_hint in {"wasm", "wasm-parity", "wasm-db-parity"}:
+        return "WASM Parity"
+    if area_hint in {"perf", "performance"}:
+        return "Performance & Benchmarking"
+    if area_hint in {"security"}:
+        return "Security & Supply Chain"
     area_label = _build_area_label(issue=issue, metadata={"area": area_hint})
     area_key = area_label.removeprefix("area:")
     return PROJECT_FROM_AREA.get(area_key, "Runtime & Intrinsics")
+
+
+def _build_expected_local_artifacts(
+    *, seed_items: list[dict[str, Any]], index_rows: list[dict[str, Any]]
+) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
+    project_to_path: dict[str, str] = {}
+    manifests: dict[str, list[dict[str, Any]]] = {}
+
+    for row in index_rows:
+        project = str(row.get("project") or "").strip()
+        path = str(row.get("path") or "").strip()
+        if not project or not path:
+            raise RuntimeError("manifest index rows must include project and path")
+        project_to_path[project] = path
+        manifests[path] = []
+
+    for item in seed_items:
+        metadata = item.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        project = _project_name_for_issue(
+            {"title": str(item.get("title") or "")},
+            {
+                str(key): str(value)
+                for key, value in metadata.items()
+                if value is not None
+            },
+        )
+        manifest_path = project_to_path.get(project)
+        if manifest_path is None:
+            raise RuntimeError(f"project missing from manifest index: {project}")
+        manifests[manifest_path].append(item)
+
+    for row in index_rows:
+        project = str(row.get("project") or "").strip()
+        manifest_path = str(row.get("path") or "").strip()
+        manifests[manifest_path] = linear_seed_backlog.group_manifest_items(
+            project, manifests[manifest_path]
+        )
+
+    updated_index: list[dict[str, Any]] = []
+    for row in index_rows:
+        updated_row = dict(row)
+        manifest_path = str(updated_row["path"])
+        updated_row["count"] = len(manifests[manifest_path])
+        updated_index.append(updated_row)
+    return manifests, updated_index
+
+
+def _json_text(payload: Any) -> str:
+    return json.dumps(payload, indent=2, ensure_ascii=True) + "\n"
+
+
+def _resolve_under_root(repo_root: Path, target: str) -> Path:
+    path = Path(target)
+    if path.is_absolute():
+        return path
+    return (repo_root / path).resolve()
 
 
 def _risk_label(priority: int | None) -> str:
@@ -762,6 +832,109 @@ def cmd_fix_manifests(args: argparse.Namespace) -> int:
         "changed_entries": changed_entries,
     }
     print(json.dumps(output, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_refresh_local_artifacts(args: argparse.Namespace) -> int:
+    repo_root = Path(args.repo_root).resolve()
+    index_path = _resolve_under_root(repo_root, str(args.index))
+    seed_output = _resolve_under_root(repo_root, str(args.seed_output))
+
+    index_rows = json.loads(index_path.read_text(encoding="utf-8"))
+    if not isinstance(index_rows, list):
+        raise RuntimeError("manifest index must be a list")
+
+    max_items = int(args.max_items)
+    backlog = linear_seed_backlog.build_seed_backlog(
+        repo_root,
+        max_items=None if max_items <= 0 else max_items,
+        source_mode=str(args.source_mode),
+    )
+    seed_items = backlog["selected"]
+    manifests, updated_index = _build_expected_local_artifacts(
+        seed_items=seed_items, index_rows=index_rows
+    )
+
+    changed_files: list[dict[str, Any]] = []
+
+    current_seed = (
+        json.loads(seed_output.read_text(encoding="utf-8"))
+        if seed_output.exists()
+        else None
+    )
+    if current_seed != seed_items:
+        changed_files.append(
+            {
+                "path": str(seed_output),
+                "kind": "seed_backlog",
+                "current_count": len(current_seed) if isinstance(current_seed, list) else 0,
+                "expected_count": len(seed_items),
+            }
+        )
+        if args.apply:
+            seed_output.write_text(_json_text(seed_items), encoding="utf-8")
+
+    if index_rows != updated_index:
+        changed_files.append(
+            {
+                "path": str(index_path),
+                "kind": "manifest_index",
+                "current_count": len(index_rows),
+                "expected_count": len(updated_index),
+            }
+        )
+        if args.apply:
+            index_path.write_text(_json_text(updated_index), encoding="utf-8")
+
+    for path_str, expected_items in manifests.items():
+        manifest_path = _resolve_under_root(repo_root, path_str)
+        current_items = (
+            json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest_path.exists()
+            else None
+        )
+        if current_items == expected_items:
+            continue
+        changed_files.append(
+            {
+                "path": str(manifest_path),
+                "kind": "manifest",
+                "current_count": len(current_items)
+                if isinstance(current_items, list)
+                else 0,
+                "expected_count": len(expected_items),
+            }
+        )
+        if args.apply:
+            manifest_path.write_text(_json_text(expected_items), encoding="utf-8")
+
+    print(
+        json.dumps(
+            {
+                "repo_root": str(repo_root),
+                "apply": bool(args.apply),
+                "max_items": max_items,
+                "source_mode": str(args.source_mode),
+                "inventory": {
+                    "source_mode": backlog["source_mode"],
+                    "todo_count": backlog["todo_count"],
+                    "normalized_count": backlog["normalized_count"],
+                    "deduped_count": backlog["deduped_count"],
+                    "selected_count": len(seed_items),
+                    "skipped_count": backlog["skipped_count"],
+                    "excluded_due_to_limit": backlog["deduped_count"] - len(seed_items),
+                },
+                "changed_file_count": len(changed_files),
+                "changed_files": changed_files,
+                "manifest_counts": [
+                    {"path": row["path"], "project": row["project"], "count": row["count"]}
+                    for row in updated_index
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
@@ -1137,6 +1310,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fix_manifests.add_argument("--apply", action="store_true")
     fix_manifests.set_defaults(func=cmd_fix_manifests)
+
+    refresh_local = sub.add_parser("refresh-local-artifacts")
+    refresh_local.add_argument("--repo-root", default=".")
+    refresh_local.add_argument("--index", default="ops/linear/manifests/index.json")
+    refresh_local.add_argument("--seed-output", default="ops/linear/seed_backlog.json")
+    refresh_local.add_argument(
+        "--max-items",
+        type=int,
+        default=0,
+        help="Maximum backlog items to materialize locally (0 means all deduped items).",
+    )
+    refresh_local.add_argument(
+        "--source-mode",
+        choices=linear_seed_backlog.SOURCE_MODES,
+        default="codebase",
+        help="Harvest mode for local artifacts; defaults to codebase-only.",
+    )
+    refresh_local.add_argument("--apply", action="store_true")
+    refresh_local.set_defaults(func=cmd_refresh_local_artifacts)
 
     fix_issues = sub.add_parser("fix-issues")
     fix_issues.add_argument("--team", default="Moltlang")

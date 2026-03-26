@@ -23,6 +23,7 @@ class DesiredIssue:
     title: str
     description: str
     priority: int | None
+    sync_key: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,11 +31,32 @@ class SyncPlan:
     creates: tuple[DesiredIssue, ...]
     updates: tuple[tuple[str, DesiredIssue], ...]
     duplicate_updates: tuple[str, ...]
+    missing_updates: tuple[str, ...]
     existing_skipped: int
+
+
+def _local_env_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "ops" / "linear" / "runtime" / "local.env"
+
+
+def _read_local_env_var(name: str) -> str:
+    env_path = _local_env_path()
+    if not env_path.exists():
+        return ""
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() == name:
+            return value.strip().strip("'").strip('"')
+    return ""
 
 
 def _api_key() -> str:
     token = os.environ.get("LINEAR_API_KEY", "").strip()
+    if not token:
+        token = _read_local_env_var("LINEAR_API_KEY")
     if not token:
         raise RuntimeError("LINEAR_API_KEY is required")
     return token
@@ -413,7 +435,10 @@ def _build_issue_description(item: dict[str, Any]) -> str:
     if metadata:
         parts.append("\n\n---\n")
         for key in sorted(metadata):
-            parts.append(f"- {key}: {metadata[key]}")
+            value = metadata[key]
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, sort_keys=True)
+            parts.append(f"- {key}: {value}")
     return "\n".join(parts).strip()
 
 
@@ -442,10 +467,17 @@ def _title_key(title: str) -> str:
 
 
 def _to_desired(item: dict[str, Any]) -> DesiredIssue:
+    metadata = item.get("metadata") or {}
+    sync_key = ""
+    if isinstance(metadata, dict):
+        sync_key = str(
+            metadata.get("group_key") or metadata.get("sync_key") or ""
+        ).strip()
     return DesiredIssue(
         title=str(item.get("title", "")).strip(),
         description=_build_issue_description(item),
         priority=_issue_priority(item),
+        sync_key=sync_key or _title_key(str(item.get("title", "")).strip()),
     )
 
 
@@ -459,17 +491,59 @@ def _normalize_existing_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _normalize_description_for_compare(value: Any) -> str:
+    text = _normalize_existing_text(value)
+    text = re.sub(r"\[([^\]]+)\]\(<[^>]+>\)", r"\1", text)
+    text = text.replace("\\[", "[").replace("\\]", "]")
+    text = re.sub(r"\\([`_*])", r"\1", text)
+    text = text.replace("`", "")
+    text = re.sub(r"^\s*\*\s+", "- ", text, flags=re.MULTILINE)
+    text = re.sub(r"\s+\n", "\n", text)
+    canonical_lines: list[str] = []
+    for raw in text.splitlines():
+        line = " ".join(raw.split())
+        line = re.sub(r"[^a-zA-Z0-9:-]+", "", line).strip().lower()
+        canonical_lines.append(line)
+    return "\n".join(canonical_lines).strip()
+
+
+def _extract_description_metadata(description: Any) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for raw in str(description or "").splitlines():
+        match = re.match(r"^\s*[-*]\s*([a-zA-Z0-9_]+)\s*:\s*(.+?)\s*$", raw)
+        if not match:
+            continue
+        result[match.group(1).strip().lower()] = match.group(2).strip()
+    return result
+
+
+def _existing_sync_key(issue: dict[str, Any]) -> str:
+    metadata = _extract_description_metadata(issue.get("description"))
+    sync_key = str(metadata.get("group_key") or metadata.get("sync_key") or "").strip()
+    if sync_key:
+        return sync_key
+    return _title_key(str(issue.get("title") or ""))
+
+
+def _is_managed_grouped_issue(issue: dict[str, Any]) -> bool:
+    metadata = _extract_description_metadata(issue.get("description"))
+    kind = str(metadata.get("kind") or "").strip().lower()
+    sync_key = str(metadata.get("group_key") or metadata.get("sync_key") or "").strip()
+    return bool(sync_key and kind == "grouped")
+
+
 def _build_sync_plan(
     *,
     desired: list[DesiredIssue],
     existing: list[dict[str, Any]],
     update_existing: bool,
     close_duplicates: bool,
+    close_missing: bool,
     duplicate_state_id: str | None,
 ) -> SyncPlan:
     by_key: dict[str, list[dict[str, Any]]] = {}
     for row in existing:
-        key = _title_key(str(row.get("title") or ""))
+        key = _existing_sync_key(row)
         if not key:
             continue
         by_key.setdefault(key, []).append(row)
@@ -480,7 +554,7 @@ def _build_sync_plan(
     desired_keys: set[str] = set()
 
     for want in desired:
-        key = _title_key(want.title)
+        key = want.sync_key or _title_key(want.title)
         desired_keys.add(key)
         matches = sorted(by_key.get(key, []), key=_issue_sort_key)
         if not matches:
@@ -490,11 +564,18 @@ def _build_sync_plan(
         canonical = matches[0]
         existing_skipped += 1
         if update_existing:
-            existing_desc = _normalize_existing_text(canonical.get("description"))
+            existing_desc = _normalize_description_for_compare(
+                canonical.get("description")
+            )
+            existing_title = _normalize_existing_text(canonical.get("title"))
             existing_priority = canonical.get("priority")
             if not isinstance(existing_priority, int):
                 existing_priority = None
-            if existing_desc != want.description or existing_priority != want.priority:
+            if (
+                existing_desc != _normalize_description_for_compare(want.description)
+                or existing_priority != want.priority
+                or existing_title != want.title
+            ):
                 updates.append((str(canonical["id"]), want))
 
     duplicate_updates: list[str] = []
@@ -513,10 +594,24 @@ def _build_sync_plan(
                     continue
                 duplicate_updates.append(str(duplicate["id"]))
 
+    missing_updates: list[str] = []
+    if close_missing and duplicate_state_id:
+        for key, rows in by_key.items():
+            if key in desired_keys:
+                continue
+            for row in rows:
+                if not _is_managed_grouped_issue(row):
+                    continue
+                state_type = str((row.get("state") or {}).get("type") or "").lower()
+                if state_type in {"completed", "canceled"}:
+                    continue
+                missing_updates.append(str(row["id"]))
+
     return SyncPlan(
         creates=tuple(creates),
         updates=tuple(updates),
         duplicate_updates=tuple(duplicate_updates),
+        missing_updates=tuple(missing_updates),
         existing_skipped=existing_skipped,
     )
 
@@ -564,6 +659,7 @@ async def _execute_sync_plan(
 
     for issue_id, item in plan.updates:
         input_payload: dict[str, Any] = {
+            "title": item.title,
             "description": item.description,
         }
         if item.priority is not None:
@@ -583,6 +679,19 @@ async def _execute_sync_plan(
 
     if duplicate_state_id:
         for issue_id in plan.duplicate_updates:
+            tasks.append(
+                asyncio.create_task(
+                    _run_limited(
+                        semaphore,
+                        MUTATION_ISSUE_UPDATE,
+                        {
+                            "id": issue_id,
+                            "input": {"stateId": duplicate_state_id},
+                        },
+                    )
+                )
+            )
+        for issue_id in plan.missing_updates:
             tasks.append(
                 asyncio.create_task(
                     _run_limited(
@@ -712,6 +821,7 @@ def _sync_manifest(
     dry_run: bool,
     update_existing: bool,
     close_duplicates: bool,
+    close_missing: bool,
     duplicate_state: str,
     concurrency: int,
 ) -> dict[str, Any]:
@@ -731,6 +841,7 @@ def _sync_manifest(
         existing=existing,
         update_existing=update_existing,
         close_duplicates=close_duplicates,
+        close_missing=close_missing,
         duplicate_state_id=duplicate_state_id,
     )
 
@@ -744,6 +855,7 @@ def _sync_manifest(
             "create": len(plan.creates),
             "update": len(plan.updates),
             "close_duplicates": len(plan.duplicate_updates),
+            "close_missing": len(plan.missing_updates),
             "existing_skipped": plan.existing_skipped,
         },
         "dry_run": dry_run,
@@ -754,6 +866,7 @@ def _sync_manifest(
             "create_titles": [item.title for item in plan.creates[:10]],
             "update_issue_ids": [issue_id for issue_id, _ in plan.updates[:10]],
             "close_duplicate_issue_ids": list(plan.duplicate_updates[:10]),
+            "close_missing_issue_ids": list(plan.missing_updates[:10]),
         }
         return summary
 
@@ -1053,6 +1166,7 @@ def cmd_sync_manifest(args: argparse.Namespace) -> int:
         dry_run=bool(args.dry_run),
         update_existing=bool(args.update_existing),
         close_duplicates=bool(args.close_duplicates),
+        close_missing=bool(args.close_missing),
         duplicate_state=args.duplicate_state,
         concurrency=max(1, int(args.concurrency)),
     )
@@ -1086,6 +1200,7 @@ def cmd_sync_index(args: argparse.Namespace) -> int:
             dry_run=bool(args.dry_run),
             update_existing=bool(args.update_existing),
             close_duplicates=bool(args.close_duplicates),
+            close_missing=bool(args.close_missing),
             duplicate_state=args.duplicate_state,
             concurrency=max(1, int(args.concurrency)),
         )
@@ -1215,7 +1330,7 @@ def build_parser() -> argparse.ArgumentParser:
         "sync-manifest",
         help=(
             "Idempotently sync one manifest into a team/project "
-            "(create missing, optionally update existing and close duplicates)"
+            "(create missing, optionally update existing, close duplicates, and close stale managed issues)"
         ),
     )
     sync_manifest.add_argument("--team", required=True, help="Team id/key/name")
@@ -1224,10 +1339,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync_manifest.add_argument("--dry-run", action="store_true")
     sync_manifest.add_argument("--update-existing", action="store_true")
     sync_manifest.add_argument("--close-duplicates", action="store_true")
+    sync_manifest.add_argument("--close-missing", action="store_true")
     sync_manifest.add_argument(
         "--duplicate-state",
         default="Canceled",
-        help="Workflow state name used when closing duplicates",
+        help="Workflow state name used when closing duplicates or stale managed issues",
     )
     sync_manifest.add_argument(
         "--concurrency",
@@ -1250,10 +1366,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync_index.add_argument("--dry-run", action="store_true")
     sync_index.add_argument("--update-existing", action="store_true")
     sync_index.add_argument("--close-duplicates", action="store_true")
+    sync_index.add_argument("--close-missing", action="store_true")
     sync_index.add_argument(
         "--duplicate-state",
         default="Canceled",
-        help="Workflow state name used when closing duplicates",
+        help="Workflow state name used when closing duplicates or stale managed issues",
     )
     sync_index.add_argument(
         "--concurrency",

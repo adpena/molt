@@ -29,8 +29,19 @@ compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tes
 - **dyld hardening**: after a dyld import-format incident, diff runs force `MOLT_BACKEND_DAEMON=0` for safety. Set `MOLT_DIFF_QUARANTINE_ON_DYLD=1` only when you need cold target/state quarantine.
 - **Local dyld fallback**: on macOS, dyld retries/quarantine can route to local `/tmp` lanes (`MOLT_DIFF_DYLD_LOCAL_FALLBACK=1`, default). Override root with `MOLT_DIFF_DYLD_LOCAL_ROOT=<abs path>`.
 - **Cache hardening**: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache`. Default is platform-safe auto (`1` on macOS, `0` elsewhere); dyld guard/retry also enables it for the current run.
+- **Batch compile server cooldown**: diff workers now require repeated consecutive batch-server failures before entering cooldown. Tune with `MOLT_DIFF_BATCH_COMPILE_SERVER_DISABLE_AFTER_FAILURES=<n>` and `MOLT_DIFF_BATCH_COMPILE_SERVER_DISABLE_COOLDOWN_SEC=<seconds>`.
 - **Shared target pinning (macOS)**: explicitly set both `CARGO_TARGET_DIR` and `MOLT_DIFF_CARGO_TARGET_DIR` to the same shared path for diff runs so workers do not drift onto ad-hoc/default targets and duplicate rebuilds.
 - **Interrupted-run cleanup**: before a new long sweep, clear stale harness workers from prior crashes (`ps -axo pid,command | rg "tests/molt_diff.py"` then `kill -TERM <pid>`/`kill -KILL <pid>` as needed). Keep one supervising diff run per shared target.
+
+## Linear Workspace Hygiene
+- Refresh the repo-backed local Linear artifacts from current TODO contracts with `python3 tools/linear_hygiene.py refresh-local-artifacts --repo-root .` to inspect drift.
+- Apply the refreshed local seed/manifests/index with `python3 tools/linear_hygiene.py refresh-local-artifacts --repo-root . --apply`.
+- `refresh-local-artifacts` is codebase-canonical by default: it harvests structured `TODO(...)` contracts from `src/`, `runtime/`, `tools/`, `tests/`, `formal/`, and `demo/`, materializes the full deduped leaf inventory into `ops/linear/seed_backlog.json`, then reduces that inventory into grouped/category manifests under `ops/linear/manifests/*.json` and updates counts in `ops/linear/manifests/index.json`.
+- Use `--source-mode all` only for audits that explicitly want stale doc signal mixed in; the default `codebase` mode is the source of truth for prioritization and live sync.
+- The grouped manifests are the live-sync source of truth. They preserve strong urgency via worst-leaf Linear priority plus explicit impact/pressure rollups in the issue title/description/metadata, while keeping non-code signal secondary.
+- The local artifact contract is now two-layer:
+  - `ops/linear/seed_backlog.json`: full normalized leaf inventory for auditability.
+  - `ops/linear/manifests/*.json`: grouped/category issues sized for the live Linear workspace.
 
 ## On-Call Runbook (Stdlib Intrinsics Gates)
 Use this section when `python3 tools/check_stdlib_intrinsics.py` fails in CI or
