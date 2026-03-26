@@ -8901,6 +8901,10 @@ impl SimpleBackend {
                     }
                     switch_to_block_tracking(&mut builder, fallthrough, &mut is_block_filled);
                     builder.seal_block(fallthrough);
+                    // check_exception's fallthrough is always a fresh empty block —
+                    // force-clear is_block_filled so subsequent ops (add, loop_index_next)
+                    // are never incorrectly skipped by the whitelist guard.
+                    is_block_filled = false;
                     // Propagate remaining tracked objects to BOTH the fallthrough
                     // and the exception handler. Without this, the exception handler
                     // may access objects that were only passed to the fallthrough,
