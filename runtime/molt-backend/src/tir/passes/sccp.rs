@@ -131,6 +131,15 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         let block = &func.blocks[&bid];
         for op in &block.ops {
             for &res in &op.results {
+                // Loop-carried values (loop_index_start, loop_index_next, iter_next)
+                // must not be folded — they change on each iteration.
+                let original_kind = op.attrs.get("_original_kind")
+                    .and_then(|v| if let AttrValue::Str(s) = v { Some(s.as_str()) } else { None })
+                    .unwrap_or("");
+                if matches!(original_kind, "loop_index_start" | "loop_index_next" | "iter_next") {
+                    lattice.insert(res, LatticeValue::Bottom);
+                    continue;
+                }
                 // If this result is inside a try region and may throw, force Bottom.
                 if try_region_results.contains(&res) {
                     lattice.insert(res, LatticeValue::Bottom);
