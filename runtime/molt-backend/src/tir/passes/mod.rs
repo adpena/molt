@@ -48,14 +48,19 @@ pub const VERIFICATION_FAILED_SENTINEL: usize = 0;
 pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     let mut stats = Vec::with_capacity(8);
 
-    stats.push(unboxing::run(func));
-    stats.push(escape_analysis::run(func));
-    stats.push(refcount_elim::run(func));
-    stats.push(type_guard_hoist::run(func));
-    stats.push(sccp::run(func));
-    stats.push(strength_reduction::run(func));
-    stats.push(bce::run(func));
-    stats.push(dce::run(func));
+    // Each pass can be individually disabled for debugging:
+    //   MOLT_TIR_SKIP=unboxing,sccp,dce (comma-separated pass names)
+    let skip = std::env::var("MOLT_TIR_SKIP").unwrap_or_default();
+    let skip_set: std::collections::HashSet<&str> = skip.split(',').collect();
+
+    if !skip_set.contains("unboxing") { stats.push(unboxing::run(func)); }
+    if !skip_set.contains("escape_analysis") { stats.push(escape_analysis::run(func)); }
+    if !skip_set.contains("refcount_elim") { stats.push(refcount_elim::run(func)); }
+    if !skip_set.contains("type_guard_hoist") { stats.push(type_guard_hoist::run(func)); }
+    if !skip_set.contains("sccp") { stats.push(sccp::run(func)); }
+    if !skip_set.contains("strength_reduction") { stats.push(strength_reduction::run(func)); }
+    if !skip_set.contains("bce") { stats.push(bce::run(func)); }
+    if !skip_set.contains("dce") { stats.push(dce::run(func)); }
 
     // Verify TIR invariants after all passes.  Instead of panicking
     // (which kills the process under panic=abort profiles), return an
