@@ -2,6 +2,7 @@ pub(crate) mod cancellation;
 pub(crate) mod channels;
 pub(crate) mod event_loop;
 pub(crate) mod generators;
+pub(crate) mod generators_async;
 pub(crate) mod io_poller;
 #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
 pub(crate) mod net_stubs;
@@ -71,6 +72,8 @@ pub(crate) use scheduler::{process_task_drop, process_task_state};
 
 #[allow(unused_imports)]
 pub(crate) use generators::*;
+#[allow(unused_imports)]
+pub(crate) use generators_async::*;
 
 pub(crate) use poll::{
     anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr,
