@@ -8,14 +8,12 @@ pub use super::sockets_net::*;
 
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
-use num_bigint::BigInt;
-use num_traits::{Signed, ToPrimitive};
 #[cfg(molt_has_net_io)]
 use socket2::{Domain, Protocol, SockAddr, SockAddrStorage, SockRef, Socket, Type};
 use std::collections::HashMap;
 #[cfg(all(molt_has_net_io, not(unix)))]
 use std::collections::VecDeque;
-use std::ffi::{CStr, CString, OsString};
+use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 #[cfg(molt_has_net_io)]
