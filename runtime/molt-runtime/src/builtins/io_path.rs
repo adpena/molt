@@ -6,6 +6,7 @@
 
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::PyToken;
 #[cfg(target_arch = "wasm32")]

@@ -6436,3 +6436,55 @@ pub(crate) fn socketpair_windows_loopback_raw(family: i32) -> Result<(RawSocket,
     Ok((client.into_raw_socket(), server.into_raw_socket()))
 }
 
+
+
+// ── WASM stubs for functions extracted to sockets_net.rs ──
+// On native, these come from sockets_net.rs (behind molt_has_net_io).
+// On WASM micro, sockets_net.rs is disabled, so we provide minimal stubs.
+
+#[cfg(target_arch = "wasm32")]
+mod wasm_net_stubs {
+    use molt_obj_model::MoltObject;
+
+    macro_rules! wasm_net_stub {
+        ($name:ident $(, $arg:ident : $ty:ty)*) => {
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $name($($arg: $ty),*) -> u64 {
+                MoltObject::none().bits()
+            }
+        };
+    }
+
+    wasm_net_stub!(molt_socketpair, _a: u64, _b: u64, _c: u64);
+    wasm_net_stub!(molt_socket_getaddrinfo, _a: u64, _b: u64, _c: u64, _d: u64, _e: u64, _f: u64);
+    wasm_net_stub!(molt_socket_getnameinfo, _a: u64, _b: u64);
+    wasm_net_stub!(molt_socket_gethostname);
+    wasm_net_stub!(molt_socket_gethostbyname, _a: u64);
+    wasm_net_stub!(molt_socket_gethostbyaddr, _a: u64);
+    wasm_net_stub!(molt_socket_getfqdn, _a: u64);
+    wasm_net_stub!(molt_socket_gethostbyname_ex, _a: u64);
+    wasm_net_stub!(molt_socket_getservbyname, _a: u64, _b: u64);
+    wasm_net_stub!(molt_socket_getservbyport, _a: u64, _b: u64);
+    wasm_net_stub!(molt_socket_getprotobyname, _a: u64);
+    wasm_net_stub!(molt_socket_inet_pton, _a: u64, _b: u64);
+    wasm_net_stub!(molt_socket_inet_ntop, _a: u64, _b: u64);
+    wasm_net_stub!(molt_socket_htons, _a: u64);
+    wasm_net_stub!(molt_socket_ntohs, _a: u64);
+    wasm_net_stub!(molt_socket_htonl, _a: u64);
+    wasm_net_stub!(molt_socket_ntohl, _a: u64);
+    wasm_net_stub!(molt_socket_has_ipv6);
+    wasm_net_stub!(molt_socket_has_dualstack_ipv6);
+    wasm_net_stub!(molt_socket_if_nameindex);
+    wasm_net_stub!(molt_socket_if_nametoindex, _a: u64);
+    wasm_net_stub!(molt_socket_if_indextoname, _a: u64);
+    wasm_net_stub!(molt_socket_cmsg_len, _a: u64);
+    wasm_net_stub!(molt_socket_cmsg_space, _a: u64);
+    wasm_net_stub!(molt_socket_send_fds, _a: u64, _b: u64, _c: u64);
+    wasm_net_stub!(molt_socket_recv_fds, _a: u64, _b: u64, _c: u64, _d: u64);
+    wasm_net_stub!(molt_socket_sendfile, _a: u64, _b: u64, _c: u64, _d: u64);
+    wasm_net_stub!(molt_socket_sendmsg_afalg, _a: u64, _b: u64, _c: u64, _d: u64);
+    wasm_net_stub!(molt_socket_sethostname, _a: u64);
+}
+
+#[cfg(target_arch = "wasm32")]
+pub use wasm_net_stubs::*;
