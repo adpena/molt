@@ -14,7 +14,7 @@ use crate::bridge::{
     class_set_iter_next,
     dec_ref_bits, exception_pending, inc_ref_bits,
     index_i64_from_obj,
-    is_truthy, missing_bits, molt_iter,
+    is_truthy, missing_bits, molt_iter_bridge as molt_iter,
     object_class_bits, object_type_id,
     raise_exception, raise_not_iterable, seq_vec_ref,
     tuple_from_iter_bits, ExceptionSentinel,
@@ -964,7 +964,7 @@ fn zip_longest_class(_py: &PyToken) -> u64 {
 }
 
 fn iter_next_pair(_py: &PyToken, iter_bits: u64) -> Option<(u64, bool)> {
-    let pair_bits = molt_iter_next(iter_bits);
+    let pair_bits = bridge_molt_iter_next(_py, iter_bits);
     let pair_obj = obj_from_bits(pair_bits);
     let pair_ptr = pair_obj.as_ptr()?;
     unsafe {
@@ -992,7 +992,7 @@ pub extern "C" fn molt_itertools_chain(iterables_bits: u64) -> u64 {
             return raise_not_iterable(_py, iterables_bits);
         }
         let class_bits = chain_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
         let inst_bits = alloc_instance_for_class(_py, class_bits);
@@ -1158,7 +1158,7 @@ pub extern "C" fn molt_itertools_islice(
             return raise_not_iterable(_py, iterable_bits);
         }
         let class_bits = islice_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             dec_ref_bits(_py, iter_bits);
             return MoltObject::none().bits();
         };
@@ -1234,7 +1234,7 @@ pub extern "C" fn molt_itertools_repeat(obj_bits: u64, times_bits: u64) -> u64 {
             if val < 0 { 0 } else { val }
         };
         let class_bits = repeat_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
         let inst_bits = alloc_instance_for_class(_py, class_bits);
@@ -1272,7 +1272,7 @@ pub extern "C" fn molt_itertools_repeat_next(self_bits: u64) -> u64 {
 pub extern "C" fn molt_itertools_count(start_bits: u64, step_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let class_bits = count_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
         let inst_bits = alloc_instance_for_class(_py, class_bits);
@@ -1297,7 +1297,7 @@ pub extern "C" fn molt_itertools_count_next(self_bits: u64) -> u64 {
         let current_bits = unsafe { count_current_bits(self_ptr) };
         let step_bits = unsafe { count_step_bits(self_ptr) };
         inc_ref_bits(_py, current_bits);
-        let next_bits = molt_add(current_bits, step_bits);
+        let next_bits = bridge_molt_add(current_bits, step_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -1339,7 +1339,7 @@ pub extern "C" fn molt_itertools_cycle(iterable_bits: u64) -> u64 {
         }
         let list_bits = MoltObject::from_ptr(list_ptr).bits();
         let class_bits = cycle_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             dec_ref_bits(_py, list_bits);
             return MoltObject::none().bits();
         };
@@ -1395,7 +1395,7 @@ pub extern "C" fn molt_itertools_accumulate(
             return raise_not_iterable(_py, iterable_bits);
         }
         let class_bits = accumulate_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             dec_ref_bits(_py, iter_bits);
             return MoltObject::none().bits();
         };
@@ -1457,7 +1457,7 @@ pub extern "C" fn molt_itertools_accumulate_next(self_bits: u64) -> u64 {
         }
         let total_bits = unsafe { accumulate_total_bits(self_ptr) };
         let next_bits = if func_bits == 0 || obj_from_bits(func_bits).is_none() {
-            molt_add(total_bits, val_bits)
+            bridge_molt_add(total_bits, val_bits)
         } else {
             call_callable2(_py, func_bits, total_bits, val_bits)
         };
@@ -1486,7 +1486,7 @@ pub extern "C" fn molt_itertools_batched(iterable_bits: u64, n_bits: u64, strict
             return raise_not_iterable(_py, iterable_bits);
         }
         let class_bits = batched_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             dec_ref_bits(_py, iter_bits);
             return MoltObject::none().bits();
         };
@@ -1569,7 +1569,7 @@ pub extern "C" fn molt_itertools_compress(data_bits: u64, selectors_bits: u64) -
             return raise_not_iterable(_py, selectors_bits);
         }
         let class_bits = compress_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             dec_ref_bits(_py, data_iter_bits);
             dec_ref_bits(_py, selectors_iter_bits);
             return MoltObject::none().bits();
@@ -1624,7 +1624,7 @@ pub extern "C" fn molt_itertools_dropwhile(predicate_bits: u64, iterable_bits: u
             return raise_not_iterable(_py, iterable_bits);
         }
         let class_bits = dropwhile_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             dec_ref_bits(_py, iter_bits);
             return MoltObject::none().bits();
         };
@@ -1695,7 +1695,7 @@ pub extern "C" fn molt_itertools_filterfalse(predicate_bits: u64, iterable_bits:
             return raise_not_iterable(_py, iterable_bits);
         }
         let class_bits = filterfalse_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             dec_ref_bits(_py, iter_bits);
             return MoltObject::none().bits();
         };
@@ -1755,7 +1755,7 @@ pub extern "C" fn molt_itertools_pairwise(iterable_bits: u64) -> u64 {
             return raise_not_iterable(_py, iterable_bits);
         }
         let class_bits = pairwise_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             dec_ref_bits(_py, iter_bits);
             return MoltObject::none().bits();
         };
@@ -1831,7 +1831,7 @@ pub extern "C" fn molt_itertools_product(iterables_bits: u64, repeat_bits: u64) 
             let iterables = unsafe { seq_vec_ref(iterables_ptr) };
             let mut base_pools: Vec<u64> = Vec::with_capacity(iterables.len());
             for &iterable_bits in iterables.iter() {
-                let Some(tuple_bits) = (tuple_from_iter_bits(_py, iterable_bits))
+                let Some(tuple_bits) = tuple_from_iter_bits(_py, iterable_bits)
                 else {
                     for bits in base_pools.iter().copied() {
                         dec_ref_bits(_py, bits);
@@ -1868,7 +1868,7 @@ pub extern "C" fn molt_itertools_product(iterables_bits: u64, repeat_bits: u64) 
         });
         let data_ptr = Box::into_raw(data);
         let class_bits = product_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             unsafe {
                 for bits in (*data_ptr).pools_bits.iter().copied() {
                     dec_ref_bits(_py, bits);
@@ -1955,7 +1955,7 @@ pub extern "C" fn molt_itertools_product_next(self_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_permutations(iterable_bits: u64, r_bits: u64) -> u64 {
     with_core_gil!(_py, {
-        let Some(pool_bits) = (tuple_from_iter_bits(_py, iterable_bits)) else {
+        let Some(pool_bits) = tuple_from_iter_bits(_py, iterable_bits) else {
             return MoltObject::none().bits();
         };
         let pool_ptr = obj_from_bits(pool_bits).as_ptr().unwrap();
@@ -1999,7 +1999,7 @@ pub extern "C" fn molt_itertools_permutations(iterable_bits: u64, r_bits: u64) -
         });
         let data_ptr = Box::into_raw(data);
         let class_bits = permutations_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             unsafe {
                 dec_ref_bits(_py, (*data_ptr).pool_bits);
                 drop(Box::from_raw(data_ptr));
@@ -2080,7 +2080,7 @@ pub extern "C" fn molt_itertools_permutations_next(self_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_combinations(iterable_bits: u64, r_bits: u64) -> u64 {
     with_core_gil!(_py, {
-        let Some(pool_bits) = (tuple_from_iter_bits(_py, iterable_bits)) else {
+        let Some(pool_bits) = tuple_from_iter_bits(_py, iterable_bits) else {
             return MoltObject::none().bits();
         };
         let pool_ptr = obj_from_bits(pool_bits).as_ptr().unwrap();
@@ -2113,7 +2113,7 @@ pub extern "C" fn molt_itertools_combinations(iterable_bits: u64, r_bits: u64) -
         });
         let data_ptr = Box::into_raw(data);
         let class_bits = combinations_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             unsafe {
                 dec_ref_bits(_py, (*data_ptr).pool_bits);
                 drop(Box::from_raw(data_ptr));
@@ -2140,7 +2140,7 @@ pub extern "C" fn molt_itertools_combinations_with_replacement(
     r_bits: u64,
 ) -> u64 {
     with_core_gil!(_py, {
-        let Some(pool_bits) = (tuple_from_iter_bits(_py, iterable_bits)) else {
+        let Some(pool_bits) = tuple_from_iter_bits(_py, iterable_bits) else {
             return MoltObject::none().bits();
         };
         let pool_ptr = obj_from_bits(pool_bits).as_ptr().unwrap();
@@ -2173,7 +2173,7 @@ pub extern "C" fn molt_itertools_combinations_with_replacement(
         });
         let data_ptr = Box::into_raw(data);
         let class_bits = combinations_with_replacement_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             unsafe {
                 dec_ref_bits(_py, (*data_ptr).pool_bits);
                 drop(Box::from_raw(data_ptr));
@@ -2315,7 +2315,7 @@ pub extern "C" fn molt_itertools_groupby(iterable_bits: u64, key_bits: u64) -> u
             return raise_not_iterable(_py, iterable_bits);
         }
         let class_bits = groupby_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             dec_ref_bits(_py, iter_bits);
             return MoltObject::none().bits();
         };
@@ -2402,7 +2402,7 @@ pub extern "C" fn molt_itertools_groupby_next(self_bits: u64) -> u64 {
             let tgt_key_bits = unsafe { groupby_tgt_key_bits(self_ptr) };
             let curr_key_bits = unsafe { groupby_curr_key_bits(self_ptr) };
             if tgt_key_bits != missing {
-                let eq_bits = molt_eq(tgt_key_bits, curr_key_bits);
+                let eq_bits = bridge_molt_eq(tgt_key_bits, curr_key_bits);
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
@@ -2422,7 +2422,7 @@ pub extern "C" fn molt_itertools_groupby_next(self_bits: u64) -> u64 {
         unsafe { groupby_set_tgt_key_bits(self_ptr, curr_key_bits) };
         inc_ref_bits(_py, curr_key_bits);
         let class_bits = groupby_iter_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             dec_ref_bits(_py, curr_key_bits);
             return MoltObject::none().bits();
         };
@@ -2463,7 +2463,7 @@ pub extern "C" fn molt_itertools_groupby_iter_next(self_bits: u64) -> u64 {
             return raise_exception::<u64>(_py, "StopIteration", "");
         }
         let curr_key_bits = unsafe { groupby_curr_key_bits(parent_ptr) };
-        let eq_bits = molt_eq(curr_key_bits, target_bits);
+        let eq_bits = bridge_molt_eq(curr_key_bits, target_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -2488,7 +2488,7 @@ pub extern "C" fn molt_itertools_starmap(func_bits: u64, iterable_bits: u64) -> 
             return raise_not_iterable(_py, iterable_bits);
         }
         let class_bits = starmap_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             dec_ref_bits(_py, iter_bits);
             return MoltObject::none().bits();
         };
@@ -2541,7 +2541,7 @@ pub extern "C" fn molt_itertools_takewhile(predicate_bits: u64, iterable_bits: u
             return raise_not_iterable(_py, iterable_bits);
         }
         let class_bits = takewhile_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             dec_ref_bits(_py, iter_bits);
             return MoltObject::none().bits();
         };
@@ -2636,7 +2636,7 @@ pub extern "C" fn molt_itertools_zip_longest(iterables_bits: u64, fillvalue_bits
         });
         let data_ptr = Box::into_raw(data);
         let class_bits = zip_longest_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             unsafe {
                 for bits in (*data_ptr).iter_bits.iter().copied() {
                     dec_ref_bits(_py, bits);
@@ -2745,7 +2745,7 @@ pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
         });
         let data_ptr = Box::into_raw(data);
         let class_bits = tee_iter_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             unsafe {
                 dec_ref_bits(_py, (*data_ptr).iter_bits);
                 drop(Box::from_raw(data_ptr));
@@ -2823,7 +2823,18 @@ pub extern "C" fn molt_itertools_tee_next(self_bits: u64) -> u64 {
     })
 }
 
-pub(crate) fn itertools_drop_instance(_py: &PyToken, ptr: *mut u8) -> bool {
+/// Public entry for dropping itertools instances.
+/// The `_py` parameter is ignored — GIL is acquired internally if needed.
+pub fn itertools_drop_instance<T>(_py: &T, ptr: *mut u8) -> bool {
+    itertools_drop_instance_impl(ptr)
+}
+
+fn itertools_drop_instance_impl(ptr: *mut u8) -> bool {
+    let _py = &PyToken::new();
+    itertools_drop_instance_inner(_py, ptr)
+}
+
+fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
     let class_bits = unsafe { object_class_bits(ptr) };
     if class_bits == 0 {
         return false;

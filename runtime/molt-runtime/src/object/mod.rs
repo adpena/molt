@@ -72,9 +72,13 @@ pub(crate) use type_ids::*;
 
 use crate::async_rt::poll::ws_wait_poll_fn_addr;
 use crate::builtins::{
-    functools::functools_drop_instance, itertools::itertools_drop_instance,
+    functools::functools_drop_instance,
     operator::operator_drop_instance, types::types_drop_instance,
 };
+#[cfg(not(feature = "stdlib_itertools"))]
+use crate::builtins::itertools::itertools_drop_instance;
+#[cfg(feature = "stdlib_itertools")]
+use molt_runtime_itertools::itertools::itertools_drop_instance;
 use crate::provenance::{register_ptr, release_ptr, resolve_ptr};
 use crate::{
     ALLOC_BYTES_DICT, ALLOC_BYTES_LIST, ALLOC_BYTES_STRING, ALLOC_BYTES_TOTAL, ALLOC_BYTES_TUPLE,

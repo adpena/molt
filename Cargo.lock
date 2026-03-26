@@ -3048,6 +3048,7 @@ dependencies = [
  "molt-runtime-compression",
  "molt-runtime-core",
  "molt-runtime-crypto",
+ "molt-runtime-itertools",
  "molt-runtime-math",
  "molt-runtime-net",
  "molt-runtime-regex",
@@ -3134,6 +3135,14 @@ dependencies = [
  "sha2",
  "sha3",
  "subtle",
+]
+
+[[package]]
+name = "molt-runtime-itertools"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-obj-model",
+ "molt-runtime-core",
 ]
 
 [[package]]

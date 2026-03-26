@@ -548,3 +548,101 @@ pub fn dict_order_clone(_py: &PyToken, ptr: *mut u8) -> Vec<u64> {
         unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u64, out_len)) };
     boxed.into_vec()
 }
+
+// ---------------------------------------------------------------------------
+// Extended helpers (email / zipfile / decimal)
+// ---------------------------------------------------------------------------
+
+pub fn alloc_list_with_capacity(_py: &PyToken, elems: &[u64], capacity: usize) -> *mut u8 {
+    unsafe { (vt().alloc_list_with_capacity)(elems.as_ptr(), elems.len(), capacity) }
+}
+
+pub fn attr_name_bits_from_bytes(_py: &PyToken, name: &[u8]) -> Option<u64> {
+    let mut out: u64 = 0;
+    let ok = unsafe { (vt().attr_name_bits_from_bytes)(name.as_ptr(), name.len(), &mut out) };
+    if ok != 0 { Some(out) } else { None }
+}
+
+pub unsafe fn call_class_init_with_args(
+    _py: &PyToken,
+    class_ptr: *mut u8,
+    args: &[u64],
+) -> u64 {
+    unsafe { (vt().call_class_init_with_args)(class_ptr, args.as_ptr(), args.len()) }
+}
+
+pub fn missing_bits(_py: &PyToken) -> u64 {
+    unsafe { (vt().missing_bits)() }
+}
+
+pub fn molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bits: u64) -> u64 {
+    unsafe { (vt().molt_getattr_builtin)(obj_bits, name_bits, default_bits) }
+}
+
+pub fn molt_module_import(name_bits: u64) -> u64 {
+    unsafe { (vt().molt_module_import)(name_bits) }
+}
+
+// ---------------------------------------------------------------------------
+// Local helper functions (reimplemented for serial crate)
+// ---------------------------------------------------------------------------
+
+/// Iterate over a Python iterable and collect all items as String.
+pub fn iterable_to_string_vec(_py: &PyToken, values_bits: u64) -> Result<Vec<String>, u64> {
+    let iter_bits = molt_iter(_py, values_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let mut out: Vec<String> = Vec::new();
+    loop {
+        match molt_iter_next(_py, iter_bits) {
+            Some(item_bits) => {
+                let Some(item) = string_obj_to_owned(obj_from_bits(item_bits)) else {
+                    return Err(raise_exception::<u64>(_py, "TypeError", "expected str item"));
+                };
+                out.push(item);
+            }
+            None => {
+                if exception_pending(_py) {
+                    return Err(MoltObject::none().bits());
+                }
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Allocate a Molt string object and return its bits.
+pub fn alloc_string_bits(_py: &PyToken, value: &str) -> Option<u64> {
+    let ptr = alloc_string(_py, value.as_bytes());
+    if ptr.is_null() {
+        None
+    } else {
+        Some(MoltObject::from_ptr(ptr).bits())
+    }
+}
+
+/// Allocate a Molt list of strings.
+pub fn alloc_string_list(_py: &PyToken, values: &[String]) -> u64 {
+    let mut item_bits: Vec<u64> = Vec::with_capacity(values.len());
+    for value in values {
+        let ptr = alloc_string(_py, value.as_bytes());
+        if ptr.is_null() {
+            for bits in &item_bits {
+                dec_ref_bits(_py, *bits);
+            }
+            return MoltObject::none().bits();
+        }
+        item_bits.push(MoltObject::from_ptr(ptr).bits());
+    }
+    let list_ptr = alloc_list_with_capacity(_py, item_bits.as_slice(), item_bits.len());
+    for bits in &item_bits {
+        dec_ref_bits(_py, *bits);
+    }
+    if list_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(list_ptr).bits()
+    }
+}
