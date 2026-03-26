@@ -11604,6 +11604,18 @@ def _build_entry_main_ops(
     version_ops: Sequence[dict[str, Any]],
     register_global_code_id: Callable[[str], int],
 ) -> list[dict[str, Any]]:
+    # NOTE: molt_runtime_init is called here for WASM targets where
+    # there is no C main stub.  For native targets the C stub calls
+    # molt_runtime_init before molt_main, so this is a harmless no-op
+    # (idempotent — returns immediately if already initialised).
+    #
+    # molt_runtime_shutdown is NOT called here.  For native targets the
+    # C stub's molt_finish() handles shutdown + _exit().  For WASM
+    # targets the JS host runner handles cleanup.  Previously this
+    # function emitted a molt_runtime_shutdown call which tore down the
+    # runtime while the C stub still needed it (e.g. to check for
+    # pending exceptions), and the subsequent TLS/atexit destructor
+    # phase would hang or crash on exit.
     return [
         {
             "kind": "call",
@@ -11625,13 +11637,6 @@ def _build_entry_main_ops(
             "args": [],
             "out": "v1",
             "value": register_global_code_id(entry_init),
-        },
-        {
-            "kind": "call",
-            "s_value": "molt_runtime_shutdown",
-            "args": [],
-            "out": "v2",
-            "value": register_global_code_id("molt_runtime_shutdown"),
         },
         {"kind": "ret_void"},
     ]

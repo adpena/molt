@@ -71,6 +71,8 @@ mod stringprep_bridge;
 mod xml_bridge;
 #[cfg(feature = "stdlib_ipaddress")]
 mod ipaddress_bridge;
+#[cfg(feature = "stdlib_zoneinfo")]
+mod zoneinfo_bridge;
 // Re-export extracted crates so their symbols are available at link time.
 #[cfg(feature = "stdlib_serial")]
 pub use molt_runtime_serial;
@@ -102,6 +104,8 @@ pub use molt_runtime_stringprep;
 pub use molt_runtime_xml;
 #[cfg(feature = "stdlib_ipaddress")]
 pub use molt_runtime_ipaddress;
+#[cfg(feature = "stdlib_zoneinfo")]
+pub use molt_runtime_zoneinfo;
 #[cfg(feature = "stdlib_tk")]
 mod gui;
 #[cfg(feature = "stdlib_tk")]
@@ -490,7 +494,10 @@ pub use molt_runtime_text::unicodedata_mod::*;
 pub use crate::builtins::warnings_ext::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::zlib::*;
+#[cfg(not(feature = "stdlib_zoneinfo"))]
 pub use crate::builtins::zoneinfo::*;
+#[cfg(feature = "stdlib_zoneinfo")]
+pub use molt_runtime_zoneinfo::zoneinfo::*;
 #[allow(unused_imports)]
 pub(crate) use crate::call::bind::molt_callargs_push_kw;
 pub(crate) use crate::call::bind::{
