@@ -45,6 +45,7 @@ pub(crate) mod ops;
 pub(crate) mod ops_bytes;
 pub(crate) mod ops_dict;
 pub(crate) mod ops_arith;
+pub(crate) mod ops_builtins;
 pub(crate) mod ops_compare;
 pub(crate) mod ops_convert;
 pub(crate) mod ops_encoding;

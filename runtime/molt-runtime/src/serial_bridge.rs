@@ -695,7 +695,7 @@ extern "C" fn bridge_raise_not_iterable(bits: u64) -> u64 {
 extern "C" fn bridge_molt_sorted_builtin(bits: u64) -> u64 {
     let none = MoltObject::none().bits();
     let false_bits = MoltObject::from_bool(false).bits();
-    crate::object::ops::molt_sorted_builtin(bits, none, false_bits)
+    crate::molt_sorted_builtin(bits, none, false_bits)
 }
 
 extern "C" fn bridge_molt_mul(a: u64, b: u64) -> u64 {

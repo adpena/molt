@@ -684,7 +684,7 @@ pub extern "C" fn __molt_math_molt_sorted_builtin(bits: u64) -> u64 {
     // We pass None for key and False for reverse (default sorted behavior).
     let none = MoltObject::none().bits();
     let false_bits = MoltObject::from_bool(false).bits();
-    crate::object::ops::molt_sorted_builtin(bits, none, false_bits)
+    crate::molt_sorted_builtin(bits, none, false_bits)
 }
 
 #[unsafe(no_mangle)]
