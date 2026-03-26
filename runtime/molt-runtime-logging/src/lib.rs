@@ -1,1 +1,1 @@
-pub fn placeholder() {}
+//! `molt-runtime-logging` — placeholder for logging intrinsics.

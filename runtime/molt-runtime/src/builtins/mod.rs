@@ -47,6 +47,7 @@ pub(crate) mod datetime;
 pub(crate) mod dbm_dumb;
 #[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod decimal;
+#[cfg(not(feature = "stdlib_difflib"))]
 pub(crate) mod difflib;
 pub(crate) mod enum_ext;
 pub(crate) mod exceptions;

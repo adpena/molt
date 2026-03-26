@@ -9,3 +9,4 @@ description = "HTTP client/server, urllib, socketserver, cookies, ctypes, and lo
 # Core runtime types used by the HTTP/logging implementations
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
+libc = "0.2"

@@ -2677,12 +2677,16 @@ dependencies = [
  "molt-lang-cpython-abi",
  "molt-lang-obj-model",
  "molt-runtime-asyncio",
+ "molt-runtime-collections",
  "molt-runtime-compression",
  "molt-runtime-core",
  "molt-runtime-crypto",
+ "molt-runtime-difflib",
  "molt-runtime-itertools",
+ "molt-runtime-logging",
  "molt-runtime-math",
  "molt-runtime-net",
+ "molt-runtime-path",
  "molt-runtime-regex",
  "molt-runtime-serial",
  "molt-runtime-text",
@@ -2722,6 +2726,14 @@ dependencies = [
 
 [[package]]
 name = "molt-runtime-asyncio"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+]
+
+[[package]]
+name = "molt-runtime-collections"
 version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",
@@ -2771,7 +2783,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-runtime-difflib"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+]
+
+[[package]]
+name = "molt-runtime-http"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+]
+
+[[package]]
 name = "molt-runtime-itertools"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+]
+
+[[package]]
+name = "molt-runtime-logging"
 version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",
@@ -2810,9 +2847,11 @@ dependencies = [
 name = "molt-runtime-path"
 version = "0.1.0"
 dependencies = [
+ "glob",
  "libc",
  "molt-lang-obj-model",
  "molt-runtime-core",
+ "num_cpus",
 ]
 
 [[package]]

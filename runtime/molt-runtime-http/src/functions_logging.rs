@@ -2,25 +2,25 @@ use std::collections::HashMap;
 
 use molt_obj_model::MoltObject;
 
-use super::functions::alloc_string_bits;
-use super::functions_http::urllib_request_attr_optional;
-use super::functions_pickle::pickle_resolve_global_bits;
-use crate::object::type_ids::TYPE_ID_TUPLE;
-use crate::{
+use molt_runtime_core::prelude::*;
+use molt_runtime_core::obj_from_bits;
+
+use crate::functions_http::{alloc_string_bits, urllib_request_attr_optional};
+use crate::bridge::{
     alloc_string, attr_name_bits_from_bytes, builtin_classes, call_callable0, call_callable1,
     call_class_init_with_args, clear_exception, dec_ref_bits, dict_get_in_place,
-    exception_pending, inc_ref_bits, missing_bits, molt_getattr_builtin, obj_from_bits,
-    object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_f64, to_i64,
-    TYPE_ID_DICT, TYPE_ID_LIST,
+    exception_pending, inc_ref_bits, missing_bits, molt_getattr_builtin, object_type_id,
+    raise_exception, resolve_global_bits, seq_vec_ref, string_obj_to_owned, to_f64, to_i64,
+    ExceptionSentinel,
 };
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_runtime_ready() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+    molt_runtime_core::with_core_gil!(_py, { MoltObject::from_bool(true).bits() })
 }
 
 fn logging_percent_lookup_mapping_value(
-    _py: &crate::PyToken<'_>,
+    _py: &molt_runtime_core::CoreGilToken,
     mapping_ptr: *mut u8,
     key: &str,
 ) -> Option<u64> {
@@ -34,8 +34,8 @@ fn logging_percent_lookup_mapping_value(
     value
 }
 
-fn logging_percent_render_str(_py: &crate::PyToken<'_>, value_bits: u64) -> Option<String> {
-    let rendered_bits = crate::molt_str_from_obj(value_bits);
+fn logging_percent_render_str(_py: &molt_runtime_core::CoreGilToken, value_bits: u64) -> Option<String> {
+    let rendered_bits = crate::bridge::molt_str_from_obj(value_bits);
     if exception_pending(_py) {
         return None;
     }
@@ -44,8 +44,8 @@ fn logging_percent_render_str(_py: &crate::PyToken<'_>, value_bits: u64) -> Opti
     rendered
 }
 
-fn logging_percent_render_repr(_py: &crate::PyToken<'_>, value_bits: u64) -> Option<String> {
-    let rendered_bits = crate::molt_repr_from_obj(value_bits);
+fn logging_percent_render_repr(_py: &molt_runtime_core::CoreGilToken, value_bits: u64) -> Option<String> {
+    let rendered_bits = crate::bridge::molt_repr_from_obj(value_bits);
     if exception_pending(_py) {
         return None;
     }
@@ -55,7 +55,7 @@ fn logging_percent_render_repr(_py: &crate::PyToken<'_>, value_bits: u64) -> Opt
 }
 
 fn logging_percent_render_value(
-    _py: &crate::PyToken<'_>,
+    _py: &molt_runtime_core::CoreGilToken,
     spec: char,
     value_bits: u64,
 ) -> Option<String> {
@@ -84,7 +84,7 @@ fn logging_percent_render_value(
 }
 
 fn logging_config_dict_lookup(
-    _py: &crate::PyToken<'_>,
+    _py: &molt_runtime_core::CoreGilToken,
     dict_bits: u64,
     key: &str,
 ) -> Result<Option<u64>, u64> {
@@ -95,7 +95,7 @@ fn logging_config_dict_lookup(
             "logging config object must be dict",
         ));
     };
-    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+    if unsafe { object_type_id(dict_ptr) } != crate::bridge::type_id_dict() {
         return Err(raise_exception::<u64>(
             _py,
             "TypeError",
@@ -114,7 +114,7 @@ fn logging_config_dict_lookup(
 }
 
 fn logging_config_dict_items(
-    _py: &crate::PyToken<'_>,
+    _py: &molt_runtime_core::CoreGilToken,
     dict_bits: u64,
 ) -> Result<Vec<(u64, u64)>, u64> {
     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
@@ -124,7 +124,7 @@ fn logging_config_dict_items(
             "logging config section must be dict",
         ));
     };
-    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+    if unsafe { object_type_id(dict_ptr) } != crate::bridge::type_id_dict() {
         return Err(raise_exception::<u64>(
             _py,
             "TypeError",
@@ -152,7 +152,7 @@ fn logging_config_dict_items(
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    let list_bits = unsafe { call_callable1(_py, builtin_classes(_py).list, iterable_bits) };
+    let list_bits = unsafe { call_callable1(_py, builtin_classes(_py, "list"), iterable_bits) };
     dec_ref_bits(_py, iterable_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
@@ -165,7 +165,7 @@ fn logging_config_dict_items(
             "logging config items() must produce an iterable of pairs",
         ));
     };
-    if unsafe { object_type_id(list_ptr) } != TYPE_ID_LIST {
+    if unsafe { object_type_id(list_ptr) } != crate::bridge::type_id_list() {
         dec_ref_bits(_py, list_bits);
         return Err(raise_exception::<u64>(
             _py,
@@ -188,7 +188,7 @@ fn logging_config_dict_items(
                 "logging config items must be pairs",
             ));
         };
-        if unsafe { object_type_id(item_ptr) } != TYPE_ID_TUPLE {
+        if unsafe { object_type_id(item_ptr) } != crate::bridge::type_id_tuple() {
             dec_ref_bits(_py, list_bits);
             for (key_bits, value_bits) in pairs {
                 dec_ref_bits(_py, key_bits);
@@ -223,8 +223,8 @@ fn logging_config_dict_items(
     Ok(pairs)
 }
 
-fn logging_config_name_list(_py: &crate::PyToken<'_>, seq_bits: u64) -> Result<Vec<String>, u64> {
-    let list_bits = unsafe { call_callable1(_py, builtin_classes(_py).list, seq_bits) };
+fn logging_config_name_list(_py: &molt_runtime_core::CoreGilToken, seq_bits: u64) -> Result<Vec<String>, u64> {
+    let list_bits = unsafe { call_callable1(_py, builtin_classes(_py, "list"), seq_bits) };
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
@@ -236,7 +236,7 @@ fn logging_config_name_list(_py: &crate::PyToken<'_>, seq_bits: u64) -> Result<V
             "logging config handler list must be iterable",
         ));
     };
-    if unsafe { object_type_id(list_ptr) } != TYPE_ID_LIST {
+    if unsafe { object_type_id(list_ptr) } != crate::bridge::type_id_list() {
         dec_ref_bits(_py, list_bits);
         return Err(raise_exception::<u64>(
             _py,
@@ -262,7 +262,7 @@ fn logging_config_name_list(_py: &crate::PyToken<'_>, seq_bits: u64) -> Result<V
 }
 
 fn logging_config_call_method1(
-    _py: &crate::PyToken<'_>,
+    _py: &molt_runtime_core::CoreGilToken,
     obj_bits: u64,
     method_name: &[u8],
     arg_bits: u64,
@@ -283,7 +283,7 @@ fn logging_config_call_method1(
 }
 
 fn logging_config_clear_logger_handlers(
-    _py: &crate::PyToken<'_>,
+    _py: &molt_runtime_core::CoreGilToken,
     logger_bits: u64,
 ) -> Result<(), u64> {
     let Some(handlers_bits) = urllib_request_attr_optional(_py, logger_bits, b"handlers")? else {
@@ -294,7 +294,7 @@ fn logging_config_clear_logger_handlers(
         return Ok(());
     };
     let ty = unsafe { object_type_id(handlers_ptr) };
-    let snapshot: Vec<u64> = if ty == TYPE_ID_LIST || ty == TYPE_ID_TUPLE {
+    let snapshot: Vec<u64> = if ty == crate::bridge::type_id_list() || ty == crate::bridge::type_id_tuple() {
         unsafe { seq_vec_ref(handlers_ptr).to_vec() }
     } else {
         dec_ref_bits(_py, handlers_bits);
@@ -312,20 +312,20 @@ fn logging_config_clear_logger_handlers(
 }
 
 fn logging_config_resolve_ext_stream(
-    _py: &crate::PyToken<'_>,
+    _py: &molt_runtime_core::CoreGilToken,
     value_bits: u64,
 ) -> Result<u64, u64> {
     let Some(text) = string_obj_to_owned(obj_from_bits(value_bits)) else {
         return Ok(value_bits);
     };
     if text == "ext://sys.stdout" {
-        return pickle_resolve_global_bits(_py, "sys", "stdout");
+        return resolve_global_bits(_py, "sys", "stdout");
     }
     if text == "ext://sys.stderr" {
-        return pickle_resolve_global_bits(_py, "sys", "stderr");
+        return resolve_global_bits(_py, "sys", "stderr");
     }
     if text == "ext://sys.stdin" {
-        return pickle_resolve_global_bits(_py, "sys", "stdin");
+        return resolve_global_bits(_py, "sys", "stdin");
     }
     Err(raise_exception::<u64>(
         _py,
@@ -336,7 +336,7 @@ fn logging_config_resolve_ext_stream(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let version_bits = match logging_config_dict_lookup(_py, config_bits, "version") {
             Ok(Some(bits)) => bits,
             Ok(None) => {
@@ -351,12 +351,12 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "ValueError", "unsupported logging config version");
         }
 
-        let formatter_class_bits = match pickle_resolve_global_bits(_py, "logging", "Formatter") {
+        let formatter_class_bits = match resolve_global_bits(_py, "logging", "Formatter") {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
         let stream_handler_class_bits =
-            match pickle_resolve_global_bits(_py, "logging", "StreamHandler") {
+            match resolve_global_bits(_py, "logging", "StreamHandler") {
                 Ok(bits) => bits,
                 Err(bits) => {
                     dec_ref_bits(_py, formatter_class_bits);
@@ -364,7 +364,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                 }
             };
         let file_handler_class_bits =
-            match pickle_resolve_global_bits(_py, "logging", "FileHandler") {
+            match resolve_global_bits(_py, "logging", "FileHandler") {
                 Ok(bits) => bits,
                 Err(bits) => {
                     dec_ref_bits(_py, stream_handler_class_bits);
@@ -372,7 +372,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                     return bits;
                 }
             };
-        let get_logger_bits = match pickle_resolve_global_bits(_py, "logging", "getLogger") {
+        let get_logger_bits = match resolve_global_bits(_py, "logging", "getLogger") {
             Ok(bits) => bits,
             Err(bits) => {
                 dec_ref_bits(_py, file_handler_class_bits);
@@ -428,7 +428,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                     }
                 };
                 let formatter_bits =
-                    unsafe { call_class_init_with_args(_py, formatter_class_ptr, &[fmt_bits]) };
+                    unsafe { call_class_init_with_args(_py, MoltObject::from_ptr(formatter_class_ptr).bits(), &[fmt_bits]) };
                 if exception_pending(_py) {
                     dec_ref_bits(_py, name_bits);
                     dec_ref_bits(_py, cfg_bits);
@@ -543,7 +543,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                         }
                     };
                     unsafe {
-                        call_class_init_with_args(_py, stream_handler_class_ptr, &[stream_arg_bits])
+                        call_class_init_with_args(_py, MoltObject::from_ptr(stream_handler_class_ptr).bits(), &[stream_arg_bits])
                     }
                 } else if class_name == "logging.FileHandler" {
                     let filename_bits = match logging_config_dict_lookup(_py, cfg_bits, "filename")
@@ -874,7 +874,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_config_valid_ident(value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(value_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -906,7 +906,7 @@ pub extern "C" fn molt_logging_config_file_config(
     disable_existing_loggers_bits: u64,
     encoding_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let _ = (
             config_file_bits,
             defaults_bits,
@@ -923,7 +923,7 @@ pub extern "C" fn molt_logging_config_file_config(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_config_listen(port_bits: u64, verify_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let _ = (port_bits, verify_bits);
         raise_exception::<_>(
             _py,
@@ -935,19 +935,19 @@ pub extern "C" fn molt_logging_config_listen(port_bits: u64, verify_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_config_stop_listening() -> u64 {
-    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+    molt_runtime_core::with_core_gil!(_py, { MoltObject::none().bits() })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_percent_style_format(fmt_bits: u64, mapping_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_core_gil!(_py, {
         let Some(fmt) = string_obj_to_owned(obj_from_bits(fmt_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "logging format string must be str");
         };
         let Some(mapping_ptr) = obj_from_bits(mapping_bits).as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "logging mapping must be dict");
         };
-        if unsafe { object_type_id(mapping_ptr) } != TYPE_ID_DICT {
+        if unsafe { object_type_id(mapping_ptr) } != crate::bridge::type_id_dict() {
             return raise_exception::<_>(_py, "TypeError", "logging mapping must be dict");
         }
 
