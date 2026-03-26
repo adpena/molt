@@ -308,6 +308,7 @@ pub use crate::builtins::html::*;
 pub use crate::builtins::inspect::*;
 pub use crate::builtins::io::*;
 pub use crate::builtins::io_file::*;
+pub use crate::builtins::io_path::*;
 pub(crate) use crate::builtins::io::{
     DecodeFailure, close_payload, file_handle_enter,
     file_handle_exit, path_from_bits,
