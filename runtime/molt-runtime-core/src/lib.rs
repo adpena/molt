@@ -150,6 +150,97 @@ macro_rules! with_gil_entry {
 }
 
 // ---------------------------------------------------------------------------
+// GIL acquisition — function-pointer dispatch so extracted crates can acquire
+// the GIL without depending on molt-runtime.
+// ---------------------------------------------------------------------------
+
+use std::sync::atomic::{AtomicPtr, Ordering};
+
+/// Opaque GIL token — proof that the GIL is held.
+/// Equivalent to PyToken but usable across crate boundaries.
+#[derive(Clone, Copy)]
+pub struct CoreGilToken {
+    _private: (),
+}
+
+/// GIL vtable — function pointers for acquire/release.
+/// Populated by molt-runtime at init time.
+#[repr(C)]
+pub struct GilVtable {
+    /// Acquire the GIL. Returns an opaque guard value.
+    /// The guard must be passed to `release` when done.
+    pub acquire: unsafe extern "C" fn() -> u64,
+    /// Release the GIL. Takes the guard value from acquire.
+    pub release: unsafe extern "C" fn(u64),
+    /// Check if the GIL is currently held by this thread.
+    pub is_held: unsafe extern "C" fn() -> bool,
+}
+
+// SAFETY: The vtable is populated once at init time and then only read.
+// All function pointers are plain `extern "C"` fn pointers (Send + Sync).
+unsafe impl Send for GilVtable {}
+unsafe impl Sync for GilVtable {}
+
+static GIL_VTABLE: AtomicPtr<GilVtable> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Initialize the GIL vtable. Called once by molt-runtime at startup.
+pub fn set_gil_vtable(vtable: &'static GilVtable) {
+    GIL_VTABLE.store(vtable as *const GilVtable as *mut GilVtable, Ordering::Release);
+}
+
+/// Acquire the GIL via the vtable. Panics if vtable not initialized.
+#[inline]
+pub fn core_gil_acquire() -> u64 {
+    let ptr = GIL_VTABLE.load(Ordering::Acquire);
+    assert!(!ptr.is_null(), "GIL vtable not initialized — call molt_runtime_init() first");
+    unsafe { ((*ptr).acquire)() }
+}
+
+/// Release the GIL via the vtable.
+#[inline]
+pub fn core_gil_release(guard: u64) {
+    let ptr = GIL_VTABLE.load(Ordering::Acquire);
+    if !ptr.is_null() {
+        unsafe { ((*ptr).release)(guard) }
+    }
+}
+
+/// RAII guard for GIL acquisition, usable from any crate.
+pub struct CoreGilGuard {
+    guard_token: u64,
+}
+
+impl CoreGilGuard {
+    #[inline]
+    pub fn new() -> Self {
+        Self { guard_token: core_gil_acquire() }
+    }
+
+    #[inline]
+    pub fn token(&self) -> CoreGilToken {
+        CoreGilToken { _private: () }
+    }
+}
+
+impl Drop for CoreGilGuard {
+    #[inline]
+    fn drop(&mut self) {
+        core_gil_release(self.guard_token);
+    }
+}
+
+/// Cross-crate GIL entry macro — equivalent to with_gil_entry! but works from any crate.
+#[macro_export]
+macro_rules! with_core_gil {
+    ($py:ident, $body:block) => {{
+        let _gil_guard = $crate::CoreGilGuard::new();
+        let $py = _gil_guard.token();
+        let $py = &$py;
+        $body
+    }};
+}
+
+// ---------------------------------------------------------------------------
 // FFI — extern "C" declarations resolved by the linker from molt-runtime.
 //
 // These are the REAL runtime functions.  Each one has a matching
@@ -509,9 +600,10 @@ pub mod prelude {
     pub use crate::type_ids::*;
     pub use crate::{
         bits_from_ptr, obj_from_bits, ptr_from_bits,
-        GilReleaseGuard, MoltObject, PyToken,
+        CoreGilGuard, CoreGilToken, GilReleaseGuard, MoltObject, PyToken,
     };
     pub use crate::with_gil_entry;
+    pub use crate::with_core_gil;
 
     // Safe runtime wrappers
     pub use crate::{

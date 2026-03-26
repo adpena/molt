@@ -432,6 +432,33 @@ fn post_shutdown_sentinel() -> &'static RuntimeState {
     SENTINEL.get_or_init(|| Box::leak(Box::new(RuntimeState::new())))
 }
 
+// ---------------------------------------------------------------------------
+// GIL vtable shims — bridge core crate's function-pointer GIL to the real
+// mutex-based GIL in this crate.
+// ---------------------------------------------------------------------------
+
+extern "C" fn __core_gil_acquire() -> u64 {
+    let guard = GilGuard::new();
+    // Leak the guard — it will be released by __core_gil_release
+    Box::into_raw(Box::new(guard)) as u64
+}
+
+extern "C" fn __core_gil_release(token: u64) {
+    if token != 0 {
+        unsafe { drop(Box::from_raw(token as *mut GilGuard)); }
+    }
+}
+
+extern "C" fn __core_gil_is_held() -> bool {
+    gil_held()
+}
+
+static CORE_GIL_VT: molt_runtime_core::GilVtable = molt_runtime_core::GilVtable {
+    acquire: __core_gil_acquire,
+    release: __core_gil_release,
+    is_held: __core_gil_is_held,
+};
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_init() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -469,6 +496,10 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     // through a single struct instead of 58 individual extern "C" symbols.
     #[cfg(feature = "stdlib_serial")]
     molt_runtime_serial::bridge::init_vtable();
+
+    // Initialize the core GIL vtable so extracted crates can acquire the GIL
+    // via molt-runtime-core without depending on molt-runtime.
+    molt_runtime_core::set_gil_vtable(&CORE_GIL_VT);
 
     1
 }
