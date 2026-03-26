@@ -59,6 +59,10 @@ mod text_bridge;
 mod serial_bridge;
 #[cfg(feature = "stdlib_itertools")]
 mod itertools_bridge;
+#[cfg(feature = "stdlib_difflib")]
+mod difflib_bridge;
+#[cfg(feature = "stdlib_logging_ext")]
+mod logging_bridge;
 // Re-export extracted crates so their symbols are available at link time.
 #[cfg(feature = "stdlib_serial")]
 pub use molt_runtime_serial;
@@ -78,6 +82,10 @@ pub use molt_runtime_path;
 pub use molt_runtime_regex;
 #[cfg(feature = "stdlib_text")]
 pub use molt_runtime_text;
+#[cfg(feature = "stdlib_difflib")]
+pub use molt_runtime_difflib;
+#[cfg(feature = "stdlib_logging_ext")]
+pub use molt_runtime_logging;
 #[cfg(feature = "stdlib_tk")]
 mod gui;
 #[cfg(feature = "stdlib_tk")]
@@ -293,7 +301,11 @@ pub use crate::builtins::dbm_dumb::*;
 pub use crate::builtins::decimal::*;
 #[cfg(feature = "stdlib_serial")]
 pub use molt_runtime_serial::decimal::*;
+#[cfg(not(feature = "stdlib_difflib"))]
+#[cfg(not(feature = "stdlib_difflib"))]
 pub use crate::builtins::difflib::*;
+#[cfg(feature = "stdlib_difflib")]
+pub use molt_runtime_difflib::difflib::*;
 pub use crate::builtins::enum_ext::*;
 pub(crate) use crate::builtins::exceptions::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, ExceptionSentinel,
@@ -369,6 +381,7 @@ pub use crate::builtins::itertools::*;
 #[cfg(feature = "stdlib_itertools")]
 pub use molt_runtime_itertools::itertools::*;
 pub use crate::builtins::json::*;
+// NOTE: molt-runtime-logging is still a stub — always use the local module.
 pub use crate::builtins::logging_ext::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::lzma::*;

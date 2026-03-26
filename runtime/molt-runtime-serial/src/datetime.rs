@@ -1,16 +1,15 @@
 //! Rust intrinsics for the Python `datetime` module.
 //!
-//! All functions are C-callable via `
-// Fallback for WASM where host function is not available
-#[allow(dead_code)]
-unsafe fn molt_time_local_offset_fallback(_secs: i64) -> i64 { 0 }
-
-#[unsafe(no_mangle)]` and accept/return
+//! All functions are C-callable via `#[unsafe(no_mangle)] and accept/return
 //! NaN-boxed `u64` values following the standard Molt object model.
 //!
 //! Calendar math uses Howard Hinnant's civil_from_days / days_from_civil
 //! algorithms.  Time and hash functions are pure Rust, with
 //! `cfg(target_arch = "wasm32")` stubs for platform-specific syscalls.
+
+// Fallback for WASM where host function is not available
+#[allow(dead_code)]
+unsafe fn molt_time_local_offset_fallback(_secs: i64) -> i64 { 0 }
 
 use std::fmt::Write as _;
 

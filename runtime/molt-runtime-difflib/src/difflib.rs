@@ -538,7 +538,7 @@ fn get_close_matches_impl(
 // Object helpers
 // ---------------------------------------------------------------------------
 
-fn alloc_str_or_err(_py: &PyToken<'_>, s: &str) -> Result<u64, u64> {
+fn alloc_str_or_err(_py: &PyToken, s: &str) -> Result<u64, u64> {
     let ptr = alloc_string(_py, s.as_bytes());
     if ptr.is_null() {
         Err(raise_exception::<u64>(_py, "MemoryError", "out of memory"))
@@ -548,7 +548,7 @@ fn alloc_str_or_err(_py: &PyToken<'_>, s: &str) -> Result<u64, u64> {
 }
 
 /// Decode a Python list-of-str to a Vec<String>.
-fn list_to_str_vec(_py: &PyToken<'_>, bits: u64) -> Result<Vec<String>, u64> {
+fn list_to_str_vec(_py: &PyToken, bits: u64) -> Result<Vec<String>, u64> {
     let obj = obj_from_bits(bits);
     if obj.is_none() {
         return Ok(Vec::new());
@@ -579,7 +579,7 @@ fn list_to_str_vec(_py: &PyToken<'_>, bits: u64) -> Result<Vec<String>, u64> {
 }
 
 /// Build a Python list from a Vec<String>.
-fn str_vec_to_list(_py: &PyToken<'_>, items: &[String]) -> u64 {
+fn str_vec_to_list(_py: &PyToken, items: &[String]) -> u64 {
     let mut bits: Vec<u64> = Vec::with_capacity(items.len());
     for s in items {
         let ptr = alloc_string(_py, s.as_bytes());
@@ -869,6 +869,6 @@ pub extern "C" fn molt_difflib_is_junk(ch_bits: u64) -> u64 {
 
 // Suppress dead-code warnings for internal helpers used only in some paths.
 #[allow(dead_code)]
-fn _use_alloc_str(_py: &PyToken<'_>, s: &str) -> Result<u64, u64> {
+fn _use_alloc_str(_py: &PyToken, s: &str) -> Result<u64, u64> {
     alloc_str_or_err(_py, s)
 }

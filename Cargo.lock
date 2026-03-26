@@ -3049,7 +3049,9 @@ dependencies = [
  "molt-runtime-compression",
  "molt-runtime-core",
  "molt-runtime-crypto",
+ "molt-runtime-difflib",
  "molt-runtime-itertools",
+ "molt-runtime-logging",
  "molt-runtime-math",
  "molt-runtime-net",
  "molt-runtime-path",
@@ -3149,7 +3151,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-runtime-difflib"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+]
+
+[[package]]
 name = "molt-runtime-itertools"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+]
+
+[[package]]
+name = "molt-runtime-logging"
 version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",
