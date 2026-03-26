@@ -264,3 +264,9 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[profile.dev-release]
+inherits = "release"
+lto = "thin"
+codegen-units = 4
+debug = 1
