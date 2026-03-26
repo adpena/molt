@@ -11,7 +11,6 @@ use num_traits::{Signed, ToPrimitive, Zero};
 use std::borrow::Cow;
 use std::sync::OnceLock;
 
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_str_from_obj(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(val_bits);
@@ -1593,4 +1592,3 @@ pub(crate) fn maybe_emit_runtime_feedback_file(payload: &serde_json::Value) {
     }
     eprintln!("molt_runtime_feedback_file {}", path.display());
 }
-
