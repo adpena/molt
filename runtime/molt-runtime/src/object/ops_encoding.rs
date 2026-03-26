@@ -3,6 +3,7 @@
 use crate::*;
 use super::ops_string::{push_wtf8_codepoint, wtf8_from_bytes, wtf8_has_surrogates};
 
+#[derive(Clone, Copy)]
 pub(crate) enum EncodingKind {
     Utf8,
     Utf8Sig,
@@ -250,7 +251,7 @@ fn encode_utf32(text: &str, endian: Endian, with_bom: bool) -> Vec<u8> {
     out
 }
 
-fn is_surrogate(code: u32) -> bool {
+pub(crate) fn is_surrogate(code: u32) -> bool {
     (0xD800..=0xDFFF).contains(&code)
 }
 
@@ -274,7 +275,7 @@ fn unicode_name_escape(code: u32) -> String {
     unicode_escape_codepoint(code)
 }
 
-fn unicode_escape(ch: char) -> String {
+pub(crate) fn unicode_escape(ch: char) -> String {
     unicode_escape_codepoint(ch as u32)
 }
 
