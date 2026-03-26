@@ -9446,6 +9446,36 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
                 if type_id == TYPE_ID_TYPE {
+                    // Materialise the key as a proper heap tuple when the
+                    // incoming args may be a stack-allocated (inline-layout)
+                    // tuple.  Stack tuples use raw i64 slots instead of a
+                    // Vec<u64> pointer, so runtime helpers like seq_vec_ref
+                    // crash on them.  We detect them via the IMMORTAL flag
+                    // (stack tuples are marked immortal with refcount=MAX).
+                    let safe_key_bits = unsafe {
+                        if let Some(kp) = obj_from_bits(key_bits).as_ptr() {
+                            if object_type_id(kp) == TYPE_ID_TUPLE
+                                && ((*header_from_obj_ptr(kp)).flags
+                                    & crate::object::HEADER_FLAG_IMMORTAL) != 0
+                            {
+                                // Stack tuple: read N inline i64 slots and
+                                // build a heap tuple from them.
+                                let n = tuple_len(kp);
+                                let base = kp as *const u64;
+                                let elems: Vec<u64> =
+                                    (0..n).map(|i| *base.add(i)).collect();
+                                let new_ptr = alloc_tuple(_py, &elems);
+                                if new_ptr.is_null() {
+                                    return MoltObject::none().bits();
+                                }
+                                MoltObject::from_ptr(new_ptr).bits()
+                            } else {
+                                key_bits
+                            }
+                        } else {
+                            key_bits
+                        }
+                    };
                     // Try explicit __class_getitem__ first (handles custom
                     // implementations in user-defined classes).
                     if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__class_getitem__")
@@ -9454,8 +9484,11 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         {
                             dec_ref_bits(_py, name_bits);
                             exception_stack_push();
-                            let res = call_callable1(_py, call_bits, key_bits);
+                            let res = call_callable1(_py, call_bits, safe_key_bits);
                             dec_ref_bits(_py, call_bits);
+                            if safe_key_bits != key_bits {
+                                dec_ref_bits(_py, safe_key_bits);
+                            }
                             if exception_pending(_py) {
                                 exception_stack_pop(_py);
                                 return MoltObject::none().bits();
@@ -9469,7 +9502,11 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     // directly.  This matches CPython >= 3.12 where every
                     // type supports subscript via a default that returns
                     // types.GenericAlias(cls, params).
-                    return crate::builtins::types::molt_generic_alias_new(obj_bits, key_bits);
+                    let res = crate::builtins::types::molt_generic_alias_new(obj_bits, safe_key_bits);
+                    if safe_key_bits != key_bits {
+                        dec_ref_bits(_py, safe_key_bits);
+                    }
+                    return res;
                 }
                 if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__getitem__") {
                     if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {
