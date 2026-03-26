@@ -497,6 +497,9 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     #[cfg(feature = "stdlib_serial")]
     molt_runtime_serial::bridge::init_vtable();
 
+    #[cfg(feature = "stdlib_itertools")]
+    molt_runtime_itertools::bridge::init_vtable();
+
     // Initialize the core GIL vtable so extracted crates can acquire the GIL
     // via molt-runtime-core without depending on molt-runtime.
     molt_runtime_core::set_gil_vtable(&CORE_GIL_VT);

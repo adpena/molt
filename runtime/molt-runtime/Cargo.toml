@@ -58,6 +58,7 @@ stdlib_concurrent = []
 stdlib_dbm = []
 stdlib_importlib_extra = []
 stdlib_regex = ["dep:molt-runtime-regex"]
+stdlib_itertools = ["dep:molt-runtime-itertools"]
 stdlib_serial = ["dep:molt-runtime-serial"]
 stdlib_csv = ["stdlib_serial"]
 stdlib_signal = []
@@ -92,6 +93,7 @@ molt-runtime-net = { path = "../molt-runtime-net", optional = true }
 molt-runtime-asyncio = { path = "../molt-runtime-asyncio", optional = true }
 molt-runtime-math = { path = "../molt-runtime-math", optional = true }
 molt-runtime-regex = { path = "../molt-runtime-regex", optional = true }
+molt-runtime-itertools = { path = "../molt-runtime-itertools", optional = true }
 molt-runtime-serial = { path = "../molt-runtime-serial", optional = true }
 molt-cpython-abi = { package = "molt-lang-cpython-abi", path = "../molt-cpython-abi", optional = true, features = ["extension-loader"] }
 serde_json = "1.0"
