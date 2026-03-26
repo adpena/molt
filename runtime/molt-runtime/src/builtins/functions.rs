@@ -25,14 +25,13 @@ use crate::{
     alloc_function_obj, alloc_list_with_capacity, alloc_string, alloc_tuple,
     attr_name_bits_from_bytes, bound_method_func_bits, builtin_classes, bytes_like_slice,
     call_callable0, call_callable1,
-    call_callable2, call_callable3, call_class_init_with_args, clear_exception, dec_ref_bits,
-    dict_get_in_place, ensure_function_code_bits, exception_kind_bits, exception_pending,
-    format_obj, function_dict_bits, function_set_closure_bits, function_set_trampoline_ptr,
+    call_callable2, call_class_init_with_args, clear_exception, dec_ref_bits,
+    dict_get_in_place, ensure_function_code_bits, exception_kind_bits, exception_pending, function_dict_bits, function_set_closure_bits, function_set_trampoline_ptr,
     inc_ref_bits, is_truthy, maybe_ptr_from_bits, missing_bits, module_dict_bits,
     molt_exception_last, molt_getattr_builtin, molt_getitem_method, molt_is_callable, molt_iter,
     molt_iter_next, molt_list_insert, molt_trace_enter_slot, obj_from_bits, object_class_bits,
     object_set_class_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned,
-    to_f64, to_i64, type_name, type_of_bits,
+    to_f64, to_i64, type_name,
 };
 use memchr::{memchr, memmem};
 
