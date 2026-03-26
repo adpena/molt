@@ -46,7 +46,6 @@ pub(crate) mod ops_encoding;
 pub(crate) mod ops_format;
 pub(crate) mod ops_hash;
 pub(crate) mod ops_list;
-pub(crate) mod ops_encoding;
 pub(crate) mod ops_bytes;
 pub(crate) mod ops_dict;
 pub(crate) mod ops_heapq;
