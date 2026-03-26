@@ -1053,18 +1053,18 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, nbc: &NanB
     builder.switch_to_block(check_immortal_block);
     let raw_ptr = unbox_ptr_value(builder, val, nbc);
 
-    // Load flags (u64 at ptr + HEADER_FLAGS_OFFSET)
+    // Load flags (u32 at ptr + HEADER_FLAGS_OFFSET)
     let flags = builder.ins().load(
-        types::I64,
+        types::I32,
         MemFlags::trusted(),
         raw_ptr,
         HEADER_FLAGS_OFFSET,
     );
     let immortal_mask = builder
         .ins()
-        .iconst(types::I64, HEADER_FLAG_IMMORTAL as i64);
+        .iconst(types::I32, HEADER_FLAG_IMMORTAL as i64);
     let immortal_bits = builder.ins().band(flags, immortal_mask);
-    let zero = builder.ins().iconst(types::I64, 0);
+    let zero = builder.ins().iconst(types::I32, 0);
     let is_mortal = builder.ins().icmp(IntCC::Equal, immortal_bits, zero);
     builder
         .ins()
