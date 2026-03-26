@@ -567,8 +567,11 @@ unsafe fn call_type_with_builder(
         let mut default_new = false;
         let is_exc_subclass = issubclass_bits(class_bits, builtins.base_exception);
         {
-            let class_name = class_name_for_error(class_bits);
-            eprintln!("[DEBUG] call_type_with_builder: class={} bits={:#x} is_exc_subclass={}", class_name, class_bits, is_exc_subclass);
+            #[cfg(debug_assertions)]
+            {
+                let class_name = class_name_for_error(class_bits);
+                eprintln!("[DEBUG] call_type_with_builder: class={} bits={:#x} is_exc_subclass={}", class_name, class_bits, is_exc_subclass);
+            }
         }
         let inst_bits = if is_exc_subclass {
             let new_name_bits =
