@@ -16,6 +16,8 @@ use std::io::{ErrorKind, Read, Seek, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use super::io_file::normalize_text_encoding;
+pub(crate) use super::io_file::{file_handle_detached_message, file_handle_is_closed};
 #[cfg(not(unix))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
