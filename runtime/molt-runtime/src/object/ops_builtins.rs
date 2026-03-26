@@ -1060,7 +1060,7 @@ fn minmax_compare(_py: &PyToken<'_>, best_key_bits: u64, cand_key_bits: u64) -> 
 fn molt_minmax_builtin(
     _py: &PyToken<'_>,
     args_bits: u64,
-    key_bits: u64,
+    pub(crate) key_bits: u64,
     default_bits: u64,
     want_max: bool,
     name: &str,
