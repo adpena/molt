@@ -11,7 +11,6 @@ use crate::*;
 use std::io::ErrorKind;
 use std::collections::HashMap;
 #[cfg(unix)]
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
 use super::io::{
     alloc_path_list_bits, alloc_string_list_bits, bytes_sequence_from_bits,

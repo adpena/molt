@@ -21,7 +21,7 @@ stdlib_full = [
     "stdlib_tk", "stdlib_net", "stdlib_asyncio", "stdlib_email",
     "stdlib_math", "stdlib_decimal", "stdlib_regex", "stdlib_collections", "stdlib_path", "stdlib_serial", "stdlib_logging", "stdlib_concurrent",
     "stdlib_dbm", "stdlib_importlib_extra", "stdlib_csv",
-    "stdlib_signal", "stdlib_select", "stdlib_text",
+    "stdlib_signal", "stdlib_select", "stdlib_text", "stdlib_itertools",
     "builtin_set", "builtin_complex", "builtin_memoryview",
     "builtin_contextvars", "builtin_fcntl",
     "cext_loader",
