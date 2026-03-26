@@ -26314,10 +26314,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             # typing module.  Fall through to the normal import path.
             pass
         if module_name == "_intrinsics":
-            # All require_intrinsic / load_intrinsic calls are resolved at
-            # compile time (see the _require_intrinsic handler in visit_Call).
-            # Do NOT bind names in locals — the intrinsic resolver in
-            # visit_Call triggers specifically when the name is NOT in locals.
+            # Resolved at compile time.
             return None
         if module_name in self._STUB_IMPORT_MODULES:
             return None
