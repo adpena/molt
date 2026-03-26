@@ -26881,10 +26881,12 @@ def main() -> int:
                 stdlib_profile = defaults["stdlib_profile"]
 
         # --backend: resolve effective backend and propagate via MOLT_BACKEND.
-        # "auto" means cranelift for dev builds, llvm for release.
+        # "auto" defaults to cranelift for all builds.  The LLVM backend is
+        # still MVP (e.g. check_exception is a no-op) and must be requested
+        # explicitly via --backend llvm or MOLT_BACKEND=llvm.
         effective_backend = backend_choice
         if effective_backend == "auto":
-            effective_backend = "llvm" if build_profile == "release" else "cranelift"
+            effective_backend = "cranelift"
         os.environ["MOLT_BACKEND"] = effective_backend
 
         return build(

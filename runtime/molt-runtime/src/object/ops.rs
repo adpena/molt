@@ -29397,12 +29397,10 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
     if let Some(i) = obj.as_int() {
         return i.to_string();
     }
-    // Codegen zero-init: raw 0x0 is float +0.0 in NaN-boxing but
-    // represents int 0 when produced by Cranelift's default variable
-    // initialisation.  Render as "0" for CPython parity.
-    if obj.bits() == 0 {
-        return "0".to_string();
-    }
+    // NaN-boxing: raw 0x0 is IEEE 754 +0.0.  Previous code treated it
+    // as int 0 because Cranelift zero-inits variables to 0x0, but that
+    // broke float parity (e.g. math.sin(0) displayed "0" not "0.0").
+    // Proper int 0 is MoltObject::from_int(0) (0x7ff9_0000_0000_0000).
     if let Some(f) = obj.as_float() {
         return format_float(f);
     }
@@ -30450,10 +30448,6 @@ pub(crate) fn format_with_spec(
                 Ok(format_string_with_spec(format_obj_str(_py, obj), spec))
             } else if obj.as_int().is_some() || bigint_ptr_from_bits(obj.bits()).is_some() {
                 format_int_with_spec(obj, spec)
-            } else if obj.bits() == 0 {
-                // Codegen zero-init: raw 0x0 is float +0.0 in NaN-boxing
-                // but represents int 0.  Format as integer for parity.
-                format_int_with_spec(MoltObject::from_int(0), spec)
             } else if obj.as_float().is_some() {
                 format_float_with_spec(obj, spec)
             } else {
