@@ -3132,29 +3132,18 @@ impl SimpleBackend {
                             data_ptr,
                             HEADER_FLAGS_OFFSET,
                         );
-                        // poll_fn (u64 at -32) — zero (not a coroutine)
-                        let zero_i64 = builder.ins().iconst(types::I64, 0);
-                        builder.ins().store(
-                            MemFlags::trusted(),
-                            zero_i64,
-                            data_ptr,
-                            -32,
-                        );
-                        // state (i64 at -24) — zero
-                        builder.ins().store(
-                            MemFlags::trusted(),
-                            zero_i64,
-                            data_ptr,
-                            -24,
-                        );
-                        // size (u64 at -16) — total allocation size
-                        let size_val = builder.ins().iconst(types::I64, slot_bytes as i64);
-                        builder.ins().store(
-                            MemFlags::trusted(),
-                            size_val,
-                            data_ptr,
-                            -16,
-                        );
+                        // size_class (u16 at -4) and cold_idx (u16 at -2)
+                        // are left as zero: stack tuples have no cold header
+                        // and zero size_class means "oversized" (exact size
+                        // irrelevant since the slot is never freed).
+                        //
+                        // NOTE: The old 40-byte header had poll_fn at -32,
+                        // state at -24, and extended_size at -16.  Those
+                        // fields were moved to MoltColdHeader; writing them
+                        // here would corrupt adjacent stack slots and—
+                        // critically—overwrite the type_id we just stored
+                        // (the -16 store clobbered type_id with the byte
+                        // size, making tuples appear as type_id 32/48/etc.).
 
                         // Store elements and collect Values for stack_tuples.
                         let mut elems: Vec<Value> = Vec::with_capacity(n);
