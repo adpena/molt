@@ -5,8 +5,14 @@ edition = "2024"
 license = "Apache-2.0"
 description = "Path/OS intrinsics for the Molt runtime (pathlib.Path, os.walk, os.scandir, shutil extras)."
 
+[features]
+default = ["stdlib_fs_extra"]
+stdlib_fs_extra = ["dep:glob"]
+
 [dependencies]
 # Core runtime types used by the path/os implementations
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 libc = "0.2"
+num_cpus = "1.17"
+glob = { version = "0.3", optional = true }

@@ -11,4 +11,7 @@ pub mod binascii;
 pub mod configparser;
 pub mod csv;
 pub mod datetime;
+pub mod decimal;
+pub mod email;
 pub mod structs;
+pub mod zipfile;
