@@ -25144,12 +25144,18 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                 let class_name =
                     unsafe { string_obj_to_owned(obj_from_bits(class_name_bits(ptr))) }
                         .unwrap_or_else(|| "object".to_string());
+                eprintln!("[MOLT-DEBUG] subscript fail (TYPE_ID_TYPE, no __class_getitem__): class_name={}, obj_bits=0x{:016x}, key_bits=0x{:016x}", class_name, obj_bits, key_bits);
                 format!("type '{}' is not subscriptable", class_name)
             } else {
-                format!("'{}' object is not subscriptable", type_name(_py, obj))
+                let tn = type_name(_py, obj);
+                let tid = unsafe { object_type_id(ptr) };
+                eprintln!("[MOLT-DEBUG] subscript fail (ptr path): type_name={}, type_id={}, obj_bits=0x{:016x}, key_bits=0x{:016x}", tn, tid, obj_bits, key_bits);
+                format!("'{}' object is not subscriptable", tn)
             };
             return raise_exception::<_>(_py, "TypeError", &msg);
         }
+        let obj_dbg = obj_from_bits(obj_bits);
+        eprintln!("[MOLT-DEBUG] subscript fail (no-ptr path): type_name={}, obj_bits=0x{:016x}, key_bits=0x{:016x}, is_int={}, is_float={}, is_bool={}, is_none={}, is_pending={}", type_name(_py, obj_dbg), obj_bits, key_bits, obj_dbg.is_int(), obj_dbg.is_float(), obj_dbg.is_bool(), obj_dbg.is_none(), obj_dbg.is_pending());
         let msg = format!("'{}' object is not subscriptable", type_name(_py, obj));
         raise_exception::<_>(_py, "TypeError", &msg)
     })
