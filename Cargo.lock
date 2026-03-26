@@ -3058,6 +3058,7 @@ dependencies = [
  "molt-runtime-path",
  "molt-runtime-regex",
  "molt-runtime-serial",
+ "molt-runtime-stringprep",
  "molt-runtime-text",
  "molt-runtime-tk",
  "num-bigint",
@@ -3243,6 +3244,14 @@ dependencies = [
  "num-bigint",
  "num-traits",
  "serde_json",
+]
+
+[[package]]
+name = "molt-runtime-stringprep"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-obj-model",
+ "molt-runtime-core",
 ]
 
 [[package]]
