@@ -633,7 +633,9 @@ impl SimpleBackend {
                 }
                 match op.kind.as_str() {
                     "label" | "state_label" | "else" | "end_if" | "loop_start"
-                    | "loop_index_start" | "loop_end" => {}
+                    | "loop_index_start" | "loop_index_next" | "loop_continue"
+                    | "loop_end" | "loop_break" | "loop_break_if_true"
+                    | "loop_break_if_false" => {}
                     _ => continue,
                 }
             }
