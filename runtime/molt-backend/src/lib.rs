@@ -2351,6 +2351,22 @@ impl SimpleBackend {
                 eprintln!(
                     "MOLT_BACKEND: TIR parallel optimization took {tir_elapsed:.2?} for {uncached_count} functions"
                 );
+
+                // DEBUG: dump lowered simple IR
+                if env_setting("MOLT_DUMP_LOWERED_OPS").is_some() {
+                    let filter = env_setting("MOLT_DUMP_LOWERED_OPS").unwrap_or_default();
+                    for func_ir in &ir.functions {
+                        if filter.is_empty() || func_ir.name.contains(&filter) {
+                            eprintln!("\n=== LOWERED OPS: {} ({} ops) ===", func_ir.name, func_ir.ops.len());
+                            for (i, op) in func_ir.ops.iter().enumerate() {
+                                eprintln!("  {:4}: {:25} args={:?} out={:?} var={:?} value={:?} s_value={:?}",
+                                    i, op.kind,
+                                    op.args.as_ref().map(|a| a.join(",")),
+                                    op.out, op.var, op.value, op.s_value);
+                            }
+                        }
+                    }
+                }
             }
 
             tir_cache.save_index();

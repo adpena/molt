@@ -59,7 +59,9 @@ pub(crate) mod frames;
 pub(crate) mod functions;
 #[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod functions_email;
+#[cfg(not(feature = "stdlib_http"))]
 pub(crate) mod functions_http;
+#[cfg(not(feature = "stdlib_http"))]
 pub(crate) mod functions_logging;
 pub(crate) mod functions_pickle;
 pub(crate) mod functions_stat;
@@ -84,6 +86,7 @@ pub(crate) mod ipaddress;
 #[cfg(not(feature = "stdlib_itertools"))]
 pub(crate) mod itertools;
 pub(crate) mod json;
+// NOTE: molt-runtime-logging is still a stub — always compile the local module.
 pub(crate) mod logging_ext;
 mod micro_stubs;
 #[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]

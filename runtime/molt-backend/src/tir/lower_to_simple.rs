@@ -209,7 +209,14 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         }),
         OpCode::ConstBool => Some(OpIR {
             kind: "const_bool".to_string(),
-            value: Some(if attr_bool(&op.attrs, "value").unwrap_or(false) { 1 } else { 0 }),
+            // The SSA lift stores the value as AttrValue::Int (from OpIR.value),
+            // while SCCP-generated const_bool ops store it as AttrValue::Bool.
+            // Handle both representations to avoid silently converting true→false.
+            value: Some(match op.attrs.get("value") {
+                Some(AttrValue::Bool(b)) => if *b { 1 } else { 0 },
+                Some(AttrValue::Int(i)) => if *i != 0 { 1 } else { 0 },
+                _ => 0,
+            }),
             out: out_var,
             ..OpIR::default()
         }),
