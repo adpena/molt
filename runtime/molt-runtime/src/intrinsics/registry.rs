@@ -362,3 +362,86 @@ fn build_intrinsic_func(_py: &PyToken<'_>, fn_ptr: u64, arity: u8) -> Option<u64
     }
     Some(MoltObject::from_ptr(ptr).bits())
 }
+
+/// Register a synthetic `_intrinsics` module in the module cache so that
+/// stdlib Python files can `from _intrinsics import require_intrinsic`.
+/// The module contains a `require_intrinsic` function that delegates to
+/// the runtime's intrinsic lookup.
+pub(crate) fn register_intrinsics_module(_py: &PyToken<'_>) {
+    use crate::{module_dict_bits, alloc_string, dict_set_in_place};
+    use crate::object::builders::{alloc_module_obj, alloc_function_obj};
+
+    // Create the _intrinsics module
+    let name_ptr = alloc_string(_py, b"_intrinsics");
+    if name_ptr.is_null() { return; }
+    let name_bits = MoltObject::from_ptr(name_ptr).bits();
+
+    let module_ptr = alloc_module_obj(_py, name_bits);
+    if module_ptr.is_null() {
+        dec_ref_bits(_py, name_bits);
+        return;
+    }
+    let module_bits = MoltObject::from_ptr(module_ptr).bits();
+
+    // Add require_intrinsic function to the module dict
+    let dict_bits = unsafe { module_dict_bits(module_ptr) };
+    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+        // Create the require_intrinsic function object
+        let fn_name_ptr = alloc_string(_py, b"require_intrinsic");
+        if !fn_name_ptr.is_null() {
+            let fn_name_bits = MoltObject::from_ptr(fn_name_ptr).bits();
+            let fn_obj = alloc_function_obj(
+                _py,
+                molt_require_intrinsic_runtime as *const () as usize as u64,
+                1, // arity
+            );
+            if !fn_obj.is_null() {
+                let fn_bits = MoltObject::from_ptr(fn_obj).bits();
+                let key_ptr = alloc_string(_py, b"require_intrinsic");
+                if !key_ptr.is_null() {
+                    let key_bits = MoltObject::from_ptr(key_ptr).bits();
+                    unsafe { dict_set_in_place(_py, dict_ptr, key_bits, fn_bits); }
+                    dec_ref_bits(_py, key_bits);
+                }
+                dec_ref_bits(_py, fn_bits);
+            }
+            dec_ref_bits(_py, fn_name_bits);
+        }
+    }
+
+    // Register in module cache
+    crate::builtins::modules::molt_module_cache_set(name_bits, module_bits);
+    dec_ref_bits(_py, module_bits);
+    dec_ref_bits(_py, name_bits);
+}
+
+/// Runtime implementation of require_intrinsic(name) -> function
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_require_intrinsic_runtime(name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let name_obj = obj_from_bits(name_bits);
+        let Some(name_ptr) = name_obj.as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            if object_type_id(name_ptr) != TYPE_ID_STRING {
+                return MoltObject::none().bits();
+            }
+            let len = string_len(name_ptr);
+            let bytes = std::slice::from_raw_parts(string_bytes(name_ptr), len);
+            let name = std::str::from_utf8(bytes).unwrap_or("");
+            if let Some(addr) = resolve_symbol(name) {
+                let fn_obj = alloc_function_obj(
+                    _py,
+                    addr,
+                    2, // default arity
+                );
+                if !fn_obj.is_null() {
+                    inc_ref_bits(_py, name_bits);
+                    return MoltObject::from_ptr(fn_obj).bits();
+                }
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
