@@ -6,8 +6,6 @@ use molt_obj_model::MoltObject;
 use num_bigint::{BigInt, Sign};
 use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
-use std::borrow::Cow;
-use std::cmp::Ordering;
 
 use super::ops::{call_binary_dunder, call_inplace_dunder, concat_bytes_like, fill_repeated_bytes};
 

@@ -5,17 +5,16 @@ pub(crate) use crate::object::ops_iter::{
 
 // Re-export arith functions for backward compatibility with crate::object::ops::* paths
 pub(crate) use crate::object::ops_arith::repeat_sequence;
-use crate::object::ops_arith::binary_type_error;
 
 // Re-export compare functions for backward compatibility with crate::object::ops::* paths
 pub(crate) use crate::object::ops_compare::{
-    CompareBoolOutcome, CompareOp, CompareOutcome, compare_builtin_bool, compare_objects,
-    compare_type_error, rich_compare_bool,
+    CompareOutcome, compare_objects,
+    compare_type_error,
 };
 
 // Re-export format functions for backward compatibility with crate::object::ops::* paths
 pub(crate) use crate::object::ops_format::{
-    FormatError, FormatSpec, decode_string_list, decode_value_list, format_float_with_spec,
+    FormatSpec, decode_string_list, decode_value_list, format_float_with_spec,
     format_obj, format_obj_str, format_with_spec, parse_format_spec, string_obj_to_owned,
 };
 
@@ -27,18 +26,16 @@ pub(crate) use crate::object::ops_hash::{
 
 // Re-export encoding functions for backward compatibility with crate::object::ops::* paths
 pub(crate) use crate::object::ops_encoding::{
-    DecodeTextError, EncodeError, EncodingKind, decode_bytes_text, decode_error_byte,
+    DecodeTextError, EncodeError, decode_bytes_text, decode_error_byte,
     decode_error_range, encode_error_reason, encode_string_with_errors, encoding_kind_name,
     is_surrogate, normalize_encoding, unicode_escape,
 };
 
-use crate::object::accessors::object_field_init_ptr_raw;
 use crate::object::layout::{range_start_bits, range_step_bits, range_stop_bits};
 use crate::object::ops_bytes::{
     BytesCtorKind, bytes_ascii_space, bytes_hex_from_bits, bytes_item_to_u8,
     collect_bytearray_assign_bytes,
 };
-use crate::randomness::{fill_os_random, os_random_supported};
 use crate::state::runtime_state::PythonVersionInfo;
 use crate::*;
 use memchr::{memchr, memmem};
@@ -47,18 +44,16 @@ use num_bigint::{BigInt, Sign};
 use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
 use std::borrow::Cow;
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
 #[cfg(not(target_arch = "wasm32"))]
 use std::ffi::CString;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Mutex, OnceLock};
 
 use super::ops_string::{
-    push_wtf8_codepoint, utf8_char_to_byte_index_cached, wtf8_codepoint_at, wtf8_from_bytes,
-    wtf8_has_surrogates,
+    push_wtf8_codepoint, utf8_char_to_byte_index_cached, wtf8_codepoint_at,
 };
 
 #[inline]
@@ -905,7 +900,6 @@ pub extern "C" fn molt_dataclass_set_class(obj_bits: u64, class_bits: u64) -> u6
 
 #[unsafe(no_mangle)]
 
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_profile_dump() {
     crate::with_gil_entry!(_py, {
         if !profile_enabled(_py) {
@@ -12119,7 +12113,6 @@ pub(crate) unsafe fn frozenset_from_iter_bits(_py: &PyToken<'_>, other_bits: u64
 }
 
 
-#[unsafe(no_mangle)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inc_ref_obj(bits: u64) {
     // Fast path: skip GIL for non-pointer values (ints, floats, bools, none).

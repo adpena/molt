@@ -211,6 +211,7 @@ impl SimpleBackend {
         defined_functions: &BTreeSet<String>,
         closure_functions: &BTreeSet<String>,
         emit_traces: bool,
+        leaf_functions: &BTreeSet<String>,
     ) {
         self.compile_func_inner(
             func_ir,
@@ -221,6 +222,7 @@ impl SimpleBackend {
             emit_traces,
             false,
             &BTreeSet::new(),
+            leaf_functions,
         );
     }
 
@@ -238,6 +240,7 @@ impl SimpleBackend {
         emit_traces: bool,
         _raw_int_mode: bool,
         _typed_int_functions: &BTreeSet<String>,
+        leaf_functions: &BTreeSet<String>,
     ) {
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
@@ -7036,7 +7039,13 @@ impl SimpleBackend {
                         );
                     }
 
-                    let res = if use_direct_call {
+                    let res = if use_direct_call && leaf_functions.contains(target_name) {
+                        // Leaf function: no user-level calls inside, so it
+                        // cannot recurse.  Skip the recursion guard entirely
+                        // (saves 2 atomic ops + 2 extern-C calls per call).
+                        let direct_call = builder.ins().call(local_callee, &args);
+                        builder.inst_results(direct_call)[0]
+                    } else if use_direct_call {
                         // Lightweight recursion guard using global atomics
                         // (no TLS on the hot path). The data-symbol inline
                         // approach was reverted because Cranelift global_value
