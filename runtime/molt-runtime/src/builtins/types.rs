@@ -927,20 +927,10 @@ pub extern "C" fn molt_classmethod_new(func_bits: u64) -> u64 {
 pub extern "C" fn molt_generic_alias_new(origin_bits: u64, args_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let args_obj = obj_from_bits(args_bits);
-        // Always create a fresh heap-allocated args tuple.  This is
-        // necessary because the incoming tuple may be stack-allocated
-        // (from the Cranelift stack-tuple optimisation) and would become
-        // a dangling pointer once the caller's stack frame is unwound.
-        // Copying the elements into a new heap tuple is cheap and safe.
         let args_tuple_bits = if let Some(args_ptr) = args_obj.as_ptr() {
             unsafe {
                 if object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                    let elems = seq_vec_ref(args_ptr);
-                    let new_ptr = alloc_tuple(_py, elems);
-                    if new_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    MoltObject::from_ptr(new_ptr).bits()
+                    args_bits
                 } else {
                     let tuple_ptr = alloc_tuple(_py, &[args_bits]);
                     if tuple_ptr.is_null() {
@@ -956,10 +946,11 @@ pub extern "C" fn molt_generic_alias_new(origin_bits: u64, args_bits: u64) -> u6
             }
             MoltObject::from_ptr(tuple_ptr).bits()
         };
+        let owned_args = args_tuple_bits != args_bits;
         let ptr = alloc_generic_alias(_py, origin_bits, args_tuple_bits);
-        // The new tuple was created above; dec_ref since alloc_generic_alias
-        // inc_refs it.
-        dec_ref_bits(_py, args_tuple_bits);
+        if owned_args {
+            dec_ref_bits(_py, args_tuple_bits);
+        }
         if ptr.is_null() {
             MoltObject::none().bits()
         } else {
