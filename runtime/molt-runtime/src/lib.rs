@@ -188,12 +188,6 @@ pub use crate::async_rt::net_stubs::{
     molt_socket_htons,
     molt_socket_ntohl,
     molt_socket_ntohs,
-    molt_socket_reader_at_eof,
-    molt_socket_reader_drop,
-    molt_socket_reader_new,
-    molt_socket_reader_read,
-    molt_socket_reader_readline,
-    molt_socket_reader_readline_limit,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -452,6 +446,8 @@ pub use crate::builtins::ssl::*;
 pub use crate::builtins::string_ext::*;
 #[cfg(not(feature = "stdlib_stringprep"))]
 pub use crate::builtins::stringprep::*;
+#[cfg(feature = "stdlib_stringprep")]
+pub use molt_runtime_stringprep::stringprep::*;
 pub(crate) use crate::builtins::strings::{
     bytes_count_impl, bytes_find_impl, bytes_rfind_impl, bytes_strip_range, replace_bytes_impl,
     replace_bytes_impl_limit, replace_string_impl, rsplit_bytes_to_list_maxsplit,
