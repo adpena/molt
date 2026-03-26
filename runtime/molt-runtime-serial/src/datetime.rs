@@ -21,6 +21,7 @@ use crate::bridge::*;
 // ---------------------------------------------------------------------------
 
 /// Proleptic Gregorian ordinal where day 1 = 0001-01-01.
+#[allow(dead_code)]
 type Ordinal = i64;
 
 /// Parsed datetime components:
@@ -1319,6 +1320,7 @@ fn strftime_impl(args: &StrftimeArgs<'_>) -> Result<String, String> {
     let yday = day_of_year(y, m, d); // 1-based
     let wday_sun0 = (wday_mon0 + 1).rem_euclid(7); // Sun=0..Sat=6
 
+    #[allow(dead_code)]
     fn push_num(out: &mut String, val: i32, width: usize, pad: char) {
         let s = if val < 0 {
             format!("-{:0>width$}", -val, width = width.saturating_sub(1))
@@ -2111,6 +2113,7 @@ fn py_hash_i128(n: i128) -> i64 {
 ///   acc = 0x27D4EB2F165667C5 ^ (len * multiplier)
 ///   for each item:
 ///       acc = acc * multiplier ^ lane_hash(item)
+#[allow(dead_code)]
 fn cpython_tuple_hash(values: &[i64]) -> i64 {
     // Port of CPython's tuplehash from Objects/tupleobject.c
     // xxHash constants
