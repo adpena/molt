@@ -1916,6 +1916,7 @@ pub(super) fn alloc_string_bits(_py: &crate::PyToken<'_>, value: &str) -> Option
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn alloc_string_tuple(_py: &crate::PyToken<'_>, values: &[String]) -> u64 {
     let mut item_bits: Vec<u64> = Vec::with_capacity(values.len());
     for value in values {
@@ -1941,6 +1942,7 @@ pub(super) fn alloc_string_tuple(_py: &crate::PyToken<'_>, values: &[String]) ->
     out
 }
 
+#[allow(dead_code)]
 pub(super) fn alloc_qsl_list(_py: &crate::PyToken<'_>, items: &[(String, String)]) -> u64 {
     let mut tuple_bits: Vec<u64> = Vec::with_capacity(items.len());
     for (key, value) in items {
@@ -1982,6 +1984,7 @@ pub(super) fn alloc_qsl_list(_py: &crate::PyToken<'_>, items: &[(String, String)
     out
 }
 
+#[allow(dead_code)]
 pub(super) fn alloc_qs_dict(
     _py: &crate::PyToken<'_>,
     order: &[String],
