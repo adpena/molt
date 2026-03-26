@@ -13,7 +13,7 @@ use crate::builtins::io::{
     path_basename_text, path_dirname_text, path_join_text, path_normpath_text,
 };
 use crate::builtins::modules::runpy_exec_restricted_source;
-#[cfg(target_arch = \"wasm32\")]
+#[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 use crate::*;
 
@@ -129,21 +129,21 @@ fn collect_virtual_env_site_packages(virtual_env: &str, windows_paths: bool) -> 
     out
 }
 
-struct SysBootstrapState {
-    path: Vec<String>,
-    stdlib_root: Option<String>,
-    pythonpath_entries: Vec<String>,
-    module_roots_entries: Vec<String>,
-    venv_site_packages_entries: Vec<String>,
-    py_path_raw: String,
-    module_roots_raw: String,
-    virtual_env_raw: String,
-    dev_trusted_raw: String,
-    pwd: String,
-    include_cwd: bool,
+pub(super) struct SysBootstrapState {
+    pub(super) path: Vec<String>,
+    pub(super) stdlib_root: Option<String>,
+    pub(super) pythonpath_entries: Vec<String>,
+    pub(super) module_roots_entries: Vec<String>,
+    pub(super) venv_site_packages_entries: Vec<String>,
+    pub(super) py_path_raw: String,
+    pub(super) module_roots_raw: String,
+    pub(super) virtual_env_raw: String,
+    pub(super) dev_trusted_raw: String,
+    pub(super) pwd: String,
+    pub(super) include_cwd: bool,
 }
 
-fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBootstrapState {
+pub(super) fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBootstrapState {
     let (py_path_raw, module_roots_raw, virtual_env_raw, dev_trusted_raw, pwd_raw, windows_paths) = {
         let guard = env_state()
             .lock()
@@ -281,10 +281,10 @@ struct ImportlibRuntimeStateViewBits {
     path_importer_cache_bits: u64,
 }
 
-struct ImportlibSpecFromFileLocationPayload {
-    path: String,
-    is_package: bool,
-    package_root: Option<String>,
+pub(super) struct ImportlibSpecFromFileLocationPayload {
+    pub(super) path: String,
+    pub(super) is_package: bool,
+    pub(super) package_root: Option<String>,
 }
 
 struct ImportlibBootstrapPayload {
@@ -297,14 +297,14 @@ struct ImportlibBootstrapPayload {
     stdlib_root: Option<String>,
 }
 
-struct ImportlibResourcesPathPayload {
-    basename: String,
-    exists: bool,
-    is_file: bool,
-    is_dir: bool,
-    entries: Vec<String>,
-    has_init_py: bool,
-    is_archive_member: bool,
+pub(super) struct ImportlibResourcesPathPayload {
+    pub(super) basename: String,
+    pub(super) exists: bool,
+    pub(super) is_file: bool,
+    pub(super) is_dir: bool,
+    pub(super) entries: Vec<String>,
+    pub(super) has_init_py: bool,
+    pub(super) is_archive_member: bool,
 }
 
 struct ImportlibResourcesPackagePayload {
@@ -314,15 +314,15 @@ struct ImportlibResourcesPackagePayload {
     init_file: Option<String>,
 }
 
-struct ImportlibMetadataPayload {
-    path: String,
-    name: String,
-    version: String,
-    metadata: Vec<(String, String)>,
-    entry_points: Vec<(String, String, String)>,
-    requires_dist: Vec<String>,
-    provides_extra: Vec<String>,
-    requires_python: Option<String>,
+pub(super) struct ImportlibMetadataPayload {
+    pub(super) path: String,
+    pub(super) name: String,
+    pub(super) version: String,
+    pub(super) metadata: Vec<(String, String)>,
+    pub(super) entry_points: Vec<(String, String, String)>,
+    pub(super) requires_dist: Vec<String>,
+    pub(super) provides_extra: Vec<String>,
+    pub(super) requires_python: Option<String>,
 }
 
 struct ImportlibResourcesFilesPayload {
@@ -333,10 +333,10 @@ struct ImportlibResourcesFilesPayload {
     files_traversable_bits: Option<u64>,
 }
 
-struct ImportlibMetadataRecordEntry {
-    path: String,
-    hash: Option<String>,
-    size: Option<String>,
+pub(super) struct ImportlibMetadataRecordEntry {
+    pub(super) path: String,
+    pub(super) hash: Option<String>,
+    pub(super) size: Option<String>,
 }
 
 fn bootstrap_path_sep() -> char {
@@ -1274,14 +1274,14 @@ fn importlib_metadata_dist_paths(
     out
 }
 
-fn importlib_metadata_entry_points_payload(
+pub(super) fn importlib_metadata_entry_points_payload(
     search_paths: &[String],
     module_file: Option<String>,
 ) -> Vec<(String, String, String)> {
     importlib_metadata_entry_points_select_payload(search_paths, module_file, None, None)
 }
 
-fn importlib_metadata_distributions_payload(
+pub(super) fn importlib_metadata_distributions_payload(
     search_paths: &[String],
     module_file: Option<String>,
 ) -> Vec<ImportlibMetadataPayload> {
@@ -1293,7 +1293,7 @@ fn importlib_metadata_distributions_payload(
     out
 }
 
-fn importlib_metadata_entry_points_select_payload(
+pub(super) fn importlib_metadata_entry_points_select_payload(
     search_paths: &[String],
     module_file: Option<String>,
     group: Option<&str>,
@@ -1320,7 +1320,7 @@ fn importlib_metadata_entry_points_select_payload(
     out
 }
 
-fn importlib_metadata_entry_points_filter_payload(
+pub(super) fn importlib_metadata_entry_points_filter_payload(
     search_paths: &[String],
     module_file: Option<String>,
     group: Option<&str>,
@@ -1353,7 +1353,7 @@ fn importlib_metadata_entry_points_filter_payload(
     out
 }
 
-fn importlib_metadata_normalize_name(name: &str) -> String {
+pub(super) fn importlib_metadata_normalize_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut prev_sep = false;
     for ch in name.chars() {
@@ -2011,7 +2011,7 @@ fn importlib_runtime_state_payload_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
     Ok(dict_bits)
 }
 
-fn importlib_resources_path_payload(path: &str) -> ImportlibResourcesPathPayload {
+pub(super) fn importlib_resources_path_payload(path: &str) -> ImportlibResourcesPathPayload {
     let sep = bootstrap_path_sep();
     let basename = path_basename_text(path, sep);
     if let Some((archive_path, inner_path)) = split_zip_archive_path(path) {
@@ -2322,7 +2322,7 @@ fn importlib_resources_first_fs_file_candidate(roots: &[String], resource: &str)
     None
 }
 
-fn importlib_metadata_parse_headers(text: &str) -> Vec<(String, String)> {
+pub(super) fn importlib_metadata_parse_headers(text: &str) -> Vec<(String, String)> {
     let mut mapping: Vec<(String, String)> = Vec::new();
     let mut current_idx: Option<usize> = None;
     for raw_line in text.lines() {
@@ -2346,7 +2346,7 @@ fn importlib_metadata_parse_headers(text: &str) -> Vec<(String, String)> {
     mapping
 }
 
-fn importlib_metadata_header_values(headers: &[(String, String)], key: &str) -> Vec<String> {
+pub(super) fn importlib_metadata_header_values(headers: &[(String, String)], key: &str) -> Vec<String> {
     headers
         .iter()
         .filter_map(|(k, v)| {
@@ -2359,13 +2359,13 @@ fn importlib_metadata_header_values(headers: &[(String, String)], key: &str) -> 
         .collect()
 }
 
-fn importlib_metadata_first_nonempty(headers: &[(String, String)], key: &str) -> Option<String> {
+pub(super) fn importlib_metadata_first_nonempty(headers: &[(String, String)], key: &str) -> Option<String> {
     importlib_metadata_header_values(headers, key)
         .into_iter()
         .find(|value| !value.is_empty())
 }
 
-fn importlib_metadata_parse_entry_points(text: &str) -> Vec<(String, String, String)> {
+pub(super) fn importlib_metadata_parse_entry_points(text: &str) -> Vec<(String, String, String)> {
     let mut group: Option<String> = None;
     let mut out: Vec<(String, String, String)> = Vec::new();
     for line in text.lines() {
@@ -2392,7 +2392,7 @@ fn importlib_metadata_parse_entry_points(text: &str) -> Vec<(String, String, Str
     out
 }
 
-fn importlib_metadata_parse_csv_row(row: &str) -> Vec<String> {
+pub(super) fn importlib_metadata_parse_csv_row(row: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut chars = row.chars().peekable();
@@ -2424,7 +2424,7 @@ fn importlib_metadata_parse_csv_row(row: &str) -> Vec<String> {
     out
 }
 
-fn importlib_metadata_record_payload(path: &str) -> Vec<ImportlibMetadataRecordEntry> {
+pub(super) fn importlib_metadata_record_payload(path: &str) -> Vec<ImportlibMetadataRecordEntry> {
     let sep = bootstrap_path_sep();
     let record_path = path_join_text(path.to_string(), "RECORD", sep);
     let record_text = match std::fs::read(&record_path) {
@@ -2462,7 +2462,7 @@ fn importlib_metadata_record_payload(path: &str) -> Vec<ImportlibMetadataRecordE
     out
 }
 
-fn importlib_metadata_packages_distributions_payload(
+pub(super) fn importlib_metadata_packages_distributions_payload(
     search_paths: &[String],
     module_file: Option<String>,
 ) -> Vec<(String, Vec<String>)> {
@@ -2497,7 +2497,7 @@ fn importlib_metadata_packages_distributions_payload(
         .collect()
 }
 
-fn importlib_metadata_payload(path: &str) -> ImportlibMetadataPayload {
+pub(super) fn importlib_metadata_payload(path: &str) -> ImportlibMetadataPayload {
     let sep = bootstrap_path_sep();
     let base = path_basename_text(path, sep);
     let fallback_name = base
@@ -2542,7 +2542,7 @@ fn importlib_metadata_payload(path: &str) -> ImportlibMetadataPayload {
     }
 }
 
-fn importlib_spec_from_file_location_payload(path: &str) -> ImportlibSpecFromFileLocationPayload {
+pub(super) fn importlib_spec_from_file_location_payload(path: &str) -> ImportlibSpecFromFileLocationPayload {
     let sep = bootstrap_path_sep();
     let is_package = path_basename_text(path, sep) == "__init__.py";
     let package_root = if is_package {
@@ -4896,7 +4896,7 @@ fn alloc_string_triplets_list_bits(
     }
 }
 
-fn locale_encoding_label(locale: &str) -> &'static str {
+pub(super) fn locale_encoding_label(locale: &str) -> &'static str {
     if locale == "C" || locale == "POSIX" {
         "US-ASCII"
     } else {
@@ -4904,7 +4904,7 @@ fn locale_encoding_label(locale: &str) -> &'static str {
     }
 }
 
-fn alloc_str_bits(_py: &PyToken<'_>, value: &str) -> Result<u64, u64> {
+pub(super) fn alloc_str_bits(_py: &PyToken<'_>, value: &str) -> Result<u64, u64> {
     let ptr = alloc_string(_py, value.as_bytes());
     if ptr.is_null() {
         return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
@@ -4972,7 +4972,7 @@ fn string_arg_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Result<Stri
     }
 }
 
-fn bytes_arg_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Result<Vec<u8>, u64> {
+pub(super) fn bytes_arg_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Result<Vec<u8>, u64> {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return Err(raise_exception::<_>(
             _py,

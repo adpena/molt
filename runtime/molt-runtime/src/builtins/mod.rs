@@ -53,6 +53,7 @@ pub(crate) mod fnmatch;
 pub(crate) mod fractions;
 pub(crate) mod frames;
 pub(crate) mod functions;
+pub(crate) mod functions_http;
 pub(crate) mod functions_pickle;
 pub(crate) mod functools;
 #[cfg(feature = "stdlib_fs_extra")]
@@ -86,6 +87,7 @@ pub(crate) mod operator;
 pub(crate) mod os_ext;
 pub(crate) mod pathlib;
 pub(crate) mod platform;
+pub(crate) mod platform_importlib;
 pub(crate) mod platform_mod;
 pub(crate) mod pprint_ext;
 pub(crate) mod punycode;
