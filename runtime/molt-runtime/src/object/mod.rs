@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -649,6 +649,23 @@ thread_local! {
     pub(crate) static NURSERY_SUSPENDED: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Suspend nursery allocation — all objects go to global allocator.
+#[inline(always)]
+pub(crate) fn nursery_suspend() {
+    NURSERY_SUSPENDED.with(|s| s.set(true));
+}
+
+/// Resume nursery allocation.
+#[inline(always)]
+pub(crate) fn nursery_resume() {
+    NURSERY_SUSPENDED.with(|s| s.set(false));
+}
+
+#[inline(always)]
+fn nursery_is_suspended() -> bool {
+    NURSERY_SUSPENDED.with(|s| s.get())
+}
+
 /// Reset the thread-local nursery, reclaiming all bump-allocated memory.
 /// Call at function exit once all nursery-allocated objects in the frame are dead.
 #[inline(always)]
@@ -907,7 +924,7 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
     // ~2 instructions) before falling back to the global allocator.
     let header_ptr = header_ptr
         .or_else(|| {
-            if total_size <= NURSERY_ALLOC_MAX && !pool_eligible {
+            if total_size <= NURSERY_ALLOC_MAX && !pool_eligible && !nursery_is_suspended() {
                 NURSERY_TLS.with(|cell| {
                     cell.borrow_mut().alloc(total_size, 8).map(|ptr| {
                         from_nursery = true;

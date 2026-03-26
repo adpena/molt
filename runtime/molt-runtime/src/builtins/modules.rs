@@ -439,6 +439,16 @@ pub extern "C" fn molt_module_cache_get(name_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_import(name_bits: u64) -> u64 {
+    // Suspend nursery during import — objects created during module init
+    // (type objects, class dicts, etc.) may be stored in persistent containers
+    // (sys.modules, module.__dict__) that outlive the nursery reset.
+    crate::object::nursery_suspend();
+    let result = molt_module_import_inner(name_bits);
+    crate::object::nursery_resume();
+    result
+}
+
+fn molt_module_import_inner(name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
             Some(val) => val,
