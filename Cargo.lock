@@ -3063,6 +3063,7 @@ dependencies = [
  "molt-runtime-text",
  "molt-runtime-tk",
  "molt-runtime-xml",
+ "molt-runtime-zoneinfo",
  "num-bigint",
  "num-integer",
  "num-traits",
@@ -3287,6 +3288,14 @@ dependencies = [
 
 [[package]]
 name = "molt-runtime-xml"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+]
+
+[[package]]
+name = "molt-runtime-zoneinfo"
 version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",
