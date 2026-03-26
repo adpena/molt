@@ -5899,20 +5899,14 @@ pub extern "C" fn molt_urllib_request_response_readinto(handle_bits: u64, buffer
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
         let mut export = crate::bridge::BufferExport {
-            ptr: std::ptr::null(),
+            ptr: 0,
             len: 0,
-            readonly: false,
+            readonly: 0,
+            stride: 0,
             itemsize: 0,
-            format_ptr: std::ptr::null(),
-            format_len: 0,
-            ndim: 0,
-            shape_ptr: std::ptr::null(),
-            shape_len: 0,
-            strides_ptr: std::ptr::null(),
-            strides_len: 0,
         };
         if crate::bridge::molt_buffer_export(buffer_bits, &mut export)
-            || export.readonly
+            || export.readonly != 0
             || export.itemsize != 1
         {
             return raise_exception::<_>(
@@ -5921,7 +5915,7 @@ pub extern "C" fn molt_urllib_request_response_readinto(handle_bits: u64, buffer
                 "readinto() argument must be a writable bytes-like object",
             );
         }
-        let out_len = export.len;
+        let out_len = export.len as usize;
         if out_len == 0 {
             return MoltObject::from_int(0).bits();
         }
