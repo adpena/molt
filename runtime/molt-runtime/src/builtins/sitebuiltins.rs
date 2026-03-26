@@ -1,4 +1,4 @@
-use crate::object::ops::molt_print_builtin;
+use crate::molt_print_builtin;
 use crate::object::ops::type_name;
 use crate::{
     MoltObject, PyToken, alloc_exception_from_class_bits, alloc_string, alloc_tuple, dec_ref_bits,
