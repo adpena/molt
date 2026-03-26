@@ -1,17 +1,13 @@
 #![allow(dead_code, unused_imports)]
+
+use molt_runtime_core::prelude::*;
+use crate::bridge::*;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::ptr;
 
-use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
 use num_traits::{One, Signed, ToPrimitive, Zero};
-
-use crate::object::ops::{is_truthy, string_obj_to_owned};
-use crate::{
-    PyToken, alloc_string, alloc_tuple, bits_from_ptr, dec_ref_bits, int_bits_from_bigint,
-    int_bits_from_i64, obj_from_bits, ptr_from_bits, raise_exception, release_ptr, to_bigint,
-};
 
 const MPD_CLAMPED: u32 = 0x00000001;
 const MPD_CONVERSION_SYNTAX: u32 = 0x00000002;
@@ -201,7 +197,7 @@ fn decimal_signal_name(flags: u32) -> &'static str {
     "InvalidOperation"
 }
 
-fn apply_status(_py: &PyToken<'_>, ctx: &mut DecimalContextHandle, status: u32) -> Result<(), u64> {
+fn apply_status(_py: &PyToken, ctx: &mut DecimalContextHandle, status: u32) -> Result<(), u64> {
     if status == 0 {
         return Ok(());
     }
@@ -384,7 +380,7 @@ fn decimal_to_string(dec: &DecimalHandle, capitals: i32) -> String {
     }
 }
 
-fn decimal_tuple_bits(_py: &PyToken<'_>, dec: &DecimalHandle) -> u64 {
+fn decimal_tuple_bits(_py: &PyToken, dec: &DecimalHandle) -> u64 {
     let sign_bits = int_bits_from_i64(_py, if dec.sign { 1 } else { 0 });
 
     let (digit_bits, exp_bits) = match dec.special {
@@ -616,7 +612,7 @@ fn decimal_bits(dec: DecimalHandle) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_context_new() -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let handle = Box::new(default_context());
         bits_from_ptr(Box::into_raw(handle) as *mut u8)
     })
@@ -624,7 +620,7 @@ pub extern "C" fn molt_decimal_context_new() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_context_get_current() -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ptr = ensure_current_context();
         context_inc(ptr);
         bits_from_ptr(ptr as *mut u8)
@@ -633,7 +629,7 @@ pub extern "C" fn molt_decimal_context_get_current() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_context_set_current(ctx_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(new_ptr) = context_ptr_from_bits(ctx_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal context");
         };
@@ -655,7 +651,7 @@ pub extern "C" fn molt_decimal_context_set_current(ctx_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_context_copy(ctx_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -669,7 +665,7 @@ pub extern "C" fn molt_decimal_context_copy(ctx_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_context_drop(ctx_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(ctx_bits) as *mut DecimalContextHandle;
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -681,7 +677,7 @@ pub extern "C" fn molt_decimal_context_drop(ctx_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_context_get_prec(ctx_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -693,7 +689,7 @@ pub extern "C" fn molt_decimal_context_get_prec(ctx_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_context_set_prec(ctx_bits: u64, prec_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -714,7 +710,7 @@ pub extern "C" fn molt_decimal_context_set_prec(ctx_bits: u64, prec_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_context_get_rounding(ctx_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -726,7 +722,7 @@ pub extern "C" fn molt_decimal_context_get_rounding(ctx_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_context_set_rounding(ctx_bits: u64, round_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -747,7 +743,7 @@ pub extern "C" fn molt_decimal_context_set_rounding(ctx_bits: u64, round_bits: u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_context_clear_flags(ctx_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -762,7 +758,7 @@ pub extern "C" fn molt_decimal_context_clear_flags(ctx_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_context_get_flag(ctx_bits: u64, flag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -782,7 +778,7 @@ pub extern "C" fn molt_decimal_context_set_flag(
     flag_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -805,7 +801,7 @@ pub extern "C" fn molt_decimal_context_set_flag(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_context_get_trap(ctx_bits: u64, flag_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -825,7 +821,7 @@ pub extern "C" fn molt_decimal_context_set_trap(
     flag_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -848,7 +844,7 @@ pub extern "C" fn molt_decimal_context_set_trap(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_from_str(ctx_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -873,7 +869,7 @@ pub extern "C" fn molt_decimal_from_str(ctx_bits: u64, value_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_from_int(ctx_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let _ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -893,7 +889,7 @@ pub extern "C" fn molt_decimal_from_int(ctx_bits: u64, value_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_clone(value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = decimal_handle_from_bits(value_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
         };
@@ -903,7 +899,7 @@ pub extern "C" fn molt_decimal_clone(value_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_drop(value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(value_bits);
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -919,7 +915,7 @@ pub extern "C" fn molt_decimal_drop(value_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_to_string(value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = decimal_handle_from_bits(value_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
         };
@@ -939,7 +935,7 @@ pub extern "C" fn molt_decimal_to_string(value_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_as_tuple(value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = decimal_handle_from_bits(value_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
         };
@@ -949,7 +945,7 @@ pub extern "C" fn molt_decimal_as_tuple(value_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_to_float(value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = decimal_handle_from_bits(value_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
         };
@@ -972,7 +968,7 @@ pub extern "C" fn molt_decimal_to_float(value_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_div(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1050,7 +1046,7 @@ pub extern "C" fn molt_decimal_div(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_quantize(ctx_bits: u64, a_bits: u64, exp_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1110,7 +1106,7 @@ pub extern "C" fn molt_decimal_quantize(ctx_bits: u64, a_bits: u64, exp_bits: u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_compare(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let _ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1138,7 +1134,7 @@ pub extern "C" fn molt_decimal_compare(ctx_bits: u64, a_bits: u64, b_bits: u64) 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_compare_total(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
         };
@@ -1183,7 +1179,7 @@ pub extern "C" fn molt_decimal_compare_total(a_bits: u64, b_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_normalize(ctx_bits: u64, a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let _ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1199,7 +1195,7 @@ pub extern "C" fn molt_decimal_normalize(ctx_bits: u64, a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_exp(ctx_bits: u64, a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1256,8 +1252,8 @@ pub extern "C" fn molt_decimal_exp(ctx_bits: u64, a_bits: u64) -> u64 {
 
 // ── Binary arithmetic ────────────────────────────────────────────────────
 
-fn binary_arith_setup<'a>(
-    _py: &PyToken<'a>,
+fn binary_arith_setup(
+    _py: &PyToken,
     ctx_bits: u64,
     a_bits: u64,
     b_bits: u64,
@@ -1300,7 +1296,7 @@ fn align_add_sub(a: &DecimalHandle, b: &DecimalHandle) -> (BigInt, BigInt, i64) 
 }
 
 fn finalize_binary(
-    _py: &PyToken<'_>,
+    _py: &PyToken,
     ctx: &mut DecimalContextHandle,
     sign: bool,
     coeff: BigInt,
@@ -1326,7 +1322,7 @@ fn finalize_binary(
 }
 
 fn transcendental_via_f64(
-    _py: &PyToken<'_>,
+    _py: &PyToken,
     ctx: &mut DecimalContextHandle,
     a: &DecimalHandle,
     f: impl FnOnce(f64) -> f64,
@@ -1374,7 +1370,7 @@ fn transcendental_via_f64(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_add(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -1414,7 +1410,7 @@ pub extern "C" fn molt_decimal_add(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_sub(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -1459,7 +1455,7 @@ pub extern "C" fn molt_decimal_sub(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_mul(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -1492,7 +1488,7 @@ pub extern "C" fn molt_decimal_mul(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_floordiv(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -1531,7 +1527,7 @@ pub extern "C" fn molt_decimal_floordiv(ctx_bits: u64, a_bits: u64, b_bits: u64)
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_mod(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -1560,7 +1556,7 @@ pub extern "C" fn molt_decimal_mod(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_pow(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -1597,7 +1593,7 @@ pub extern "C" fn molt_decimal_pow(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_abs(ctx_bits: u64, a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1617,7 +1613,7 @@ pub extern "C" fn molt_decimal_abs(ctx_bits: u64, a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_neg(ctx_bits: u64, a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1637,7 +1633,7 @@ pub extern "C" fn molt_decimal_neg(ctx_bits: u64, a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_pos(ctx_bits: u64, a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1663,7 +1659,7 @@ pub extern "C" fn molt_decimal_pos(ctx_bits: u64, a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_sqrt(ctx_bits: u64, a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1687,7 +1683,7 @@ pub extern "C" fn molt_decimal_sqrt(ctx_bits: u64, a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_ln(ctx_bits: u64, a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1716,7 +1712,7 @@ pub extern "C" fn molt_decimal_ln(ctx_bits: u64, a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_log10(ctx_bits: u64, a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1747,7 +1743,7 @@ pub extern "C" fn molt_decimal_log10(ctx_bits: u64, a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_is_finite(a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -1757,7 +1753,7 @@ pub extern "C" fn molt_decimal_is_finite(a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_is_infinite(a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -1767,7 +1763,7 @@ pub extern "C" fn molt_decimal_is_infinite(a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_is_nan(a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -1778,7 +1774,7 @@ pub extern "C" fn molt_decimal_is_nan(a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_is_zero(a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -1788,7 +1784,7 @@ pub extern "C" fn molt_decimal_is_zero(a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_is_signed(a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -1798,7 +1794,7 @@ pub extern "C" fn molt_decimal_is_signed(a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_is_normal(ctx_bits: u64, a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1818,7 +1814,7 @@ pub extern "C" fn molt_decimal_is_normal(ctx_bits: u64, a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_is_subnormal(ctx_bits: u64, a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1838,7 +1834,7 @@ pub extern "C" fn molt_decimal_is_subnormal(ctx_bits: u64, a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_number_class(ctx_bits: u64, a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1883,7 +1879,7 @@ pub extern "C" fn molt_decimal_number_class(ctx_bits: u64, a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_adjusted(a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
         };
@@ -1899,7 +1895,7 @@ pub extern "C" fn molt_decimal_adjusted(a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_max(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -1929,7 +1925,7 @@ pub extern "C" fn molt_decimal_max(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_min(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -1959,7 +1955,7 @@ pub extern "C" fn molt_decimal_min(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_same_quantum(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -1977,7 +1973,7 @@ pub extern "C" fn molt_decimal_same_quantum(a_bits: u64, b_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_to_integral_value(ctx_bits: u64, a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -2025,7 +2021,7 @@ pub extern "C" fn molt_decimal_to_integral_exact(ctx_bits: u64, a_bits: u64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_to_eng_string(a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
         };
@@ -2082,7 +2078,7 @@ pub extern "C" fn molt_decimal_to_eng_string(a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_next_plus(ctx_bits: u64, a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -2130,7 +2126,7 @@ pub extern "C" fn molt_decimal_next_plus(ctx_bits: u64, a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_next_minus(ctx_bits: u64, a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -2180,7 +2176,7 @@ pub extern "C" fn molt_decimal_next_minus(ctx_bits: u64, a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_copy_abs(a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
         };
@@ -2195,7 +2191,7 @@ pub extern "C" fn molt_decimal_copy_abs(a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_copy_negate(a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
         };
@@ -2210,7 +2206,7 @@ pub extern "C" fn molt_decimal_copy_negate(a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_copy_sign(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
         };
@@ -2230,7 +2226,7 @@ pub extern "C" fn molt_decimal_copy_sign(a_bits: u64, b_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_as_integer_ratio(a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
         };
@@ -2266,7 +2262,7 @@ pub extern "C" fn molt_decimal_as_integer_ratio(a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_from_float(ctx_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -2302,7 +2298,7 @@ pub extern "C" fn molt_decimal_from_float(ctx_bits: u64, value_bits: u64) -> u64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_to_int(a_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
         };
@@ -2327,7 +2323,7 @@ pub extern "C" fn molt_decimal_to_int(a_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_scaleb(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -2366,7 +2362,7 @@ pub extern "C" fn molt_decimal_scaleb(ctx_bits: u64, a_bits: u64, b_bits: u64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_remainder_near(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -2395,7 +2391,7 @@ pub extern "C" fn molt_decimal_remainder_near(ctx_bits: u64, a_bits: u64, b_bits
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_fma(ctx_bits: u64, a_bits: u64, b_bits: u64, c_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),

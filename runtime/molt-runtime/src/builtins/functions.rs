@@ -1,5 +1,15 @@
 use super::functions_http::urllib_request_attr_optional;
+#[cfg(not(feature = "stdlib_serial"))]
 use super::functions_email::email_quopri_alloc_str;
+#[cfg(feature = "stdlib_serial")]
+fn email_quopri_alloc_str(_py: &crate::PyToken<'_>, value: &str) -> u64 {
+    let ptr = crate::alloc_string(_py, value.as_bytes());
+    if ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
 use super::functions_pickle::pickle_resolve_global_bits;
 use molt_obj_model::MoltObject;
 #[cfg(feature = "stdlib_ast")]
