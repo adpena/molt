@@ -2,6 +2,8 @@ pub(crate) mod cancellation;
 pub(crate) mod channels;
 pub(crate) mod event_loop;
 pub(crate) mod generators;
+pub(crate) mod generators_async;
+pub(crate) mod generators_core;
 pub(crate) mod io_poller;
 #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
 pub(crate) mod net_stubs;
