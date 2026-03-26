@@ -3693,7 +3693,7 @@ fn urllib_raise_http_error(
     let exc_bits = unsafe {
         call_class_init_with_args(
             _py,
-            class_ptr,
+            MoltObject::from_ptr(class_ptr).bits(),
             &[url_bits, code_bits, reason_bits, headers_bits, fp_bits],
         )
     };
