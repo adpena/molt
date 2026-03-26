@@ -13,6 +13,8 @@ members = [
     "molt-runtime-regex",
     "molt-runtime-path",
     "molt-runtime-text",
+    "molt-runtime-difflib",
+    "molt-runtime-logging",
     "molt-runtime",
     "molt-backend",
     "molt-wasm-host",
