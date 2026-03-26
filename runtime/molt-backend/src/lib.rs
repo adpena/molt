@@ -676,6 +676,45 @@ fn unbox_int(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> V
     builder.ins().sshr(shifted, shift)
 }
 
+/// Unbox a NaN-boxed value that is either TAG_INT or TAG_BOOL to an i64.
+///
+/// Booleans are coerced to 0/1 (matching Python's `bool` subclass of `int`).
+/// This is needed in `fast_int` arithmetic paths where the TIR optimizer may
+/// mark an op as `fast_int` even when one or both operands are booleans.
+#[cfg(feature = "native-backend")]
+fn unbox_int_or_bool(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
+    let mask = builder.use_var(nbc.qnan_tag_mask);
+    let bool_tag = builder.use_var(nbc.qnan_tag_bool);
+    let masked = builder.ins().band(val, mask);
+    let is_bool = builder.ins().icmp(IntCC::Equal, masked, bool_tag);
+
+    let bool_block = builder.create_block();
+    let int_block = builder.create_block();
+    let merge_block = builder.create_block();
+    builder.append_block_param(merge_block, types::I64);
+
+    builder.ins().brif(is_bool, bool_block, &[], int_block, &[]);
+
+    // Bool path: extract bit 0 as the integer value (False=0, True=1).
+    builder.switch_to_block(bool_block);
+    builder.seal_block(bool_block);
+    let one = builder.ins().iconst(types::I64, 1);
+    let bool_val = builder.ins().band(val, one);
+    jump_block(builder, merge_block, &[bool_val]);
+
+    // Int path: normal unbox_int shift pair.
+    builder.switch_to_block(int_block);
+    builder.seal_block(int_block);
+    let shift = builder.use_var(nbc.int_shift);
+    let shifted = builder.ins().ishl(val, shift);
+    let int_val = builder.ins().sshr(shifted, shift);
+    jump_block(builder, merge_block, &[int_val]);
+
+    builder.switch_to_block(merge_block);
+    builder.seal_block(merge_block);
+    builder.block_params(merge_block)[0]
+}
+
 #[allow(dead_code)]
 #[cfg(feature = "native-backend")]
 fn is_int_tag(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
