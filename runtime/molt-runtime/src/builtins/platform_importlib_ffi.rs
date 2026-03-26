@@ -764,7 +764,7 @@ pub extern "C" fn molt_importlib_coerce_module_name(
     })
 }
 
-fn importlib_coerce_search_paths_values(
+pub(super) fn importlib_coerce_search_paths_values(
     _py: &PyToken<'_>,
     value_bits: u64,
     label: &str,
@@ -3566,7 +3566,7 @@ fn importlib_find_spec_orchestrated_impl(
     out
 }
 
-fn importlib_sys_module_bits(_py: &PyToken<'_>) -> Option<u64> {
+pub(super) fn importlib_sys_module_bits(_py: &PyToken<'_>) -> Option<u64> {
     let module_cache = crate::builtins::exceptions::internals::module_cache(_py);
     let guard = module_cache.lock().unwrap();
     guard.get("sys").copied()
