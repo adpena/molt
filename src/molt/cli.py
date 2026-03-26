@@ -17971,6 +17971,19 @@ def _ensure_backend_binary(
         # Kill any running backend daemon so it doesn't serve stale code
         # after the binary is rebuilt.
         _kill_stale_backend_daemon()
+        # Invalidate TIR optimization cache — the optimized IR from the old
+        # backend may produce wrong code with the new passes (e.g. SCCP folding
+        # loop-carried phis). Also clear compiled binary cache.
+        import shutil
+        for cache_dir in [
+            project_root / ".molt_cache",
+            Path.home() / "Library" / "Caches" / "molt" / "home" / "bin",
+            Path.home() / "Library" / "Caches" / "molt",
+        ]:
+            if cache_dir.is_dir():
+                shutil.rmtree(cache_dir, ignore_errors=True)
+                if not json_output:
+                    print(f"  Cleared stale cache: {cache_dir}", file=sys.stderr)
         cmd = [
             "cargo",
             "build",
