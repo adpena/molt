@@ -53,6 +53,7 @@ pub(crate) mod fnmatch;
 pub(crate) mod fractions;
 pub(crate) mod frames;
 pub(crate) mod functions;
+pub(crate) mod functions_email;
 pub(crate) mod functions_pickle;
 pub(crate) mod functools;
 #[cfg(feature = "stdlib_fs_extra")]
