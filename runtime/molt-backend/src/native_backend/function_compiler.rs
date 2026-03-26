@@ -599,9 +599,6 @@ impl SimpleBackend {
                 continue;
             }
             let op = ops[op_idx].clone();
-            if op.kind == "index" {
-                eprintln!("[DEBUG-BACKEND-OP] func={} op_idx={} kind={} args={:?} out={:?}", func_ir.name, op_idx, op.kind, op.args, op.out);
-            }
             sync_block_filled(&builder, &mut is_block_filled);
             if is_block_filled {
                 if op.kind == "if"
