@@ -5,6 +5,8 @@
 //! `stdlib_http` feature flag.  When the feature is disabled the linker
 //! can strip all HTTP/logging intrinsic code from the final binary.
 
+#![allow(unused_unsafe)]
+
 /// FFI bridge to molt-runtime internal functions (resolved at link time).
 pub mod bridge;
 
