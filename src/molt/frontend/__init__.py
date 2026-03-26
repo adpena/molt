@@ -5580,10 +5580,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="CONST_BOOL", args=[value], result=res))
             return res
         if isinstance(value, int):
-            res = MoltValue(self.next_var(), type_hint="int")
             if _INLINE_INT_MIN <= value <= _INLINE_INT_MAX:
+                res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="CONST", args=[value], result=res))
             else:
+                res = MoltValue(self.next_var(), type_hint="bigint")
                 self.emit(MoltOp(kind="CONST_BIGINT", args=[str(value)], result=res))
             return res
         if isinstance(value, float):
@@ -10222,10 +10223,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="CONST_BOOL", args=[node.value], result=res))
             return res
         if isinstance(node.value, int):
-            res = MoltValue(self.next_var(), type_hint="int")
             if _INLINE_INT_MIN <= node.value <= _INLINE_INT_MAX:
+                res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="CONST", args=[node.value], result=res))
             else:
+                # Use "bigint" hint so _should_fast_int returns False —
+                # bigint values are heap-allocated pointers and must not
+                # be unboxed as inline ints in the fast arithmetic path.
+                res = MoltValue(self.next_var(), type_hint="bigint")
                 self.emit(
                     MoltOp(kind="CONST_BIGINT", args=[str(node.value)], result=res)
                 )
@@ -11767,9 +11772,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         self,
                         add: Callable[[str], None],
                         add_hint: Callable[[str, ast.AST | None], None],
+                        self_name: str = "self",
                     ) -> None:
                         self._add = add
                         self._add_hint = add_hint
+                        self._self_name = self_name
 
                     def visit_Assign(self, node: ast.Assign) -> None:
                         for target in node.targets:
@@ -11787,7 +11794,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         if (
                             isinstance(target, ast.Attribute)
                             and isinstance(target.value, ast.Name)
-                            and target.value.id == "self"
+                            and target.value.id == self._self_name
                         ):
                             self._add(target.attr)
                             self._add_hint(target.attr, annotation)
@@ -11803,8 +11810,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     def visit_Lambda(self, node: ast.Lambda) -> None:
                         return
 
-                collector = FieldCollector(add_field, add_field_hint)
                 for method in methods_in_body:
+                    # Use the actual first parameter name (e.g. "self", "s",
+                    # "cls") so that ``def __init__(s, x): s.x = x`` correctly
+                    # discovers field ``x``.
+                    self_param = "self"
+                    if method.args.args:
+                        self_param = method.args.args[0].arg
+                    collector = FieldCollector(add_field, add_field_hint, self_name=self_param)
                     for stmt in method.body:
                         collector.visit(stmt)
 
@@ -12039,7 +12052,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 hint = None
                 if i == 0 and descriptor == "classmethod":
                     hint = node.name
-                elif i == 0 and arg.arg == "self":
+                elif i == 0 and descriptor not in ("classmethod", "staticmethod"):
                     hint = node.name
                 if self._hints_enabled():
                     explicit = self.explicit_type_hints.get(arg.arg)
@@ -12349,7 +12362,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 hint = None
                 if idx == 0 and descriptor == "classmethod":
                     hint = node.name
-                elif idx == 0 and arg.arg == "self":
+                elif idx == 0 and descriptor not in ("classmethod", "staticmethod"):
                     hint = node.name
                 if self._hints_enabled():
                     explicit = self.explicit_type_hints.get(arg.arg)
@@ -12541,7 +12554,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     hint = None
                     if i == 0 and descriptor == "classmethod":
                         hint = node.name
-                    elif i == 0 and arg.arg == "self":
+                    elif i == 0 and descriptor not in ("classmethod", "staticmethod"):
                         hint = node.name
                     if self._hints_enabled():
                         explicit = self.explicit_type_hints.get(arg.arg)
@@ -12739,7 +12752,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     hint = None
                     if idx == 0 and descriptor == "classmethod":
                         hint = node.name
-                    elif idx == 0 and arg.arg == "self":
+                    elif idx == 0 and descriptor not in ("classmethod", "staticmethod"):
                         hint = node.name
                     if self._hints_enabled():
                         explicit = self.explicit_type_hints.get(arg.arg)
@@ -12877,7 +12890,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 hint = None
                 if i == 0 and descriptor == "classmethod":
                     hint = node.name
-                elif i == 0 and arg.arg == "self":
+                elif i == 0 and descriptor not in ("classmethod", "staticmethod"):
                     hint = node.name
                 if self._hints_enabled():
                     explicit = self.explicit_type_hints.get(arg.arg)
@@ -13013,7 +13026,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 hint = None
                 if idx == 0 and descriptor == "classmethod":
                     hint = node.name
-                elif idx == 0 and arg.arg == "self":
+                elif idx == 0 and descriptor not in ("classmethod", "staticmethod"):
                     hint = node.name
                 if self._hints_enabled():
                     explicit = self.explicit_type_hints.get(arg.arg)
@@ -16123,8 +16136,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             imported_binding = self.imported_names.get(func_id)
             imported_from = imported_binding
             target_info = self.locals.get(func_id) or self.globals.get(func_id)
-            if func_id == "chain":
-                import sys; print(f"DEBUG target_info for chain: {target_info} hint={getattr(target_info, 'type_hint', None)}", file=sys.stderr)
             is_local = func_id in self.locals or func_id in self.boxed_locals
             if self.is_async() and func_id in self.async_locals:
                 loaded = self._load_local_value(func_id)
@@ -17757,7 +17768,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if target_info and str(target_info.type_hint).startswith(
                 ("GenFunc:", "GenClosureFunc:")
             ):
-                import sys; print(f"DEBUG GenFunc call: func_id={func_id} needs_bind={needs_bind} hint={target_info.type_hint}", file=sys.stderr)
                 target_value = target_info
                 if needs_bind:
                     if (
