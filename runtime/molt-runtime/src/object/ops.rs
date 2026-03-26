@@ -1,22 +1,16 @@
 // Re-export iter impl functions for backward compatibility with crate::object::ops::* paths
-
-// Re-exports for backward compatibility with crate::object::ops::* paths
-pub use crate::object::ops_arith::*;
-pub use crate::object::ops_compare::*;
-pub use crate::object::ops_convert::*;
-pub use crate::object::ops_sys::*;
-pub use crate::object::ops_builtins::*;
-
 pub(crate) use crate::object::ops_iter::{
     enumerate_new_impl, filter_new_impl, map_new_impl, reversed_new_impl, zip_new_impl,
 };
 
+use crate::object::accessors::object_field_init_ptr_raw;
 use crate::object::layout::{range_start_bits, range_step_bits, range_stop_bits};
 use crate::object::ops_bytes::{
     BytesCtorKind, bytes_ascii_space, bytes_hex_from_bits, bytes_item_to_u8,
     collect_bytearray_assign_bytes,
 };
 use crate::randomness::{fill_os_random, os_random_supported};
+use crate::state::runtime_state::PythonVersionInfo;
 use crate::*;
 use memchr::{memchr, memmem};
 use molt_obj_model::MoltObject;
@@ -25,8 +19,13 @@ use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::{HashMap};
-use std::sync::OnceLock;
+use std::collections::{HashMap, HashSet};
+use std::ffi::CStr;
+#[cfg(not(target_arch = "wasm32"))]
+use std::ffi::CString;
+use std::io::{BufRead, BufReader, Write};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Mutex, OnceLock};
 
 use super::ops_string::{
     push_wtf8_codepoint, utf8_char_to_byte_index_cached, wtf8_codepoint_at, wtf8_from_bytes,
@@ -172,7 +171,7 @@ pub(crate) fn slice_match(slice: &[u8], needle: &[u8], start_raw: i64, total: i6
     }
 }
 
-pub(crate) fn range_components_bigint(ptr: *mut u8) -> Option<(BigInt, BigInt, BigInt)> {
+pub(super) fn range_components_bigint(ptr: *mut u8) -> Option<(BigInt, BigInt, BigInt)> {
     unsafe {
         let start_obj = obj_from_bits(range_start_bits(ptr));
         let stop_obj = obj_from_bits(range_stop_bits(ptr));
@@ -184,7 +183,7 @@ pub(crate) fn range_components_bigint(ptr: *mut u8) -> Option<(BigInt, BigInt, B
     }
 }
 
-pub(crate) fn range_components_i64(ptr: *mut u8) -> Option<(i64, i64, i64)> {
+pub(super) fn range_components_i64(ptr: *mut u8) -> Option<(i64, i64, i64)> {
     unsafe {
         let start = to_i64(obj_from_bits(range_start_bits(ptr)))?;
         let stop = to_i64(obj_from_bits(range_stop_bits(ptr)))?;
@@ -196,7 +195,7 @@ pub(crate) fn range_components_i64(ptr: *mut u8) -> Option<(i64, i64, i64)> {
     }
 }
 
-pub(crate) fn range_len_i128(start: i64, stop: i64, step: i64) -> i128 {
+pub(super) fn range_len_i128(start: i64, stop: i64, step: i64) -> i128 {
     if step == 0 {
         return 0;
     }
@@ -218,7 +217,7 @@ pub(crate) fn range_len_i128(start: i64, stop: i64, step: i64) -> i128 {
     1 + span / step_abs
 }
 
-pub(crate) fn range_value_at_index_i64(start: i64, stop: i64, step: i64, idx: i128) -> Option<i64> {
+pub(super) fn range_value_at_index_i64(start: i64, stop: i64, step: i64, idx: i128) -> Option<i64> {
     if idx < 0 {
         return None;
     }
@@ -238,7 +237,7 @@ pub(crate) fn range_value_at_index_i64(start: i64, stop: i64, step: i64, idx: i1
     i64::try_from(val).ok()
 }
 
-pub(crate) fn range_index_for_candidate(
+pub(super) fn range_index_for_candidate(
     start: &BigInt,
     stop: &BigInt,
     step: &BigInt,
@@ -267,7 +266,7 @@ pub(crate) fn range_index_for_candidate(
     Some(offset / step)
 }
 
-pub(crate) fn range_lookup_candidate(_py: &PyToken<'_>, val_bits: u64) -> Option<BigInt> {
+pub(super) fn range_lookup_candidate(_py: &PyToken<'_>, val_bits: u64) -> Option<BigInt> {
     let val = obj_from_bits(val_bits);
     if let Some(f) = val.as_float() {
         if !f.is_finite() || f.fract() != 0.0 {
@@ -287,24 +286,24 @@ pub(crate) fn range_lookup_candidate(_py: &PyToken<'_>, val_bits: u64) -> Option
 }
 
 #[inline]
-pub(crate) fn debug_index_enabled() -> bool {
+fn debug_index_enabled() -> bool {
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_INDEX").as_deref() == Ok("1"))
 }
 
 #[inline]
-pub(crate) fn debug_index_list_enabled() -> bool {
+fn debug_index_list_enabled() -> bool {
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_INDEX_LIST").as_deref() == Ok("1"))
 }
 
 #[inline]
-pub(crate) fn debug_store_index_enabled() -> bool {
+fn debug_store_index_enabled() -> bool {
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_STORE_INDEX").as_deref() == Ok("1"))
 }
 
-pub(crate) fn range_len_bigint(start: &BigInt, stop: &BigInt, step: &BigInt) -> BigInt {
+pub(super) fn range_len_bigint(start: &BigInt, stop: &BigInt, step: &BigInt) -> BigInt {
     if step.is_zero() {
         return BigInt::from(0);
     }
@@ -323,7 +322,7 @@ pub(crate) fn range_len_bigint(start: &BigInt, stop: &BigInt, step: &BigInt) -> 
     BigInt::from(1) + span / step_abs
 }
 
-pub(crate) fn alloc_range_from_bigints(_py: &PyToken<'_>, start: BigInt, stop: BigInt, step: BigInt) -> u64 {
+pub(super) fn alloc_range_from_bigints(_py: &PyToken<'_>, start: BigInt, stop: BigInt, step: BigInt) -> u64 {
     let start_bits = int_bits_from_bigint(_py, start);
     let stop_bits = int_bits_from_bigint(_py, stop);
     let step_bits = int_bits_from_bigint(_py, step);
@@ -871,11 +870,22736 @@ pub extern "C" fn molt_dataclass_set_class(obj_bits: u64, class_bits: u64) -> u6
     })
 }
 
+// --- NaN-boxed ops ---
+
+fn is_number_for_concat(obj: MoltObject) -> bool {
+    if obj.as_float().is_some() {
+        return true;
+    }
+    if to_i64(obj).is_some() {
+        return true;
+    }
+    if bigint_ptr_from_bits(obj.bits()).is_some() {
+        return true;
+    }
+    if complex_ptr_from_bits(obj.bits()).is_some() {
+        return true;
+    }
+    false
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        // Note: exception_pending check removed — backends guarantee molt_add
+        // is only called on non-exception paths, so the TLS + atomic overhead
+        // of checking every arithmetic op is unnecessary.
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        // Guard: skip int fast path if either operand is a float, because
+        // to_i64 coerces exact-integer floats (e.g. 2.0 -> 2).
+        if !lhs.is_float() && !rhs.is_float() && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            let res = li as i128 + ri as i128;
+            return int_bits_from_i128(_py, res);
+        }
+        // Float fast path — second most common after int, moved before
+        // as_ptr / bigint checks to avoid unnecessary pointer dereferences.
+        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
+            return MoltObject::from_float(lf + rf).bits();
+        }
+        if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
+            unsafe {
+                let ltype = object_type_id(lp);
+                let rtype = object_type_id(rp);
+                if ltype == TYPE_ID_STRING && rtype == TYPE_ID_STRING {
+                    let l_len = string_len(lp);
+                    let r_len = string_len(rp);
+                    let l_bytes = std::slice::from_raw_parts(string_bytes(lp), l_len);
+                    let r_bytes = std::slice::from_raw_parts(string_bytes(rp), r_len);
+                    if let Some(bits) = concat_bytes_like(_py, l_bytes, r_bytes, TYPE_ID_STRING) {
+                        return bits;
+                    }
+                    return MoltObject::none().bits();
+                }
+                if ltype == TYPE_ID_BYTES && rtype == TYPE_ID_BYTES {
+                    let l_len = bytes_len(lp);
+                    let r_len = bytes_len(rp);
+                    let l_bytes = std::slice::from_raw_parts(bytes_data(lp), l_len);
+                    let r_bytes = std::slice::from_raw_parts(bytes_data(rp), r_len);
+                    if let Some(bits) = concat_bytes_like(_py, l_bytes, r_bytes, TYPE_ID_BYTES) {
+                        return bits;
+                    }
+                    return MoltObject::none().bits();
+                }
+                if ltype == TYPE_ID_BYTEARRAY && rtype == TYPE_ID_BYTEARRAY {
+                    let l_len = bytes_len(lp);
+                    let r_len = bytes_len(rp);
+                    let l_bytes = std::slice::from_raw_parts(bytes_data(lp), l_len);
+                    let r_bytes = std::slice::from_raw_parts(bytes_data(rp), r_len);
+                    if let Some(bits) = concat_bytes_like(_py, l_bytes, r_bytes, TYPE_ID_BYTEARRAY)
+                    {
+                        return bits;
+                    }
+                    return MoltObject::none().bits();
+                }
+                if ltype == TYPE_ID_LIST && rtype == TYPE_ID_LIST {
+                    let l_len = list_len(lp);
+                    let r_len = list_len(rp);
+                    let l_elems = seq_vec_ref(lp);
+                    let r_elems = seq_vec_ref(rp);
+                    let mut combined = Vec::with_capacity(l_len + r_len);
+                    combined.extend_from_slice(l_elems);
+                    combined.extend_from_slice(r_elems);
+                    let ptr = alloc_list(_py, &combined);
+                    if ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_ptr(ptr).bits();
+                }
+                if ltype == TYPE_ID_TUPLE && rtype == TYPE_ID_TUPLE {
+                    let l_len = tuple_len(lp);
+                    let r_len = tuple_len(rp);
+                    let l_elems = seq_vec_ref(lp);
+                    let r_elems = seq_vec_ref(rp);
+                    let mut combined = Vec::with_capacity(l_len + r_len);
+                    combined.extend_from_slice(l_elems);
+                    combined.extend_from_slice(r_elems);
+                    let ptr = alloc_tuple(_py, &combined);
+                    if ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_ptr(ptr).bits();
+                }
+            }
+        }
+        if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+            let res = l_big + r_big;
+            if let Some(i) = bigint_to_inline(&res) {
+                return MoltObject::from_int(i).bits();
+            }
+            return bigint_bits(_py, res);
+        }
+        if complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some() {
+            match (
+                complex_from_obj_strict(_py, lhs),
+                complex_from_obj_strict(_py, rhs),
+            ) {
+                (Ok(Some(lc)), Ok(Some(rc))) => {
+                    return complex_bits(_py, lc.re + rc.re, lc.im + rc.im);
+                }
+                (Err(_), _) | (_, Err(_)) => {
+                    return raise_exception::<_>(
+                        _py,
+                        "OverflowError",
+                        "int too large to convert to float",
+                    );
+                }
+                _ => {}
+            }
+        }
+        unsafe {
+            let add_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.add_name, b"__add__");
+            let radd_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.radd_name, b"__radd__");
+            if let Some(res_bits) = call_binary_dunder(_py, a, b, add_name_bits, radd_name_bits) {
+                return res_bits;
+            }
+        }
+        binary_type_error(_py, lhs, rhs, "+")
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_concat(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        if is_number_for_concat(lhs) && is_number_for_concat(rhs) {
+            return binary_type_error(_py, lhs, rhs, "+");
+        }
+        molt_add(a, b)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        if let Some(ptr) = lhs.as_ptr() {
+            unsafe {
+                let ltype = object_type_id(ptr);
+                if ltype == TYPE_ID_LIST {
+                    let _ = molt_list_extend(a, b);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    inc_ref_bits(_py, a);
+                    return a;
+                }
+                if ltype == TYPE_ID_STRING {
+                    // In-place string concat: O(n) amortised when refcount == 1.
+                    let header = &mut *header_from_obj_ptr(ptr);
+                    if header.ref_count.load(std::sync::atomic::Ordering::Relaxed) == 1
+                        && (header.flags & crate::object::HEADER_FLAG_IMMORTAL) == 0
+                    {
+                        let rhs_obj = obj_from_bits(b);
+                        if let Some(r_ptr) = rhs_obj.as_ptr() {
+                            if object_type_id(r_ptr) == TYPE_ID_STRING {
+                                let l_len = string_len(ptr);
+                                let r_len = string_len(r_ptr);
+                                if let Some(content_len) = l_len.checked_add(r_len) {
+                                let needed = std::mem::size_of::<MoltHeader>()
+                                    + std::mem::size_of::<usize>()
+                                    + content_len;
+                                let total_sz = super::total_size_from_header(header, ptr);
+                                if total_sz >= needed {
+                                    // Fast: spare capacity — append in place, zero alloc
+                                    let l_data = string_bytes(ptr) as *mut u8;
+                                    let r_data = string_bytes(r_ptr);
+                                    std::ptr::copy_nonoverlapping(r_data, l_data.add(l_len), r_len);
+                                    *(ptr as *mut usize) = l_len + r_len;
+                                    super::object_set_state(ptr, 0); // invalidate hash
+                                    inc_ref_bits(_py, a);
+                                    return a;
+                                }
+                                // Slow: allocate 2x, amortised growth
+                                let new_cap = std::cmp::max(total_sz * 2, needed + 64);
+                                let new_ptr = alloc_object(_py, new_cap, TYPE_ID_STRING);
+                                if !new_ptr.is_null() {
+                                    let l_data = string_bytes(ptr);
+                                    let r_data = string_bytes(r_ptr);
+                                    let n_data = string_bytes(new_ptr) as *mut u8;
+                                    std::ptr::copy_nonoverlapping(l_data, n_data, l_len);
+                                    std::ptr::copy_nonoverlapping(r_data, n_data.add(l_len), r_len);
+                                    *(new_ptr as *mut usize) = l_len + r_len;
+                                    // Caller dec-refs old LHS after storing result.
+                                    return MoltObject::from_ptr(new_ptr).bits();
+                                }
+                                } // if let Some(content_len) — overflow falls through
+                            }
+                        }
+                    }
+                    // Fall through to regular add (concat)
+                }
+                if ltype == TYPE_ID_BYTEARRAY {
+                    if bytearray_concat_in_place(_py, ptr, b) {
+                        inc_ref_bits(_py, a);
+                        return a;
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        }
+        unsafe {
+            let iadd_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.iadd_name, b"__iadd__");
+            if let Some(res_bits) = call_inplace_dunder(_py, a, b, iadd_name_bits) {
+                return res_bits;
+            }
+        }
+        molt_add(a, b)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_inplace_concat(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        if is_number_for_concat(lhs) && is_number_for_concat(rhs) {
+            return binary_type_error(_py, lhs, rhs, "+");
+        }
+        molt_inplace_add(a, b)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        if !lhs.is_float() && !rhs.is_float() && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            let res = li as i128 - ri as i128;
+            return int_bits_from_i128(_py, res);
+        }
+        // Float fast path — moved before bigint/as_ptr checks.
+        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
+            return MoltObject::from_float(lf - rf).bits();
+        }
+        if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+            let res = l_big - r_big;
+            if let Some(i) = bigint_to_inline(&res) {
+                return MoltObject::from_int(i).bits();
+            }
+            return bigint_bits(_py, res);
+        }
+        if complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some() {
+            match (
+                complex_from_obj_strict(_py, lhs),
+                complex_from_obj_strict(_py, rhs),
+            ) {
+                (Ok(Some(lc)), Ok(Some(rc))) => {
+                    return complex_bits(_py, lc.re - rc.re, lc.im - rc.im);
+                }
+                (Err(_), _) | (_, Err(_)) => {
+                    return raise_exception::<_>(
+                        _py,
+                        "OverflowError",
+                        "int too large to convert to float",
+                    );
+                }
+                _ => {}
+            }
+        }
+        if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
+            unsafe {
+                let ltype = object_type_id(lp);
+                let rtype = object_type_id(rp);
+                if is_set_like_type(ltype) && is_set_like_type(rtype) {
+                    return set_like_difference(_py, lp, rp, ltype);
+                }
+                if (is_set_like_type(ltype) || is_set_view_type(ltype))
+                    && (is_set_like_type(rtype) || is_set_view_type(rtype))
+                {
+                    let (lhs_ptr, lhs_bits) = if is_set_like_type(ltype) {
+                        (lp, None)
+                    } else {
+                        let Some(bits) = dict_view_as_set_bits(_py, lp, ltype) else {
+                            return MoltObject::none().bits();
+                        };
+                        let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                            dec_ref_bits(_py, bits);
+                            return MoltObject::none().bits();
+                        };
+                        (ptr, Some(bits))
+                    };
+                    let (rhs_ptr, rhs_bits) = if is_set_like_type(rtype) {
+                        (rp, None)
+                    } else {
+                        let Some(bits) = dict_view_as_set_bits(_py, rp, rtype) else {
+                            if let Some(bits) = lhs_bits {
+                                dec_ref_bits(_py, bits);
+                            }
+                            return MoltObject::none().bits();
+                        };
+                        let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                            if let Some(bits) = lhs_bits {
+                                dec_ref_bits(_py, bits);
+                            }
+                            dec_ref_bits(_py, bits);
+                            return MoltObject::none().bits();
+                        };
+                        (ptr, Some(bits))
+                    };
+                    let res = set_like_difference(_py, lhs_ptr, rhs_ptr, TYPE_ID_SET);
+                    if let Some(bits) = lhs_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if let Some(bits) = rhs_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return res;
+                }
+            }
+        }
+        unsafe {
+            let sub_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.sub_name, b"__sub__");
+            let rsub_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.rsub_name, b"__rsub__");
+            if let Some(res_bits) = call_binary_dunder(_py, a, b, sub_name_bits, rsub_name_bits) {
+                return res_bits;
+            }
+        }
+        binary_type_error(_py, lhs, rhs, "-")
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_inplace_sub(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        // Int/float fast paths — avoid dunder dispatch overhead for numeric types.
+        if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            return int_bits_from_i128(_py, li as i128 - ri as i128);
+        }
+        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
+            return MoltObject::from_float(lf - rf).bits();
+        }
+        if let Some(ptr) = lhs.as_ptr() {
+            unsafe {
+                if object_type_id(ptr) == TYPE_ID_SET {
+                    let rhs = obj_from_bits(b);
+                    let ok = rhs
+                        .as_ptr()
+                        .is_some_and(|rhs_ptr| is_set_inplace_rhs_type(object_type_id(rhs_ptr)));
+                    if !ok {
+                        return raise_unsupported_inplace(_py, "-=", a, b);
+                    }
+                    let _ = molt_set_difference_update(a, b);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    inc_ref_bits(_py, a);
+                    return a;
+                }
+            }
+        }
+        unsafe {
+            let isub_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.isub_name, b"__isub__");
+            if let Some(res_bits) = call_inplace_dunder(_py, a, b, isub_name_bits) {
+                return res_bits;
+            }
+        }
+        molt_sub(a, b)
+    })
+}
+
+pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Option<u64> {
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if count <= 0 {
+            let out_ptr = match type_id {
+                TYPE_ID_LIST => alloc_list(_py, &[]),
+                TYPE_ID_TUPLE => alloc_tuple(_py, &[]),
+                TYPE_ID_STRING => alloc_string(_py, &[]),
+                TYPE_ID_BYTES => alloc_bytes(_py, &[]),
+                TYPE_ID_BYTEARRAY => alloc_bytearray(_py, &[]),
+                _ => return None,
+            };
+            if out_ptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            return Some(MoltObject::from_ptr(out_ptr).bits());
+        }
+        if count == 1 && type_id == TYPE_ID_TUPLE {
+            let bits = MoltObject::from_ptr(ptr).bits();
+            inc_ref_bits(_py, bits);
+            return Some(bits);
+        }
+
+        let times = count as usize;
+        match type_id {
+            TYPE_ID_LIST => {
+                let elems = seq_vec_ref(ptr);
+                let total = match elems.len().checked_mul(times) {
+                    Some(total) => total,
+                    None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
+                };
+                let mut combined = Vec::with_capacity(total);
+                for _ in 0..times {
+                    combined.extend_from_slice(elems);
+                }
+                let out_ptr = alloc_list(_py, &combined);
+                if out_ptr.is_null() {
+                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                }
+                Some(MoltObject::from_ptr(out_ptr).bits())
+            }
+            TYPE_ID_TUPLE => {
+                let elems = seq_vec_ref(ptr);
+                let total = match elems.len().checked_mul(times) {
+                    Some(total) => total,
+                    None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
+                };
+                let mut combined = Vec::with_capacity(total);
+                for _ in 0..times {
+                    combined.extend_from_slice(elems);
+                }
+                let out_ptr = alloc_tuple(_py, &combined);
+                if out_ptr.is_null() {
+                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                }
+                Some(MoltObject::from_ptr(out_ptr).bits())
+            }
+            TYPE_ID_STRING => {
+                let len = string_len(ptr);
+                let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
+                let total = match len.checked_mul(times) {
+                    Some(total) => total,
+                    None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
+                };
+                let out_ptr = alloc_bytes_like_with_len(_py, total, TYPE_ID_STRING);
+                if out_ptr.is_null() {
+                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                }
+                let data_ptr = out_ptr.add(std::mem::size_of::<usize>());
+                let out_slice = std::slice::from_raw_parts_mut(data_ptr, total);
+                fill_repeated_bytes(out_slice, bytes);
+                Some(MoltObject::from_ptr(out_ptr).bits())
+            }
+            TYPE_ID_BYTES => {
+                let len = bytes_len(ptr);
+                let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
+                let total = match len.checked_mul(times) {
+                    Some(total) => total,
+                    None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
+                };
+                let out_ptr = alloc_bytes_like_with_len(_py, total, TYPE_ID_BYTES);
+                if out_ptr.is_null() {
+                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                }
+                let data_ptr = out_ptr.add(std::mem::size_of::<usize>());
+                let out_slice = std::slice::from_raw_parts_mut(data_ptr, total);
+                fill_repeated_bytes(out_slice, bytes);
+                Some(MoltObject::from_ptr(out_ptr).bits())
+            }
+            TYPE_ID_BYTEARRAY => {
+                let len = bytes_len(ptr);
+                let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
+                let total = match len.checked_mul(times) {
+                    Some(total) => total,
+                    None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
+                };
+                let mut out = Vec::with_capacity(total);
+                for _ in 0..times {
+                    out.extend_from_slice(bytes);
+                }
+                let out_ptr = alloc_bytearray(_py, &out);
+                if out_ptr.is_null() {
+                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                }
+                Some(MoltObject::from_ptr(out_ptr).bits())
+            }
+            _ => None,
+        }
+    }
+}
+
+unsafe fn list_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> bool {
+    unsafe {
+        let elems = seq_vec(ptr);
+        if count <= 0 {
+            for &item in elems.iter() {
+                dec_ref_bits(_py, item);
+            }
+            elems.clear();
+            return true;
+        }
+        let count = match usize::try_from(count) {
+            Ok(val) => val,
+            Err(_) => {
+                return raise_exception::<_>(
+                    _py,
+                    "OverflowError",
+                    "cannot fit 'int' into an index-sized integer",
+                );
+            }
+        };
+        if count == 1 {
+            return true;
+        }
+        let snapshot = elems.clone();
+        if snapshot.is_empty() {
+            return true;
+        }
+        let total = match snapshot.len().checked_mul(count) {
+            Some(total) => total,
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    "OverflowError",
+                    "cannot fit 'int' into an index-sized integer",
+                );
+            }
+        };
+        elems.reserve(total.saturating_sub(snapshot.len()));
+        for _ in 1..count {
+            for &item in snapshot.iter() {
+                elems.push(item);
+                inc_ref_bits(_py, item);
+            }
+        }
+        true
+    }
+}
+
+unsafe fn bytearray_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> bool {
+    unsafe {
+        let elems = bytearray_vec(ptr);
+        if count <= 0 {
+            elems.clear();
+            return true;
+        }
+        let count = match usize::try_from(count) {
+            Ok(val) => val,
+            Err(_) => {
+                return raise_exception::<_>(
+                    _py,
+                    "OverflowError",
+                    "cannot fit 'int' into an index-sized integer",
+                );
+            }
+        };
+        if count == 1 {
+            return true;
+        }
+        let snapshot = elems.clone();
+        if snapshot.is_empty() {
+            return true;
+        }
+        let total = match snapshot.len().checked_mul(count) {
+            Some(total) => total,
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    "OverflowError",
+                    "cannot fit 'int' into an index-sized integer",
+                );
+            }
+        };
+        elems.reserve(total.saturating_sub(snapshot.len()));
+        for _ in 1..count {
+            elems.extend_from_slice(&snapshot);
+        }
+        true
+    }
+}
+
+unsafe fn bytearray_concat_in_place(_py: &PyToken<'_>, ptr: *mut u8, other_bits: u64) -> bool {
+    unsafe {
+        let other = obj_from_bits(other_bits);
+        let Some(other_ptr) = other.as_ptr() else {
+            let msg = format!("can't concat {} to bytearray", type_name(_py, other));
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        let other_type = object_type_id(other_ptr);
+        let payload = if other_type == TYPE_ID_MEMORYVIEW {
+            if let Some(slice) = memoryview_bytes_slice(other_ptr) {
+                slice.to_vec()
+            } else if let Some(buf) = memoryview_collect_bytes(other_ptr) {
+                buf
+            } else {
+                let msg = format!("can't concat {} to bytearray", type_name(_py, other));
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+        } else if other_type == TYPE_ID_BYTES || other_type == TYPE_ID_BYTEARRAY {
+            if other_ptr == ptr {
+                bytearray_vec_ref(ptr).clone()
+            } else {
+                bytes_like_slice_raw(other_ptr).unwrap_or(&[]).to_vec()
+            }
+        } else {
+            let msg = format!("can't concat {} to bytearray", type_name(_py, other));
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        bytearray_vec(ptr).extend_from_slice(&payload);
+        true
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_inplace_mul(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        // Int/float fast paths — avoid dunder dispatch overhead for numeric types.
+        if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            return int_bits_from_i128(_py, li as i128 * ri as i128);
+        }
+        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
+            return MoltObject::from_float(lf * rf).bits();
+        }
+        if let Some(ptr) = lhs.as_ptr() {
+            unsafe {
+                let ltype = object_type_id(ptr);
+                if ltype == TYPE_ID_LIST || ltype == TYPE_ID_BYTEARRAY {
+                    let rhs_type = type_name(_py, obj_from_bits(b));
+                    let msg = format!("can't multiply sequence by non-int of type '{rhs_type}'");
+                    let count = index_i64_from_obj(_py, b, &msg);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    let ok = if ltype == TYPE_ID_LIST {
+                        list_repeat_in_place(_py, ptr, count)
+                    } else {
+                        bytearray_repeat_in_place(_py, ptr, count)
+                    };
+                    if !ok || exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    inc_ref_bits(_py, a);
+                    return a;
+                }
+            }
+        }
+        molt_mul(a, b)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        if !lhs.is_float() && !rhs.is_float() && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            let res = li as i128 * ri as i128;
+            return int_bits_from_i128(_py, res);
+        }
+        // Float fast path — moved before repeat_sequence/bigint checks.
+        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
+            return MoltObject::from_float(lf * rf).bits();
+        }
+        if let Some(count) = to_i64(lhs)
+            && let Some(ptr) = rhs.as_ptr()
+            && let Some(bits) = repeat_sequence(_py, ptr, count)
+        {
+            return bits;
+        }
+        if let Some(count) = to_i64(rhs)
+            && let Some(ptr) = lhs.as_ptr()
+            && let Some(bits) = repeat_sequence(_py, ptr, count)
+        {
+            return bits;
+        }
+        if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+            let res = l_big * r_big;
+            if let Some(i) = bigint_to_inline(&res) {
+                return MoltObject::from_int(i).bits();
+            }
+            return bigint_bits(_py, res);
+        }
+        if complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some() {
+            match (
+                complex_from_obj_strict(_py, lhs),
+                complex_from_obj_strict(_py, rhs),
+            ) {
+                (Ok(Some(lc)), Ok(Some(rc))) => {
+                    let re = lc.re * rc.re - lc.im * rc.im;
+                    let im = lc.im * rc.re + lc.re * rc.im;
+                    return complex_bits(_py, re, im);
+                }
+                (Err(_), _) | (_, Err(_)) => {
+                    return raise_exception::<_>(
+                        _py,
+                        "OverflowError",
+                        "int too large to convert to float",
+                    );
+                }
+                _ => {}
+            }
+        }
+        unsafe {
+            let mul_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.mul_name, b"__mul__");
+            let rmul_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.rmul_name, b"__rmul__");
+            if let Some(res_bits) = call_binary_dunder(_py, a, b, mul_name_bits, rmul_name_bits) {
+                return res_bits;
+            }
+        }
+        binary_type_error(_py, lhs, rhs, "*")
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_div(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        // Python true division: int / int always returns float
+        if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            if ri == 0 {
+                return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
+            }
+            return MoltObject::from_float(li as f64 / ri as f64).bits();
+        }
+        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
+            if rf == 0.0 {
+                return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
+            }
+            return MoltObject::from_float(lf / rf).bits();
+        }
+        if complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some() {
+            match (
+                complex_from_obj_strict(_py, lhs),
+                complex_from_obj_strict(_py, rhs),
+            ) {
+                (Ok(Some(lc)), Ok(Some(rc))) => {
+                    let denom = rc.re * rc.re + rc.im * rc.im;
+                    if denom == 0.0 {
+                        return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
+                    }
+                    let re = (lc.re * rc.re + lc.im * rc.im) / denom;
+                    let im = (lc.im * rc.re - lc.re * rc.im) / denom;
+                    return complex_bits(_py, re, im);
+                }
+                (Err(_), _) | (_, Err(_)) => {
+                    return raise_exception::<_>(
+                        _py,
+                        "OverflowError",
+                        "int too large to convert to float",
+                    );
+                }
+                _ => {}
+            }
+        }
+        if bigint_ptr_from_bits(a).is_some() || bigint_ptr_from_bits(b).is_some() {
+            return raise_exception::<_>(_py, "OverflowError", "int too large to convert to float");
+        }
+        unsafe {
+            let div_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.truediv_name,
+                b"__truediv__",
+            );
+            let rdiv_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.rtruediv_name,
+                b"__rtruediv__",
+            );
+            if let Some(res_bits) = call_binary_dunder(_py, a, b, div_name_bits, rdiv_name_bits) {
+                return res_bits;
+            }
+        }
+        raise_exception::<_>(_py, "TypeError", "unsupported operand type(s) for /")
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_inplace_div(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        unsafe {
+            let idiv_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.itruediv_name,
+                b"__itruediv__",
+            );
+            if let Some(res_bits) = call_inplace_dunder(_py, a, b, idiv_name_bits) {
+                return res_bits;
+            }
+        }
+        molt_div(a, b)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_floordiv(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        let either_float = lhs.is_float() || rhs.is_float();
+        if !either_float && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            if ri == 0 {
+                return raise_exception::<_>(
+                    _py,
+                    "ZeroDivisionError",
+                    "integer division or modulo by zero",
+                );
+            }
+            if li == i64::MIN && ri == -1 {
+                // overflow — fall through to bigint
+            } else {
+                let q = li / ri;
+                let r = li % ri;
+                let res = if r != 0 && (r < 0) != (ri < 0) { q - 1 } else { q };
+                return MoltObject::from_int(res).bits();
+            }
+        }
+        if !either_float && let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+            if r_big.is_zero() {
+                return raise_exception::<_>(
+                    _py,
+                    "ZeroDivisionError",
+                    "integer division or modulo by zero",
+                );
+            }
+            let res = l_big.div_floor(&r_big);
+            if let Some(i) = bigint_to_inline(&res) {
+                return MoltObject::from_int(i).bits();
+            }
+            return bigint_bits(_py, res);
+        }
+        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
+            if rf == 0.0 {
+                return raise_exception::<_>(
+                    _py,
+                    "ZeroDivisionError",
+                    "float floor division by zero",
+                );
+            }
+            return MoltObject::from_float((lf / rf).floor()).bits();
+        }
+        unsafe {
+            let div_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.floordiv_name,
+                b"__floordiv__",
+            );
+            let rdiv_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.rfloordiv_name,
+                b"__rfloordiv__",
+            );
+            if let Some(res_bits) = call_binary_dunder(_py, a, b, div_name_bits, rdiv_name_bits) {
+                return res_bits;
+            }
+        }
+        raise_exception::<_>(_py, "TypeError", "unsupported operand type(s) for //")
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_inplace_floordiv(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        unsafe {
+            let idiv_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.ifloordiv_name,
+                b"__ifloordiv__",
+            );
+            if let Some(res_bits) = call_inplace_dunder(_py, a, b, idiv_name_bits) {
+                return res_bits;
+            }
+        }
+        molt_floordiv(a, b)
+    })
+}
+
+#[derive(Clone, Copy, Default)]
+struct PercentFormatFlags {
+    left_adjust: bool,
+    sign_plus: bool,
+    sign_space: bool,
+    zero_pad: bool,
+    alternate: bool,
+}
+
+fn percent_object_has_getitem(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__getitem__") else {
+        return false;
+    };
+    let call_bits = unsafe { attr_lookup_ptr_allow_missing(_py, ptr, name_bits) };
+    dec_ref_bits(_py, name_bits);
+    if let Some(call_bits) = call_bits {
+        dec_ref_bits(_py, call_bits);
+        return true;
+    }
+    false
+}
+
+fn percent_rhs_allows_unused_non_tuple(_py: &PyToken<'_>, rhs: MoltObject) -> bool {
+    let Some(ptr) = rhs.as_ptr() else {
+        return false;
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if type_id == TYPE_ID_STRING || type_id == TYPE_ID_TUPLE {
+            return false;
+        }
+    }
+    percent_object_has_getitem(_py, ptr)
+}
+
+fn percent_parse_usize(
+    _py: &PyToken<'_>,
+    bytes: &[u8],
+    idx: &mut usize,
+    field_name: &str,
+) -> Option<usize> {
+    let start = *idx;
+    let mut out: usize = 0;
+    while *idx < bytes.len() && bytes[*idx].is_ascii_digit() {
+        let digit = (bytes[*idx] - b'0') as usize;
+        out = match out.checked_mul(10).and_then(|v| v.checked_add(digit)) {
+            Some(v) => v,
+            None => {
+                let msg = format!("{field_name} too large in format string");
+                return raise_exception::<Option<usize>>(_py, "ValueError", &msg);
+            }
+        };
+        *idx += 1;
+    }
+    if *idx == start { None } else { Some(out) }
+}
+
+fn percent_unsupported_char(_py: &PyToken<'_>, ch: u8, idx: usize) -> Option<String> {
+    let ch_display = ch as char;
+    let msg = format!("unsupported format character '{ch_display}' (0x{ch:02x}) at index {idx}");
+    raise_exception::<Option<String>>(_py, "ValueError", &msg)
+}
+
+fn percent_apply_width(
+    text: String,
+    width: Option<usize>,
+    left_adjust: bool,
+    pad_char: char,
+) -> String {
+    let Some(width) = width else {
+        return text;
+    };
+    let text_len = text.chars().count();
+    if text_len >= width {
+        return text;
+    }
+    let pad_len = width - text_len;
+    let padding = pad_char.to_string().repeat(pad_len);
+    if left_adjust {
+        format!("{text}{padding}")
+    } else {
+        format!("{padding}{text}")
+    }
+}
+
+fn percent_apply_numeric_width(
+    prefix: &str,
+    body: String,
+    width: Option<usize>,
+    left_adjust: bool,
+    zero_pad: bool,
+) -> String {
+    let prefix_len = prefix.chars().count();
+    let body_len = body.chars().count();
+    if zero_pad
+        && !left_adjust
+        && let Some(width) = width
+        && width > prefix_len + body_len
+    {
+        let mut out = String::with_capacity(width);
+        out.push_str(prefix);
+        out.push_str(&"0".repeat(width - prefix_len - body_len));
+        out.push_str(&body);
+        return out;
+    }
+    let mut text = String::with_capacity(prefix.len() + body.len());
+    text.push_str(prefix);
+    text.push_str(&body);
+    percent_apply_width(text, width, left_adjust, ' ')
+}
+
+fn percent_raise_real_type_error_decimal(
+    _py: &PyToken<'_>,
+    obj: MoltObject,
+    conv: u8,
+) -> Option<BigInt> {
+    let conv_ch = conv as char;
+    let msg = format!(
+        "%{conv_ch} format: a real number is required, not {}",
+        type_name(_py, obj)
+    );
+    raise_exception::<Option<BigInt>>(_py, "TypeError", &msg)
+}
+
+fn percent_raise_integer_type_error(
+    _py: &PyToken<'_>,
+    obj: MoltObject,
+    conv: u8,
+) -> Option<BigInt> {
+    let conv_ch = conv as char;
+    let msg = format!(
+        "%{conv_ch} format: an integer is required, not {}",
+        type_name(_py, obj)
+    );
+    raise_exception::<Option<BigInt>>(_py, "TypeError", &msg)
+}
+
+fn percent_raise_real_type_error_f(_py: &PyToken<'_>, obj: MoltObject) -> Option<f64> {
+    let msg = format!("must be real number, not {}", type_name(_py, obj));
+    raise_exception::<Option<f64>>(_py, "TypeError", &msg)
+}
+
+fn percent_raise_char_type_error(_py: &PyToken<'_>, obj: MoltObject) -> Option<char> {
+    let _ = obj;
+    raise_exception::<Option<char>>(_py, "TypeError", "%c requires int or char")
+}
+
+fn percent_char_from_bigint(_py: &PyToken<'_>, value: BigInt) -> Option<char> {
+    let max_code = BigInt::from(0x110000u32);
+    if value.sign() == Sign::Minus || value >= max_code {
+        return raise_exception::<Option<char>>(
+            _py,
+            "OverflowError",
+            "%c arg not in range(0x110000)",
+        );
+    }
+    let Some(code) = value.to_u32() else {
+        return raise_exception::<Option<char>>(
+            _py,
+            "OverflowError",
+            "%c arg not in range(0x110000)",
+        );
+    };
+    let Some(ch) = char::from_u32(code) else {
+        return raise_exception::<Option<char>>(
+            _py,
+            "OverflowError",
+            "%c arg not in range(0x110000)",
+        );
+    };
+    Some(ch)
+}
+
+fn percent_decimal_from_obj(_py: &PyToken<'_>, value_bits: u64, conv: u8) -> Option<BigInt> {
+    let obj = obj_from_bits(value_bits);
+    if let Some(i) = to_i64(obj) {
+        return Some(BigInt::from(i));
+    }
+    if let Some(big_ptr) = bigint_ptr_from_bits(value_bits) {
+        return Some(unsafe { bigint_ref(big_ptr) }.clone());
+    }
+    if let Some(f) = obj.as_float() {
+        if f.is_nan() {
+            return raise_exception::<Option<BigInt>>(
+                _py,
+                "ValueError",
+                "cannot convert float NaN to integer",
+            );
+        }
+        if f.is_infinite() {
+            return raise_exception::<Option<BigInt>>(
+                _py,
+                "OverflowError",
+                "cannot convert float infinity to integer",
+            );
+        }
+        return Some(bigint_from_f64_trunc(f));
+    }
+    if let Some(ptr) = maybe_ptr_from_bits(value_bits) {
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_COMPLEX
+                || type_id == TYPE_ID_STRING
+                || type_id == TYPE_ID_BYTES
+                || type_id == TYPE_ID_BYTEARRAY
+            {
+                return percent_raise_real_type_error_decimal(_py, obj, conv);
+            }
+            let int_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.int_name, b"__int__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, int_name_bits) {
+                let res_bits = call_callable0(_py, call_bits);
+                dec_ref_bits(_py, call_bits);
+                if exception_pending(_py) {
+                    if obj_from_bits(res_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return None;
+                }
+                let res_obj = obj_from_bits(res_bits);
+                if let Some(i) = to_i64(res_obj) {
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return Some(BigInt::from(i));
+                }
+                if let Some(res_big_ptr) = bigint_ptr_from_bits(res_bits) {
+                    let out = bigint_ref(res_big_ptr).clone();
+                    dec_ref_bits(_py, res_bits);
+                    return Some(out);
+                }
+                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, res_bits);
+                }
+                let msg = format!("__int__ returned non-int (type {res_type})");
+                return raise_exception::<Option<BigInt>>(_py, "TypeError", &msg);
+            }
+            if exception_pending(_py) {
+                return None;
+            }
+            let index_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
+                let res_bits = call_callable0(_py, call_bits);
+                dec_ref_bits(_py, call_bits);
+                if exception_pending(_py) {
+                    if obj_from_bits(res_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return None;
+                }
+                let res_obj = obj_from_bits(res_bits);
+                if let Some(i) = to_i64(res_obj) {
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return Some(BigInt::from(i));
+                }
+                if let Some(res_big_ptr) = bigint_ptr_from_bits(res_bits) {
+                    let out = bigint_ref(res_big_ptr).clone();
+                    dec_ref_bits(_py, res_bits);
+                    return Some(out);
+                }
+                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, res_bits);
+                }
+                let msg = format!("__index__ returned non-int (type {res_type})");
+                return raise_exception::<Option<BigInt>>(_py, "TypeError", &msg);
+            }
+            if exception_pending(_py) {
+                return None;
+            }
+        }
+    }
+    percent_raise_real_type_error_decimal(_py, obj, conv)
+}
+
+fn percent_integer_from_obj(_py: &PyToken<'_>, value_bits: u64, conv: u8) -> Option<BigInt> {
+    let obj = obj_from_bits(value_bits);
+    if let Some(i) = to_i64(obj) {
+        return Some(BigInt::from(i));
+    }
+    if let Some(big_ptr) = bigint_ptr_from_bits(value_bits) {
+        return Some(unsafe { bigint_ref(big_ptr) }.clone());
+    }
+    if let Some(ptr) = maybe_ptr_from_bits(value_bits) {
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_COMPLEX
+                || type_id == TYPE_ID_STRING
+                || type_id == TYPE_ID_BYTES
+                || type_id == TYPE_ID_BYTEARRAY
+            {
+                return percent_raise_integer_type_error(_py, obj, conv);
+            }
+            let index_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
+                let res_bits = call_callable0(_py, call_bits);
+                dec_ref_bits(_py, call_bits);
+                if exception_pending(_py) {
+                    if obj_from_bits(res_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return None;
+                }
+                let res_obj = obj_from_bits(res_bits);
+                if let Some(i) = to_i64(res_obj) {
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return Some(BigInt::from(i));
+                }
+                if let Some(res_big_ptr) = bigint_ptr_from_bits(res_bits) {
+                    let out = bigint_ref(res_big_ptr).clone();
+                    dec_ref_bits(_py, res_bits);
+                    return Some(out);
+                }
+                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, res_bits);
+                }
+                let msg = format!("__index__ returned non-int (type {res_type})");
+                return raise_exception::<Option<BigInt>>(_py, "TypeError", &msg);
+            }
+            if exception_pending(_py) {
+                return None;
+            }
+        }
+    }
+    percent_raise_integer_type_error(_py, obj, conv)
+}
+
+fn percent_char_from_obj(_py: &PyToken<'_>, value_bits: u64) -> Option<char> {
+    let obj = obj_from_bits(value_bits);
+    if let Some(text) = string_obj_to_owned(obj) {
+        let mut chars = text.chars();
+        return match chars.next() {
+            Some(ch) if chars.next().is_none() => Some(ch),
+            _ => percent_raise_char_type_error(_py, obj),
+        };
+    }
+    if let Some(i) = to_i64(obj) {
+        return percent_char_from_bigint(_py, BigInt::from(i));
+    }
+    if let Some(big_ptr) = bigint_ptr_from_bits(value_bits) {
+        return percent_char_from_bigint(_py, unsafe { bigint_ref(big_ptr) }.clone());
+    }
+    if let Some(ptr) = maybe_ptr_from_bits(value_bits) {
+        unsafe {
+            let index_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
+                let res_bits = call_callable0(_py, call_bits);
+                dec_ref_bits(_py, call_bits);
+                if exception_pending(_py) {
+                    if obj_from_bits(res_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return None;
+                }
+                let res_obj = obj_from_bits(res_bits);
+                if let Some(i) = to_i64(res_obj) {
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return percent_char_from_bigint(_py, BigInt::from(i));
+                }
+                if let Some(res_big_ptr) = bigint_ptr_from_bits(res_bits) {
+                    let out = bigint_ref(res_big_ptr).clone();
+                    dec_ref_bits(_py, res_bits);
+                    return percent_char_from_bigint(_py, out);
+                }
+                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, res_bits);
+                }
+                let msg = format!("__index__ returned non-int (type {res_type})");
+                return raise_exception::<Option<char>>(_py, "TypeError", &msg);
+            }
+            if exception_pending(_py) {
+                return None;
+            }
+        }
+    }
+    percent_raise_char_type_error(_py, obj)
+}
+
+fn percent_float_from_obj(_py: &PyToken<'_>, value_bits: u64) -> Option<f64> {
+    let obj = obj_from_bits(value_bits);
+    if let Some(f) = obj.as_float() {
+        return Some(f);
+    }
+    if let Some(i) = to_i64(obj) {
+        return Some(i as f64);
+    }
+    if let Some(big_ptr) = bigint_ptr_from_bits(value_bits) {
+        return match unsafe { bigint_ref(big_ptr) }.to_f64() {
+            Some(v) => Some(v),
+            None => raise_exception::<Option<f64>>(
+                _py,
+                "OverflowError",
+                "int too large to convert to float",
+            ),
+        };
+    }
+    if let Some(ptr) = maybe_ptr_from_bits(value_bits) {
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_COMPLEX
+                || type_id == TYPE_ID_STRING
+                || type_id == TYPE_ID_BYTES
+                || type_id == TYPE_ID_BYTEARRAY
+            {
+                return percent_raise_real_type_error_f(_py, obj);
+            }
+            let float_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.float_name, b"__float__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) {
+                let res_bits = call_callable0(_py, call_bits);
+                dec_ref_bits(_py, call_bits);
+                if exception_pending(_py) {
+                    if obj_from_bits(res_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return None;
+                }
+                let res_obj = obj_from_bits(res_bits);
+                if let Some(f) = res_obj.as_float() {
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return Some(f);
+                }
+                let owner = class_name_for_error(type_of_bits(_py, value_bits));
+                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, res_bits);
+                }
+                let msg = format!("{owner}.__float__ returned non-float (type {res_type})");
+                return raise_exception::<Option<f64>>(_py, "TypeError", &msg);
+            }
+            if exception_pending(_py) {
+                return None;
+            }
+            let index_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
+                let res_bits = call_callable0(_py, call_bits);
+                dec_ref_bits(_py, call_bits);
+                if exception_pending(_py) {
+                    if obj_from_bits(res_bits).as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return None;
+                }
+                let res_obj = obj_from_bits(res_bits);
+                if let Some(i) = to_i64(res_obj) {
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return Some(i as f64);
+                }
+                if let Some(res_big_ptr) = bigint_ptr_from_bits(res_bits) {
+                    let out = bigint_ref(res_big_ptr).to_f64();
+                    dec_ref_bits(_py, res_bits);
+                    return match out {
+                        Some(v) => Some(v),
+                        None => raise_exception::<Option<f64>>(
+                            _py,
+                            "OverflowError",
+                            "int too large to convert to float",
+                        ),
+                    };
+                }
+                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, res_bits);
+                }
+                let msg = format!("__index__ returned non-int (type {res_type})");
+                return raise_exception::<Option<f64>>(_py, "TypeError", &msg);
+            }
+            if exception_pending(_py) {
+                return None;
+            }
+        }
+    }
+    percent_raise_real_type_error_f(_py, obj)
+}
+
+fn percent_numeric_prefix(is_negative: bool, flags: PercentFormatFlags) -> Option<char> {
+    if is_negative {
+        Some('-')
+    } else if flags.sign_plus {
+        Some('+')
+    } else if flags.sign_space {
+        Some(' ')
+    } else {
+        None
+    }
+}
+
+fn percent_format_text(
+    text: String,
+    width: Option<usize>,
+    precision: Option<usize>,
+    flags: PercentFormatFlags,
+) -> String {
+    let rendered = if let Some(precision) = precision {
+        text.chars().take(precision).collect::<String>()
+    } else {
+        text
+    };
+    percent_apply_width(rendered, width, flags.left_adjust, ' ')
+}
+
+fn percent_format_decimal(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    width: Option<usize>,
+    precision: Option<usize>,
+    flags: PercentFormatFlags,
+    conv: u8,
+) -> Option<String> {
+    let value = percent_decimal_from_obj(_py, value_bits, conv)?;
+    let negative = value.is_negative();
+    let mut body = value.abs().to_string();
+    if let Some(precision) = precision
+        && body.len() < precision
+    {
+        body = format!("{}{}", "0".repeat(precision - body.len()), body);
+    }
+    let mut prefix = String::new();
+    if let Some(sign) = percent_numeric_prefix(negative, flags) {
+        prefix.push(sign);
+    }
+    let zero_pad = flags.zero_pad && !flags.left_adjust;
+    Some(percent_apply_numeric_width(
+        prefix.as_str(),
+        body,
+        width,
+        flags.left_adjust,
+        zero_pad,
+    ))
+}
+
+fn percent_format_radix(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    width: Option<usize>,
+    precision: Option<usize>,
+    flags: PercentFormatFlags,
+    conv: u8,
+) -> Option<String> {
+    let value = percent_integer_from_obj(_py, value_bits, conv)?;
+    let negative = value.is_negative();
+    let mut body = match conv {
+        b'o' => value.abs().to_str_radix(8),
+        b'x' | b'X' => value.abs().to_str_radix(16),
+        _ => value.abs().to_string(),
+    };
+    if conv == b'X' {
+        body = body.to_uppercase();
+    }
+    if let Some(precision) = precision
+        && body.len() < precision
+    {
+        body = format!("{}{}", "0".repeat(precision - body.len()), body);
+    }
+    let mut prefix = String::new();
+    if let Some(sign) = percent_numeric_prefix(negative, flags) {
+        prefix.push(sign);
+    }
+    if flags.alternate {
+        match conv {
+            b'o' => prefix.push_str("0o"),
+            b'x' => prefix.push_str("0x"),
+            b'X' => prefix.push_str("0X"),
+            _ => {}
+        }
+    }
+    Some(percent_apply_numeric_width(
+        prefix.as_str(),
+        body,
+        width,
+        flags.left_adjust,
+        flags.zero_pad && !flags.left_adjust,
+    ))
+}
+
+fn percent_format_float(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    width: Option<usize>,
+    precision: Option<usize>,
+    flags: PercentFormatFlags,
+    conv: u8,
+) -> Option<String> {
+    let value = percent_float_from_obj(_py, value_bits)?;
+    let sign = if flags.sign_plus {
+        Some('+')
+    } else if flags.sign_space {
+        Some(' ')
+    } else {
+        None
+    };
+    let align = if flags.left_adjust {
+        Some('<')
+    } else if flags.zero_pad {
+        Some('=')
+    } else {
+        None
+    };
+    let spec = FormatSpec {
+        fill: if flags.zero_pad && !flags.left_adjust {
+            '0'
+        } else {
+            ' '
+        },
+        align,
+        sign,
+        alternate: flags.alternate,
+        width,
+        grouping: None,
+        precision,
+        ty: Some(conv as char),
+    };
+    match format_float_with_spec(MoltObject::from_float(value), &spec) {
+        Ok(text) => Some(text),
+        Err((kind, msg)) => raise_exception::<Option<String>>(_py, kind, msg.as_ref()),
+    }
+}
+
+fn percent_format_ascii(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    width: Option<usize>,
+    precision: Option<usize>,
+    flags: PercentFormatFlags,
+) -> Option<String> {
+    let rendered_bits = molt_ascii_from_obj(value_bits);
+    if exception_pending(_py) {
+        if obj_from_bits(rendered_bits).as_ptr().is_some() {
+            dec_ref_bits(_py, rendered_bits);
+        }
+        return None;
+    }
+    let rendered = string_obj_to_owned(obj_from_bits(rendered_bits));
+    if obj_from_bits(rendered_bits).as_ptr().is_some() {
+        dec_ref_bits(_py, rendered_bits);
+    }
+    let rendered = rendered.unwrap_or_default();
+    Some(percent_format_text(rendered, width, precision, flags))
+}
+
+fn percent_format_char(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    width: Option<usize>,
+    flags: PercentFormatFlags,
+) -> Option<String> {
+    let ch = percent_char_from_obj(_py, value_bits)?;
+    Some(percent_apply_width(
+        ch.to_string(),
+        width,
+        flags.left_adjust,
+        ' ',
+    ))
+}
+
+fn percent_lookup_mapping_arg(_py: &PyToken<'_>, rhs_bits: u64, key: &str) -> Option<(u64, bool)> {
+    let rhs_obj = obj_from_bits(rhs_bits);
+    let Some(rhs_ptr) = rhs_obj.as_ptr() else {
+        return raise_exception::<Option<(u64, bool)>>(
+            _py,
+            "TypeError",
+            "format requires a mapping",
+        );
+    };
+    unsafe {
+        let rhs_type = object_type_id(rhs_ptr);
+        if rhs_type == TYPE_ID_TUPLE {
+            return raise_exception::<Option<(u64, bool)>>(
+                _py,
+                "TypeError",
+                "format requires a mapping",
+            );
+        }
+        let key_ptr = alloc_string(_py, key.as_bytes());
+        if key_ptr.is_null() {
+            return None;
+        }
+        let key_bits = MoltObject::from_ptr(key_ptr).bits();
+        if rhs_type == TYPE_ID_DICT {
+            if let Some(bits) = dict_get_in_place(_py, rhs_ptr, key_bits) {
+                dec_ref_bits(_py, key_bits);
+                return Some((bits, false));
+            }
+            if exception_pending(_py) {
+                dec_ref_bits(_py, key_bits);
+                return None;
+            }
+            raise_key_error_with_key::<()>(_py, key_bits);
+            dec_ref_bits(_py, key_bits);
+            return None;
+        }
+        if !percent_object_has_getitem(_py, rhs_ptr) {
+            dec_ref_bits(_py, key_bits);
+            return raise_exception::<Option<(u64, bool)>>(
+                _py,
+                "TypeError",
+                "format requires a mapping",
+            );
+        }
+        let bits = molt_index(rhs_bits, key_bits);
+        dec_ref_bits(_py, key_bits);
+        if exception_pending(_py) {
+            return None;
+        }
+        Some((bits, true))
+    }
+}
+
+fn percent_consume_next_arg(
+    _py: &PyToken<'_>,
+    rhs_bits: u64,
+    tuple_ptr: Option<*mut u8>,
+    tuple_idx: &mut usize,
+    single_consumed: &mut bool,
+) -> Option<u64> {
+    if let Some(ptr) = tuple_ptr {
+        let elems = unsafe { seq_vec_ref(ptr) };
+        if *tuple_idx >= elems.len() {
+            return raise_exception::<Option<u64>>(
+                _py,
+                "TypeError",
+                "not enough arguments for format string",
+            );
+        }
+        let bits = elems[*tuple_idx];
+        *tuple_idx += 1;
+        return Some(bits);
+    }
+    if *single_consumed {
+        return raise_exception::<Option<u64>>(
+            _py,
+            "TypeError",
+            "not enough arguments for format string",
+        );
+    }
+    *single_consumed = true;
+    Some(rhs_bits)
+}
+
+fn string_percent_format_impl(_py: &PyToken<'_>, text: &str, rhs_bits: u64) -> Option<String> {
+    let rhs_obj = obj_from_bits(rhs_bits);
+    let tuple_ptr = rhs_obj
+        .as_ptr()
+        .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_TUPLE });
+    let mut tuple_idx = 0usize;
+    let mut single_consumed = false;
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut literal_start = 0usize;
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if bytes[idx] != b'%' {
+            idx += 1;
+            continue;
+        }
+        out.push_str(&text[literal_start..idx]);
+        idx += 1;
+        if idx >= bytes.len() {
+            return raise_exception::<Option<String>>(_py, "ValueError", "incomplete format");
+        }
+        if bytes[idx] == b'%' {
+            out.push('%');
+            idx += 1;
+            literal_start = idx;
+            continue;
+        }
+        let mut key: Option<&str> = None;
+        if bytes[idx] == b'(' {
+            let key_start = idx + 1;
+            let mut key_end = key_start;
+            while key_end < bytes.len() && bytes[key_end] != b')' {
+                key_end += 1;
+            }
+            if key_end >= bytes.len() {
+                return raise_exception::<Option<String>>(
+                    _py,
+                    "ValueError",
+                    "incomplete format key",
+                );
+            }
+            key = Some(&text[key_start..key_end]);
+            idx = key_end + 1;
+        }
+        let mut flags = PercentFormatFlags::default();
+        loop {
+            if idx >= bytes.len() {
+                return raise_exception::<Option<String>>(_py, "ValueError", "incomplete format");
+            }
+            match bytes[idx] {
+                b'-' => flags.left_adjust = true,
+                b'+' => flags.sign_plus = true,
+                b' ' => flags.sign_space = true,
+                b'0' => flags.zero_pad = true,
+                b'#' => flags.alternate = true,
+                _ => break,
+            }
+            idx += 1;
+        }
+        let mut width = if idx < bytes.len() && bytes[idx].is_ascii_digit() {
+            percent_parse_usize(_py, bytes, &mut idx, "width")
+        } else {
+            None
+        };
+        if idx < bytes.len() && bytes[idx] == b'*' {
+            idx += 1;
+            let width_bits = percent_consume_next_arg(
+                _py,
+                rhs_bits,
+                tuple_ptr,
+                &mut tuple_idx,
+                &mut single_consumed,
+            )?;
+            let width_val = index_i64_from_obj(_py, width_bits, "* wants int");
+            if exception_pending(_py) {
+                return None;
+            }
+            if width_val < 0 {
+                flags.left_adjust = true;
+                let abs = width_val.checked_abs().unwrap_or(i64::MAX);
+                let Ok(width_usize) = usize::try_from(abs) else {
+                    return raise_exception::<Option<String>>(
+                        _py,
+                        "OverflowError",
+                        "width too big",
+                    );
+                };
+                width = Some(width_usize);
+            } else {
+                let Ok(width_usize) = usize::try_from(width_val) else {
+                    return raise_exception::<Option<String>>(
+                        _py,
+                        "OverflowError",
+                        "width too big",
+                    );
+                };
+                width = Some(width_usize);
+            }
+        }
+        let mut precision: Option<usize> = None;
+        if idx < bytes.len() && bytes[idx] == b'.' {
+            idx += 1;
+            if idx < bytes.len() && bytes[idx] == b'*' {
+                idx += 1;
+                let prec_bits = percent_consume_next_arg(
+                    _py,
+                    rhs_bits,
+                    tuple_ptr,
+                    &mut tuple_idx,
+                    &mut single_consumed,
+                )?;
+                let prec_val = index_i64_from_obj(_py, prec_bits, "* wants int");
+                if exception_pending(_py) {
+                    return None;
+                }
+                if prec_val <= 0 {
+                    precision = Some(0);
+                } else {
+                    let Ok(prec_usize) = usize::try_from(prec_val) else {
+                        return raise_exception::<Option<String>>(
+                            _py,
+                            "OverflowError",
+                            "precision too big",
+                        );
+                    };
+                    precision = Some(prec_usize);
+                }
+            } else {
+                precision =
+                    Some(percent_parse_usize(_py, bytes, &mut idx, "precision").unwrap_or(0));
+            }
+        }
+        if idx < bytes.len() && (bytes[idx] == b'h' || bytes[idx] == b'l' || bytes[idx] == b'L') {
+            let first = bytes[idx];
+            idx += 1;
+            if idx < bytes.len() && (first == b'h' || first == b'l') && bytes[idx] == first {
+                idx += 1;
+            }
+        }
+        if idx >= bytes.len() {
+            return raise_exception::<Option<String>>(_py, "ValueError", "incomplete format");
+        }
+        let conv_idx = idx;
+        let conv = bytes[idx];
+        idx += 1;
+        let (value_bits, drop_value) = if let Some(key) = key {
+            percent_lookup_mapping_arg(_py, rhs_bits, key)?
+        } else {
+            (
+                percent_consume_next_arg(
+                    _py,
+                    rhs_bits,
+                    tuple_ptr,
+                    &mut tuple_idx,
+                    &mut single_consumed,
+                )?,
+                false,
+            )
+        };
+        let rendered = match conv {
+            b's' => Some(percent_format_text(
+                format_obj_str(_py, obj_from_bits(value_bits)),
+                width,
+                precision,
+                flags,
+            )),
+            b'r' => Some(percent_format_text(
+                format_obj(_py, obj_from_bits(value_bits)),
+                width,
+                precision,
+                flags,
+            )),
+            b'a' => percent_format_ascii(_py, value_bits, width, precision, flags),
+            b'c' => percent_format_char(_py, value_bits, width, flags),
+            b'd' | b'i' | b'u' => {
+                percent_format_decimal(_py, value_bits, width, precision, flags, conv)
+            }
+            b'o' | b'x' | b'X' => {
+                percent_format_radix(_py, value_bits, width, precision, flags, conv)
+            }
+            b'f' | b'F' | b'e' | b'E' | b'g' | b'G' => {
+                percent_format_float(_py, value_bits, width, precision, flags, conv)
+            }
+            _ => percent_unsupported_char(_py, conv, conv_idx),
+        };
+        if drop_value {
+            dec_ref_bits(_py, value_bits);
+        }
+        let rendered = rendered?;
+        out.push_str(&rendered);
+        literal_start = idx;
+    }
+    out.push_str(&text[literal_start..]);
+    if let Some(ptr) = tuple_ptr {
+        let elems = unsafe { seq_vec_ref(ptr) };
+        if tuple_idx < elems.len() {
+            return raise_exception::<Option<String>>(
+                _py,
+                "TypeError",
+                "not all arguments converted during string formatting",
+            );
+        }
+    } else if !single_consumed && !percent_rhs_allows_unused_non_tuple(_py, rhs_obj) {
+        return raise_exception::<Option<String>>(
+            _py,
+            "TypeError",
+            "not all arguments converted during string formatting",
+        );
+    }
+    Some(out)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        // Int fast path first — much more common than string % formatting.
+        // Skip if either operand is a float so that e.g. 7 % 2.0 returns 1.0 (float).
+        let either_float = lhs.is_float() || rhs.is_float();
+        if !either_float && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            if ri == 0 {
+                return raise_exception::<_>(_py, "ZeroDivisionError", "integer division or modulo by zero");
+            }
+            let mut rem = li % ri;
+            if rem != 0 && (rem > 0) != (ri > 0) {
+                rem += ri;
+            }
+            return MoltObject::from_int(rem).bits();
+        }
+        // String % formatting — moved after int fast path.
+        if let Some(ptr) = lhs.as_ptr() {
+            unsafe {
+                if object_type_id(ptr) == TYPE_ID_STRING {
+                    let text = string_obj_to_owned(lhs).unwrap_or_default();
+                    let Some(rendered) = string_percent_format_impl(_py, &text, b) else {
+                        return MoltObject::none().bits();
+                    };
+                    let out_ptr = alloc_string(_py, rendered.as_bytes());
+                    if out_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_ptr(out_ptr).bits();
+                }
+            }
+        }
+        if !either_float && let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+            if r_big.is_zero() {
+                return raise_exception::<_>(_py, "ZeroDivisionError", "integer division or modulo by zero");
+            }
+            let res = l_big.mod_floor(&r_big);
+            if let Some(i) = bigint_to_inline(&res) {
+                return MoltObject::from_int(i).bits();
+            }
+            return bigint_bits(_py, res);
+        }
+        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
+            if rf == 0.0 {
+                return raise_exception::<_>(_py, "ZeroDivisionError", "float modulo");
+            }
+            let mut rem = lf % rf;
+            if rem != 0.0 && (rem > 0.0) != (rf > 0.0) {
+                rem += rf;
+            }
+            return MoltObject::from_float(rem).bits();
+        }
+        raise_exception::<_>(_py, "TypeError", "unsupported operand type(s) for %")
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_inplace_mod(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        unsafe {
+            let imod_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.imod_name, b"__imod__");
+            if let Some(res_bits) = call_inplace_dunder(_py, a, b, imod_name_bits) {
+                return res_bits;
+            }
+        }
+        molt_mod(a, b)
+    })
+}
+
+fn complex_pow(base: ComplexParts, exp: ComplexParts) -> Result<ComplexParts, ()> {
+    if base.re == 0.0 && base.im == 0.0 {
+        if exp.re == 0.0 && exp.im == 0.0 {
+            return Ok(ComplexParts { re: 1.0, im: 0.0 });
+        }
+        if exp.im != 0.0 || exp.re < 0.0 {
+            return Err(());
+        }
+        return Ok(ComplexParts { re: 0.0, im: 0.0 });
+    }
+    let r = (base.re * base.re + base.im * base.im).sqrt();
+    let theta = base.im.atan2(base.re);
+    let log_r = r.ln();
+    let u = exp.re * log_r - exp.im * theta;
+    let v = exp.im * log_r + exp.re * theta;
+    let exp_u = u.exp();
+    Ok(ComplexParts {
+        re: exp_u * v.cos(),
+        im: exp_u * v.sin(),
+    })
+}
+
+fn pow_i64_checked(base: i64, exp: i64) -> Option<i64> {
+    if exp < 0 {
+        return None;
+    }
+    let mut result: i128 = 1;
+    let mut base_val: i128 = base as i128;
+    let mut exp_val = exp as u64;
+    let max = (1i128 << 46) - 1;
+    let min = -(1i128 << 46);
+    while exp_val > 0 {
+        if (exp_val & 1) != 0 {
+            result = result.saturating_mul(base_val);
+            if result > max || result < min {
+                return None;
+            }
+        }
+        exp_val >>= 1;
+        if exp_val > 0 {
+            base_val = base_val.saturating_mul(base_val);
+            if base_val > max || base_val < min {
+                return None;
+            }
+        }
+    }
+    Some(result as i64)
+}
+
+fn mod_py_i128(value: i128, modulus: i128) -> i128 {
+    let mut rem = value % modulus;
+    if rem != 0 && (rem > 0) != (modulus > 0) {
+        rem += modulus;
+    }
+    rem
+}
+
+fn mod_pow_i128(_py: &PyToken<'_>, mut base: i128, exp: i64, modulus: i128) -> i128 {
+    let mut result: i128 = 1;
+    base = mod_py_i128(base, modulus);
+    let mut exp_val = exp as u64;
+    while exp_val > 0 {
+        if (exp_val & 1) != 0 {
+            result = mod_py_i128(result * base, modulus);
+        }
+        exp_val >>= 1;
+        if exp_val > 0 {
+            base = mod_py_i128(base * base, modulus);
+        }
+    }
+    mod_py_i128(result, modulus)
+}
+
+fn egcd_i128(a: i128, b: i128) -> (i128, i128, i128) {
+    if b == 0 {
+        return (a, 1, 0);
+    }
+    let (g, x, y) = egcd_i128(b, a % b);
+    (g, y, x - (a / b) * y)
+}
+
+fn mod_inverse_i128(_py: &PyToken<'_>, value: i128, modulus: i128) -> Option<i128> {
+    let (g, x, _) = egcd_i128(value, modulus);
+    if g == 1 || g == -1 {
+        Some(mod_py_i128(x, modulus))
+    } else {
+        None
+    }
+}
+
+fn mod_pow_bigint(base: &BigInt, exp: u64, modulus: &BigInt) -> BigInt {
+    let mut result = BigInt::from(1);
+    let mut base_val = base.mod_floor(modulus);
+    let mut exp_val = exp;
+    while exp_val > 0 {
+        if (exp_val & 1) != 0 {
+            result = (result * &base_val).mod_floor(modulus);
+        }
+        exp_val >>= 1;
+        if exp_val > 0 {
+            base_val = (&base_val * &base_val).mod_floor(modulus);
+        }
+    }
+    result
+}
+
+fn egcd_bigint(a: BigInt, b: BigInt) -> (BigInt, BigInt, BigInt) {
+    if b.is_zero() {
+        return (a, BigInt::from(1), BigInt::from(0));
+    }
+    let (q, r) = a.div_mod_floor(&b);
+    let (g, x, y) = egcd_bigint(b, r);
+    (g, y.clone(), x - q * y)
+}
+
+fn mod_inverse_bigint(value: BigInt, modulus: &BigInt) -> Option<BigInt> {
+    let (g, x, _) = egcd_bigint(value, modulus.clone());
+    if g == BigInt::from(1) || g == BigInt::from(-1) {
+        Some(x.mod_floor(modulus))
+    } else {
+        None
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_pow(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        if complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some() {
+            match (
+                complex_from_obj_strict(_py, lhs),
+                complex_from_obj_strict(_py, rhs),
+            ) {
+                (Ok(Some(base)), Ok(Some(exp))) => {
+                    return match complex_pow(base, exp) {
+                        Ok(out) => complex_bits(_py, out.re, out.im),
+                        Err(()) => raise_exception::<_>(
+                            _py,
+                            "ZeroDivisionError",
+                            "zero to a negative or complex power",
+                        ),
+                    };
+                }
+                (Err(_), _) | (_, Err(_)) => {
+                    return raise_exception::<_>(
+                        _py,
+                        "OverflowError",
+                        "int too large to convert to float",
+                    );
+                }
+                _ => {}
+            }
+        }
+        if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            if ri >= 0 {
+                if let Some(res) = pow_i64_checked(li, ri) {
+                    return MoltObject::from_int(res).bits();
+                }
+                let res = BigInt::from(li).pow(ri as u32);
+                if let Some(i) = bigint_to_inline(&res) {
+                    return MoltObject::from_int(i).bits();
+                }
+                return bigint_bits(_py, res);
+            }
+            let lf = li as f64;
+            let rf = ri as f64;
+            if lf == 0.0 && rf < 0.0 {
+                return raise_exception::<_>(
+                    _py,
+                    "ZeroDivisionError",
+                    "0.0 cannot be raised to a negative power",
+                );
+            }
+            let out = lf.powf(rf);
+            if out.is_infinite() && lf.is_finite() && rf.is_finite() {
+                return raise_exception::<_>(_py, "OverflowError", "math range error");
+            }
+            return MoltObject::from_float(out).bits();
+        }
+        if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+            if let Some(exp) = r_big.to_u64() {
+                let res = l_big.pow(exp as u32);
+                if let Some(i) = bigint_to_inline(&res) {
+                    return MoltObject::from_int(i).bits();
+                }
+                return bigint_bits(_py, res);
+            }
+            if r_big.is_negative()
+                && let Some(lf) = l_big.to_f64()
+            {
+                let rf = r_big.to_f64().unwrap_or(f64::NEG_INFINITY);
+                if lf == 0.0 && rf < 0.0 {
+                    return raise_exception::<_>(
+                        _py,
+                        "ZeroDivisionError",
+                        "0.0 cannot be raised to a negative power",
+                    );
+                }
+                return MoltObject::from_float(lf.powf(rf)).bits();
+            }
+            return raise_exception::<_>(_py, "OverflowError", "exponent too large");
+        }
+        if let (Some(lf), Some(rf)) = (to_f64(lhs), to_f64(rhs)) {
+            if lf == 0.0 && rf < 0.0 {
+                return raise_exception::<_>(
+                    _py,
+                    "ZeroDivisionError",
+                    "0.0 cannot be raised to a negative power",
+                );
+            }
+            if lf < 0.0 && rf.is_finite() && rf.fract() != 0.0 {
+                let base = ComplexParts { re: lf, im: 0.0 };
+                let exp = ComplexParts { re: rf, im: 0.0 };
+                if let Ok(out) = complex_pow(base, exp) {
+                    return complex_bits(_py, out.re, out.im);
+                }
+            }
+            let out = lf.powf(rf);
+            if out.is_infinite() && lf.is_finite() && rf.is_finite() {
+                return raise_exception::<_>(_py, "OverflowError", "math range error");
+            }
+            return MoltObject::from_float(out).bits();
+        }
+        raise_exception::<_>(_py, "TypeError", "unsupported operand type(s) for **")
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_inplace_pow(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        unsafe {
+            let ipow_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.ipow_name, b"__ipow__");
+            if let Some(res_bits) = call_inplace_dunder(_py, a, b, ipow_name_bits) {
+                return res_bits;
+            }
+        }
+        molt_pow(a, b)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_pow_mod(a: u64, b: u64, m: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        let mod_obj = obj_from_bits(m);
+        if let (Some(li), Some(ri), Some(mi)) = (to_i64(lhs), to_i64(rhs), to_i64(mod_obj)) {
+            let (base, exp, modulus) = (li as i128, ri, mi as i128);
+            if modulus == 0 {
+                return raise_exception::<_>(_py, "ValueError", "pow() 3rd argument cannot be 0");
+            }
+            let result = if exp < 0 {
+                let mod_abs = modulus.abs();
+                let base_mod = mod_py_i128(base, mod_abs);
+                let Some(inv) = mod_inverse_i128(_py, base_mod, mod_abs) else {
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "base is not invertible for the given modulus",
+                    );
+                };
+                let inv_mod = mod_py_i128(inv, modulus);
+                mod_pow_i128(_py, inv_mod, -exp, modulus)
+            } else {
+                mod_pow_i128(_py, base, exp, modulus)
+            };
+            return MoltObject::from_int(result as i64).bits();
+        }
+        if let (Some(base), Some(exp), Some(modulus)) =
+            (to_bigint(lhs), to_bigint(rhs), to_bigint(mod_obj))
+        {
+            if modulus.is_zero() {
+                return raise_exception::<_>(_py, "ValueError", "pow() 3rd argument cannot be 0");
+            }
+            let result = if exp.is_negative() {
+                let mod_abs = modulus.abs();
+                let base_mod = base.mod_floor(&mod_abs);
+                let Some(inv) = mod_inverse_bigint(base_mod, &mod_abs) else {
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "base is not invertible for the given modulus",
+                    );
+                };
+                let inv_mod = inv.mod_floor(&modulus);
+                let neg_exp = -exp;
+                if neg_exp.to_u64().is_none() {
+                    return raise_exception::<_>(_py, "OverflowError", "exponent too large");
+                }
+                let exp_u64 = neg_exp.to_u64().unwrap();
+                mod_pow_bigint(&inv_mod, exp_u64, &modulus)
+            } else {
+                if exp.to_u64().is_none() {
+                    return raise_exception::<_>(_py, "OverflowError", "exponent too large");
+                }
+                let exp_u64 = exp.to_u64().unwrap();
+                mod_pow_bigint(&base, exp_u64, &modulus)
+            };
+            if let Some(i) = bigint_to_inline(&result) {
+                return MoltObject::from_int(i).bits();
+            }
+            return bigint_bits(_py, result);
+        }
+        raise_exception::<_>(
+            _py,
+            "TypeError",
+            "pow() 3rd argument not allowed unless all arguments are integers",
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let val = obj_from_bits(val_bits);
+        let has_ndigits = to_i64(obj_from_bits(has_ndigits_bits)).unwrap_or(0) != 0;
+        if let Some(ptr) = bigint_ptr_from_bits(val_bits) {
+            if !has_ndigits {
+                return val_bits;
+            }
+            let ndigits_obj = obj_from_bits(ndigits_bits);
+            if ndigits_obj.is_none() {
+                return val_bits;
+            }
+            let ndigits = index_i64_from_obj(_py, ndigits_bits, "round() ndigits must be int");
+            if ndigits >= 0 {
+                return val_bits;
+            }
+            let exp = (-ndigits) as u32;
+            let value = unsafe { bigint_ref(ptr).clone() };
+            let pow = BigInt::from(10).pow(exp);
+            if pow.is_zero() {
+                return val_bits;
+            }
+            let div = value.div_floor(&pow);
+            let rem = value.mod_floor(&pow);
+            let twice = &rem * 2;
+            let mut rounded = div;
+            if twice > pow || (twice == pow && !rounded.is_even()) {
+                if value.is_negative() {
+                    rounded -= 1;
+                } else {
+                    rounded += 1;
+                }
+            }
+            let result = rounded * pow;
+            if let Some(i) = bigint_to_inline(&result) {
+                return MoltObject::from_int(i).bits();
+            }
+            return bigint_bits(_py, result);
+        }
+        if !val.is_int()
+            && !val.is_bool()
+            && !val.is_float()
+            && let Some(ptr) = maybe_ptr_from_bits(val_bits)
+        {
+            unsafe {
+                let round_name_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.round_name, b"__round__");
+                if let Some(call_bits) = attr_lookup_ptr(_py, ptr, round_name_bits) {
+                    let ndigits_obj = obj_from_bits(ndigits_bits);
+                    let want_arg = has_ndigits && !ndigits_obj.is_none();
+                    let arity = callable_arity(_py, call_bits).unwrap_or(0);
+                    let res_bits = if arity <= 1 {
+                        if want_arg {
+                            call_callable1(_py, call_bits, ndigits_bits)
+                        } else {
+                            call_callable0(_py, call_bits)
+                        }
+                    } else {
+                        let arg_bits = if want_arg {
+                            ndigits_bits
+                        } else {
+                            MoltObject::none().bits()
+                        };
+                        call_callable1(_py, call_bits, arg_bits)
+                    };
+                    dec_ref_bits(_py, call_bits);
+                    return res_bits;
+                }
+            }
+        }
+        if !val.is_float() && let Some(i) = to_i64(val) {
+            if !has_ndigits {
+                return MoltObject::from_int(i).bits();
+            }
+            let ndigits_obj = obj_from_bits(ndigits_bits);
+            if ndigits_obj.is_none() {
+                return MoltObject::from_int(i).bits();
+            }
+            let Some(ndigits) = to_i64(ndigits_obj) else {
+                return raise_exception::<_>(_py, "TypeError", "round() ndigits must be int");
+            };
+            if ndigits >= 0 {
+                return MoltObject::from_int(i).bits();
+            }
+            let exp = (-ndigits) as u32;
+            if exp > 38 {
+                return MoltObject::from_int(0).bits();
+            }
+            let pow = 10_i128.pow(exp);
+            let value = i as i128;
+            if pow == 0 {
+                return MoltObject::from_int(i).bits();
+            }
+            let div = value / pow;
+            let rem = value % pow;
+            let abs_rem = rem.abs();
+            let twice = abs_rem.saturating_mul(2);
+            let mut rounded = div;
+            if twice > pow || (twice == pow && (div & 1) != 0) {
+                rounded += if value >= 0 { 1 } else { -1 };
+            }
+            let result = rounded.saturating_mul(pow);
+            return MoltObject::from_int(result as i64).bits();
+        }
+        if let Some(f) = to_f64(val) {
+            if !has_ndigits {
+                if f.is_nan() {
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "cannot convert float NaN to integer",
+                    );
+                }
+                if f.is_infinite() {
+                    return raise_exception::<_>(
+                        _py,
+                        "OverflowError",
+                        "cannot convert float infinity to integer",
+                    );
+                }
+                let rounded = round_half_even(f);
+                let big = bigint_from_f64_trunc(rounded);
+                if let Some(i) = bigint_to_inline(&big) {
+                    return MoltObject::from_int(i).bits();
+                }
+                return bigint_bits(_py, big);
+            }
+            let ndigits_obj = obj_from_bits(ndigits_bits);
+            if ndigits_obj.is_none() {
+                if f.is_nan() {
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "cannot convert float NaN to integer",
+                    );
+                }
+                if f.is_infinite() {
+                    return raise_exception::<_>(
+                        _py,
+                        "OverflowError",
+                        "cannot convert float infinity to integer",
+                    );
+                }
+                let rounded = round_half_even(f);
+                let big = bigint_from_f64_trunc(rounded);
+                if let Some(i) = bigint_to_inline(&big) {
+                    return MoltObject::from_int(i).bits();
+                }
+                return bigint_bits(_py, big);
+            }
+            let Some(ndigits) = to_i64(ndigits_obj) else {
+                return raise_exception::<_>(_py, "TypeError", "round() ndigits must be int");
+            };
+            let rounded = round_float_ndigits(f, ndigits);
+            return MoltObject::from_float(rounded).bits();
+        }
+        raise_exception::<_>(_py, "TypeError", "round() expects a real number")
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_trunc(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let val = obj_from_bits(val_bits);
+        if let Some(i) = to_i64(val) {
+            return MoltObject::from_int(i).bits();
+        }
+        if bigint_ptr_from_bits(val_bits).is_some() {
+            return val_bits;
+        }
+        if let Some(f) = to_f64(val) {
+            if f.is_nan() {
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "cannot convert float NaN to integer",
+                );
+            }
+            if f.is_infinite() {
+                return raise_exception::<_>(
+                    _py,
+                    "OverflowError",
+                    "cannot convert float infinity to integer",
+                );
+            }
+            let big = bigint_from_f64_trunc(f);
+            if let Some(i) = bigint_to_inline(&big) {
+                return MoltObject::from_int(i).bits();
+            }
+            return bigint_bits(_py, big);
+        }
+        if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
+            unsafe {
+                let trunc_name_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.trunc_name, b"__trunc__");
+                if let Some(call_bits) = attr_lookup_ptr(_py, ptr, trunc_name_bits) {
+                    let res_bits = call_callable0(_py, call_bits);
+                    dec_ref_bits(_py, call_bits);
+                    return res_bits;
+                }
+            }
+        }
+        raise_exception::<_>(_py, "TypeError", "trunc() expects a real number")
+    })
+}
+
+pub(super) fn set_like_result_type_id(type_id: u32) -> u32 {
+    if type_id == TYPE_ID_FROZENSET {
+        TYPE_ID_FROZENSET
+    } else {
+        TYPE_ID_SET
+    }
+}
+
+pub(super) unsafe fn set_like_new_bits(type_id: u32, capacity: usize) -> u64 {
+    if type_id == TYPE_ID_FROZENSET {
+        molt_frozenset_new(capacity as u64)
+    } else {
+        molt_set_new(capacity as u64)
+    }
+}
+
+pub(super) unsafe fn set_like_union(
+    _py: &PyToken<'_>,
+    lhs_ptr: *mut u8,
+    rhs_ptr: *mut u8,
+    result_type_id: u32,
+) -> u64 {
+    unsafe {
+        let l_elems = set_order(lhs_ptr);
+        let r_elems = set_order(rhs_ptr);
+        let res_bits = set_like_new_bits(result_type_id, l_elems.len() + r_elems.len());
+        let res_ptr = obj_from_bits(res_bits)
+            .as_ptr()
+            .unwrap_or(std::ptr::null_mut());
+        if res_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        for &entry in l_elems.iter() {
+            set_add_in_place(_py, res_ptr, entry);
+        }
+        for &entry in r_elems.iter() {
+            set_add_in_place(_py, res_ptr, entry);
+        }
+        res_bits
+    }
+}
+
+pub(super) unsafe fn set_like_intersection(
+    _py: &PyToken<'_>,
+    lhs_ptr: *mut u8,
+    rhs_ptr: *mut u8,
+    result_type_id: u32,
+) -> u64 {
+    unsafe {
+        let l_elems = set_order(lhs_ptr);
+        let r_elems = set_order(rhs_ptr);
+        let (probe_elems, probe_table, output) = if l_elems.len() <= r_elems.len() {
+            (r_elems, set_table(rhs_ptr), l_elems)
+        } else {
+            (l_elems, set_table(lhs_ptr), r_elems)
+        };
+        let res_bits = set_like_new_bits(result_type_id, output.len());
+        let res_ptr = obj_from_bits(res_bits)
+            .as_ptr()
+            .unwrap_or(std::ptr::null_mut());
+        if res_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        for &entry in output.iter() {
+            let found = set_find_entry(_py, probe_elems, probe_table, entry);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, res_bits);
+                return MoltObject::none().bits();
+            }
+            if found.is_some() {
+                set_add_in_place(_py, res_ptr, entry);
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, res_bits);
+                    return MoltObject::none().bits();
+                }
+            }
+        }
+        res_bits
+    }
+}
+
+pub(super) unsafe fn set_like_difference(
+    _py: &PyToken<'_>,
+    lhs_ptr: *mut u8,
+    rhs_ptr: *mut u8,
+    result_type_id: u32,
+) -> u64 {
+    unsafe {
+        let l_elems = set_order(lhs_ptr);
+        let r_elems = set_order(rhs_ptr);
+        let r_table = set_table(rhs_ptr);
+        let res_bits = set_like_new_bits(result_type_id, l_elems.len());
+        let res_ptr = obj_from_bits(res_bits)
+            .as_ptr()
+            .unwrap_or(std::ptr::null_mut());
+        if res_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        for &entry in l_elems.iter() {
+            let found = set_find_entry(_py, r_elems, r_table, entry);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, res_bits);
+                return MoltObject::none().bits();
+            }
+            if found.is_none() {
+                set_add_in_place(_py, res_ptr, entry);
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, res_bits);
+                    return MoltObject::none().bits();
+                }
+            }
+        }
+        res_bits
+    }
+}
+
+pub(super) unsafe fn set_like_symdiff(
+    _py: &PyToken<'_>,
+    lhs_ptr: *mut u8,
+    rhs_ptr: *mut u8,
+    result_type_id: u32,
+) -> u64 {
+    unsafe {
+        let l_elems = set_order(lhs_ptr);
+        let r_elems = set_order(rhs_ptr);
+        let l_table = set_table(lhs_ptr);
+        let r_table = set_table(rhs_ptr);
+        let res_bits = set_like_new_bits(result_type_id, l_elems.len() + r_elems.len());
+        let res_ptr = obj_from_bits(res_bits)
+            .as_ptr()
+            .unwrap_or(std::ptr::null_mut());
+        if res_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        for &entry in l_elems.iter() {
+            let found = set_find_entry(_py, r_elems, r_table, entry);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, res_bits);
+                return MoltObject::none().bits();
+            }
+            if found.is_none() {
+                set_add_in_place(_py, res_ptr, entry);
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, res_bits);
+                    return MoltObject::none().bits();
+                }
+            }
+        }
+        for &entry in r_elems.iter() {
+            let found = set_find_entry(_py, l_elems, l_table, entry);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, res_bits);
+                return MoltObject::none().bits();
+            }
+            if found.is_none() {
+                set_add_in_place(_py, res_ptr, entry);
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, res_bits);
+                    return MoltObject::none().bits();
+                }
+            }
+        }
+        res_bits
+    }
+}
+
+pub(super) unsafe fn set_like_copy_bits(_py: &PyToken<'_>, ptr: *mut u8, result_type_id: u32) -> u64 {
+    unsafe {
+        let elems = set_order(ptr);
+        let res_bits = set_like_new_bits(result_type_id, elems.len());
+        let res_ptr = obj_from_bits(res_bits)
+            .as_ptr()
+            .unwrap_or(std::ptr::null_mut());
+        if res_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        for &entry in elems.iter() {
+            set_add_in_place(_py, res_ptr, entry);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, res_bits);
+                return MoltObject::none().bits();
+            }
+        }
+        res_bits
+    }
+}
+
+pub(super) unsafe fn set_like_ptr_from_bits(
+    _py: &PyToken<'_>,
+    other_bits: u64,
+) -> Option<(*mut u8, Option<u64>)> {
+    unsafe {
+        let obj = obj_from_bits(other_bits);
+        if let Some(ptr) = obj.as_ptr() {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_SET || type_id == TYPE_ID_FROZENSET {
+                return Some((ptr, None));
+            }
+        }
+        let set_bits = set_from_iter_bits(_py, other_bits)?;
+        let ptr = obj_from_bits(set_bits).as_ptr()?;
+        Some((ptr, Some(set_bits)))
+    }
+}
+
+pub(super) unsafe fn set_from_iter_bits(_py: &PyToken<'_>, other_bits: u64) -> Option<u64> {
+    unsafe {
+        let iter_bits = molt_iter(other_bits);
+        if obj_from_bits(iter_bits).is_none() {
+            return raise_not_iterable(_py, other_bits);
+        }
+        let set_bits = molt_set_new(0);
+        let set_ptr = obj_from_bits(set_bits).as_ptr()?;
+        loop {
+            let pair_bits = molt_iter_next(iter_bits);
+            let pair_obj = obj_from_bits(pair_bits);
+            let pair_ptr = pair_obj.as_ptr()?;
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                return None;
+            }
+            let pair_elems = seq_vec_ref(pair_ptr);
+            if pair_elems.len() < 2 {
+                return None;
+            }
+            let done_bits = pair_elems[1];
+            if is_truthy(_py, obj_from_bits(done_bits)) {
+                break;
+            }
+            let val_bits = pair_elems[0];
+            set_add_in_place(_py, set_ptr, val_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, set_bits);
+                return None;
+            }
+        }
+        Some(set_bits)
+    }
+}
+
+fn binary_type_error(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject, op: &str) -> u64 {
+    let msg = format!(
+        "unsupported operand type(s) for {op}: '{}' and '{}'",
+        type_name(_py, lhs),
+        type_name(_py, rhs)
+    );
+    raise_exception::<_>(_py, "TypeError", &msg)
+}
+
+fn is_union_operand(_py: &PyToken<'_>, obj: MoltObject) -> bool {
+    if obj.is_none() {
+        return true;
+    }
+    let Some(ptr) = obj.as_ptr() else {
+        return false;
+    };
+    unsafe {
+        matches!(
+            object_type_id(ptr),
+            TYPE_ID_TYPE | TYPE_ID_GENERIC_ALIAS | TYPE_ID_UNION
+        )
+    }
+}
+
+fn append_union_arg(_py: &PyToken<'_>, args: &mut Vec<u64>, candidate: u64) {
+    for &existing in args.iter() {
+        if obj_eq(_py, obj_from_bits(existing), obj_from_bits(candidate)) {
+            return;
+        }
+    }
+    args.push(candidate);
+}
+
+fn collect_union_args(_py: &PyToken<'_>, bits: u64, args: &mut Vec<u64>) {
+    let obj = obj_from_bits(bits);
+    if obj.is_none() {
+        append_union_arg(_py, args, builtin_classes(_py).none_type);
+        return;
+    }
+    if let Some(ptr) = obj.as_ptr() {
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_UNION {
+                let args_bits = union_type_args_bits(ptr);
+                let args_obj = obj_from_bits(args_bits);
+                if let Some(args_ptr) = args_obj.as_ptr()
+                    && object_type_id(args_ptr) == TYPE_ID_TUPLE
+                {
+                    let elems = seq_vec_ref(args_ptr);
+                    for &elem_bits in elems.iter() {
+                        append_union_arg(_py, args, elem_bits);
+                    }
+                    return;
+                }
+                append_union_arg(_py, args, args_bits);
+                return;
+            }
+        }
+    }
+    append_union_arg(_py, args, bits);
+}
+
+fn build_union_type(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> u64 {
+    let mut args = Vec::new();
+    collect_union_args(_py, lhs.bits(), &mut args);
+    collect_union_args(_py, rhs.bits(), &mut args);
+    if args.len() == 1 {
+        let bits = args[0];
+        inc_ref_bits(_py, bits);
+        return bits;
+    }
+    let tuple_ptr = alloc_tuple(_py, args.as_slice());
+    if tuple_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let args_bits = MoltObject::from_ptr(tuple_ptr).bits();
+    let union_ptr = alloc_union_type(_py, args_bits);
+    if union_ptr.is_null() {
+        dec_ref_bits(_py, args_bits);
+        return MoltObject::none().bits();
+    }
+    dec_ref_bits(_py, args_bits);
+    MoltObject::from_ptr(union_ptr).bits()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bit_or(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            if lhs.is_bool() && rhs.is_bool() {
+                return MoltObject::from_bool((li != 0) | (ri != 0)).bits();
+            }
+            let res = li | ri;
+            if inline_int_from_i128(res as i128).is_some() {
+                return MoltObject::from_int(res).bits();
+            }
+            return bigint_bits(_py, BigInt::from(li) | BigInt::from(ri));
+        }
+        if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+            let res = l_big | r_big;
+            if let Some(i) = bigint_to_inline(&res) {
+                return MoltObject::from_int(i).bits();
+            }
+            return bigint_bits(_py, res);
+        }
+        if is_union_operand(_py, lhs) && is_union_operand(_py, rhs) {
+            return build_union_type(_py, lhs, rhs);
+        }
+        if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
+            unsafe {
+                let ltype = object_type_id(lp);
+                let rtype = object_type_id(rp);
+                if is_set_like_type(ltype) && is_set_like_type(rtype) {
+                    return set_like_union(_py, lp, rp, set_like_result_type_id(ltype));
+                }
+                if (is_set_like_type(ltype) || is_set_view_type(ltype))
+                    && (is_set_like_type(rtype) || is_set_view_type(rtype))
+                {
+                    let (lhs_ptr, lhs_bits) = if is_set_like_type(ltype) {
+                        (lp, None)
+                    } else {
+                        let Some(bits) = dict_view_as_set_bits(_py, lp, ltype) else {
+                            return MoltObject::none().bits();
+                        };
+                        let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                            dec_ref_bits(_py, bits);
+                            return MoltObject::none().bits();
+                        };
+                        (ptr, Some(bits))
+                    };
+                    let (rhs_ptr, rhs_bits) = if is_set_like_type(rtype) {
+                        (rp, None)
+                    } else {
+                        let Some(bits) = dict_view_as_set_bits(_py, rp, rtype) else {
+                            if let Some(bits) = lhs_bits {
+                                dec_ref_bits(_py, bits);
+                            }
+                            return MoltObject::none().bits();
+                        };
+                        let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                            if let Some(bits) = lhs_bits {
+                                dec_ref_bits(_py, bits);
+                            }
+                            dec_ref_bits(_py, bits);
+                            return MoltObject::none().bits();
+                        };
+                        (ptr, Some(bits))
+                    };
+                    let res = set_like_union(_py, lhs_ptr, rhs_ptr, TYPE_ID_SET);
+                    if let Some(bits) = lhs_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if let Some(bits) = rhs_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return res;
+                }
+                if ltype == TYPE_ID_DICT && rtype == TYPE_ID_DICT {
+                    let builtins = builtin_classes(_py);
+                    let lhs_class = object_class_bits(lp);
+                    let rhs_class = object_class_bits(rp);
+                    let lhs_exact = lhs_class == 0 || lhs_class == builtins.dict;
+                    let rhs_exact = rhs_class == 0 || rhs_class == builtins.dict;
+                    if !lhs_exact || !rhs_exact {
+                        // Dict subclasses must dispatch through dunder resolution.
+                        // Skip the dict fast-path so __or__/__ror__ can run.
+                        // (Exact dict stays on the optimized union path.)
+                    } else if let (Some(lhs_bits), Some(rhs_bits)) = (
+                        dict_like_bits_from_ptr(_py, lp),
+                        dict_like_bits_from_ptr(_py, rp),
+                    ) {
+                        let out_bits = molt_dict_copy(lhs_bits);
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
+                        let _ = molt_dict_update(out_bits, rhs_bits);
+                        if exception_pending(_py) {
+                            dec_ref_bits(_py, out_bits);
+                            return MoltObject::none().bits();
+                        }
+                        return out_bits;
+                    }
+                }
+            }
+        }
+        unsafe {
+            let or_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.or_name, b"__or__");
+            let ror_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.ror_name, b"__ror__");
+            if let Some(res_bits) = call_binary_dunder(_py, a, b, or_name_bits, ror_name_bits) {
+                return res_bits;
+            }
+        }
+        binary_type_error(_py, lhs, rhs, "|")
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_inplace_bit_or(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        if let Some(ptr) = lhs.as_ptr() {
+            unsafe {
+                if object_type_id(ptr) == TYPE_ID_SET {
+                    let rhs = obj_from_bits(b);
+                    let ok = rhs
+                        .as_ptr()
+                        .is_some_and(|rhs_ptr| is_set_inplace_rhs_type(object_type_id(rhs_ptr)));
+                    if !ok {
+                        return raise_unsupported_inplace(_py, "|=", a, b);
+                    }
+                    let _ = molt_set_update(a, b);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    inc_ref_bits(_py, a);
+                    return a;
+                }
+            }
+        }
+        if let Some(ptr) = lhs.as_ptr() {
+            unsafe {
+                if object_type_id(ptr) == TYPE_ID_DICT {
+                    let builtins = builtin_classes(_py);
+                    let class_bits = object_class_bits(ptr);
+                    let exact_dict = class_bits == 0 || class_bits == builtins.dict;
+                    if exact_dict {
+                        if let Some(rhs_ptr) = obj_from_bits(b).as_ptr()
+                            && dict_like_bits_from_ptr(_py, rhs_ptr).is_some()
+                        {
+                            let _ = molt_dict_update(a, b);
+                            if exception_pending(_py) {
+                                return MoltObject::none().bits();
+                            }
+                            inc_ref_bits(_py, a);
+                            return a;
+                        }
+                        return raise_unsupported_inplace(_py, "|=", a, b);
+                    }
+                }
+            }
+        }
+        unsafe {
+            let ior_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.ior_name, b"__ior__");
+            if let Some(res_bits) = call_inplace_dunder(_py, a, b, ior_name_bits) {
+                return res_bits;
+            }
+        }
+        molt_bit_or(a, b)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bit_and(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            if lhs.is_bool() && rhs.is_bool() {
+                return MoltObject::from_bool((li != 0) & (ri != 0)).bits();
+            }
+            let res = li & ri;
+            if inline_int_from_i128(res as i128).is_some() {
+                return MoltObject::from_int(res).bits();
+            }
+            return bigint_bits(_py, BigInt::from(li) & BigInt::from(ri));
+        }
+        if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+            let res = l_big & r_big;
+            if let Some(i) = bigint_to_inline(&res) {
+                return MoltObject::from_int(i).bits();
+            }
+            return bigint_bits(_py, res);
+        }
+        if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
+            unsafe {
+                let ltype = object_type_id(lp);
+                let rtype = object_type_id(rp);
+                if is_set_like_type(ltype) && is_set_like_type(rtype) {
+                    return set_like_intersection(_py, lp, rp, set_like_result_type_id(ltype));
+                }
+                if (is_set_like_type(ltype) || is_set_view_type(ltype))
+                    && (is_set_like_type(rtype) || is_set_view_type(rtype))
+                {
+                    let (lhs_ptr, lhs_bits) = if is_set_like_type(ltype) {
+                        (lp, None)
+                    } else {
+                        let Some(bits) = dict_view_as_set_bits(_py, lp, ltype) else {
+                            return MoltObject::none().bits();
+                        };
+                        let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                            dec_ref_bits(_py, bits);
+                            return MoltObject::none().bits();
+                        };
+                        (ptr, Some(bits))
+                    };
+                    let (rhs_ptr, rhs_bits) = if is_set_like_type(rtype) {
+                        (rp, None)
+                    } else {
+                        let Some(bits) = dict_view_as_set_bits(_py, rp, rtype) else {
+                            if let Some(bits) = lhs_bits {
+                                dec_ref_bits(_py, bits);
+                            }
+                            return MoltObject::none().bits();
+                        };
+                        let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                            if let Some(bits) = lhs_bits {
+                                dec_ref_bits(_py, bits);
+                            }
+                            dec_ref_bits(_py, bits);
+                            return MoltObject::none().bits();
+                        };
+                        (ptr, Some(bits))
+                    };
+                    let res = set_like_intersection(_py, lhs_ptr, rhs_ptr, TYPE_ID_SET);
+                    if let Some(bits) = lhs_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if let Some(bits) = rhs_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return res;
+                }
+            }
+        }
+        unsafe {
+            let and_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.and_name, b"__and__");
+            let rand_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.rand_name, b"__rand__");
+            if let Some(res_bits) = call_binary_dunder(_py, a, b, and_name_bits, rand_name_bits) {
+                return res_bits;
+            }
+        }
+        binary_type_error(_py, lhs, rhs, "&")
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_inplace_bit_and(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        if let Some(ptr) = lhs.as_ptr() {
+            unsafe {
+                if object_type_id(ptr) == TYPE_ID_SET {
+                    let rhs = obj_from_bits(b);
+                    let ok = rhs
+                        .as_ptr()
+                        .is_some_and(|rhs_ptr| is_set_inplace_rhs_type(object_type_id(rhs_ptr)));
+                    if !ok {
+                        return raise_unsupported_inplace(_py, "&=", a, b);
+                    }
+                    let _ = molt_set_intersection_update(a, b);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    inc_ref_bits(_py, a);
+                    return a;
+                }
+            }
+        }
+        unsafe {
+            let iand_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.iand_name, b"__iand__");
+            if let Some(res_bits) = call_inplace_dunder(_py, a, b, iand_name_bits) {
+                return res_bits;
+            }
+        }
+        molt_bit_and(a, b)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bit_xor(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        if let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            if lhs.is_bool() && rhs.is_bool() {
+                return MoltObject::from_bool((li != 0) ^ (ri != 0)).bits();
+            }
+            let res = li ^ ri;
+            if inline_int_from_i128(res as i128).is_some() {
+                return MoltObject::from_int(res).bits();
+            }
+            return bigint_bits(_py, BigInt::from(li) ^ BigInt::from(ri));
+        }
+        if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+            let res = l_big ^ r_big;
+            if let Some(i) = bigint_to_inline(&res) {
+                return MoltObject::from_int(i).bits();
+            }
+            return bigint_bits(_py, res);
+        }
+        if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
+            unsafe {
+                let ltype = object_type_id(lp);
+                let rtype = object_type_id(rp);
+                if is_set_like_type(ltype) && is_set_like_type(rtype) {
+                    return set_like_symdiff(_py, lp, rp, set_like_result_type_id(ltype));
+                }
+                if (is_set_like_type(ltype) || is_set_view_type(ltype))
+                    && (is_set_like_type(rtype) || is_set_view_type(rtype))
+                {
+                    let (lhs_ptr, lhs_bits) = if is_set_like_type(ltype) {
+                        (lp, None)
+                    } else {
+                        let Some(bits) = dict_view_as_set_bits(_py, lp, ltype) else {
+                            return MoltObject::none().bits();
+                        };
+                        let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                            dec_ref_bits(_py, bits);
+                            return MoltObject::none().bits();
+                        };
+                        (ptr, Some(bits))
+                    };
+                    let (rhs_ptr, rhs_bits) = if is_set_like_type(rtype) {
+                        (rp, None)
+                    } else {
+                        let Some(bits) = dict_view_as_set_bits(_py, rp, rtype) else {
+                            if let Some(bits) = lhs_bits {
+                                dec_ref_bits(_py, bits);
+                            }
+                            return MoltObject::none().bits();
+                        };
+                        let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+                            if let Some(bits) = lhs_bits {
+                                dec_ref_bits(_py, bits);
+                            }
+                            dec_ref_bits(_py, bits);
+                            return MoltObject::none().bits();
+                        };
+                        (ptr, Some(bits))
+                    };
+                    let res = set_like_symdiff(_py, lhs_ptr, rhs_ptr, TYPE_ID_SET);
+                    if let Some(bits) = lhs_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if let Some(bits) = rhs_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return res;
+                }
+            }
+        }
+        unsafe {
+            let xor_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.xor_name, b"__xor__");
+            let rxor_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.rxor_name, b"__rxor__");
+            if let Some(res_bits) = call_binary_dunder(_py, a, b, xor_name_bits, rxor_name_bits) {
+                return res_bits;
+            }
+        }
+        binary_type_error(_py, lhs, rhs, "^")
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_invert(val: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(val);
+        if let Some(i) = to_i64(obj) {
+            let res = -(i as i128) - 1;
+            return int_bits_from_i128(_py, res);
+        }
+        if let Some(big) = to_bigint(obj) {
+            let res = -big - BigInt::from(1);
+            if let Some(i) = bigint_to_inline(&res) {
+                return MoltObject::from_int(i).bits();
+            }
+            return bigint_bits(_py, res);
+        }
+        let msg = format!("bad operand type for unary ~: '{}'", type_name(_py, obj));
+        raise_exception::<_>(_py, "TypeError", &msg)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_neg(val: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(val);
+        if let Some(i) = to_i64(obj) {
+            let res = -(i as i128);
+            return int_bits_from_i128(_py, res);
+        }
+        if let Some(big) = to_bigint(obj) {
+            let res = -big;
+            if let Some(i) = bigint_to_inline(&res) {
+                return MoltObject::from_int(i).bits();
+            }
+            return bigint_bits(_py, res);
+        }
+        if let Some(f) = to_f64(obj) {
+            return MoltObject::from_float(-f).bits();
+        }
+        if let Some(ptr) = complex_ptr_from_bits(val) {
+            let value = unsafe { *complex_ref(ptr) };
+            return complex_bits(_py, -value.re, -value.im);
+        }
+        if let Some(ptr) = maybe_ptr_from_bits(val)
+            && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__neg__")
+        {
+            unsafe {
+                let call_bits = attr_lookup_ptr(_py, ptr, name_bits);
+                dec_ref_bits(_py, name_bits);
+                if let Some(call_bits) = call_bits {
+                    let res_bits = call_callable0(_py, call_bits);
+                    dec_ref_bits(_py, call_bits);
+                    return res_bits;
+                }
+            }
+        }
+        let type_name = class_name_for_error(type_of_bits(_py, val));
+        let msg = format!("bad operand type for unary -: '{type_name}'");
+        raise_exception::<_>(_py, "TypeError", &msg)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_inplace_bit_xor(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        if let Some(ptr) = lhs.as_ptr() {
+            unsafe {
+                if object_type_id(ptr) == TYPE_ID_SET {
+                    let rhs = obj_from_bits(b);
+                    let ok = rhs
+                        .as_ptr()
+                        .is_some_and(|rhs_ptr| is_set_inplace_rhs_type(object_type_id(rhs_ptr)));
+                    if !ok {
+                        return raise_unsupported_inplace(_py, "^=", a, b);
+                    }
+                    let _ = molt_set_symdiff_update(a, b);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    inc_ref_bits(_py, a);
+                    return a;
+                }
+            }
+        }
+        unsafe {
+            let ixor_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.ixor_name, b"__ixor__");
+            if let Some(res_bits) = call_inplace_dunder(_py, a, b, ixor_name_bits) {
+                return res_bits;
+            }
+        }
+        molt_bit_xor(a, b)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_lshift(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        let shift = index_i64_from_obj(_py, b, "shift count must be int");
+        if shift < 0 {
+            return raise_exception::<_>(_py, "ValueError", "negative shift count");
+        }
+        let shift_u = shift as u32;
+        if let Some(value) = to_i64(lhs) {
+            if shift_u >= 63 {
+                return bigint_bits(_py, BigInt::from(value) << shift_u);
+            }
+            let res = value << shift_u;
+            if inline_int_from_i128(res as i128).is_some() {
+                return MoltObject::from_int(res).bits();
+            }
+            return bigint_bits(_py, BigInt::from(value) << shift_u);
+        }
+        if let Some(value) = to_bigint(lhs) {
+            let res = value << shift_u;
+            if let Some(i) = bigint_to_inline(&res) {
+                return MoltObject::from_int(i).bits();
+            }
+            return bigint_bits(_py, res);
+        }
+        binary_type_error(_py, lhs, rhs, "<<")
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_inplace_lshift(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        unsafe {
+            let ilshift_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.ilshift_name,
+                b"__ilshift__",
+            );
+            if let Some(res_bits) = call_inplace_dunder(_py, a, b, ilshift_name_bits) {
+                return res_bits;
+            }
+        }
+        molt_lshift(a, b)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_rshift(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        let shift = index_i64_from_obj(_py, b, "shift count must be int");
+        if shift < 0 {
+            return raise_exception::<_>(_py, "ValueError", "negative shift count");
+        }
+        let shift_u = shift as u32;
+        if let Some(value) = to_i64(lhs) {
+            let res = if shift_u >= 63 {
+                if value >= 0 { 0 } else { -1 }
+            } else {
+                value >> shift_u
+            };
+            return MoltObject::from_int(res).bits();
+        }
+        if let Some(value) = to_bigint(lhs) {
+            let res = value >> shift_u;
+            if let Some(i) = bigint_to_inline(&res) {
+                return MoltObject::from_int(i).bits();
+            }
+            return bigint_bits(_py, res);
+        }
+        binary_type_error(_py, lhs, rhs, ">>")
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_inplace_rshift(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        unsafe {
+            let irshift_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.irshift_name,
+                b"__irshift__",
+            );
+            if let Some(res_bits) = call_inplace_dunder(_py, a, b, irshift_name_bits) {
+                return res_bits;
+            }
+        }
+        molt_rshift(a, b)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_matmul(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
+            unsafe {
+                if object_type_id(lp) == TYPE_ID_BUFFER2D && object_type_id(rp) == TYPE_ID_BUFFER2D
+                {
+                    return molt_buffer2d_matmul(a, b);
+                }
+            }
+        }
+        unsafe {
+            let matmul_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.matmul_name, b"__matmul__");
+            let rmatmul_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.rmatmul_name,
+                b"__rmatmul__",
+            );
+            if let Some(res_bits) =
+                call_binary_dunder(_py, a, b, matmul_name_bits, rmatmul_name_bits)
+            {
+                return res_bits;
+            }
+        }
+        binary_type_error(_py, lhs, rhs, "@")
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_inplace_matmul(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        unsafe {
+            let imatmul_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.imatmul_name,
+                b"__imatmul__",
+            );
+            if let Some(res_bits) = call_inplace_dunder(_py, a, b, imatmul_name_bits) {
+                return res_bits;
+            }
+        }
+        molt_matmul(a, b)
+    })
+}
+
+fn compare_type_error(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject, op: &str) -> u64 {
+    let msg = format!(
+        "'{}' not supported between instances of '{}' and '{}'",
+        op,
+        type_name(_py, lhs),
+        type_name(_py, rhs),
+    );
+    raise_exception::<_>(_py, "TypeError", &msg)
+}
 
 #[derive(Clone, Copy)]
+pub(crate) enum CompareOutcome {
+    Ordered(Ordering),
+    Unordered,
+    NotComparable,
+    Error,
+}
 
-pub(crate) use super::ops_encoding::*;
+#[derive(Clone, Copy)]
+enum CompareBoolOutcome {
+    True,
+    False,
+    NotComparable,
+    Error,
+}
 
+#[derive(Clone, Copy)]
+enum CompareValueOutcome {
+    Value(u64),
+    NotComparable,
+    Error,
+}
+
+#[derive(Clone, Copy)]
+enum CompareOp {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+fn is_number(obj: MoltObject) -> bool {
+    to_i64(obj).is_some() || obj.is_float() || bigint_ptr_from_bits(obj.bits()).is_some()
+}
+
+fn compare_numbers_outcome(lhs: MoltObject, rhs: MoltObject) -> CompareOutcome {
+    if let Some(ordering) = compare_numbers(lhs, rhs) {
+        return CompareOutcome::Ordered(ordering);
+    }
+    if is_number(lhs) && is_number(rhs) {
+        return CompareOutcome::Unordered;
+    }
+    CompareOutcome::NotComparable
+}
+
+// ---------------------------------------------------------------------------
+// SIMD-accelerated lexicographic byte comparison for string/bytes ordering.
+// Uses SIMD to skip past equal prefix, then scalar compare at divergence.
+// ---------------------------------------------------------------------------
+
+/// Find the first byte index where `a` and `b` differ, within `len` bytes.
+/// Returns `len` if the prefixes are identical.
+#[inline]
+unsafe fn simd_find_first_byte_diff(a: *const u8, b: *const u8, len: usize) -> usize {
+    unsafe {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::arch::is_x86_feature_detected!("avx2") {
+                return simd_find_first_byte_diff_avx2(a, b, len);
+            }
+            return simd_find_first_byte_diff_sse2(a, b, len);
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            return simd_find_first_byte_diff_neon(a, b, len);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if cfg!(target_feature = "simd128") {
+                return simd_find_first_byte_diff_wasm(a, b, len);
+            }
+        }
+        #[allow(unreachable_code)]
+        {
+            for i in 0..len {
+                if *a.add(i) != *b.add(i) {
+                    return i;
+                }
+            }
+            len
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+unsafe fn simd_find_first_byte_diff_wasm(a: *const u8, b: *const u8, len: usize) -> usize {
+    use std::arch::wasm32::*;
+    let mut i = 0usize;
+    while i + 16 <= len {
+        let va = unsafe { v128_load(a.add(i) as *const v128) };
+        let vb = unsafe { v128_load(b.add(i) as *const v128) };
+        let eq = u8x16_eq(va, vb);
+        let mask = u8x16_bitmask(eq) as u32;
+        if mask != 0xFFFF {
+            // Not all equal — find first differing byte
+            return i + (!mask).trailing_zeros() as usize;
+        }
+        i += 16;
+    }
+    // Scalar tail
+    while i < len {
+        if unsafe { *a.add(i) != *b.add(i) } {
+            return i;
+        }
+        i += 1;
+    }
+    len
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+unsafe fn simd_find_first_byte_diff_sse2(a: *const u8, b: *const u8, len: usize) -> usize {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    while i + 16 <= len {
+        let va = _mm_loadu_si128(a.add(i) as *const __m128i);
+        let vb = _mm_loadu_si128(b.add(i) as *const __m128i);
+        let cmp = _mm_cmpeq_epi8(va, vb);
+        let mask = _mm_movemask_epi8(cmp) as u32;
+        if mask != 0xFFFF {
+            // Find first differing byte via trailing zeros of negated mask
+            return i + (!mask).trailing_zeros() as usize;
+        }
+        i += 16;
+    }
+    for j in i..len {
+        if *a.add(j) != *b.add(j) {
+            return j;
+        }
+    }
+    len
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+unsafe fn simd_find_first_byte_diff_avx2(a: *const u8, b: *const u8, len: usize) -> usize {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    while i + 32 <= len {
+        let va = _mm256_loadu_si256(a.add(i) as *const __m256i);
+        let vb = _mm256_loadu_si256(b.add(i) as *const __m256i);
+        let cmp = _mm256_cmpeq_epi8(va, vb);
+        let mask = _mm256_movemask_epi8(cmp) as u32;
+        if mask != 0xFFFFFFFF {
+            return i + (!mask).trailing_zeros() as usize;
+        }
+        i += 32;
+    }
+    // SSE2 tail
+    if i + 16 <= len {
+        let va = _mm_loadu_si128(a.add(i) as *const __m128i);
+        let vb = _mm_loadu_si128(b.add(i) as *const __m128i);
+        let cmp = _mm_cmpeq_epi8(va, vb);
+        let mask = _mm_movemask_epi8(cmp) as u32;
+        if mask != 0xFFFF {
+            return i + (!mask).trailing_zeros() as usize;
+        }
+        i += 16;
+    }
+    for j in i..len {
+        if *a.add(j) != *b.add(j) {
+            return j;
+        }
+    }
+    len
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn simd_find_first_byte_diff_neon(a: *const u8, b: *const u8, len: usize) -> usize {
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut i = 0usize;
+        while i + 16 <= len {
+            let va = vld1q_u8(a.add(i));
+            let vb = vld1q_u8(b.add(i));
+            let cmp = vceqq_u8(va, vb);
+            if vminvq_u8(cmp) != 0xFF {
+                // Find the exact byte — check 8-byte halves first
+                let low = vget_low_u8(cmp);
+                let _high = vget_high_u8(cmp);
+                if vminv_u8(low) != 0xFF {
+                    for j in 0..8 {
+                        if *a.add(i + j) != *b.add(i + j) {
+                            return i + j;
+                        }
+                    }
+                }
+                for j in 8..16 {
+                    if *a.add(i + j) != *b.add(i + j) {
+                        return i + j;
+                    }
+                }
+            }
+            i += 16;
+        }
+        for j in i..len {
+            if *a.add(j) != *b.add(j) {
+                return j;
+            }
+        }
+        len
+    }
+}
+
+unsafe fn compare_string_bytes(lhs_ptr: *mut u8, rhs_ptr: *mut u8) -> Ordering {
+    unsafe {
+        let l_len = string_len(lhs_ptr);
+        let r_len = string_len(rhs_ptr);
+        let common = l_len.min(r_len);
+        if common >= 32 {
+            // SIMD fast path: skip past identical prefix
+            let l_data = string_bytes(lhs_ptr);
+            let r_data = string_bytes(rhs_ptr);
+            let diff_at = simd_find_first_byte_diff(l_data, r_data, common);
+            if diff_at == common {
+                return l_len.cmp(&r_len);
+            }
+            return (*l_data.add(diff_at)).cmp(&*r_data.add(diff_at));
+        }
+        let l_bytes = std::slice::from_raw_parts(string_bytes(lhs_ptr), l_len);
+        let r_bytes = std::slice::from_raw_parts(string_bytes(rhs_ptr), r_len);
+        l_bytes.cmp(r_bytes)
+    }
+}
+
+unsafe fn compare_bytes_like(lhs_ptr: *mut u8, rhs_ptr: *mut u8) -> Ordering {
+    unsafe {
+        let l_len = bytes_len(lhs_ptr);
+        let r_len = bytes_len(rhs_ptr);
+        let common = l_len.min(r_len);
+        if common >= 32 {
+            // SIMD fast path: skip past identical prefix
+            let l_data = bytes_data(lhs_ptr);
+            let r_data = bytes_data(rhs_ptr);
+            let diff_at = simd_find_first_byte_diff(l_data, r_data, common);
+            if diff_at == common {
+                return l_len.cmp(&r_len);
+            }
+            return (*l_data.add(diff_at)).cmp(&*r_data.add(diff_at));
+        }
+        let l_bytes = std::slice::from_raw_parts(bytes_data(lhs_ptr), l_len);
+        let r_bytes = std::slice::from_raw_parts(bytes_data(rhs_ptr), r_len);
+        l_bytes.cmp(r_bytes)
+    }
+}
+
+unsafe fn compare_sequence(
+    _py: &PyToken<'_>,
+    lhs_ptr: *mut u8,
+    rhs_ptr: *mut u8,
+) -> CompareOutcome {
+    unsafe {
+        let lhs = seq_vec_ref(lhs_ptr);
+        let rhs = seq_vec_ref(rhs_ptr);
+        let common = lhs.len().min(rhs.len());
+        // SIMD fast path: bulk-compare NaN-boxed u64 arrays to skip past
+        // identity-equal prefix without per-element branch overhead.
+        let first_diff = simd_find_first_mismatch(lhs, rhs);
+        for idx in first_diff..common {
+            let l_bits = lhs[idx];
+            let r_bits = rhs[idx];
+            if obj_eq(_py, obj_from_bits(l_bits), obj_from_bits(r_bits)) {
+                continue;
+            }
+            return compare_objects(_py, obj_from_bits(l_bits), obj_from_bits(r_bits));
+        }
+        CompareOutcome::Ordered(lhs.len().cmp(&rhs.len()))
+    }
+}
+
+fn compare_objects_builtin(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> CompareOutcome {
+    match compare_numbers_outcome(lhs, rhs) {
+        CompareOutcome::NotComparable => {}
+        outcome => return outcome,
+    }
+    let (Some(lhs_ptr), Some(rhs_ptr)) = (lhs.as_ptr(), rhs.as_ptr()) else {
+        return CompareOutcome::NotComparable;
+    };
+    unsafe {
+        let ltype = object_type_id(lhs_ptr);
+        let rtype = object_type_id(rhs_ptr);
+        if ltype == TYPE_ID_STRING && rtype == TYPE_ID_STRING {
+            return CompareOutcome::Ordered(compare_string_bytes(lhs_ptr, rhs_ptr));
+        }
+        if (ltype == TYPE_ID_BYTES || ltype == TYPE_ID_BYTEARRAY)
+            && (rtype == TYPE_ID_BYTES || rtype == TYPE_ID_BYTEARRAY)
+        {
+            return CompareOutcome::Ordered(compare_bytes_like(lhs_ptr, rhs_ptr));
+        }
+        if ltype == TYPE_ID_LIST && rtype == TYPE_ID_LIST {
+            return compare_sequence(_py, lhs_ptr, rhs_ptr);
+        }
+        if ltype == TYPE_ID_TUPLE && rtype == TYPE_ID_TUPLE {
+            return compare_sequence(_py, lhs_ptr, rhs_ptr);
+        }
+    }
+    CompareOutcome::NotComparable
+}
+
+fn ordering_matches(ordering: Ordering, op: CompareOp) -> bool {
+    match op {
+        CompareOp::Lt => ordering == Ordering::Less,
+        CompareOp::Le => ordering != Ordering::Greater,
+        CompareOp::Gt => ordering == Ordering::Greater,
+        CompareOp::Ge => ordering != Ordering::Less,
+    }
+}
+
+fn compare_builtin_bool(
+    _py: &PyToken<'_>,
+    lhs: MoltObject,
+    rhs: MoltObject,
+    op: CompareOp,
+) -> CompareBoolOutcome {
+    match compare_objects_builtin(_py, lhs, rhs) {
+        CompareOutcome::Ordered(ordering) => {
+            if ordering_matches(ordering, op) {
+                CompareBoolOutcome::True
+            } else {
+                CompareBoolOutcome::False
+            }
+        }
+        CompareOutcome::Unordered => CompareBoolOutcome::False,
+        CompareOutcome::NotComparable => CompareBoolOutcome::NotComparable,
+        CompareOutcome::Error => CompareBoolOutcome::Error,
+    }
+}
+
+fn rich_compare_bool(
+    _py: &PyToken<'_>,
+    lhs: MoltObject,
+    rhs: MoltObject,
+    op_name_bits: u64,
+    reverse_name_bits: u64,
+) -> CompareBoolOutcome {
+    let pending_before = exception_pending(_py);
+    let prev_exc_bits = if pending_before {
+        exception_last_bits_noinc(_py).unwrap_or(0)
+    } else {
+        0
+    };
+    let exception_changed = || {
+        if !exception_pending(_py) {
+            return false;
+        }
+        if !pending_before {
+            return true;
+        }
+        exception_last_bits_noinc(_py).unwrap_or(0) != prev_exc_bits
+    };
+    if let Some(outcome) = rich_compare_type_bool(_py, lhs, rhs, op_name_bits, reverse_name_bits) {
+        return outcome;
+    }
+    unsafe {
+        if let Some(lhs_ptr) = lhs.as_ptr() {
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, lhs_ptr, op_name_bits) {
+                let res_bits = call_callable1(_py, call_bits, rhs.bits());
+                dec_ref_bits(_py, call_bits);
+                if exception_changed() {
+                    dec_ref_bits(_py, res_bits);
+                    return CompareBoolOutcome::Error;
+                }
+                if is_not_implemented_bits(_py, res_bits) {
+                    dec_ref_bits(_py, res_bits);
+                } else {
+                    let truthy = is_truthy(_py, obj_from_bits(res_bits));
+                    dec_ref_bits(_py, res_bits);
+                    return if truthy {
+                        CompareBoolOutcome::True
+                    } else {
+                        CompareBoolOutcome::False
+                    };
+                }
+            }
+            if exception_changed() {
+                return CompareBoolOutcome::Error;
+            }
+        }
+        if let Some(rhs_ptr) = rhs.as_ptr() {
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, rhs_ptr, reverse_name_bits)
+            {
+                let res_bits = call_callable1(_py, call_bits, lhs.bits());
+                dec_ref_bits(_py, call_bits);
+                if exception_changed() {
+                    dec_ref_bits(_py, res_bits);
+                    return CompareBoolOutcome::Error;
+                }
+                if is_not_implemented_bits(_py, res_bits) {
+                    dec_ref_bits(_py, res_bits);
+                } else {
+                    let truthy = is_truthy(_py, obj_from_bits(res_bits));
+                    dec_ref_bits(_py, res_bits);
+                    return if truthy {
+                        CompareBoolOutcome::True
+                    } else {
+                        CompareBoolOutcome::False
+                    };
+                }
+            }
+            if exception_changed() {
+                return CompareBoolOutcome::Error;
+            }
+        }
+    }
+    CompareBoolOutcome::NotComparable
+}
+
+fn rich_compare_value(
+    _py: &PyToken<'_>,
+    lhs: MoltObject,
+    rhs: MoltObject,
+    op_name_bits: u64,
+    reverse_name_bits: u64,
+) -> CompareValueOutcome {
+    let pending_before = exception_pending(_py);
+    let prev_exc_bits = if pending_before {
+        exception_last_bits_noinc(_py).unwrap_or(0)
+    } else {
+        0
+    };
+    let exception_changed = || {
+        if !exception_pending(_py) {
+            return false;
+        }
+        if !pending_before {
+            return true;
+        }
+        exception_last_bits_noinc(_py).unwrap_or(0) != prev_exc_bits
+    };
+    if let Some(outcome) = rich_compare_type_value(_py, lhs, rhs, op_name_bits, reverse_name_bits) {
+        return outcome;
+    }
+    unsafe {
+        if let Some(lhs_ptr) = lhs.as_ptr() {
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, lhs_ptr, op_name_bits) {
+                let res_bits = call_callable1(_py, call_bits, rhs.bits());
+                dec_ref_bits(_py, call_bits);
+                if exception_changed() {
+                    dec_ref_bits(_py, res_bits);
+                    return CompareValueOutcome::Error;
+                }
+                if is_not_implemented_bits(_py, res_bits) {
+                    dec_ref_bits(_py, res_bits);
+                } else {
+                    return CompareValueOutcome::Value(res_bits);
+                }
+            }
+            if exception_changed() {
+                return CompareValueOutcome::Error;
+            }
+        }
+        if let Some(rhs_ptr) = rhs.as_ptr() {
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, rhs_ptr, reverse_name_bits)
+            {
+                let res_bits = call_callable1(_py, call_bits, lhs.bits());
+                dec_ref_bits(_py, call_bits);
+                if exception_changed() {
+                    dec_ref_bits(_py, res_bits);
+                    return CompareValueOutcome::Error;
+                }
+                if is_not_implemented_bits(_py, res_bits) {
+                    dec_ref_bits(_py, res_bits);
+                } else {
+                    return CompareValueOutcome::Value(res_bits);
+                }
+            }
+            if exception_changed() {
+                return CompareValueOutcome::Error;
+            }
+        }
+    }
+    CompareValueOutcome::NotComparable
+}
+
+fn rich_compare_type_bool(
+    _py: &PyToken<'_>,
+    lhs: MoltObject,
+    rhs: MoltObject,
+    op_name_bits: u64,
+    reverse_name_bits: u64,
+) -> Option<CompareBoolOutcome> {
+    unsafe {
+        let mut saw_type = false;
+        if let Some(lhs_ptr) = lhs.as_ptr()
+            && object_type_id(lhs_ptr) == TYPE_ID_TYPE
+        {
+            saw_type = true;
+            if let Some(outcome) = rich_compare_type_method(_py, lhs_ptr, rhs.bits(), op_name_bits)
+            {
+                return Some(outcome);
+            }
+        }
+        if let Some(rhs_ptr) = rhs.as_ptr()
+            && object_type_id(rhs_ptr) == TYPE_ID_TYPE
+        {
+            saw_type = true;
+            if let Some(outcome) =
+                rich_compare_type_method(_py, rhs_ptr, lhs.bits(), reverse_name_bits)
+            {
+                return Some(outcome);
+            }
+        }
+        if saw_type {
+            return Some(CompareBoolOutcome::NotComparable);
+        }
+    }
+    None
+}
+
+fn rich_compare_type_value(
+    _py: &PyToken<'_>,
+    lhs: MoltObject,
+    rhs: MoltObject,
+    op_name_bits: u64,
+    reverse_name_bits: u64,
+) -> Option<CompareValueOutcome> {
+    unsafe {
+        let mut saw_type = false;
+        if let Some(lhs_ptr) = lhs.as_ptr()
+            && object_type_id(lhs_ptr) == TYPE_ID_TYPE
+        {
+            saw_type = true;
+            if let Some(outcome) =
+                rich_compare_type_method_value(_py, lhs_ptr, rhs.bits(), op_name_bits)
+            {
+                return Some(outcome);
+            }
+        }
+        if let Some(rhs_ptr) = rhs.as_ptr()
+            && object_type_id(rhs_ptr) == TYPE_ID_TYPE
+        {
+            saw_type = true;
+            if let Some(outcome) =
+                rich_compare_type_method_value(_py, rhs_ptr, lhs.bits(), reverse_name_bits)
+            {
+                return Some(outcome);
+            }
+        }
+        if saw_type {
+            return Some(CompareValueOutcome::NotComparable);
+        }
+    }
+    None
+}
+
+unsafe fn rich_compare_type_method(
+    _py: &PyToken<'_>,
+    type_ptr: *mut u8,
+    other_bits: u64,
+    op_name_bits: u64,
+) -> Option<CompareBoolOutcome> {
+    unsafe {
+        let pending_before = exception_pending(_py);
+        let prev_exc_bits = if pending_before {
+            exception_last_bits_noinc(_py).unwrap_or(0)
+        } else {
+            0
+        };
+        let exception_changed = || {
+            if !exception_pending(_py) {
+                return false;
+            }
+            if !pending_before {
+                return true;
+            }
+            exception_last_bits_noinc(_py).unwrap_or(0) != prev_exc_bits
+        };
+        let mut meta_bits = object_class_bits(type_ptr);
+        if meta_bits == 0 {
+            meta_bits = builtin_classes(_py).type_obj;
+        }
+        let meta_ptr = match obj_from_bits(meta_bits).as_ptr() {
+            Some(ptr) if object_type_id(ptr) == TYPE_ID_TYPE => ptr,
+            _ => return None,
+        };
+        let method_bits = class_attr_lookup_raw_mro(_py, meta_ptr, op_name_bits)?;
+        let Some(bound_bits) = descriptor_bind(_py, method_bits, meta_ptr, Some(type_ptr)) else {
+            if exception_changed() {
+                return Some(CompareBoolOutcome::Error);
+            }
+            return None;
+        };
+        let res_bits = call_callable1(_py, bound_bits, other_bits);
+        dec_ref_bits(_py, bound_bits);
+        if exception_changed() {
+            dec_ref_bits(_py, res_bits);
+            return Some(CompareBoolOutcome::Error);
+        }
+        if is_not_implemented_bits(_py, res_bits) {
+            dec_ref_bits(_py, res_bits);
+            return None;
+        }
+        let truthy = is_truthy(_py, obj_from_bits(res_bits));
+        dec_ref_bits(_py, res_bits);
+        Some(if truthy {
+            CompareBoolOutcome::True
+        } else {
+            CompareBoolOutcome::False
+        })
+    }
+}
+
+unsafe fn rich_compare_type_method_value(
+    _py: &PyToken<'_>,
+    type_ptr: *mut u8,
+    other_bits: u64,
+    op_name_bits: u64,
+) -> Option<CompareValueOutcome> {
+    unsafe {
+        let pending_before = exception_pending(_py);
+        let prev_exc_bits = if pending_before {
+            exception_last_bits_noinc(_py).unwrap_or(0)
+        } else {
+            0
+        };
+        let exception_changed = || {
+            if !exception_pending(_py) {
+                return false;
+            }
+            if !pending_before {
+                return true;
+            }
+            exception_last_bits_noinc(_py).unwrap_or(0) != prev_exc_bits
+        };
+        let mut meta_bits = object_class_bits(type_ptr);
+        if meta_bits == 0 {
+            meta_bits = builtin_classes(_py).type_obj;
+        }
+        let meta_ptr = match obj_from_bits(meta_bits).as_ptr() {
+            Some(ptr) if object_type_id(ptr) == TYPE_ID_TYPE => ptr,
+            _ => return None,
+        };
+        let method_bits = class_attr_lookup_raw_mro(_py, meta_ptr, op_name_bits)?;
+        let Some(bound_bits) = descriptor_bind(_py, method_bits, meta_ptr, Some(type_ptr)) else {
+            if exception_changed() {
+                return Some(CompareValueOutcome::Error);
+            }
+            return None;
+        };
+        let res_bits = call_callable1(_py, bound_bits, other_bits);
+        dec_ref_bits(_py, bound_bits);
+        if exception_changed() {
+            dec_ref_bits(_py, res_bits);
+            return Some(CompareValueOutcome::Error);
+        }
+        if is_not_implemented_bits(_py, res_bits) {
+            dec_ref_bits(_py, res_bits);
+            return None;
+        }
+        Some(CompareValueOutcome::Value(res_bits))
+    }
+}
+
+fn rich_compare_order(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> CompareOutcome {
+    let lt_name_bits = intern_static_name(_py, &runtime_state(_py).interned.lt_name, b"__lt__");
+    let gt_name_bits = intern_static_name(_py, &runtime_state(_py).interned.gt_name, b"__gt__");
+    match rich_compare_bool(_py, lhs, rhs, lt_name_bits, gt_name_bits) {
+        CompareBoolOutcome::True => return CompareOutcome::Ordered(Ordering::Less),
+        CompareBoolOutcome::False => {}
+        CompareBoolOutcome::NotComparable => return CompareOutcome::NotComparable,
+        CompareBoolOutcome::Error => return CompareOutcome::Error,
+    }
+    match rich_compare_bool(_py, rhs, lhs, lt_name_bits, gt_name_bits) {
+        CompareBoolOutcome::True => CompareOutcome::Ordered(Ordering::Greater),
+        CompareBoolOutcome::False => CompareOutcome::Ordered(Ordering::Equal),
+        CompareBoolOutcome::NotComparable => CompareOutcome::NotComparable,
+        CompareBoolOutcome::Error => CompareOutcome::Error,
+    }
+}
+
+pub(crate) fn compare_objects(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> CompareOutcome {
+    match compare_objects_builtin(_py, lhs, rhs) {
+        CompareOutcome::NotComparable => {}
+        outcome => return outcome,
+    }
+    rich_compare_order(_py, lhs, rhs)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_lt(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        match compare_builtin_bool(_py, lhs, rhs, CompareOp::Lt) {
+            CompareBoolOutcome::True => return MoltObject::from_bool(true).bits(),
+            CompareBoolOutcome::False => return MoltObject::from_bool(false).bits(),
+            CompareBoolOutcome::Error => return MoltObject::none().bits(),
+            CompareBoolOutcome::NotComparable => {}
+        }
+        let lt_name_bits = intern_static_name(_py, &runtime_state(_py).interned.lt_name, b"__lt__");
+        let gt_name_bits = intern_static_name(_py, &runtime_state(_py).interned.gt_name, b"__gt__");
+        match rich_compare_value(_py, lhs, rhs, lt_name_bits, gt_name_bits) {
+            CompareValueOutcome::Value(bits) => bits,
+            CompareValueOutcome::Error => MoltObject::none().bits(),
+            CompareValueOutcome::NotComparable => compare_type_error(_py, lhs, rhs, "<"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_le(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        match compare_builtin_bool(_py, lhs, rhs, CompareOp::Le) {
+            CompareBoolOutcome::True => return MoltObject::from_bool(true).bits(),
+            CompareBoolOutcome::False => return MoltObject::from_bool(false).bits(),
+            CompareBoolOutcome::Error => return MoltObject::none().bits(),
+            CompareBoolOutcome::NotComparable => {}
+        }
+        let le_name_bits = intern_static_name(_py, &runtime_state(_py).interned.le_name, b"__le__");
+        let ge_name_bits = intern_static_name(_py, &runtime_state(_py).interned.ge_name, b"__ge__");
+        match rich_compare_value(_py, lhs, rhs, le_name_bits, ge_name_bits) {
+            CompareValueOutcome::Value(bits) => bits,
+            CompareValueOutcome::Error => MoltObject::none().bits(),
+            CompareValueOutcome::NotComparable => compare_type_error(_py, lhs, rhs, "<="),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gt(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        match compare_builtin_bool(_py, lhs, rhs, CompareOp::Gt) {
+            CompareBoolOutcome::True => return MoltObject::from_bool(true).bits(),
+            CompareBoolOutcome::False => return MoltObject::from_bool(false).bits(),
+            CompareBoolOutcome::Error => return MoltObject::none().bits(),
+            CompareBoolOutcome::NotComparable => {}
+        }
+        let gt_name_bits = intern_static_name(_py, &runtime_state(_py).interned.gt_name, b"__gt__");
+        let lt_name_bits = intern_static_name(_py, &runtime_state(_py).interned.lt_name, b"__lt__");
+        match rich_compare_value(_py, lhs, rhs, gt_name_bits, lt_name_bits) {
+            CompareValueOutcome::Value(bits) => bits,
+            CompareValueOutcome::Error => MoltObject::none().bits(),
+            CompareValueOutcome::NotComparable => compare_type_error(_py, lhs, rhs, ">"),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_ge(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        match compare_builtin_bool(_py, lhs, rhs, CompareOp::Ge) {
+            CompareBoolOutcome::True => return MoltObject::from_bool(true).bits(),
+            CompareBoolOutcome::False => return MoltObject::from_bool(false).bits(),
+            CompareBoolOutcome::Error => return MoltObject::none().bits(),
+            CompareBoolOutcome::NotComparable => {}
+        }
+        let ge_name_bits = intern_static_name(_py, &runtime_state(_py).interned.ge_name, b"__ge__");
+        let le_name_bits = intern_static_name(_py, &runtime_state(_py).interned.le_name, b"__le__");
+        match rich_compare_value(_py, lhs, rhs, ge_name_bits, le_name_bits) {
+            CompareValueOutcome::Value(bits) => bits,
+            CompareValueOutcome::Error => MoltObject::none().bits(),
+            CompareValueOutcome::NotComparable => compare_type_error(_py, lhs, rhs, ">="),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_eq(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        let ellipsis = ellipsis_bits(_py);
+        if a == ellipsis || b == ellipsis {
+            return MoltObject::from_bool(a == b).bits();
+        }
+        let eq_name_bits = intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
+        match rich_compare_value(_py, lhs, rhs, eq_name_bits, eq_name_bits) {
+            CompareValueOutcome::Value(bits) => return bits,
+            CompareValueOutcome::Error => return MoltObject::none().bits(),
+            CompareValueOutcome::NotComparable => {}
+        }
+        MoltObject::from_bool(obj_eq(_py, lhs, rhs)).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_ne(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        match compare_objects_builtin(_py, lhs, rhs) {
+            CompareOutcome::Ordered(ordering) => {
+                return MoltObject::from_bool(ordering != Ordering::Equal).bits();
+            }
+            CompareOutcome::Unordered => return MoltObject::from_bool(true).bits(),
+            CompareOutcome::Error => return MoltObject::none().bits(),
+            CompareOutcome::NotComparable => {}
+        }
+        let lhs_type_bits = type_of_bits(_py, a);
+        let rhs_type_bits = type_of_bits(_py, b);
+        let lhs_type_ptr = obj_from_bits(lhs_type_bits).as_ptr();
+        let rhs_type_ptr = obj_from_bits(rhs_type_bits).as_ptr();
+        let ne_name_bits = intern_static_name(_py, &runtime_state(_py).interned.ne_name, b"__ne__");
+        let object_ne_raw = unsafe {
+            obj_from_bits(builtin_classes(_py).object)
+                .as_ptr()
+                .and_then(|ptr| class_attr_lookup_raw_mro(_py, ptr, ne_name_bits))
+        };
+        let lhs_ne_raw = unsafe {
+            lhs_type_ptr.and_then(|ptr| class_attr_lookup_raw_mro(_py, ptr, ne_name_bits))
+        };
+        let rhs_ne_raw = unsafe {
+            rhs_type_ptr.and_then(|ptr| class_attr_lookup_raw_mro(_py, ptr, ne_name_bits))
+        };
+        let lhs_ne_is_object_default = lhs_ne_raw.is_some() && lhs_ne_raw == object_ne_raw;
+
+        let mut lhs_ne_notimplemented_or_missing = true;
+        if let (Some(lhs_ptr), Some(lhs_tp), Some(lhs_raw)) =
+            (lhs.as_ptr(), lhs_type_ptr, lhs_ne_raw)
+        {
+            unsafe {
+                match call_dunder_raw(_py, lhs_raw, lhs_tp, Some(lhs_ptr), b) {
+                    BinaryDunderOutcome::Value(bits) => return bits,
+                    BinaryDunderOutcome::Error => return MoltObject::none().bits(),
+                    BinaryDunderOutcome::NotImplemented | BinaryDunderOutcome::Missing => {
+                        lhs_ne_notimplemented_or_missing = true;
+                    }
+                }
+            }
+        }
+
+        if lhs_ne_notimplemented_or_missing {
+            let rhs_is_subclass =
+                rhs_type_bits != lhs_type_bits && issubclass_bits(rhs_type_bits, lhs_type_bits);
+            let rhs_has_custom_ne = rhs_ne_raw.is_some() && rhs_ne_raw != object_ne_raw;
+            let rhs_differs_from_lhs = lhs_ne_raw.is_none_or(|lhs_raw| Some(lhs_raw) != rhs_ne_raw);
+            let should_call_rhs = rhs_type_bits != lhs_type_bits
+                && rhs_has_custom_ne
+                && (rhs_is_subclass || lhs_ne_raw.is_none() || rhs_differs_from_lhs);
+            if should_call_rhs
+                && let (Some(rhs_ptr), Some(rhs_tp), Some(rhs_raw)) =
+                    (rhs.as_ptr(), rhs_type_ptr, rhs_ne_raw)
+            {
+                unsafe {
+                    match call_dunder_raw(_py, rhs_raw, rhs_tp, Some(rhs_ptr), a) {
+                        BinaryDunderOutcome::Value(bits) => return bits,
+                        BinaryDunderOutcome::Error => return MoltObject::none().bits(),
+                        BinaryDunderOutcome::NotImplemented | BinaryDunderOutcome::Missing => {}
+                    }
+                }
+            }
+        }
+
+        if lhs_ne_is_object_default || lhs_ne_raw.is_none() {
+            let eq_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
+            match rich_compare_value(_py, lhs, rhs, eq_name_bits, eq_name_bits) {
+                CompareValueOutcome::Value(bits) => {
+                    let truthy = is_truthy(_py, obj_from_bits(bits));
+                    let had_exc = exception_pending(_py);
+                    dec_ref_bits(_py, bits);
+                    if had_exc {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_bool(!truthy).bits();
+                }
+                CompareValueOutcome::Error => return MoltObject::none().bits(),
+                CompareValueOutcome::NotComparable => {}
+            }
+        }
+
+        MoltObject::from_bool(a != b).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_eq(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a);
+        let rhs = obj_from_bits(b);
+        let Some(lp) = lhs.as_ptr() else {
+            return MoltObject::from_bool(false).bits();
+        };
+        let Some(rp) = rhs.as_ptr() else {
+            return MoltObject::from_bool(false).bits();
+        };
+        unsafe {
+            if object_type_id(lp) != TYPE_ID_STRING || object_type_id(rp) != TYPE_ID_STRING {
+                return MoltObject::from_bool(false).bits();
+            }
+            if lp == rp {
+                return MoltObject::from_bool(true).bits();
+            }
+            let l_len = string_len(lp);
+            let r_len = string_len(rp);
+            if l_len != r_len {
+                return MoltObject::from_bool(false).bits();
+            }
+            MoltObject::from_bool(simd_bytes_eq(string_bytes(lp), string_bytes(rp), l_len)).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_is(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(a == b).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_str_from_obj(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(val_bits);
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                if object_type_id(ptr) == TYPE_ID_STRING {
+                    molt_inc_ref(ptr);
+                    return val_bits;
+                }
+            }
+        }
+        let rendered = format_obj_str(_py, obj);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let ptr = alloc_string(_py, rendered.as_bytes());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_repr_from_obj(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(val_bits);
+        let rendered = format_obj(_py, obj);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let ptr = alloc_string(_py, rendered.as_bytes());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+fn ascii_escape(text: &str) -> String {
+    let bytes = text.as_bytes();
+    // SIMD fast path: if entire string is ASCII, return as-is (common case)
+    if bytes.is_ascii() {
+        return text.to_string();
+    }
+    // Find the first non-ASCII byte using SIMD scan, copy the safe prefix in bulk
+    let mut first_non_ascii = 0usize;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            use std::arch::aarch64::*;
+            let high_bit = vdupq_n_u8(0x80);
+            while first_non_ascii + 16 <= bytes.len() {
+                let chunk = vld1q_u8(bytes.as_ptr().add(first_non_ascii));
+                let is_non_ascii = vandq_u8(chunk, high_bit);
+                if vmaxvq_u8(is_non_ascii) != 0 {
+                    break;
+                }
+                first_non_ascii += 16;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe {
+            use std::arch::x86_64::*;
+            while first_non_ascii + 16 <= bytes.len() {
+                let chunk = _mm_loadu_si128(bytes.as_ptr().add(first_non_ascii) as *const __m128i);
+                let mask = _mm_movemask_epi8(chunk) as u32; // high bit of each byte
+                if mask != 0 {
+                    break;
+                }
+                first_non_ascii += 16;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            use std::arch::wasm32::*;
+            let high_bit = u8x16_splat(0x80);
+            while first_non_ascii + 16 <= bytes.len() {
+                let chunk = v128_load(bytes.as_ptr().add(first_non_ascii) as *const v128);
+                let has_high = v128_and(chunk, high_bit);
+                if u8x16_bitmask(has_high) != 0 {
+                    break;
+                }
+                first_non_ascii += 16;
+            }
+        }
+    }
+
+    while first_non_ascii < bytes.len() && bytes[first_non_ascii].is_ascii() {
+        first_non_ascii += 1;
+    }
+
+    let mut out = String::with_capacity(text.len());
+    // Copy the all-ASCII prefix in bulk
+    out.push_str(&text[..first_non_ascii]);
+    // Process remaining characters
+    for ch in text[first_non_ascii..].chars() {
+        if ch.is_ascii() {
+            out.push(ch);
+        } else {
+            let code = ch as u32;
+            if code <= 0xff {
+                out.push_str(&format!("\\x{:02x}", code));
+            } else if code <= 0xffff {
+                out.push_str(&format!("\\u{:04x}", code));
+            } else {
+                out.push_str(&format!("\\U{:08x}", code));
+            }
+        }
+    }
+    out
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_ascii_from_obj(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(val_bits);
+        let rendered = format_obj(_py, obj);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let escaped = ascii_escape(&rendered);
+        let ptr = alloc_string(_py, escaped.as_bytes());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+fn format_int_base(value: &BigInt, base: u32, prefix: &str, upper: bool) -> String {
+    let negative = value.is_negative();
+    let mut abs_val = if negative { -value } else { value.clone() };
+    if abs_val.is_zero() {
+        abs_val = BigInt::from(0);
+    }
+    let mut digits = abs_val.to_str_radix(base);
+    if upper {
+        digits = digits.to_uppercase();
+    }
+    if negative {
+        format!("-{prefix}{digits}")
+    } else {
+        format!("{prefix}{digits}")
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bin_builtin(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let type_name = class_name_for_error(type_of_bits(_py, val_bits));
+        let msg = format!("'{type_name}' object cannot be interpreted as an integer");
+        let Some(value) = index_bigint_from_obj(_py, val_bits, &msg) else {
+            return MoltObject::none().bits();
+        };
+        let text = format_int_base(&value, 2, "0b", false);
+        let ptr = alloc_string(_py, text.as_bytes());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_oct_builtin(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let type_name = class_name_for_error(type_of_bits(_py, val_bits));
+        let msg = format!("'{type_name}' object cannot be interpreted as an integer");
+        let Some(value) = index_bigint_from_obj(_py, val_bits, &msg) else {
+            return MoltObject::none().bits();
+        };
+        let text = format_int_base(&value, 8, "0o", false);
+        let ptr = alloc_string(_py, text.as_bytes());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_hex_builtin(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let type_name = class_name_for_error(type_of_bits(_py, val_bits));
+        let msg = format!("'{type_name}' object cannot be interpreted as an integer");
+        let Some(value) = index_bigint_from_obj(_py, val_bits, &msg) else {
+            return MoltObject::none().bits();
+        };
+        let text = format_int_base(&value, 16, "0x", false);
+        let ptr = alloc_string(_py, text.as_bytes());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+fn parse_float_from_bytes(bytes: &[u8]) -> Result<f64, ()> {
+    let text = std::str::from_utf8(bytes).map_err(|_| ())?;
+    let trimmed = text.trim();
+    trimmed.parse::<f64>().map_err(|_| ())
+}
+
+fn parse_complex_from_str(text: &str) -> Result<ComplexParts, ()> {
+    let mut trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(());
+    }
+    if trimmed.starts_with('(') && trimmed.ends_with(')') && trimmed.len() >= 2 {
+        trimmed = trimmed[1..trimmed.len() - 1].trim();
+        if trimmed.is_empty() {
+            return Err(());
+        }
+    }
+    if trimmed.chars().any(|ch| ch.is_whitespace()) {
+        return Err(());
+    }
+    let bytes = trimmed.as_bytes();
+    let ends_with_j = matches!(bytes.last(), Some(b'j') | Some(b'J'));
+    if ends_with_j {
+        let core = &trimmed[..trimmed.len() - 1];
+        if core.is_empty() {
+            return Ok(ComplexParts { re: 0.0, im: 1.0 });
+        }
+        if core == "+" {
+            return Ok(ComplexParts { re: 0.0, im: 1.0 });
+        }
+        if core == "-" {
+            return Ok(ComplexParts { re: 0.0, im: -1.0 });
+        }
+        let mut sep_idx = None;
+        let core_bytes = core.as_bytes();
+        for idx in 1..core_bytes.len() {
+            let ch = core_bytes[idx] as char;
+            if ch == '+' || ch == '-' {
+                let prev = core_bytes[idx - 1] as char;
+                if prev == 'e' || prev == 'E' {
+                    continue;
+                }
+                sep_idx = Some(idx);
+            }
+        }
+        if let Some(idx) = sep_idx {
+            let real_part = &core[..idx];
+            let imag_part = &core[idx..];
+            let real = parse_float_from_bytes(real_part.as_bytes())?;
+            let imag = if imag_part == "+" {
+                1.0
+            } else if imag_part == "-" {
+                -1.0
+            } else {
+                parse_float_from_bytes(imag_part.as_bytes())?
+            };
+            return Ok(ComplexParts { re: real, im: imag });
+        }
+        let imag = parse_float_from_bytes(core.as_bytes())?;
+        return Ok(ComplexParts { re: 0.0, im: imag });
+    }
+    let real = parse_float_from_bytes(trimmed.as_bytes())?;
+    Ok(ComplexParts { re: real, im: 0.0 })
+}
+
+fn parse_int_from_str(text: &str, base: i64) -> Result<(BigInt, i64), ()> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(());
+    }
+    let mut sign = 1i32;
+    let mut digits = trimmed;
+    if let Some(rest) = digits.strip_prefix('+') {
+        digits = rest;
+    } else if let Some(rest) = digits.strip_prefix('-') {
+        digits = rest;
+        sign = -1;
+    }
+    let mut base_val = base;
+    if base_val == 0 {
+        if let Some(rest) = digits
+            .strip_prefix("0x")
+            .or_else(|| digits.strip_prefix("0X"))
+        {
+            base_val = 16;
+            digits = rest;
+        } else if let Some(rest) = digits
+            .strip_prefix("0o")
+            .or_else(|| digits.strip_prefix("0O"))
+        {
+            base_val = 8;
+            digits = rest;
+        } else if let Some(rest) = digits
+            .strip_prefix("0b")
+            .or_else(|| digits.strip_prefix("0B"))
+        {
+            base_val = 2;
+            digits = rest;
+        } else {
+            base_val = 10;
+        }
+    } else if base_val == 16 {
+        if let Some(rest) = digits
+            .strip_prefix("0x")
+            .or_else(|| digits.strip_prefix("0X"))
+        {
+            digits = rest;
+        }
+    } else if base_val == 8 {
+        if let Some(rest) = digits
+            .strip_prefix("0o")
+            .or_else(|| digits.strip_prefix("0O"))
+        {
+            digits = rest;
+        }
+    } else if base_val == 2
+        && let Some(rest) = digits
+            .strip_prefix("0b")
+            .or_else(|| digits.strip_prefix("0B"))
+    {
+        digits = rest;
+    }
+    let digits = digits.replace('_', "");
+    if digits.is_empty() {
+        return Err(());
+    }
+    let parsed = BigInt::parse_bytes(digits.as_bytes(), base_val as u32).ok_or(())?;
+    let parsed = if sign < 0 { -parsed } else { parsed };
+    Ok((parsed, base_val))
+}
+
+/// # Safety
+/// - `ptr` must be null or valid for `len_bits` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_bigint_from_str(ptr: *const u8, len_bits: u64) -> u64 {
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let len = usize_from_bits(len_bits);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let bytes = std::slice::from_raw_parts(ptr, len);
+            let text = match std::str::from_utf8(bytes) {
+                Ok(val) => val,
+                Err(_) => {
+                    return raise_exception::<_>(_py, "ValueError", "invalid literal for int()");
+                }
+            };
+            let (parsed, _base_used) = match parse_int_from_str(text, 10) {
+                Ok(val) => val,
+                Err(_) => {
+                    return raise_exception::<_>(_py, "ValueError", "invalid literal for int()");
+                }
+            };
+            if let Some(i) = bigint_to_inline(&parsed) {
+                return MoltObject::from_int(i).bits();
+            }
+            bigint_bits(_py, parsed)
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(val_bits);
+        if obj.is_float() {
+            return val_bits;
+        }
+        if complex_ptr_from_bits(val_bits).is_some() {
+            let type_label = type_name(_py, obj);
+            let msg =
+                format!("float() argument must be a string or a real number, not '{type_label}'");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
+        if let Some(i) = to_i64(obj) {
+            return MoltObject::from_float(i as f64).bits();
+        }
+        if let Some(ptr) = bigint_ptr_from_bits(val_bits) {
+            let big = unsafe { bigint_ref(ptr) };
+            if let Some(val) = big.to_f64() {
+                return MoltObject::from_float(val).bits();
+            }
+            return raise_exception::<_>(_py, "OverflowError", "int too large to convert to float");
+        }
+        if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
+            unsafe {
+                let type_id = object_type_id(ptr);
+                if type_id == TYPE_ID_STRING {
+                    let len = string_len(ptr);
+                    let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
+                    if let Ok(parsed) = parse_float_from_bytes(bytes) {
+                        return MoltObject::from_float(parsed).bits();
+                    }
+                    let rendered = String::from_utf8_lossy(bytes);
+                    let msg = format!("could not convert string to float: '{rendered}'");
+                    return raise_exception::<_>(_py, "ValueError", &msg);
+                }
+                if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+                    let len = bytes_len(ptr);
+                    let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
+                    if let Ok(parsed) = parse_float_from_bytes(bytes) {
+                        return MoltObject::from_float(parsed).bits();
+                    }
+                    let rendered = String::from_utf8_lossy(bytes);
+                    let msg = format!("could not convert string to float: '{rendered}'");
+                    return raise_exception::<_>(_py, "ValueError", &msg);
+                }
+                let float_name_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.float_name, b"__float__");
+                if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) {
+                    let res_bits = call_callable0(_py, call_bits);
+                    dec_ref_bits(_py, call_bits);
+                    let res_obj = obj_from_bits(res_bits);
+                    if res_obj.is_float() {
+                        return res_bits;
+                    }
+                    let owner = class_name_for_error(type_of_bits(_py, val_bits));
+                    let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    let msg = format!("{owner}.__float__ returned non-float (type {res_type})");
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                let index_name_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
+                if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
+                    let res_bits = call_callable0(_py, call_bits);
+                    dec_ref_bits(_py, call_bits);
+                    let res_obj = obj_from_bits(res_bits);
+                    if let Some(i) = to_i64(res_obj) {
+                        return MoltObject::from_float(i as f64).bits();
+                    }
+                    let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    let msg = format!("__index__ returned non-int (type {res_type})");
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+            }
+        }
+        raise_exception::<_>(
+            _py,
+            "TypeError",
+            "float() argument must be a string or a number",
+        )
+    })
+}
+
+fn parse_float_fromhex_text(text: &str) -> Result<f64, ()> {
+    let mut src = text.trim();
+    if src.is_empty() {
+        return Err(());
+    }
+    let mut sign = 1.0f64;
+    if let Some(rest) = src.strip_prefix('+') {
+        src = rest;
+    } else if let Some(rest) = src.strip_prefix('-') {
+        src = rest;
+        sign = -1.0;
+    }
+    if src.eq_ignore_ascii_case("inf") || src.eq_ignore_ascii_case("infinity") {
+        return Ok(sign * f64::INFINITY);
+    }
+    if src.eq_ignore_ascii_case("nan") {
+        return Ok(f64::NAN);
+    }
+    let Some(hex_src) = src.strip_prefix("0x").or_else(|| src.strip_prefix("0X")) else {
+        return Err(());
+    };
+    let mut split = hex_src.split(['p', 'P']);
+    let significand = split.next().ok_or(())?;
+    let exponent_text = split.next().ok_or(())?;
+    if split.next().is_some() {
+        return Err(());
+    }
+    let exponent = exponent_text.parse::<i32>().map_err(|_| ())?;
+    let (int_part, frac_part) = if let Some((left, right)) = significand.split_once('.') {
+        (left, right)
+    } else {
+        (significand, "")
+    };
+    if int_part.is_empty() && frac_part.is_empty() {
+        return Err(());
+    }
+    let mut mantissa = 0.0f64;
+    let mut digits = 0usize;
+    for ch in int_part.bytes() {
+        let Some(d) = (ch as char).to_digit(16) else {
+            return Err(());
+        };
+        mantissa = mantissa * 16.0 + d as f64;
+        digits += 1;
+    }
+    let mut frac_digits = 0usize;
+    for ch in frac_part.bytes() {
+        let Some(d) = (ch as char).to_digit(16) else {
+            return Err(());
+        };
+        mantissa = mantissa * 16.0 + d as f64;
+        digits += 1;
+        frac_digits += 1;
+    }
+    if digits == 0 {
+        return Err(());
+    }
+    let exp2 = exponent
+        .checked_sub((frac_digits.saturating_mul(4)) as i32)
+        .ok_or(())?;
+    let mut out = mantissa * 2f64.powi(exp2);
+    if sign.is_sign_negative() {
+        out = -out;
+    }
+    Ok(out)
+}
+
+fn float_hex_string(value: f64) -> String {
+    if value.is_nan() {
+        return "nan".to_string();
+    }
+    if value.is_infinite() {
+        if value.is_sign_negative() {
+            return "-inf".to_string();
+        }
+        return "inf".to_string();
+    }
+    if value == 0.0 {
+        if value.is_sign_negative() {
+            return "-0x0.0p+0".to_string();
+        }
+        return "0x0.0p+0".to_string();
+    }
+    let bits = value.to_bits();
+    let sign = if (bits >> 63) != 0 { "-" } else { "" };
+    let exp_bits = ((bits >> 52) & 0x7ff) as i32;
+    let frac_bits = bits & ((1u64 << 52) - 1);
+    let (lead, exponent) = if exp_bits == 0 {
+        (0u8, -1022)
+    } else {
+        (1u8, exp_bits - 1023)
+    };
+    format!("{sign}0x{lead:x}.{frac_bits:013x}p{exponent:+}")
+}
+
+fn float_value_or_descriptor_error(_py: &PyToken<'_>, self_bits: u64, method: &str) -> Option<f64> {
+    let obj = obj_from_bits(self_bits);
+    if let Some(value) = obj.as_float() {
+        return Some(value);
+    }
+    let type_label = class_name_for_error(type_of_bits(_py, self_bits));
+    let msg = format!(
+        "descriptor '{method}' for 'float' objects doesn't apply to a '{type_label}' object"
+    );
+    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+    None
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_conjugate(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = float_value_or_descriptor_error(_py, self_bits, "conjugate") else {
+            return MoltObject::none().bits();
+        };
+        MoltObject::from_float(value).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_is_integer(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = float_value_or_descriptor_error(_py, self_bits, "is_integer") else {
+            return MoltObject::none().bits();
+        };
+        let out = value.is_finite() && value.fract() == 0.0;
+        MoltObject::from_bool(out).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_as_integer_ratio(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = float_value_or_descriptor_error(_py, self_bits, "as_integer_ratio")
+        else {
+            return MoltObject::none().bits();
+        };
+        if value.is_nan() {
+            return raise_exception::<_>(_py, "ValueError", "cannot convert NaN to integer ratio");
+        }
+        if value.is_infinite() {
+            return raise_exception::<_>(
+                _py,
+                "OverflowError",
+                "cannot convert Infinity to integer ratio",
+            );
+        }
+        if value == 0.0 {
+            let zero = MoltObject::from_int(0).bits();
+            let one = MoltObject::from_int(1).bits();
+            let tuple_ptr = alloc_tuple(_py, &[zero, one]);
+            if tuple_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(tuple_ptr).bits();
+        }
+        let bits = value.to_bits();
+        let negative = (bits >> 63) != 0;
+        let exp_bits = ((bits >> 52) & 0x7ff) as i32;
+        let mut mantissa = bits & ((1u64 << 52) - 1);
+        let exponent = if exp_bits == 0 {
+            -1022 - 52
+        } else {
+            mantissa |= 1u64 << 52;
+            exp_bits - 1023 - 52
+        };
+        let mut numerator = BigInt::from(mantissa);
+        if negative {
+            numerator = -numerator;
+        }
+        let mut denominator = BigInt::from(1u8);
+        if exponent >= 0 {
+            numerator <<= exponent as usize;
+        } else {
+            denominator <<= (-exponent) as usize;
+        }
+        let gcd = numerator.abs().gcd(&denominator);
+        if !gcd.is_zero() {
+            numerator /= &gcd;
+            denominator /= &gcd;
+        }
+        let num_bits = int_bits_from_bigint(_py, numerator);
+        let den_bits = int_bits_from_bigint(_py, denominator);
+        let tuple_ptr = alloc_tuple(_py, &[num_bits, den_bits]);
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_hex(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value) = float_value_or_descriptor_error(_py, self_bits, "hex") else {
+            return MoltObject::none().bits();
+        };
+        let text = float_hex_string(value);
+        let ptr = alloc_string(_py, text.as_bytes());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let text_obj = obj_from_bits(text_bits);
+        let Some(text_ptr) = text_obj.as_ptr() else {
+            let msg = format!(
+                "fromhex() argument must be str, not {}",
+                type_name(_py, text_obj)
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        unsafe {
+            if object_type_id(text_ptr) != TYPE_ID_STRING {
+                let msg = format!(
+                    "fromhex() argument must be str, not {}",
+                    type_name(_py, text_obj)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+            let bytes = std::slice::from_raw_parts(string_bytes(text_ptr), string_len(text_ptr));
+            let text = match std::str::from_utf8(bytes) {
+                Ok(val) => val,
+                Err(_) => {
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "invalid hexadecimal floating-point string",
+                    );
+                }
+            };
+            let value = match parse_float_fromhex_text(text) {
+                Ok(val) => val,
+                Err(()) => {
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "invalid hexadecimal floating-point string",
+                    );
+                }
+            };
+            let out_bits = MoltObject::from_float(value).bits();
+            let builtins = builtin_classes(_py);
+            if cls_bits == builtins.float {
+                return out_bits;
+            }
+            if !issubclass_bits(cls_bits, builtins.float) {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "fromhex() requires a float subclass",
+                );
+            }
+            let res_bits = call_callable1(_py, cls_bits, out_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            res_bits
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_from_number(cls_bits: u64, val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
+            unsafe {
+                let type_id = object_type_id(ptr);
+                if type_id == TYPE_ID_STRING
+                    || type_id == TYPE_ID_BYTES
+                    || type_id == TYPE_ID_BYTEARRAY
+                {
+                    let msg = format!(
+                        "must be real number, not {}",
+                        type_name(_py, obj_from_bits(val_bits))
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+            }
+        }
+        if complex_ptr_from_bits(val_bits).is_some() {
+            let msg = format!(
+                "must be real number, not {}",
+                type_name(_py, obj_from_bits(val_bits))
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
+        let out_bits = molt_float_from_obj(val_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let builtins = builtin_classes(_py);
+        if cls_bits == builtins.float {
+            return out_bits;
+        }
+        if !issubclass_bits(cls_bits, builtins.float) {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "from_number() requires a float subclass",
+            );
+        }
+        let res_bits = unsafe { call_callable1(_py, cls_bits, out_bits) };
+        dec_ref_bits(_py, out_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        res_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let has_imag = to_i64(obj_from_bits(has_imag_bits)).unwrap_or(0) != 0;
+        let val_obj = obj_from_bits(val_bits);
+        if !has_imag {
+            if complex_ptr_from_bits(val_bits).is_some() {
+                inc_ref_bits(_py, val_bits);
+                return val_bits;
+            }
+            if let Some(f) = val_obj.as_float() {
+                return complex_bits(_py, f, 0.0);
+            }
+            if let Some(i) = to_i64(val_obj) {
+                return complex_bits(_py, i as f64, 0.0);
+            }
+            if let Some(ptr) = bigint_ptr_from_bits(val_bits) {
+                if let Some(val) = unsafe { bigint_ref(ptr) }.to_f64() {
+                    return complex_bits(_py, val, 0.0);
+                }
+                return raise_exception::<_>(
+                    _py,
+                    "OverflowError",
+                    "int too large to convert to float",
+                );
+            }
+            if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
+                unsafe {
+                    let type_id = object_type_id(ptr);
+                    if type_id == TYPE_ID_STRING {
+                        let len = string_len(ptr);
+                        let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
+                        let text = match std::str::from_utf8(bytes) {
+                            Ok(val) => val,
+                            Err(_) => {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "ValueError",
+                                    "complex() arg is a malformed string",
+                                );
+                            }
+                        };
+                        match parse_complex_from_str(text) {
+                            Ok(parts) => {
+                                return complex_bits(_py, parts.re, parts.im);
+                            }
+                            Err(()) => {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "ValueError",
+                                    "complex() arg is a malformed string",
+                                );
+                            }
+                        }
+                    }
+                    if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+                        let type_label = type_name(_py, val_obj);
+                        let msg = format!(
+                            "complex() argument must be a string or a number, not {type_label}"
+                        );
+                        return raise_exception::<_>(_py, "TypeError", &msg);
+                    }
+                    if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__complex__") {
+                        if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, name_bits)
+                        {
+                            let res_bits = call_callable0(_py, call_bits);
+                            dec_ref_bits(_py, call_bits);
+                            if exception_pending(_py) {
+                                return MoltObject::none().bits();
+                            }
+                            if complex_ptr_from_bits(res_bits).is_some() {
+                                return res_bits;
+                            }
+                            let owner = class_name_for_error(type_of_bits(_py, val_bits));
+                            let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                            if obj_from_bits(res_bits).as_ptr().is_some() {
+                                dec_ref_bits(_py, res_bits);
+                            }
+                            let msg = format!(
+                                "{owner}.__complex__ returned non-complex (type {res_type})"
+                            );
+                            return raise_exception::<_>(_py, "TypeError", &msg);
+                        }
+                        dec_ref_bits(_py, name_bits);
+                    }
+                    let float_name_bits = intern_static_name(
+                        _py,
+                        &runtime_state(_py).interned.float_name,
+                        b"__float__",
+                    );
+                    if let Some(call_bits) =
+                        attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits)
+                    {
+                        let res_bits = call_callable0(_py, call_bits);
+                        dec_ref_bits(_py, call_bits);
+                        let res_obj = obj_from_bits(res_bits);
+                        if let Some(f) = res_obj.as_float() {
+                            return complex_bits(_py, f, 0.0);
+                        }
+                        let owner = class_name_for_error(type_of_bits(_py, val_bits));
+                        let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                        if res_obj.as_ptr().is_some() {
+                            dec_ref_bits(_py, res_bits);
+                        }
+                        let msg = format!("{owner}.__float__ returned non-float (type {res_type})");
+                        return raise_exception::<_>(_py, "TypeError", &msg);
+                    }
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    let index_name_bits = intern_static_name(
+                        _py,
+                        &runtime_state(_py).interned.index_name,
+                        b"__index__",
+                    );
+                    if let Some(call_bits) =
+                        attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits)
+                    {
+                        let res_bits = call_callable0(_py, call_bits);
+                        dec_ref_bits(_py, call_bits);
+                        let res_obj = obj_from_bits(res_bits);
+                        if let Some(i) = to_i64(res_obj) {
+                            return complex_bits(_py, i as f64, 0.0);
+                        }
+                        let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                        if res_obj.as_ptr().is_some() {
+                            dec_ref_bits(_py, res_bits);
+                        }
+                        let msg = format!("__index__ returned non-int (type {res_type})");
+                        return raise_exception::<_>(_py, "TypeError", &msg);
+                    }
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                }
+            }
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "complex() argument must be a string or a number",
+            );
+        }
+        let imag_obj = obj_from_bits(imag_bits);
+        if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
+            unsafe {
+                let type_id = object_type_id(ptr);
+                if type_id == TYPE_ID_STRING
+                    || type_id == TYPE_ID_BYTES
+                    || type_id == TYPE_ID_BYTEARRAY
+                {
+                    let type_label = type_name(_py, val_obj);
+                    let msg = format!(
+                        "complex() argument 'real' must be a real number, not {type_label}"
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+            }
+        }
+        if let Some(ptr) = maybe_ptr_from_bits(imag_bits) {
+            unsafe {
+                let type_id = object_type_id(ptr);
+                if type_id == TYPE_ID_STRING
+                    || type_id == TYPE_ID_BYTES
+                    || type_id == TYPE_ID_BYTEARRAY
+                {
+                    let type_label = type_name(_py, imag_obj);
+                    let msg = format!(
+                        "complex() argument 'imag' must be a real number, not {type_label}"
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+            }
+        }
+        let real = match complex_from_obj_strict(_py, val_obj) {
+            Ok(Some(val)) => val,
+            Ok(None) => {
+                let type_label = type_name(_py, val_obj);
+                let msg =
+                    format!("complex() argument 'real' must be a real number, not {type_label}");
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+            Err(()) => {
+                return raise_exception::<_>(
+                    _py,
+                    "OverflowError",
+                    "int too large to convert to float",
+                );
+            }
+        };
+        let imag = match complex_from_obj_strict(_py, imag_obj) {
+            Ok(Some(val)) => val,
+            Ok(None) => {
+                let type_label = type_name(_py, imag_obj);
+                let msg =
+                    format!("complex() argument 'imag' must be a real number, not {type_label}");
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+            Err(()) => {
+                return raise_exception::<_>(
+                    _py,
+                    "OverflowError",
+                    "int too large to convert to float",
+                );
+            }
+        };
+        let re = real.re - imag.im;
+        let im = real.im + imag.re;
+        complex_bits(_py, re, im)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_complex_conjugate(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = complex_ptr_from_bits(val_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "complex.conjugate expects complex");
+        };
+        let value = unsafe { *complex_ref(ptr) };
+        complex_bits(_py, value.re, -value.im)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_complex_from_number(cls_bits: u64, val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
+            unsafe {
+                let type_id = object_type_id(ptr);
+                if type_id == TYPE_ID_STRING
+                    || type_id == TYPE_ID_BYTES
+                    || type_id == TYPE_ID_BYTEARRAY
+                {
+                    let msg = format!(
+                        "must be real number, not {}",
+                        type_name(_py, obj_from_bits(val_bits))
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+            }
+        }
+        let none_bits = MoltObject::none().bits();
+        let false_bits = MoltObject::from_bool(false).bits();
+        let out_bits = molt_complex_from_obj(val_bits, none_bits, false_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let builtins = builtin_classes(_py);
+        if cls_bits == builtins.complex {
+            return out_bits;
+        }
+        if !issubclass_bits(cls_bits, builtins.complex) {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "from_number() requires a complex subclass",
+            );
+        }
+        let res_bits = unsafe { call_callable1(_py, cls_bits, out_bits) };
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        res_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_new(cls_bits: u64, val_bits: u64, base_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let cls_obj = obj_from_bits(cls_bits);
+        let Some(cls_ptr) = cls_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "int.__new__ expects type");
+        };
+        unsafe {
+            if object_type_id(cls_ptr) != TYPE_ID_TYPE {
+                return raise_exception::<_>(_py, "TypeError", "int.__new__ expects type");
+            }
+        }
+        let has_base = base_bits != missing_bits(_py);
+        let has_base_bits = MoltObject::from_int(if has_base { 1 } else { 0 }).bits();
+        let int_bits = molt_int_from_obj(val_bits, base_bits, has_base_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let builtins = builtin_classes(_py);
+        if cls_bits == builtins.int {
+            return int_bits;
+        }
+        if !issubclass_bits(cls_bits, builtins.int) {
+            let type_label = class_name_for_error(cls_bits);
+            let msg = format!("int.__new__ expects type, got {}", type_label);
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
+        let inst_bits = unsafe { alloc_instance_for_class(_py, cls_ptr) };
+        let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        let Some(slot_name_bits) = attr_name_bits_from_bytes(_py, b"__molt_int_value__") else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "int subclass layout missing value slot",
+            );
+        };
+        let Some(offset) = (unsafe { class_field_offset(_py, cls_ptr, slot_name_bits) }) else {
+            dec_ref_bits(_py, slot_name_bits);
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "int subclass layout missing value slot",
+            );
+        };
+        dec_ref_bits(_py, slot_name_bits);
+        unsafe {
+            let _ = object_field_init_ptr_raw(_py, inst_ptr, offset, int_bits);
+        }
+        inst_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_int(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(self_bits);
+        if obj.is_int() {
+            return self_bits;
+        }
+        if obj.is_bool() {
+            return MoltObject::from_int(if obj.as_bool().unwrap_or(false) { 1 } else { 0 }).bits();
+        }
+        if bigint_ptr_from_bits(self_bits).is_some() {
+            inc_ref_bits(_py, self_bits);
+            return self_bits;
+        }
+        if let Some(bits) = int_subclass_value_bits_raw(self_bits) {
+            if obj_from_bits(bits).as_ptr().is_some() {
+                inc_ref_bits(_py, bits);
+            }
+            return bits;
+        }
+        let type_label = class_name_for_error(type_of_bits(_py, self_bits));
+        let msg = format!(
+            "descriptor '__int__' requires a 'int' object but received '{}'",
+            type_label
+        );
+        raise_exception::<_>(_py, "TypeError", &msg)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_index(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(self_bits);
+        if obj.is_int() {
+            return self_bits;
+        }
+        if obj.is_bool() {
+            return MoltObject::from_int(if obj.as_bool().unwrap_or(false) { 1 } else { 0 }).bits();
+        }
+        if bigint_ptr_from_bits(self_bits).is_some() {
+            inc_ref_bits(_py, self_bits);
+            return self_bits;
+        }
+        if let Some(bits) = int_subclass_value_bits_raw(self_bits) {
+            if obj_from_bits(bits).as_ptr().is_some() {
+                inc_ref_bits(_py, bits);
+            }
+            return bits;
+        }
+        let type_label = class_name_for_error(type_of_bits(_py, self_bits));
+        let msg = format!(
+            "descriptor '__index__' requires a 'int' object but received '{}'",
+            type_label
+        );
+        raise_exception::<_>(_py, "TypeError", &msg)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_bit_length(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(self_bits);
+        let Some(value) = to_bigint(obj) else {
+            let type_label = class_name_for_error(type_of_bits(_py, self_bits));
+            let msg = format!(
+                "descriptor 'bit_length' requires a 'int' object but received '{}'",
+                type_label
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        let (_sign, bytes) = value.to_bytes_be();
+        if bytes.is_empty() {
+            return MoltObject::from_int(0).bits();
+        }
+        let lead = bytes[0];
+        let lead_bits = 8usize.saturating_sub(lead.leading_zeros() as usize);
+        let total_bits = (bytes.len().saturating_sub(1) * 8) + lead_bits;
+        MoltObject::from_int(total_bits as i64).bits()
+    })
+}
+
+fn int_method_value_bits_or_error(_py: &PyToken<'_>, self_bits: u64, method: &str) -> Option<u64> {
+    let obj = obj_from_bits(self_bits);
+    if obj.is_int() {
+        return Some(self_bits);
+    }
+    if obj.is_bool() {
+        return Some(
+            MoltObject::from_int(if obj.as_bool().unwrap_or(false) { 1 } else { 0 }).bits(),
+        );
+    }
+    if bigint_ptr_from_bits(self_bits).is_some() {
+        return Some(self_bits);
+    }
+    if let Some(bits) = int_subclass_value_bits_raw(self_bits) {
+        return Some(bits);
+    }
+    let type_label = class_name_for_error(type_of_bits(_py, self_bits));
+    let msg = format!(
+        "descriptor '{method}' requires a 'int' object but received '{}'",
+        type_label
+    );
+    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+    None
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_bit_count(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(value_bits) = int_method_value_bits_or_error(_py, self_bits, "bit_count") else {
+            return MoltObject::none().bits();
+        };
+        let value_obj = obj_from_bits(value_bits);
+        if let Some(i) = to_i64(value_obj) {
+            let count = i.unsigned_abs().count_ones() as i64;
+            return MoltObject::from_int(count).bits();
+        }
+        if let Some(ptr) = bigint_ptr_from_bits(value_bits) {
+            let abs = unsafe { bigint_ref(ptr) }.abs();
+            let (_sign, bytes) = abs.to_bytes_le();
+            let mut count = 0i64;
+            for byte in bytes {
+                count += byte.count_ones() as i64;
+            }
+            return MoltObject::from_int(count).bits();
+        }
+        // int subclasses should always lower to int/bigint storage.
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_as_integer_ratio(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(num_bits) = int_method_value_bits_or_error(_py, self_bits, "as_integer_ratio")
+        else {
+            return MoltObject::none().bits();
+        };
+        let one_bits = MoltObject::from_int(1).bits();
+        let tuple_ptr = alloc_tuple(_py, &[num_bits, one_bits]);
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(tuple_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_conjugate(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(out_bits) = int_method_value_bits_or_error(_py, self_bits, "conjugate") else {
+            return MoltObject::none().bits();
+        };
+        if obj_from_bits(out_bits).as_ptr().is_some() {
+            inc_ref_bits(_py, out_bits);
+        }
+        out_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_is_integer(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if int_method_value_bits_or_error(_py, self_bits, "is_integer").is_none() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_bool(true).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(val_bits);
+        let has_base = to_i64(obj_from_bits(has_base_bits)).unwrap_or(0) != 0;
+        let base_val = if has_base {
+            let base = index_i64_from_obj(_py, base_bits, "int() base must be int");
+            if base != 0 && !(2..=36).contains(&base) {
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "base must be 0 or between 2 and 36",
+                );
+            }
+            base
+        } else {
+            10
+        };
+        let invalid_literal = |base: i64, literal: &str| -> u64 {
+            let msg = format!("invalid literal for int() with base {base}: '{literal}'");
+            raise_exception::<_>(_py, "ValueError", &msg)
+        };
+        if has_base {
+            let Some(ptr) = maybe_ptr_from_bits(val_bits) else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "int() can't convert non-string with explicit base",
+                );
+            };
+            unsafe {
+                let type_id = object_type_id(ptr);
+                if type_id != TYPE_ID_STRING
+                    && type_id != TYPE_ID_BYTES
+                    && type_id != TYPE_ID_BYTEARRAY
+                {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "int() can't convert non-string with explicit base",
+                    );
+                }
+            }
+        }
+        if !has_base {
+            if complex_ptr_from_bits(val_bits).is_some() {
+                let type_label = type_name(_py, obj);
+                let msg = format!(
+                    "int() argument must be a string, a bytes-like object or a real number, not '{type_label}'"
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+            if let Some(i) = to_i64(obj) {
+                return MoltObject::from_int(i).bits();
+            }
+            if bigint_ptr_from_bits(val_bits).is_some() {
+                return val_bits;
+            }
+            if let Some(f) = to_f64(obj) {
+                if f.is_nan() {
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "cannot convert float NaN to integer",
+                    );
+                }
+                if f.is_infinite() {
+                    return raise_exception::<_>(
+                        _py,
+                        "OverflowError",
+                        "cannot convert float infinity to integer",
+                    );
+                }
+                let big = bigint_from_f64_trunc(f);
+                if let Some(i) = bigint_to_inline(&big) {
+                    return MoltObject::from_int(i).bits();
+                }
+                return bigint_bits(_py, big);
+            }
+        }
+        if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
+            unsafe {
+                let type_id = object_type_id(ptr);
+                if type_id == TYPE_ID_STRING {
+                    let len = string_len(ptr);
+                    let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
+                    let text = match std::str::from_utf8(bytes) {
+                        Ok(val) => val,
+                        Err(_) => return invalid_literal(base_val, "<bytes>"),
+                    };
+                    let base = if has_base { base_val } else { 10 };
+                    let (parsed, _base_used) = match parse_int_from_str(text, base) {
+                        Ok(val) => val,
+                        Err(_) => return invalid_literal(base, text),
+                    };
+                    if let Some(i) = bigint_to_inline(&parsed) {
+                        return MoltObject::from_int(i).bits();
+                    }
+                    return bigint_bits(_py, parsed);
+                }
+                if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+                    let len = bytes_len(ptr);
+                    let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
+                    let text = String::from_utf8_lossy(bytes);
+                    let base = if has_base { base_val } else { 10 };
+                    let (parsed, _base_used) = match parse_int_from_str(&text, base) {
+                        Ok(val) => val,
+                        Err(_) => return invalid_literal(base, &format!("b'{text}'")),
+                    };
+                    if let Some(i) = bigint_to_inline(&parsed) {
+                        return MoltObject::from_int(i).bits();
+                    }
+                    return bigint_bits(_py, parsed);
+                }
+                if !has_base {
+                    let int_name_bits =
+                        intern_static_name(_py, &runtime_state(_py).interned.int_name, b"__int__");
+                    if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, int_name_bits)
+                    {
+                        let res_bits = call_callable0(_py, call_bits);
+                        dec_ref_bits(_py, call_bits);
+                        let res_obj = obj_from_bits(res_bits);
+                        if let Some(i) = to_i64(res_obj) {
+                            return MoltObject::from_int(i).bits();
+                        }
+                        if bigint_ptr_from_bits(res_bits).is_some() {
+                            return res_bits;
+                        }
+                        let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                        if res_obj.as_ptr().is_some() {
+                            dec_ref_bits(_py, res_bits);
+                        }
+                        let msg = format!("__int__ returned non-int (type {res_type})");
+                        return raise_exception::<_>(_py, "TypeError", &msg);
+                    }
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    let index_name_bits = intern_static_name(
+                        _py,
+                        &runtime_state(_py).interned.index_name,
+                        b"__index__",
+                    );
+                    if let Some(call_bits) =
+                        attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits)
+                    {
+                        let res_bits = call_callable0(_py, call_bits);
+                        dec_ref_bits(_py, call_bits);
+                        let res_obj = obj_from_bits(res_bits);
+                        if let Some(i) = to_i64(res_obj) {
+                            return MoltObject::from_int(i).bits();
+                        }
+                        if bigint_ptr_from_bits(res_bits).is_some() {
+                            return res_bits;
+                        }
+                        let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                        if res_obj.as_ptr().is_some() {
+                            dec_ref_bits(_py, res_bits);
+                        }
+                        let msg = format!("__index__ returned non-int (type {res_type})");
+                        return raise_exception::<_>(_py, "TypeError", &msg);
+                    }
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                }
+            }
+        }
+        if has_base {
+            return raise_exception::<_>(_py, "ValueError", "invalid literal for int()");
+        }
+        raise_exception::<_>(
+            _py,
+            "TypeError",
+            "int() argument must be a string or a number",
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_guard_type(val_bits: u64, expected_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let expected = match to_i64(obj_from_bits(expected_bits)) {
+            Some(val) => val,
+            None => return raise_exception::<_>(_py, "TypeError", "guard type tag must be int"),
+        };
+        if expected == TYPE_TAG_ANY {
+            return val_bits;
+        }
+        let obj = obj_from_bits(val_bits);
+        let matches = match expected {
+            TYPE_TAG_INT => obj.is_int() || bigint_ptr_from_bits(val_bits).is_some(),
+            TYPE_TAG_FLOAT => obj.is_float(),
+            TYPE_TAG_COMPLEX => obj
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_COMPLEX }),
+            TYPE_TAG_BOOL => obj.is_bool(),
+            TYPE_TAG_NONE => obj.is_none(),
+            TYPE_TAG_STR => obj
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING }),
+            TYPE_TAG_BYTES => obj
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_BYTES }),
+            TYPE_TAG_BYTEARRAY => obj
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_BYTEARRAY }),
+            TYPE_TAG_LIST => obj
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_LIST }),
+            TYPE_TAG_TUPLE => obj
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TUPLE }),
+            TYPE_TAG_INTARRAY => obj
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_INTARRAY }),
+            TYPE_TAG_DICT => obj
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_DICT }),
+            TYPE_TAG_SET => obj
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_SET }),
+            TYPE_TAG_FROZENSET => obj
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_FROZENSET }),
+            TYPE_TAG_RANGE => obj
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_RANGE }),
+            TYPE_TAG_SLICE => obj
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_SLICE }),
+            TYPE_TAG_DATACLASS => obj
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_DATACLASS }),
+            TYPE_TAG_BUFFER2D => obj
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_BUFFER2D }),
+            TYPE_TAG_MEMORYVIEW => obj
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_MEMORYVIEW }),
+            _ => false,
+        };
+        if !matches {
+            profile_hit_unchecked(&GUARD_TAG_TYPE_MISMATCH_DEOPT_COUNT);
+            return raise_exception::<_>(_py, "TypeError", "type guard mismatch");
+        }
+        val_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_is_truthy(val: u64) -> i64 {
+    crate::with_gil_entry!(_py, {
+        if is_truthy(_py, obj_from_bits(val)) {
+            1
+        } else {
+            0
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_not(val: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        MoltObject::from_bool(!is_truthy(_py, obj_from_bits(val))).bits()
+    })
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|val| !val.is_empty() && val != "0")
+        .unwrap_or(false)
+}
+
+fn maybe_emit_runtime_feedback_file(payload: &serde_json::Value) {
+    if !env_flag_enabled("MOLT_RUNTIME_FEEDBACK") {
+        return;
+    }
+    let out_path = std::env::var("MOLT_RUNTIME_FEEDBACK_FILE")
+        .ok()
+        .filter(|val| !val.is_empty())
+        .unwrap_or_else(|| "molt_runtime_feedback.json".to_string());
+    let path = std::path::Path::new(&out_path);
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && let Err(err) = std::fs::create_dir_all(parent)
+    {
+        eprintln!(
+            "molt_runtime_feedback_error stage=create_dir path={} err={}",
+            path.display(),
+            err
+        );
+        return;
+    }
+    let encoded = match serde_json::to_string_pretty(payload) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!(
+                "molt_runtime_feedback_error stage=encode path={} err={}",
+                path.display(),
+                err
+            );
+            return;
+        }
+    };
+    if let Err(err) = std::fs::write(path, encoded) {
+        eprintln!(
+            "molt_runtime_feedback_error stage=write path={} err={}",
+            path.display(),
+            err
+        );
+        return;
+    }
+    eprintln!("molt_runtime_feedback_file {}", path.display());
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_profile_dump() {
+    crate::with_gil_entry!(_py, {
+        if !profile_enabled(_py) {
+            return;
+        }
+        let call_dispatch = CALL_DISPATCH_COUNT.load(AtomicOrdering::Relaxed);
+        let cache_hit = runtime_state(_py)
+            .string_count_cache_hit
+            .load(AtomicOrdering::Relaxed);
+        let cache_miss = runtime_state(_py)
+            .string_count_cache_miss
+            .load(AtomicOrdering::Relaxed);
+        let struct_stores = STRUCT_FIELD_STORE_COUNT.load(AtomicOrdering::Relaxed);
+        let attr_lookups = ATTR_LOOKUP_COUNT.load(AtomicOrdering::Relaxed);
+        let handle_resolves = HANDLE_RESOLVE_COUNT.load(AtomicOrdering::Relaxed);
+        let layout_guard = LAYOUT_GUARD_COUNT.load(AtomicOrdering::Relaxed);
+        let layout_guard_fail = LAYOUT_GUARD_FAIL.load(AtomicOrdering::Relaxed);
+        let allocs = ALLOC_COUNT.load(AtomicOrdering::Relaxed);
+        let alloc_objects = ALLOC_OBJECT_COUNT.load(AtomicOrdering::Relaxed);
+        let alloc_exceptions = ALLOC_EXCEPTION_COUNT.load(AtomicOrdering::Relaxed);
+        let alloc_dicts = ALLOC_DICT_COUNT.load(AtomicOrdering::Relaxed);
+        let alloc_tuples = ALLOC_TUPLE_COUNT.load(AtomicOrdering::Relaxed);
+        let alloc_strings = ALLOC_STRING_COUNT.load(AtomicOrdering::Relaxed);
+        let alloc_callargs = ALLOC_CALLARGS_COUNT.load(AtomicOrdering::Relaxed);
+        let alloc_bytes_callargs = ALLOC_BYTES_CALLARGS.load(AtomicOrdering::Relaxed);
+        let tb_builds = TRACEBACK_BUILD_COUNT.load(AtomicOrdering::Relaxed);
+        let tb_frames = TRACEBACK_BUILD_FRAMES.load(AtomicOrdering::Relaxed);
+        let tb_suppressed = TRACEBACK_SUPPRESS_COUNT.load(AtomicOrdering::Relaxed);
+        let async_polls = ASYNC_POLL_COUNT.load(AtomicOrdering::Relaxed);
+        let async_pending = ASYNC_PENDING_COUNT.load(AtomicOrdering::Relaxed);
+        let async_wakeups = ASYNC_WAKEUP_COUNT.load(AtomicOrdering::Relaxed);
+        let async_sleep_reg = ASYNC_SLEEP_REGISTER_COUNT.load(AtomicOrdering::Relaxed);
+        let call_bind_ic_hit = CALL_BIND_IC_HIT_COUNT.load(AtomicOrdering::Relaxed);
+        let call_bind_ic_miss = CALL_BIND_IC_MISS_COUNT.load(AtomicOrdering::Relaxed);
+        let call_indirect_noncallable_deopt =
+            CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
+        let invoke_ffi_bridge_capability_denied =
+            INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT.load(AtomicOrdering::Relaxed);
+        let guard_tag_type_mismatch_deopt =
+            GUARD_TAG_TYPE_MISMATCH_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
+        let guard_dict_shape_layout_mismatch_deopt =
+            GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
+        let guard_dict_shape_layout_fail_null_obj =
+            GUARD_DICT_SHAPE_LAYOUT_FAIL_NULL_OBJ_COUNT.load(AtomicOrdering::Relaxed);
+        let guard_dict_shape_layout_fail_non_object =
+            GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_OBJECT_COUNT.load(AtomicOrdering::Relaxed);
+        let guard_dict_shape_layout_fail_class_mismatch =
+            GUARD_DICT_SHAPE_LAYOUT_FAIL_CLASS_MISMATCH_COUNT.load(AtomicOrdering::Relaxed);
+        let guard_dict_shape_layout_fail_non_type_class =
+            GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT.load(AtomicOrdering::Relaxed);
+        let guard_dict_shape_layout_fail_expected_version_invalid =
+            GUARD_DICT_SHAPE_LAYOUT_FAIL_EXPECTED_VERSION_INVALID_COUNT
+                .load(AtomicOrdering::Relaxed);
+        let guard_dict_shape_layout_fail_version_mismatch =
+            GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT.load(AtomicOrdering::Relaxed);
+        let attr_site_name_hit = ATTR_SITE_NAME_CACHE_HIT_COUNT.load(AtomicOrdering::Relaxed);
+        let attr_site_name_miss = ATTR_SITE_NAME_CACHE_MISS_COUNT.load(AtomicOrdering::Relaxed);
+        let split_ws_ascii = SPLIT_WS_ASCII_FAST_PATH_COUNT.load(AtomicOrdering::Relaxed);
+        let split_ws_unicode = SPLIT_WS_UNICODE_PATH_COUNT.load(AtomicOrdering::Relaxed);
+        let dict_str_int_prehash_hit = DICT_STR_INT_PREHASH_HIT_COUNT.load(AtomicOrdering::Relaxed);
+        let dict_str_int_prehash_miss =
+            DICT_STR_INT_PREHASH_MISS_COUNT.load(AtomicOrdering::Relaxed);
+        let dict_str_int_prehash_deopt =
+            DICT_STR_INT_PREHASH_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
+        let taq_ingest_calls = TAQ_INGEST_CALL_COUNT.load(AtomicOrdering::Relaxed);
+        let taq_ingest_skip_marker = TAQ_INGEST_SKIP_MARKER_COUNT.load(AtomicOrdering::Relaxed);
+        let ascii_i64_parse_fail = ASCII_I64_PARSE_FAIL_COUNT.load(AtomicOrdering::Relaxed);
+        let alloc_bytes_total = ALLOC_BYTES_TOTAL.load(AtomicOrdering::Relaxed);
+        let alloc_bytes_string = ALLOC_BYTES_STRING.load(AtomicOrdering::Relaxed);
+        let alloc_bytes_dict = ALLOC_BYTES_DICT.load(AtomicOrdering::Relaxed);
+        let alloc_bytes_tuple = ALLOC_BYTES_TUPLE.load(AtomicOrdering::Relaxed);
+        let alloc_bytes_list = ALLOC_BYTES_LIST.load(AtomicOrdering::Relaxed);
+        // Take a final RSS sample before dumping.
+        sample_peak_rss();
+        let peak_rss = PEAK_RSS_BYTES.load(AtomicOrdering::Relaxed);
+        let current_rss = current_rss_bytes();
+        eprintln!(
+            "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={} attr_lookup={} handle_resolve={} layout_guard={} layout_guard_fail={} alloc_count={} alloc_object={} alloc_exception={} alloc_dict={} alloc_tuple={} alloc_string={} alloc_callargs={} alloc_bytes_callargs={} tb_builds={} tb_frames={} tb_suppressed={} async_polls={} async_pending={} async_wakeups={} async_sleep_register={} call_bind_ic_hit={} call_bind_ic_miss={} call_indirect_noncallable_deopt={} invoke_ffi_bridge_capability_denied={} guard_tag_type_mismatch_deopt={} guard_dict_shape_layout_mismatch_deopt={} attr_site_name_hit={} attr_site_name_miss={} split_ws_ascii={} split_ws_unicode={} dict_str_int_prehash_hit={} dict_str_int_prehash_miss={} dict_str_int_prehash_deopt={} taq_ingest_calls={} taq_ingest_skip_marker={} ascii_i64_parse_fail={} alloc_bytes_total={} alloc_bytes_string={} alloc_bytes_dict={} alloc_bytes_tuple={} alloc_bytes_list={} peak_rss_bytes={} current_rss_bytes={}",
+            call_dispatch,
+            cache_hit,
+            cache_miss,
+            struct_stores,
+            attr_lookups,
+            handle_resolves,
+            layout_guard,
+            layout_guard_fail,
+            allocs,
+            alloc_objects,
+            alloc_exceptions,
+            alloc_dicts,
+            alloc_tuples,
+            alloc_strings,
+            alloc_callargs,
+            alloc_bytes_callargs,
+            tb_builds,
+            tb_frames,
+            tb_suppressed,
+            async_polls,
+            async_pending,
+            async_wakeups,
+            async_sleep_reg,
+            call_bind_ic_hit,
+            call_bind_ic_miss,
+            call_indirect_noncallable_deopt,
+            invoke_ffi_bridge_capability_denied,
+            guard_tag_type_mismatch_deopt,
+            guard_dict_shape_layout_mismatch_deopt,
+            attr_site_name_hit,
+            attr_site_name_miss,
+            split_ws_ascii,
+            split_ws_unicode,
+            dict_str_int_prehash_hit,
+            dict_str_int_prehash_miss,
+            dict_str_int_prehash_deopt,
+            taq_ingest_calls,
+            taq_ingest_skip_marker,
+            ascii_i64_parse_fail,
+            alloc_bytes_total,
+            alloc_bytes_string,
+            alloc_bytes_dict,
+            alloc_bytes_tuple,
+            alloc_bytes_list,
+            peak_rss,
+            current_rss,
+        );
+        let payload = serde_json::json!({
+            "schema_version": 1,
+            "kind": "runtime_feedback",
+            "profile": {
+                "call_dispatch": call_dispatch,
+                "string_count_cache_hit": cache_hit,
+                "string_count_cache_miss": cache_miss,
+                "struct_field_store": struct_stores,
+                "attr_lookup": attr_lookups,
+                "handle_resolve": handle_resolves,
+                "layout_guard": layout_guard,
+                "layout_guard_fail": layout_guard_fail,
+                "alloc_count": allocs,
+                "alloc_object": alloc_objects,
+                "alloc_exception": alloc_exceptions,
+                "alloc_dict": alloc_dicts,
+                "alloc_tuple": alloc_tuples,
+                "alloc_string": alloc_strings,
+                "alloc_callargs": alloc_callargs,
+                "alloc_bytes_callargs": alloc_bytes_callargs,
+                "tb_builds": tb_builds,
+                "tb_frames": tb_frames,
+                "tb_suppressed": tb_suppressed,
+                "async_polls": async_polls,
+                "async_pending": async_pending,
+                "async_wakeups": async_wakeups,
+                "async_sleep_register": async_sleep_reg,
+                "alloc_bytes_total": alloc_bytes_total,
+                "alloc_bytes_string": alloc_bytes_string,
+                "alloc_bytes_dict": alloc_bytes_dict,
+                "alloc_bytes_tuple": alloc_bytes_tuple,
+                "alloc_bytes_list": alloc_bytes_list,
+            },
+            "memory": {
+                "peak_rss_bytes": peak_rss,
+                "current_rss_bytes": current_rss,
+            },
+            "hot_paths": {
+                "call_bind_ic_hit": call_bind_ic_hit,
+                "call_bind_ic_miss": call_bind_ic_miss,
+                "attr_site_name_hit": attr_site_name_hit,
+                "attr_site_name_miss": attr_site_name_miss,
+                "split_ws_ascii": split_ws_ascii,
+                "split_ws_unicode": split_ws_unicode,
+                "dict_str_int_prehash_hit": dict_str_int_prehash_hit,
+                "dict_str_int_prehash_miss": dict_str_int_prehash_miss,
+                "dict_str_int_prehash_deopt": dict_str_int_prehash_deopt,
+                "taq_ingest_calls": taq_ingest_calls,
+                "taq_ingest_skip_marker": taq_ingest_skip_marker,
+                "ascii_i64_parse_fail": ascii_i64_parse_fail,
+            },
+            "deopt_reasons": {
+                "call_indirect_noncallable": call_indirect_noncallable_deopt,
+                "invoke_ffi_bridge_capability_denied": invoke_ffi_bridge_capability_denied,
+                "guard_tag_type_mismatch": guard_tag_type_mismatch_deopt,
+                "guard_dict_shape_layout_mismatch": guard_dict_shape_layout_mismatch_deopt,
+                "guard_dict_shape_layout_fail_null_obj": guard_dict_shape_layout_fail_null_obj,
+                "guard_dict_shape_layout_fail_non_object": guard_dict_shape_layout_fail_non_object,
+                "guard_dict_shape_layout_fail_class_mismatch": guard_dict_shape_layout_fail_class_mismatch,
+                "guard_dict_shape_layout_fail_non_type_class": guard_dict_shape_layout_fail_non_type_class,
+                "guard_dict_shape_layout_fail_expected_version_invalid": guard_dict_shape_layout_fail_expected_version_invalid,
+                "guard_dict_shape_layout_fail_version_mismatch": guard_dict_shape_layout_fail_version_mismatch,
+            },
+        });
+        if env_flag_enabled("MOLT_PROFILE_JSON") {
+            eprintln!("molt_profile_json {}", payload);
+        }
+        maybe_emit_runtime_feedback_file(&payload);
+    })
+}
+
+fn vec_sum_result(_py: &PyToken<'_>, sum_bits: u64, ok: bool) -> u64 {
+    let ok_bits = MoltObject::from_bool(ok).bits();
+    let tuple_ptr = alloc_tuple(_py, &[sum_bits, ok_bits]);
+    if tuple_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    MoltObject::from_ptr(tuple_ptr).bits()
+}
+
+fn vec_sum_i64_result(_py: &PyToken<'_>, value: i64, ok: bool) -> u64 {
+    let value_bits = int_bits_from_i64(_py, value);
+    let out = vec_sum_result(_py, value_bits, ok);
+    dec_ref_bits(_py, value_bits);
+    out
+}
+
+fn vec_sum_f64_result(_py: &PyToken<'_>, value: f64, ok: bool) -> u64 {
+    vec_sum_result(_py, MoltObject::from_float(value).bits(), ok)
+}
+
+fn number_as_f64(obj: MoltObject) -> Option<f64> {
+    if let Some(f) = obj.as_float() {
+        return Some(f);
+    }
+    obj.as_int().map(|i| i as f64)
+}
+
+fn sum_floats_scalar(elems: &[u64], acc: f64) -> Option<f64> {
+    let mut vals: Vec<f64> = Vec::with_capacity(elems.len());
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        vals.push(number_as_f64(obj)?);
+    }
+    Some(sum_f64_neumaier(&vals, acc))
+}
+
+// ---------------------------------------------------------------------------
+// SIMD-accelerated float sum: SSE2 (2×f64), AVX2 (4×f64), NEON (2×f64)
+// ---------------------------------------------------------------------------
+
+/// Neumaier compensated summation on pre-extracted f64 values.
+/// Matches CPython >= 3.12 `sum()` for float sequences.
+fn sum_f64_neumaier(vals: &[f64], acc: f64) -> f64 {
+    let mut sum = acc;
+    let mut comp = 0.0_f64;
+    for &x in vals {
+        let t = sum + x;
+        if sum.abs() >= x.abs() {
+            comp += (sum - t) + x;
+        } else {
+            comp += (x - t) + sum;
+        }
+        sum = t;
+    }
+    sum + comp
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn sum_f64_simd_x86_64(vals: &[f64], acc: f64) -> f64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_sum = _mm_set1_pd(0.0);
+    while i + 2 <= vals.len() {
+        let vec = _mm_loadu_pd(vals.as_ptr().add(i));
+        vec_sum = _mm_add_pd(vec_sum, vec);
+        i += 2;
+    }
+    let mut lanes = [0.0f64; 2];
+    _mm_storeu_pd(lanes.as_mut_ptr(), vec_sum);
+    let mut sum = acc + lanes[0] + lanes[1];
+    for &v in &vals[i..] {
+        sum += v;
+    }
+    sum
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn sum_f64_simd_x86_64_avx2(vals: &[f64], acc: f64) -> f64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_sum = _mm256_setzero_pd();
+    while i + 4 <= vals.len() {
+        let vec = _mm256_loadu_pd(vals.as_ptr().add(i));
+        vec_sum = _mm256_add_pd(vec_sum, vec);
+        i += 4;
+    }
+    let mut lanes = [0.0f64; 4];
+    _mm256_storeu_pd(lanes.as_mut_ptr(), vec_sum);
+    let mut sum = acc + lanes[0] + lanes[1] + lanes[2] + lanes[3];
+    for &v in &vals[i..] {
+        sum += v;
+    }
+    sum
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(dead_code)]
+unsafe fn sum_f64_simd_aarch64(vals: &[f64], acc: f64) -> f64 {
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut i = 0usize;
+        let mut vec_sum = vdupq_n_f64(0.0);
+        while i + 2 <= vals.len() {
+            let vec = vld1q_f64(vals.as_ptr().add(i));
+            vec_sum = vaddq_f64(vec_sum, vec);
+            i += 2;
+        }
+        let mut lanes = [0.0f64; 2];
+        vst1q_f64(lanes.as_mut_ptr(), vec_sum);
+        let mut sum = acc + lanes[0] + lanes[1];
+        for &v in &vals[i..] {
+            sum += v;
+        }
+        sum
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+unsafe fn sum_f64_simd_wasm32(vals: &[f64], acc: f64) -> f64 {
+    unsafe {
+        use std::arch::wasm32::*;
+        let mut i = 0usize;
+        let mut vec_sum = f64x2_splat(0.0);
+        while i + 2 <= vals.len() {
+            let vec = v128_load(vals.as_ptr().add(i) as *const v128);
+            vec_sum = f64x2_add(vec_sum, vec);
+            i += 2;
+        }
+        let mut sum = acc + f64x2_extract_lane::<0>(vec_sum) + f64x2_extract_lane::<1>(vec_sum);
+        for &v in &vals[i..] {
+            sum += v;
+        }
+        sum
+    }
+}
+
+/// Extract all elements as f64 and compute Neumaier compensated sum.
+/// Returns None if any element is not a number (falls back to generic path).
+/// Uses Neumaier summation instead of SIMD to match CPython >= 3.12 `sum()`.
+fn sum_floats_simd(elems: &[u64], acc: f64) -> Option<f64> {
+    // Pre-extract all f64 values
+    let mut vals: Vec<f64> = Vec::with_capacity(elems.len());
+    for &bits in elems {
+        vals.push(number_as_f64(MoltObject::from_bits(bits))?);
+    }
+    Some(sum_f64_neumaier(&vals, acc))
+}
+
+// ---------------------------------------------------------------------------
+// SIMD-accelerated sequence element identity comparison
+// Batch-compare NaN-boxed u64 arrays to quickly find first mismatch index.
+// ---------------------------------------------------------------------------
+
+/// Compare two u64 slices for element-wise bitwise equality using SIMD.
+/// Returns the index of the first mismatch, or `len` if all elements match.
+/// This is an identity check (bits ==), not semantic equality (obj_eq).
+fn simd_find_first_mismatch(lhs: &[u64], rhs: &[u64]) -> usize {
+    let len = lhs.len().min(rhs.len());
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { find_first_mismatch_avx2(lhs, rhs, len) };
+        }
+        if std::arch::is_x86_feature_detected!("sse2") {
+            return unsafe { find_first_mismatch_sse2(lhs, rhs, len) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { find_first_mismatch_neon(lhs, rhs, len) };
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { find_first_mismatch_wasm32(lhs, rhs, len) };
+    }
+    find_first_mismatch_scalar(lhs, rhs, len)
+}
+
+#[cfg(target_arch = "wasm32")]
+unsafe fn find_first_mismatch_wasm32(lhs: &[u64], rhs: &[u64], len: usize) -> usize {
+    unsafe {
+        use std::arch::wasm32::*;
+        let mut i = 0usize;
+        while i + 2 <= len {
+            let l_vec = v128_load(lhs.as_ptr().add(i) as *const v128);
+            let r_vec = v128_load(rhs.as_ptr().add(i) as *const v128);
+            let cmp = u8x16_eq(l_vec, r_vec);
+            if u8x16_bitmask(cmp) != 0xFFFF {
+                if lhs[i] != rhs[i] {
+                    return i;
+                }
+                return i + 1;
+            }
+            i += 2;
+        }
+        for j in i..len {
+            if lhs[j] != rhs[j] {
+                return j;
+            }
+        }
+        len
+    }
+}
+
+fn find_first_mismatch_scalar(lhs: &[u64], rhs: &[u64], len: usize) -> usize {
+    for i in 0..len {
+        if lhs[i] != rhs[i] {
+            return i;
+        }
+    }
+    len
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn find_first_mismatch_sse2(lhs: &[u64], rhs: &[u64], len: usize) -> usize {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    // Process 2 u64s (128 bits) per iteration
+    while i + 2 <= len {
+        let l_vec = _mm_loadu_si128(lhs.as_ptr().add(i) as *const __m128i);
+        let r_vec = _mm_loadu_si128(rhs.as_ptr().add(i) as *const __m128i);
+        let cmp = _mm_cmpeq_epi8(l_vec, r_vec);
+        let mask = _mm_movemask_epi8(cmp);
+        if mask != 0xFFFF {
+            // Mismatch in this 128-bit block — find which u64
+            if lhs[i] != rhs[i] {
+                return i;
+            }
+            return i + 1;
+        }
+        i += 2;
+    }
+    // Remainder
+    for j in i..len {
+        if lhs[j] != rhs[j] {
+            return j;
+        }
+    }
+    len
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn find_first_mismatch_avx2(lhs: &[u64], rhs: &[u64], len: usize) -> usize {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    // Process 4 u64s (256 bits) per iteration
+    while i + 4 <= len {
+        let l_vec = _mm256_loadu_si256(lhs.as_ptr().add(i) as *const __m256i);
+        let r_vec = _mm256_loadu_si256(rhs.as_ptr().add(i) as *const __m256i);
+        let cmp = _mm256_cmpeq_epi64(l_vec, r_vec);
+        let mask = _mm256_movemask_epi8(cmp);
+        if mask != -1i32 {
+            // Mismatch in this 256-bit block — find which u64
+            for j in 0..4 {
+                if lhs[i + j] != rhs[i + j] {
+                    return i + j;
+                }
+            }
+        }
+        i += 4;
+    }
+    // Remainder with SSE2
+    while i + 2 <= len {
+        let l_vec = _mm_loadu_si128(lhs.as_ptr().add(i) as *const __m128i);
+        let r_vec = _mm_loadu_si128(rhs.as_ptr().add(i) as *const __m128i);
+        let cmp = _mm_cmpeq_epi8(l_vec, r_vec);
+        let mask = _mm_movemask_epi8(cmp);
+        if mask != 0xFFFF {
+            if lhs[i] != rhs[i] {
+                return i;
+            }
+            return i + 1;
+        }
+        i += 2;
+    }
+    for j in i..len {
+        if lhs[j] != rhs[j] {
+            return j;
+        }
+    }
+    len
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn find_first_mismatch_neon(lhs: &[u64], rhs: &[u64], len: usize) -> usize {
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut i = 0usize;
+        // Process 2 u64s (128 bits) per iteration
+        while i + 2 <= len {
+            let l_vec = vld1q_u64(lhs.as_ptr().add(i));
+            let r_vec = vld1q_u64(rhs.as_ptr().add(i));
+            let cmp = vceqq_u64(l_vec, r_vec);
+            // Both lanes must be all-ones (0xFFFFFFFFFFFFFFFF) for equality
+            let lane0 = vgetq_lane_u64(cmp, 0);
+            let lane1 = vgetq_lane_u64(cmp, 1);
+            if lane0 != u64::MAX {
+                return i;
+            }
+            if lane1 != u64::MAX {
+                return i + 1;
+            }
+            i += 2;
+        }
+        for j in i..len {
+            if lhs[j] != rhs[j] {
+                return j;
+            }
+        }
+        len
+    }
+}
+
+fn sum_float_range_arith_checked(start: i64, stop: i64, step: i64, acc: f64) -> Option<f64> {
+    let len = range_len_i128(start, stop, step);
+    if len <= 0 {
+        return Some(acc);
+    }
+    let n = len as f64;
+    let first = start as f64;
+    let stride = step as f64;
+    let last = first + stride * (n - 1.0);
+    let total = acc + (n * (first + last) * 0.5);
+    total.is_finite().then_some(total)
+}
+
+fn sum_ints_scalar(elems: &[u64], acc: i64) -> Option<i64> {
+    let mut sum = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        if let Some(val) = obj.as_int() {
+            sum += val;
+        } else {
+            return None;
+        }
+    }
+    Some(sum)
+}
+
+const VEC_LANE_WARMUP_SAMPLES: u64 = 128;
+const VEC_LANE_MISS_RATIO_LIMIT: u64 = 4;
+
+static VEC_SUM_INT_HITS: AtomicU64 = AtomicU64::new(0);
+static VEC_SUM_INT_MISSES: AtomicU64 = AtomicU64::new(0);
+static VEC_SUM_FLOAT_HITS: AtomicU64 = AtomicU64::new(0);
+static VEC_SUM_FLOAT_MISSES: AtomicU64 = AtomicU64::new(0);
+
+fn adaptive_vec_lanes_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("MOLT_ADAPTIVE_VEC_LANES")
+            .ok()
+            .map(|raw| {
+                let norm = raw.trim().to_ascii_lowercase();
+                !matches!(norm.as_str(), "0" | "false" | "off" | "no")
+            })
+            .unwrap_or(true)
+    })
+}
+
+fn vec_lane_allowed(hits: &AtomicU64, misses: &AtomicU64) -> bool {
+    if !adaptive_vec_lanes_enabled() {
+        return true;
+    }
+    let hit = hits.load(AtomicOrdering::Relaxed);
+    let miss = misses.load(AtomicOrdering::Relaxed);
+    let samples = hit.saturating_add(miss);
+    if samples < VEC_LANE_WARMUP_SAMPLES {
+        return true;
+    }
+    miss <= hit.saturating_mul(VEC_LANE_MISS_RATIO_LIMIT)
+}
+
+fn vec_lane_record(hits: &AtomicU64, misses: &AtomicU64, success: bool) {
+    if !adaptive_vec_lanes_enabled() {
+        return;
+    }
+    if success {
+        hits.fetch_add(1, AtomicOrdering::Relaxed);
+    } else {
+        misses.fetch_add(1, AtomicOrdering::Relaxed);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn sum_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_sum = _mm_setzero_si128();
+    while i + 2 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let v0 = obj0.as_int()?;
+        let v1 = obj1.as_int()?;
+        let vec = _mm_set_epi64x(v1, v0);
+        vec_sum = _mm_add_epi64(vec_sum, vec);
+        i += 2;
+    }
+    let mut lanes = [0i64; 2];
+    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_sum);
+    let mut sum = acc + lanes[0] + lanes[1];
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int()?;
+        sum += val;
+    }
+    Some(sum)
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn sum_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_sum = _mm256_setzero_si256();
+    while i + 4 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let obj2 = MoltObject::from_bits(elems[i + 2]);
+        let obj3 = MoltObject::from_bits(elems[i + 3]);
+        let v0 = obj0.as_int()?;
+        let v1 = obj1.as_int()?;
+        let v2 = obj2.as_int()?;
+        let v3 = obj3.as_int()?;
+        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+        vec_sum = _mm256_add_epi64(vec_sum, vec);
+        i += 4;
+    }
+    let mut lanes = [0i64; 4];
+    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_sum);
+    let mut sum = acc + lanes.iter().sum::<i64>();
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int()?;
+        sum += val;
+    }
+    Some(sum)
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn sum_ints_simd_aarch64(elems: &[u64], acc: i64) -> Option<i64> {
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut i = 0usize;
+        let mut vec_sum = vdupq_n_s64(0);
+        while i + 2 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let v0 = obj0.as_int()?;
+            let v1 = obj1.as_int()?;
+            let lanes = [v0, v1];
+            let vec = vld1q_s64(lanes.as_ptr());
+            vec_sum = vaddq_s64(vec_sum, vec);
+            i += 2;
+        }
+        let mut lanes = [0i64; 2];
+        vst1q_s64(lanes.as_mut_ptr(), vec_sum);
+        let mut sum = acc + lanes[0] + lanes[1];
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            let val = obj.as_int()?;
+            sum += val;
+        }
+        Some(sum)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+unsafe fn sum_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64> {
+    unsafe {
+        use std::arch::wasm32::*;
+        let mut i = 0usize;
+        let mut vec_sum = i64x2_splat(0);
+        while i + 2 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let v0 = obj0.as_int()?;
+            let v1 = obj1.as_int()?;
+            let arr = [v0, v1];
+            let vec = v128_load(arr.as_ptr() as *const v128);
+            vec_sum = i64x2_add(vec_sum, vec);
+            i += 2;
+        }
+        let mut sum = acc + i64x2_extract_lane::<0>(vec_sum) + i64x2_extract_lane::<1>(vec_sum);
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            let val = obj.as_int()?;
+            sum += val;
+        }
+        Some(sum)
+    }
+}
+
+fn sum_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { sum_ints_simd_x86_64_avx2(elems, acc) };
+        }
+        if std::arch::is_x86_feature_detected!("sse2") {
+            return unsafe { sum_ints_simd_x86_64(elems, acc) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { sum_ints_simd_aarch64(elems, acc) };
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { sum_ints_simd_wasm32(elems, acc) };
+    }
+    sum_ints_scalar(elems, acc)
+}
+
+fn prod_ints_scalar(elems: &[u64], acc: i64) -> Option<i64> {
+    let mut prod = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        if let Some(val) = obj.as_int() {
+            prod *= val;
+        } else {
+            return None;
+        }
+    }
+    Some(prod)
+}
+
+fn prod_ints_unboxed(elems: &[i64], acc: i64) -> i64 {
+    let mut prod = acc;
+    if prod == 0 {
+        return 0;
+    }
+    if prod == 1
+        && let Some(result) = prod_ints_unboxed_trivial(elems)
+    {
+        return result;
+    }
+    for &val in elems {
+        if val == 0 {
+            return 0;
+        }
+        prod *= val;
+    }
+    prod
+}
+
+fn prod_ints_unboxed_trivial(_elems: &[i64]) -> Option<i64> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { prod_ints_unboxed_avx2_trivial(_elems) };
+        }
+    }
+    None
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn prod_ints_unboxed_avx2_trivial(elems: &[i64]) -> Option<i64> {
+    use std::arch::x86_64::*;
+    let mut idx = 0usize;
+    let ones = _mm256_set1_epi64x(1);
+    let zeros = _mm256_setzero_si256();
+    let mut all_ones = true;
+    while idx + 4 <= elems.len() {
+        let vec = _mm256_loadu_si256(elems.as_ptr().add(idx) as *const __m256i);
+        let eq_zero = _mm256_cmpeq_epi64(vec, zeros);
+        if _mm256_movemask_epi8(eq_zero) != 0 {
+            return Some(0);
+        }
+        if all_ones {
+            let eq_one = _mm256_cmpeq_epi64(vec, ones);
+            if _mm256_movemask_epi8(eq_one) != -1 {
+                all_ones = false;
+            }
+        }
+        idx += 4;
+    }
+    for &val in &elems[idx..] {
+        if val == 0 {
+            return Some(0);
+        }
+        if val != 1 {
+            all_ones = false;
+        }
+    }
+    if all_ones {
+        return Some(1);
+    }
+    None
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn prod_ints_simd_aarch64(elems: &[u64], acc: i64) -> Option<i64> {
+    prod_ints_scalar(elems, acc)
+}
+
+fn prod_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { prod_ints_simd_aarch64(elems, acc) };
+        }
+    }
+    prod_ints_scalar(elems, acc)
+}
+
+fn min_ints_scalar(elems: &[u64], acc: i64) -> Option<i64> {
+    let mut min_val = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        if let Some(val) = obj.as_int() {
+            if val < min_val {
+                min_val = val;
+            }
+        } else {
+            return None;
+        }
+    }
+    Some(min_val)
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn min_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_min = _mm_set1_epi64x(acc);
+    while i + 2 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let v0 = obj0.as_int()?;
+        let v1 = obj1.as_int()?;
+        let vec = _mm_set_epi64x(v1, v0);
+        let cmp = _mm_cmpgt_epi64(vec_min, vec);
+        vec_min = _mm_blendv_epi8(vec_min, vec, cmp);
+        i += 2;
+    }
+    let mut lanes = [0i64; 2];
+    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_min);
+    let mut min_val = acc.min(lanes[0]).min(lanes[1]);
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int()?;
+        if val < min_val {
+            min_val = val;
+        }
+    }
+    Some(min_val)
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn min_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_min = _mm256_set1_epi64x(acc);
+    while i + 4 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let obj2 = MoltObject::from_bits(elems[i + 2]);
+        let obj3 = MoltObject::from_bits(elems[i + 3]);
+        let v0 = obj0.as_int()?;
+        let v1 = obj1.as_int()?;
+        let v2 = obj2.as_int()?;
+        let v3 = obj3.as_int()?;
+        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+        let cmp = _mm256_cmpgt_epi64(vec_min, vec);
+        vec_min = _mm256_blendv_epi8(vec_min, vec, cmp);
+        i += 4;
+    }
+    let mut lanes = [0i64; 4];
+    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_min);
+    let mut min_val = acc;
+    for lane in lanes {
+        if lane < min_val {
+            min_val = lane;
+        }
+    }
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int()?;
+        if val < min_val {
+            min_val = val;
+        }
+    }
+    Some(min_val)
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn min_ints_simd_aarch64(elems: &[u64], acc: i64) -> Option<i64> {
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut i = 0usize;
+        let mut vec_min = vdupq_n_s64(acc);
+        while i + 2 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let v0 = obj0.as_int()?;
+            let v1 = obj1.as_int()?;
+            let lanes = [v0, v1];
+            let vec = vld1q_s64(lanes.as_ptr());
+            let mask = vcgtq_s64(vec_min, vec);
+            let vec_min_u = vreinterpretq_u64_s64(vec_min);
+            let vec_u = vreinterpretq_u64_s64(vec);
+            let blended_u = vbslq_u64(mask, vec_u, vec_min_u);
+            vec_min = vreinterpretq_s64_u64(blended_u);
+            i += 2;
+        }
+        let mut lanes = [0i64; 2];
+        vst1q_s64(lanes.as_mut_ptr(), vec_min);
+        let mut min_val = acc.min(lanes[0]).min(lanes[1]);
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            let val = obj.as_int()?;
+            if val < min_val {
+                min_val = val;
+            }
+        }
+        Some(min_val)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+unsafe fn min_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64> {
+    let mut min_val = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int()?;
+        if val < min_val {
+            min_val = val;
+        }
+    }
+    Some(min_val)
+}
+
+fn min_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { min_ints_simd_x86_64_avx2(elems, acc) };
+        }
+        if std::arch::is_x86_feature_detected!("sse4.2") {
+            return unsafe { min_ints_simd_x86_64(elems, acc) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { min_ints_simd_aarch64(elems, acc) };
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { min_ints_simd_wasm32(elems, acc) };
+    }
+    min_ints_scalar(elems, acc)
+}
+
+fn max_ints_scalar(elems: &[u64], acc: i64) -> Option<i64> {
+    let mut max_val = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        if let Some(val) = obj.as_int() {
+            if val > max_val {
+                max_val = val;
+            }
+        } else {
+            return None;
+        }
+    }
+    Some(max_val)
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn max_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_max = _mm_set1_epi64x(acc);
+    while i + 2 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let v0 = obj0.as_int()?;
+        let v1 = obj1.as_int()?;
+        let vec = _mm_set_epi64x(v1, v0);
+        let cmp = _mm_cmpgt_epi64(vec, vec_max);
+        vec_max = _mm_blendv_epi8(vec_max, vec, cmp);
+        i += 2;
+    }
+    let mut lanes = [0i64; 2];
+    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_max);
+    let mut max_val = acc.max(lanes[0]).max(lanes[1]);
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int()?;
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    Some(max_val)
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn max_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_max = _mm256_set1_epi64x(acc);
+    while i + 4 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let obj2 = MoltObject::from_bits(elems[i + 2]);
+        let obj3 = MoltObject::from_bits(elems[i + 3]);
+        let v0 = obj0.as_int()?;
+        let v1 = obj1.as_int()?;
+        let v2 = obj2.as_int()?;
+        let v3 = obj3.as_int()?;
+        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+        let cmp = _mm256_cmpgt_epi64(vec, vec_max);
+        vec_max = _mm256_blendv_epi8(vec_max, vec, cmp);
+        i += 4;
+    }
+    let mut lanes = [0i64; 4];
+    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_max);
+    let mut max_val = acc;
+    for lane in lanes {
+        if lane > max_val {
+            max_val = lane;
+        }
+    }
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int()?;
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    Some(max_val)
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn max_ints_simd_aarch64(elems: &[u64], acc: i64) -> Option<i64> {
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut i = 0usize;
+        let mut vec_max = vdupq_n_s64(acc);
+        while i + 2 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let v0 = obj0.as_int()?;
+            let v1 = obj1.as_int()?;
+            let lanes = [v0, v1];
+            let vec = vld1q_s64(lanes.as_ptr());
+            let mask = vcgtq_s64(vec, vec_max);
+            let vec_max_u = vreinterpretq_u64_s64(vec_max);
+            let vec_u = vreinterpretq_u64_s64(vec);
+            let blended_u = vbslq_u64(mask, vec_u, vec_max_u);
+            vec_max = vreinterpretq_s64_u64(blended_u);
+            i += 2;
+        }
+        let mut lanes = [0i64; 2];
+        vst1q_s64(lanes.as_mut_ptr(), vec_max);
+        let mut max_val = acc.max(lanes[0]).max(lanes[1]);
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            let val = obj.as_int()?;
+            if val > max_val {
+                max_val = val;
+            }
+        }
+        Some(max_val)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+unsafe fn max_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64> {
+    let mut max_val = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int()?;
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    Some(max_val)
+}
+
+fn max_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { max_ints_simd_x86_64_avx2(elems, acc) };
+        }
+        if std::arch::is_x86_feature_detected!("sse4.2") {
+            return unsafe { max_ints_simd_x86_64(elems, acc) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { max_ints_simd_aarch64(elems, acc) };
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { max_ints_simd_wasm32(elems, acc) };
+    }
+    max_ints_scalar(elems, acc)
+}
+
+fn sum_ints_trusted_scalar(elems: &[u64], acc: i64) -> i64 {
+    let mut sum = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        sum += obj.as_int_unchecked();
+    }
+    sum
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn sum_ints_trusted_simd_x86_64(elems: &[u64], acc: i64) -> i64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_sum = _mm_setzero_si128();
+    while i + 2 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let v0 = obj0.as_int_unchecked();
+        let v1 = obj1.as_int_unchecked();
+        let vec = _mm_set_epi64x(v1, v0);
+        vec_sum = _mm_add_epi64(vec_sum, vec);
+        i += 2;
+    }
+    let mut lanes = [0i64; 2];
+    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_sum);
+    let mut sum = acc + lanes[0] + lanes[1];
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        sum += obj.as_int_unchecked();
+    }
+    sum
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn sum_ints_trusted_simd_x86_64_avx2(elems: &[u64], acc: i64) -> i64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_sum = _mm256_setzero_si256();
+    while i + 4 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let obj2 = MoltObject::from_bits(elems[i + 2]);
+        let obj3 = MoltObject::from_bits(elems[i + 3]);
+        let v0 = obj0.as_int_unchecked();
+        let v1 = obj1.as_int_unchecked();
+        let v2 = obj2.as_int_unchecked();
+        let v3 = obj3.as_int_unchecked();
+        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+        vec_sum = _mm256_add_epi64(vec_sum, vec);
+        i += 4;
+    }
+    let mut lanes = [0i64; 4];
+    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_sum);
+    let mut sum = acc + lanes.iter().sum::<i64>();
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        sum += obj.as_int_unchecked();
+    }
+    sum
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn sum_ints_trusted_simd_aarch64(elems: &[u64], acc: i64) -> i64 {
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut i = 0usize;
+        let mut vec_sum = vdupq_n_s64(0);
+        while i + 2 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let v0 = obj0.as_int_unchecked();
+            let v1 = obj1.as_int_unchecked();
+            let lanes = [v0, v1];
+            let vec = vld1q_s64(lanes.as_ptr());
+            vec_sum = vaddq_s64(vec_sum, vec);
+            i += 2;
+        }
+        let mut lanes = [0i64; 2];
+        vst1q_s64(lanes.as_mut_ptr(), vec_sum);
+        let mut sum = acc + lanes[0] + lanes[1];
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            sum += obj.as_int_unchecked();
+        }
+        sum
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+unsafe fn sum_ints_trusted_simd_wasm32(elems: &[u64], acc: i64) -> i64 {
+    unsafe {
+        use std::arch::wasm32::*;
+        let mut i = 0usize;
+        let mut vec_sum = i64x2_splat(0);
+        while i + 2 <= elems.len() {
+            let v0 = MoltObject::from_bits(elems[i]).as_int_unchecked();
+            let v1 = MoltObject::from_bits(elems[i + 1]).as_int_unchecked();
+            let arr = [v0, v1];
+            let vec = v128_load(arr.as_ptr() as *const v128);
+            vec_sum = i64x2_add(vec_sum, vec);
+            i += 2;
+        }
+        let mut sum = acc + i64x2_extract_lane::<0>(vec_sum) + i64x2_extract_lane::<1>(vec_sum);
+        for &bits in &elems[i..] {
+            sum += MoltObject::from_bits(bits).as_int_unchecked();
+        }
+        sum
+    }
+}
+
+fn sum_ints_trusted(elems: &[u64], acc: i64) -> i64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { sum_ints_trusted_simd_x86_64_avx2(elems, acc) };
+        }
+        if std::arch::is_x86_feature_detected!("sse2") {
+            return unsafe { sum_ints_trusted_simd_x86_64(elems, acc) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { sum_ints_trusted_simd_aarch64(elems, acc) };
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { sum_ints_trusted_simd_wasm32(elems, acc) };
+    }
+    sum_ints_trusted_scalar(elems, acc)
+}
+
+fn prod_ints_trusted_scalar(elems: &[u64], acc: i64) -> i64 {
+    let mut prod = acc;
+    if prod == 0 {
+        return 0;
+    }
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int_unchecked();
+        if val == 0 {
+            return 0;
+        }
+        prod *= val;
+    }
+    prod
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn prod_ints_trusted_simd_aarch64(elems: &[u64], acc: i64) -> i64 {
+    prod_ints_trusted_scalar(elems, acc)
+}
+
+fn prod_ints_trusted(elems: &[u64], acc: i64) -> i64 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { prod_ints_trusted_simd_aarch64(elems, acc) };
+        }
+    }
+    prod_ints_trusted_scalar(elems, acc)
+}
+
+fn min_ints_trusted_scalar(elems: &[u64], acc: i64) -> i64 {
+    let mut min_val = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int_unchecked();
+        if val < min_val {
+            min_val = val;
+        }
+    }
+    min_val
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn min_ints_trusted_simd_x86_64(elems: &[u64], acc: i64) -> i64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_min = _mm_set1_epi64x(acc);
+    while i + 2 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let v0 = obj0.as_int_unchecked();
+        let v1 = obj1.as_int_unchecked();
+        let vec = _mm_set_epi64x(v1, v0);
+        let cmp = _mm_cmpgt_epi64(vec_min, vec);
+        vec_min = _mm_blendv_epi8(vec_min, vec, cmp);
+        i += 2;
+    }
+    let mut lanes = [0i64; 2];
+    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_min);
+    let mut min_val = acc.min(lanes[0]).min(lanes[1]);
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int_unchecked();
+        if val < min_val {
+            min_val = val;
+        }
+    }
+    min_val
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn min_ints_trusted_simd_x86_64_avx2(elems: &[u64], acc: i64) -> i64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_min = _mm256_set1_epi64x(acc);
+    while i + 4 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let obj2 = MoltObject::from_bits(elems[i + 2]);
+        let obj3 = MoltObject::from_bits(elems[i + 3]);
+        let v0 = obj0.as_int_unchecked();
+        let v1 = obj1.as_int_unchecked();
+        let v2 = obj2.as_int_unchecked();
+        let v3 = obj3.as_int_unchecked();
+        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+        let cmp = _mm256_cmpgt_epi64(vec_min, vec);
+        vec_min = _mm256_blendv_epi8(vec_min, vec, cmp);
+        i += 4;
+    }
+    let mut lanes = [0i64; 4];
+    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_min);
+    let mut min_val = acc;
+    for lane in lanes {
+        if lane < min_val {
+            min_val = lane;
+        }
+    }
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int_unchecked();
+        if val < min_val {
+            min_val = val;
+        }
+    }
+    min_val
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn min_ints_trusted_simd_aarch64(elems: &[u64], acc: i64) -> i64 {
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut i = 0usize;
+        let mut vec_min = vdupq_n_s64(acc);
+        while i + 2 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let v0 = obj0.as_int_unchecked();
+            let v1 = obj1.as_int_unchecked();
+            let lanes = [v0, v1];
+            let vec = vld1q_s64(lanes.as_ptr());
+            let mask = vcgtq_s64(vec_min, vec);
+            let vec_min_u = vreinterpretq_u64_s64(vec_min);
+            let vec_u = vreinterpretq_u64_s64(vec);
+            let blended_u = vbslq_u64(mask, vec_u, vec_min_u);
+            vec_min = vreinterpretq_s64_u64(blended_u);
+            i += 2;
+        }
+        let mut lanes = [0i64; 2];
+        vst1q_s64(lanes.as_mut_ptr(), vec_min);
+        let mut min_val = acc.min(lanes[0]).min(lanes[1]);
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            let val = obj.as_int_unchecked();
+            if val < min_val {
+                min_val = val;
+            }
+        }
+        min_val
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+unsafe fn min_ints_trusted_simd_wasm32(elems: &[u64], acc: i64) -> i64 {
+    let mut min_val = acc;
+    for &bits in elems {
+        let val = MoltObject::from_bits(bits).as_int_unchecked();
+        if val < min_val {
+            min_val = val;
+        }
+    }
+    min_val
+}
+
+fn min_ints_trusted(elems: &[u64], acc: i64) -> i64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { min_ints_trusted_simd_x86_64_avx2(elems, acc) };
+        }
+        if std::arch::is_x86_feature_detected!("sse4.2") {
+            return unsafe { min_ints_trusted_simd_x86_64(elems, acc) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { min_ints_trusted_simd_aarch64(elems, acc) };
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { min_ints_trusted_simd_wasm32(elems, acc) };
+    }
+    min_ints_trusted_scalar(elems, acc)
+}
+
+fn max_ints_trusted_scalar(elems: &[u64], acc: i64) -> i64 {
+    let mut max_val = acc;
+    for &bits in elems {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int_unchecked();
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    max_val
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn max_ints_trusted_simd_x86_64(elems: &[u64], acc: i64) -> i64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_max = _mm_set1_epi64x(acc);
+    while i + 2 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let v0 = obj0.as_int_unchecked();
+        let v1 = obj1.as_int_unchecked();
+        let vec = _mm_set_epi64x(v1, v0);
+        let cmp = _mm_cmpgt_epi64(vec, vec_max);
+        vec_max = _mm_blendv_epi8(vec_max, vec, cmp);
+        i += 2;
+    }
+    let mut lanes = [0i64; 2];
+    _mm_storeu_si128(lanes.as_mut_ptr() as *mut __m128i, vec_max);
+    let mut max_val = acc.max(lanes[0]).max(lanes[1]);
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int_unchecked();
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    max_val
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn max_ints_trusted_simd_x86_64_avx2(elems: &[u64], acc: i64) -> i64 {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    let mut vec_max = _mm256_set1_epi64x(acc);
+    while i + 4 <= elems.len() {
+        let obj0 = MoltObject::from_bits(elems[i]);
+        let obj1 = MoltObject::from_bits(elems[i + 1]);
+        let obj2 = MoltObject::from_bits(elems[i + 2]);
+        let obj3 = MoltObject::from_bits(elems[i + 3]);
+        let v0 = obj0.as_int_unchecked();
+        let v1 = obj1.as_int_unchecked();
+        let v2 = obj2.as_int_unchecked();
+        let v3 = obj3.as_int_unchecked();
+        let vec = _mm256_set_epi64x(v3, v2, v1, v0);
+        let cmp = _mm256_cmpgt_epi64(vec, vec_max);
+        vec_max = _mm256_blendv_epi8(vec_max, vec, cmp);
+        i += 4;
+    }
+    let mut lanes = [0i64; 4];
+    _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, vec_max);
+    let mut max_val = acc;
+    for lane in lanes {
+        if lane > max_val {
+            max_val = lane;
+        }
+    }
+    for &bits in &elems[i..] {
+        let obj = MoltObject::from_bits(bits);
+        let val = obj.as_int_unchecked();
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    max_val
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn max_ints_trusted_simd_aarch64(elems: &[u64], acc: i64) -> i64 {
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut i = 0usize;
+        let mut vec_max = vdupq_n_s64(acc);
+        while i + 2 <= elems.len() {
+            let obj0 = MoltObject::from_bits(elems[i]);
+            let obj1 = MoltObject::from_bits(elems[i + 1]);
+            let v0 = obj0.as_int_unchecked();
+            let v1 = obj1.as_int_unchecked();
+            let lanes = [v0, v1];
+            let vec = vld1q_s64(lanes.as_ptr());
+            let mask = vcgtq_s64(vec, vec_max);
+            let vec_max_u = vreinterpretq_u64_s64(vec_max);
+            let vec_u = vreinterpretq_u64_s64(vec);
+            let blended_u = vbslq_u64(mask, vec_u, vec_max_u);
+            vec_max = vreinterpretq_s64_u64(blended_u);
+            i += 2;
+        }
+        let mut lanes = [0i64; 2];
+        vst1q_s64(lanes.as_mut_ptr(), vec_max);
+        let mut max_val = acc.max(lanes[0]).max(lanes[1]);
+        for &bits in &elems[i..] {
+            let obj = MoltObject::from_bits(bits);
+            let val = obj.as_int_unchecked();
+            if val > max_val {
+                max_val = val;
+            }
+        }
+        max_val
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+unsafe fn max_ints_trusted_simd_wasm32(elems: &[u64], acc: i64) -> i64 {
+    let mut max_val = acc;
+    for &bits in elems {
+        let val = MoltObject::from_bits(bits).as_int_unchecked();
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    max_val
+}
+
+fn max_ints_trusted(elems: &[u64], acc: i64) -> i64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return unsafe { max_ints_trusted_simd_x86_64_avx2(elems, acc) };
+        }
+        if std::arch::is_x86_feature_detected!("sse4.2") {
+            return unsafe { max_ints_trusted_simd_x86_64(elems, acc) };
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { max_ints_trusted_simd_aarch64(elems, acc) };
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { max_ints_trusted_simd_wasm32(elems, acc) };
+    }
+    max_ints_trusted_scalar(elems, acc)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_sum_int(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc_obj = obj_from_bits(acc_bits);
+        let acc = match acc_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        if !vec_lane_allowed(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES) {
+            return vec_sum_i64_result(_py, acc, false);
+        }
+        let seq_obj = obj_from_bits(seq_bits);
+        let ptr = match seq_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => {
+                vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, false);
+                return vec_sum_i64_result(_py, acc, false);
+            }
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, false);
+                return vec_sum_i64_result(_py, acc, false);
+            };
+            if let Some(sum) = sum_ints_checked(elems, acc) {
+                vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, true);
+                return vec_sum_i64_result(_py, sum, true);
+            }
+        }
+        vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, false);
+        vec_sum_i64_result(_py, acc, false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_sum_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc_obj = obj_from_bits(acc_bits);
+        let acc = match acc_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        if !vec_lane_allowed(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES) {
+            return vec_sum_i64_result(_py, acc, false);
+        }
+        let seq_obj = obj_from_bits(seq_bits);
+        let ptr = match seq_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => {
+                vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, false);
+                return vec_sum_i64_result(_py, acc, false);
+            }
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, false);
+                return vec_sum_i64_result(_py, acc, false);
+            };
+            let sum = sum_ints_trusted(elems, acc);
+            vec_lane_record(&VEC_SUM_INT_HITS, &VEC_SUM_INT_MISSES, true);
+            vec_sum_i64_result(_py, sum, true)
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_prod_int(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc_obj = obj_from_bits(acc_bits);
+        let acc = match acc_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let seq_obj = obj_from_bits(seq_bits);
+        let ptr = match seq_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_INTARRAY {
+                let elems = intarray_slice(ptr);
+                let prod = prod_ints_unboxed(elems, acc);
+                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
+            }
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+            };
+            if let Some(prod) = prod_ints_checked(elems, acc) {
+                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
+            }
+        }
+        vec_sum_result(_py, MoltObject::from_int(acc).bits(), false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_prod_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc_obj = obj_from_bits(acc_bits);
+        let acc = match acc_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let seq_obj = obj_from_bits(seq_bits);
+        let ptr = match seq_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_INTARRAY {
+                let elems = intarray_slice(ptr);
+                let prod = prod_ints_unboxed(elems, acc);
+                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
+            }
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+            };
+            let prod = prod_ints_trusted(elems, acc);
+            vec_sum_result(_py, MoltObject::from_int(prod).bits(), true)
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_min_int(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc_obj = obj_from_bits(acc_bits);
+        let acc = match acc_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let seq_obj = obj_from_bits(seq_bits);
+        let ptr = match seq_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+            };
+            if let Some(val) = min_ints_checked(elems, acc) {
+                return vec_sum_result(_py, MoltObject::from_int(val).bits(), true);
+            }
+        }
+        vec_sum_result(_py, MoltObject::from_int(acc).bits(), false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_min_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc_obj = obj_from_bits(acc_bits);
+        let acc = match acc_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let seq_obj = obj_from_bits(seq_bits);
+        let ptr = match seq_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+            };
+            let val = min_ints_trusted(elems, acc);
+            vec_sum_result(_py, MoltObject::from_int(val).bits(), true)
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_max_int(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc_obj = obj_from_bits(acc_bits);
+        let acc = match acc_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let seq_obj = obj_from_bits(seq_bits);
+        let ptr = match seq_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+            };
+            if let Some(val) = max_ints_checked(elems, acc) {
+                return vec_sum_result(_py, MoltObject::from_int(val).bits(), true);
+            }
+        }
+        vec_sum_result(_py, MoltObject::from_int(acc).bits(), false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_max_int_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc_obj = obj_from_bits(acc_bits);
+        let acc = match acc_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let seq_obj = obj_from_bits(seq_bits);
+        let ptr = match seq_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+            };
+            let val = max_ints_trusted(elems, acc);
+            vec_sum_result(_py, MoltObject::from_int(val).bits(), true)
+        }
+    })
+}
+
+fn sum_int_range_arith_checked(start: i64, stop: i64, step: i64, acc: i64) -> Option<i64> {
+    let len = range_len_i128(start, stop, step);
+    if len <= 0 {
+        return Some(acc);
+    }
+    let n = len;
+    let first = i128::from(start);
+    let stride = i128::from(step);
+    let last = first.checked_add(stride.checked_mul(n.checked_sub(1)?)?)?;
+    let two_term_sum = first.checked_add(last)?;
+    let range_sum = n.checked_mul(two_term_sum)?.checked_div(2)?;
+    let total = i128::from(acc).checked_add(range_sum)?;
+    i64::try_from(total).ok()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_sum_int_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc_obj = obj_from_bits(acc_bits);
+        let acc = match acc_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let start_obj = obj_from_bits(start_bits);
+        let start = match start_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_i64_result(_py, acc, false),
+        };
+        if start < 0 {
+            return vec_sum_i64_result(_py, acc, false);
+        }
+        let seq_obj = obj_from_bits(seq_bits);
+        let ptr = match seq_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_i64_result(_py, acc, false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_i64_result(_py, acc, false);
+            };
+            let start_idx = (start as usize).min(elems.len());
+            let slice = &elems[start_idx..];
+            if let Some(sum) = sum_ints_checked(slice, acc) {
+                return vec_sum_i64_result(_py, sum, true);
+            }
+        }
+        vec_sum_i64_result(_py, acc, false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_sum_int_range_trusted(
+    seq_bits: u64,
+    acc_bits: u64,
+    start_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc_obj = obj_from_bits(acc_bits);
+        let acc = match acc_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let start_obj = obj_from_bits(start_bits);
+        let start = match start_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_i64_result(_py, acc, false),
+        };
+        if start < 0 {
+            return vec_sum_i64_result(_py, acc, false);
+        }
+        let seq_obj = obj_from_bits(seq_bits);
+        let ptr = match seq_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_i64_result(_py, acc, false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_i64_result(_py, acc, false);
+            };
+            let start_idx = (start as usize).min(elems.len());
+            let slice = &elems[start_idx..];
+            let sum = sum_ints_trusted(slice, acc);
+            vec_sum_i64_result(_py, sum, true)
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_sum_int_range_iter(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc = match obj_from_bits(acc_bits).as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let ptr = match obj_from_bits(seq_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_i64_result(_py, acc, false),
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_RANGE {
+                return vec_sum_i64_result(_py, acc, false);
+            }
+            let Some((start, stop, step)) = range_components_i64(ptr) else {
+                return vec_sum_i64_result(_py, acc, false);
+            };
+            if let Some(sum) = sum_int_range_arith_checked(start, stop, step, acc) {
+                return vec_sum_i64_result(_py, sum, true);
+            }
+        }
+        vec_sum_i64_result(_py, acc, false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_sum_int_range_iter_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc = match obj_from_bits(acc_bits).as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let ptr = match obj_from_bits(seq_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_i64_result(_py, acc, false),
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_RANGE {
+                return vec_sum_i64_result(_py, acc, false);
+            }
+            let Some((start, stop, step)) = range_components_i64(ptr) else {
+                return vec_sum_i64_result(_py, acc, false);
+            };
+            if let Some(sum) = sum_int_range_arith_checked(start, stop, step, acc) {
+                return vec_sum_i64_result(_py, sum, true);
+            }
+        }
+        vec_sum_i64_result(_py, acc, false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_sum_float(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        if !vec_lane_allowed(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES) {
+            return vec_sum_f64_result(_py, acc, false);
+        }
+        let ptr = match obj_from_bits(seq_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => {
+                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
+                return vec_sum_f64_result(_py, acc, false);
+            }
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
+                return vec_sum_f64_result(_py, acc, false);
+            };
+            if let Some(sum) = sum_floats_simd(elems, acc) {
+                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, true);
+                return vec_sum_f64_result(_py, sum, true);
+            }
+        }
+        vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
+        vec_sum_f64_result(_py, acc, false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_sum_float_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        if !vec_lane_allowed(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES) {
+            return vec_sum_f64_result(_py, acc, false);
+        }
+        let ptr = match obj_from_bits(seq_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => {
+                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
+                return vec_sum_f64_result(_py, acc, false);
+            }
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
+                return vec_sum_f64_result(_py, acc, false);
+            };
+            if let Some(sum) = sum_floats_simd(elems, acc) {
+                vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, true);
+                return vec_sum_f64_result(_py, sum, true);
+            }
+        }
+        vec_lane_record(&VEC_SUM_FLOAT_HITS, &VEC_SUM_FLOAT_MISSES, false);
+        vec_sum_f64_result(_py, acc, false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_sum_float_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let start = match obj_from_bits(start_bits).as_int() {
+            Some(val) => val,
+            None => return vec_sum_f64_result(_py, acc, false),
+        };
+        if start < 0 {
+            return vec_sum_f64_result(_py, acc, false);
+        }
+        let ptr = match obj_from_bits(seq_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_f64_result(_py, acc, false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_f64_result(_py, acc, false);
+            };
+            let start_idx = (start as usize).min(elems.len());
+            let slice = &elems[start_idx..];
+            if let Some(sum) = sum_floats_scalar(slice, acc) {
+                return vec_sum_f64_result(_py, sum, true);
+            }
+        }
+        vec_sum_f64_result(_py, acc, false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_sum_float_range_trusted(
+    seq_bits: u64,
+    acc_bits: u64,
+    start_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let start = match obj_from_bits(start_bits).as_int() {
+            Some(val) => val,
+            None => return vec_sum_f64_result(_py, acc, false),
+        };
+        if start < 0 {
+            return vec_sum_f64_result(_py, acc, false);
+        }
+        let ptr = match obj_from_bits(seq_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_f64_result(_py, acc, false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_f64_result(_py, acc, false);
+            };
+            let start_idx = (start as usize).min(elems.len());
+            let slice = &elems[start_idx..];
+            if let Some(sum) = sum_floats_scalar(slice, acc) {
+                return vec_sum_f64_result(_py, sum, true);
+            }
+        }
+        vec_sum_f64_result(_py, acc, false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_sum_float_range_iter(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let ptr = match obj_from_bits(seq_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_f64_result(_py, acc, false),
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_RANGE {
+                return vec_sum_f64_result(_py, acc, false);
+            }
+            let Some((start, stop, step)) = range_components_i64(ptr) else {
+                return vec_sum_f64_result(_py, acc, false);
+            };
+            if let Some(sum) = sum_float_range_arith_checked(start, stop, step, acc) {
+                return vec_sum_f64_result(_py, sum, true);
+            }
+        }
+        vec_sum_f64_result(_py, acc, false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_sum_float_range_iter_trusted(seq_bits: u64, acc_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc = match number_as_f64(obj_from_bits(acc_bits)) {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let ptr = match obj_from_bits(seq_bits).as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_f64_result(_py, acc, false),
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_RANGE {
+                return vec_sum_f64_result(_py, acc, false);
+            }
+            let Some((start, stop, step)) = range_components_i64(ptr) else {
+                return vec_sum_f64_result(_py, acc, false);
+            };
+            if let Some(sum) = sum_float_range_arith_checked(start, stop, step, acc) {
+                return vec_sum_f64_result(_py, sum, true);
+            }
+        }
+        vec_sum_f64_result(_py, acc, false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_prod_int_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc_obj = obj_from_bits(acc_bits);
+        let acc = match acc_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let start_obj = obj_from_bits(start_bits);
+        let start = match start_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        if start < 0 {
+            return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+        }
+        let seq_obj = obj_from_bits(seq_bits);
+        let ptr = match seq_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_INTARRAY {
+                let elems = intarray_slice(ptr);
+                let start_idx = (start as usize).min(elems.len());
+                let slice = &elems[start_idx..];
+                let prod = prod_ints_unboxed(slice, acc);
+                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
+            }
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+            };
+            let start_idx = (start as usize).min(elems.len());
+            let slice = &elems[start_idx..];
+            if let Some(prod) = prod_ints_checked(slice, acc) {
+                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
+            }
+        }
+        vec_sum_result(_py, MoltObject::from_int(acc).bits(), false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_prod_int_range_trusted(
+    seq_bits: u64,
+    acc_bits: u64,
+    start_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc_obj = obj_from_bits(acc_bits);
+        let acc = match acc_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let start_obj = obj_from_bits(start_bits);
+        let start = match start_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        if start < 0 {
+            return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+        }
+        let seq_obj = obj_from_bits(seq_bits);
+        let ptr = match seq_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_INTARRAY {
+                let elems = intarray_slice(ptr);
+                let start_idx = (start as usize).min(elems.len());
+                let slice = &elems[start_idx..];
+                let prod = prod_ints_unboxed(slice, acc);
+                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
+            }
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+            };
+            let start_idx = (start as usize).min(elems.len());
+            let slice = &elems[start_idx..];
+            let prod = prod_ints_trusted(slice, acc);
+            vec_sum_result(_py, MoltObject::from_int(prod).bits(), true)
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_min_int_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc_obj = obj_from_bits(acc_bits);
+        let acc = match acc_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let start_obj = obj_from_bits(start_bits);
+        let start = match start_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        if start < 0 {
+            return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+        }
+        let seq_obj = obj_from_bits(seq_bits);
+        let ptr = match seq_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+            };
+            let start_idx = (start as usize).min(elems.len());
+            let slice = &elems[start_idx..];
+            if let Some(val) = min_ints_checked(slice, acc) {
+                return vec_sum_result(_py, MoltObject::from_int(val).bits(), true);
+            }
+        }
+        vec_sum_result(_py, MoltObject::from_int(acc).bits(), false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_min_int_range_trusted(
+    seq_bits: u64,
+    acc_bits: u64,
+    start_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc_obj = obj_from_bits(acc_bits);
+        let acc = match acc_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let start_obj = obj_from_bits(start_bits);
+        let start = match start_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        if start < 0 {
+            return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+        }
+        let seq_obj = obj_from_bits(seq_bits);
+        let ptr = match seq_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+            };
+            let start_idx = (start as usize).min(elems.len());
+            let slice = &elems[start_idx..];
+            let val = min_ints_trusted(slice, acc);
+            vec_sum_result(_py, MoltObject::from_int(val).bits(), true)
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_max_int_range(seq_bits: u64, acc_bits: u64, start_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc_obj = obj_from_bits(acc_bits);
+        let acc = match acc_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let start_obj = obj_from_bits(start_bits);
+        let start = match start_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        if start < 0 {
+            return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+        }
+        let seq_obj = obj_from_bits(seq_bits);
+        let ptr = match seq_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+            };
+            let start_idx = (start as usize).min(elems.len());
+            let slice = &elems[start_idx..];
+            if let Some(val) = max_ints_checked(slice, acc) {
+                return vec_sum_result(_py, MoltObject::from_int(val).bits(), true);
+            }
+        }
+        vec_sum_result(_py, MoltObject::from_int(acc).bits(), false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vec_max_int_range_trusted(
+    seq_bits: u64,
+    acc_bits: u64,
+    start_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let acc_obj = obj_from_bits(acc_bits);
+        let acc = match acc_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::none().bits(), false),
+        };
+        let start_obj = obj_from_bits(start_bits);
+        let start = match start_obj.as_int() {
+            Some(val) => val,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        if start < 0 {
+            return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+        }
+        let seq_obj = obj_from_bits(seq_bits);
+        let ptr = match seq_obj.as_ptr() {
+            Some(ptr) => ptr,
+            None => return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false),
+        };
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                seq_vec_ref(ptr)
+            } else {
+                return vec_sum_result(_py, MoltObject::from_int(acc).bits(), false);
+            };
+            let start_idx = (start as usize).min(elems.len());
+            let slice = &elems[start_idx..];
+            let val = max_ints_trusted(slice, acc);
+            vec_sum_result(_py, MoltObject::from_int(val).bits(), true)
+        }
+    })
+}
+
+enum SliceError {
+    Type,
+    Value,
+}
+
+fn slice_error(_py: &PyToken<'_>, err: SliceError) -> u64 {
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
+    match err {
+        SliceError::Type => raise_exception::<_>(
+            _py,
+            "TypeError",
+            "slice indices must be integers or None or have an __index__ method",
+        ),
+        SliceError::Value => raise_exception::<_>(_py, "ValueError", "slice step cannot be zero"),
+    }
+}
+
+fn decode_slice_bound(
+    _py: &PyToken<'_>,
+    obj: MoltObject,
+    len: isize,
+    default: isize,
+) -> Result<isize, SliceError> {
+    if obj.is_none() {
+        return Ok(default);
+    }
+    let msg = "slice indices must be integers or None or have an __index__ method";
+    let Some(mut idx) = index_bigint_from_obj(_py, obj.bits(), msg) else {
+        return Err(SliceError::Type);
+    };
+    let len_big = BigInt::from(len);
+    if idx.is_negative() {
+        idx += &len_big;
+    }
+    if idx < BigInt::zero() {
+        return Ok(0);
+    }
+    if idx > len_big {
+        return Ok(len);
+    }
+    Ok(idx.to_isize().unwrap_or(len))
+}
+
+fn decode_slice_bound_neg(
+    _py: &PyToken<'_>,
+    obj: MoltObject,
+    len: isize,
+    default: isize,
+) -> Result<isize, SliceError> {
+    if obj.is_none() {
+        return Ok(default);
+    }
+    let msg = "slice indices must be integers or None or have an __index__ method";
+    let Some(mut idx) = index_bigint_from_obj(_py, obj.bits(), msg) else {
+        return Err(SliceError::Type);
+    };
+    let len_big = BigInt::from(len);
+    if idx.is_negative() {
+        idx += &len_big;
+    }
+    let neg_one = BigInt::from(-1);
+    if idx < neg_one {
+        return Ok(-1);
+    }
+    if idx >= len_big {
+        return Ok(len - 1);
+    }
+    Ok(idx.to_isize().unwrap_or(len - 1))
+}
+
+fn decode_slice_step(_py: &PyToken<'_>, obj: MoltObject) -> Result<isize, SliceError> {
+    if obj.is_none() {
+        return Ok(1);
+    }
+    let msg = "slice indices must be integers or None or have an __index__ method";
+    let Some(step) = index_bigint_from_obj(_py, obj.bits(), msg) else {
+        return Err(SliceError::Type);
+    };
+    if step.is_zero() {
+        return Err(SliceError::Value);
+    }
+    if let Some(step) = step.to_i64() {
+        return Ok(step as isize);
+    }
+    if step.is_negative() {
+        return Ok(-(i64::MAX as isize));
+    }
+    Ok(i64::MAX as isize)
+}
+
+fn normalize_slice_indices(
+    _py: &PyToken<'_>,
+    len: isize,
+    start_obj: MoltObject,
+    stop_obj: MoltObject,
+    step_obj: MoltObject,
+) -> Result<(isize, isize, isize), SliceError> {
+    let step = decode_slice_step(_py, step_obj)?;
+    if step > 0 {
+        let start = decode_slice_bound(_py, start_obj, len, 0)?;
+        let stop = decode_slice_bound(_py, stop_obj, len, len)?;
+        return Ok((start, stop, step));
+    }
+    let start_default = if len == 0 { -1 } else { len - 1 };
+    let stop_default = -1;
+    let start = decode_slice_bound_neg(_py, start_obj, len, start_default)?;
+    let stop = decode_slice_bound_neg(_py, stop_obj, len, stop_default)?;
+    Ok((start, stop, step))
+}
+
+fn collect_slice_indices(start: isize, stop: isize, step: isize) -> Vec<usize> {
+    let mut out = Vec::new();
+    if step > 0 {
+        let mut i = start;
+        while i < stop {
+            out.push(i as usize);
+            let Some(next) = i.checked_add(step) else {
+                break;
+            };
+            i = next;
+        }
+    } else {
+        let mut i = start;
+        while i > stop {
+            out.push(i as usize);
+            let Some(next) = i.checked_add(step) else {
+                break;
+            };
+            i = next;
+        }
+    }
+    out
+}
+
+fn collect_iterable_values(_py: &PyToken<'_>, bits: u64, err_msg: &str) -> Option<Vec<u64>> {
+    let iter_bits = molt_iter(bits);
+    if obj_from_bits(iter_bits).is_none() {
+        if exception_pending(_py) {
+            return None;
+        }
+        return raise_exception::<_>(_py, "TypeError", err_msg);
+    }
+    let mut out = Vec::new();
+    loop {
+        let pair_bits = molt_iter_next(iter_bits);
+        if exception_pending(_py) {
+            return None;
+        }
+        let pair_ptr = obj_from_bits(pair_bits).as_ptr()?;
+        unsafe {
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                return None;
+            }
+            let elems = seq_vec_ref(pair_ptr);
+            if elems.len() < 2 {
+                return None;
+            }
+            let done_bits = elems[1];
+            if is_truthy(_py, obj_from_bits(done_bits)) {
+                break;
+            }
+            out.push(elems[0]);
+        }
+    }
+    Some(out)
+}
+
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_len(val: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(val);
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                let type_id = object_type_id(ptr);
+                if type_id == TYPE_ID_STRING {
+                    let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+                    let count = utf8_codepoint_count_cached(_py, bytes, Some(ptr as usize));
+                    return MoltObject::from_int(count).bits();
+                }
+                if type_id == TYPE_ID_BYTES {
+                    return MoltObject::from_int(bytes_len(ptr) as i64).bits();
+                }
+                if type_id == TYPE_ID_BYTEARRAY {
+                    return MoltObject::from_int(bytes_len(ptr) as i64).bits();
+                }
+                if type_id == TYPE_ID_MEMORYVIEW {
+                    if memoryview_ndim(ptr) == 0 {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "0-dim memory has no length",
+                        );
+                    }
+                    return MoltObject::from_int(memoryview_len(ptr) as i64).bits();
+                }
+                if type_id == TYPE_ID_LIST {
+                    return MoltObject::from_int(list_len(ptr) as i64).bits();
+                }
+                if type_id == TYPE_ID_TUPLE {
+                    return MoltObject::from_int(tuple_len(ptr) as i64).bits();
+                }
+                if type_id == TYPE_ID_INTARRAY {
+                    return MoltObject::from_int(intarray_len(ptr) as i64).bits();
+                }
+                if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
+                    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                        return MoltObject::none().bits();
+                    };
+                    return MoltObject::from_int(dict_len(dict_ptr) as i64).bits();
+                }
+                if type_id == TYPE_ID_SET {
+                    return MoltObject::from_int(set_len(ptr) as i64).bits();
+                }
+                if type_id == TYPE_ID_FROZENSET {
+                    return MoltObject::from_int(set_len(ptr) as i64).bits();
+                }
+                if type_id == TYPE_ID_DICT_KEYS_VIEW
+                    || type_id == TYPE_ID_DICT_VALUES_VIEW
+                    || type_id == TYPE_ID_DICT_ITEMS_VIEW
+                {
+                    return MoltObject::from_int(dict_view_len(ptr) as i64).bits();
+                }
+                if type_id == TYPE_ID_RANGE {
+                    let Some((start, stop, step)) = range_components_bigint(ptr) else {
+                        return MoltObject::none().bits();
+                    };
+                    let len = range_len_bigint(&start, &stop, &step);
+                    return int_bits_from_bigint(_py, len);
+                }
+                if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__len__") {
+                    let call_bits = attr_lookup_ptr(_py, ptr, name_bits);
+                    dec_ref_bits(_py, name_bits);
+                    if let Some(call_bits) = call_bits {
+                        let res_bits = call_callable0(_py, call_bits);
+                        dec_ref_bits(_py, call_bits);
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
+                        let res_obj = obj_from_bits(res_bits);
+                        if let Some(i) = to_i64(res_obj) {
+                            if i < 0 {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "ValueError",
+                                    "__len__() should return >= 0",
+                                );
+                            }
+                            return MoltObject::from_int(i).bits();
+                        }
+                        if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
+                            let big = bigint_ref(big_ptr);
+                            if big.is_negative() {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "ValueError",
+                                    "__len__() should return >= 0",
+                                );
+                            }
+                            let Some(len) = big.to_usize() else {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "OverflowError",
+                                    "cannot fit 'int' into an index-sized integer",
+                                );
+                            };
+                            if len > i64::MAX as usize {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "OverflowError",
+                                    "cannot fit 'int' into an index-sized integer",
+                                );
+                            }
+                            return MoltObject::from_int(len as i64).bits();
+                        }
+                        let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+                        let msg =
+                            format!("'{}' object cannot be interpreted as an integer", res_type);
+                        return raise_exception::<_>(_py, "TypeError", &msg);
+                    }
+                }
+            }
+        }
+        let type_name = class_name_for_error(type_of_bits(_py, val));
+        let msg = format!("object of type '{type_name}' has no len()");
+        raise_exception::<_>(_py, "TypeError", &msg)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_hash_builtin(val: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let hash = hash_bits_signed(_py, val);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        int_bits_from_i64(_py, hash)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_hash(val: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(val);
+        let hash = if let Some(ptr) = obj.as_ptr() {
+            hash_pointer(ptr as u64)
+        } else {
+            hash_pointer(val)
+        };
+        int_bits_from_i64(_py, hash)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_id(val: u64) -> u64 {
+    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, val as i64) })
+}
+
+fn ord_length_error(_py: &PyToken<'_>, len: usize) -> u64 {
+    let msg = format!("ord() expected a character, but string of length {len} found");
+    raise_exception::<_>(_py, "TypeError", &msg)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_ord(val: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(val);
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                let type_id = object_type_id(ptr);
+                if type_id == TYPE_ID_STRING {
+                    let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+                    let char_count = utf8_codepoint_count_cached(_py, bytes, Some(ptr as usize));
+                    if char_count != 1 {
+                        return ord_length_error(_py, char_count as usize);
+                    }
+                    let Some(code) = wtf8_codepoint_at(bytes, 0) else {
+                        return MoltObject::none().bits();
+                    };
+                    return MoltObject::from_int(code.to_u32() as i64).bits();
+                }
+                if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+                    let len = bytes_len(ptr);
+                    if len != 1 {
+                        return ord_length_error(_py, len);
+                    }
+                    let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
+                    return MoltObject::from_int(bytes[0] as i64).bits();
+                }
+            }
+        }
+        let type_name = class_name_for_error(type_of_bits(_py, val));
+        let msg = format!("ord() expected string of length 1, but {type_name} found");
+        raise_exception::<_>(_py, "TypeError", &msg)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_chr(val: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let type_name = class_name_for_error(type_of_bits(_py, val));
+        let msg = format!("'{type_name}' object cannot be interpreted as an integer");
+        let Some(value) = index_bigint_from_obj(_py, val, &msg) else {
+            return MoltObject::none().bits();
+        };
+        if value.is_negative() || value > BigInt::from(0x10FFFF) {
+            return raise_exception::<_>(_py, "ValueError", "chr() arg not in range(0x110000)");
+        }
+        let Some(code) = value.to_u32() else {
+            return raise_exception::<_>(_py, "ValueError", "chr() arg not in range(0x110000)");
+        };
+        let mut out_bytes = Vec::with_capacity(4);
+        push_wtf8_codepoint(&mut out_bytes, code);
+        let out = alloc_string(_py, &out_bytes);
+        if out.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(out).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_missing() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let bits = missing_bits(_py);
+        inc_ref_bits(_py, bits);
+        bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_not_implemented() -> u64 {
+    crate::with_gil_entry!(_py, { not_implemented_bits(_py) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_ellipsis() -> u64 {
+    crate::with_gil_entry!(_py, { ellipsis_bits(_py) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_pending() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::pending().bits() })
+}
+
+#[derive(Clone, Copy)]
+struct GcState {
+    enabled: bool,
+    thresholds: (i64, i64, i64),
+    debug_flags: i64,
+    count: (i64, i64, i64),
+}
+
+fn gc_state() -> &'static Mutex<GcState> {
+    static GC_STATE: OnceLock<Mutex<GcState>> = OnceLock::new();
+    GC_STATE.get_or_init(|| {
+        Mutex::new(GcState {
+            enabled: true,
+            thresholds: (0, 0, 0),
+            debug_flags: 0,
+            count: (0, 0, 0),
+        })
+    })
+}
+
+fn gc_int_arg(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<i64, u64> {
+    if let Some(value) = to_i64(obj_from_bits(bits)) {
+        return Ok(value);
+    }
+    if let Some(big_ptr) = bigint_ptr_from_bits(bits) {
+        let big = unsafe { bigint_ref(big_ptr) };
+        let Some(value) = big.to_i64() else {
+            let msg = format!("{label} value out of range");
+            return Err(raise_exception::<_>(_py, "OverflowError", &msg));
+        };
+        return Ok(value);
+    }
+    let type_name = class_name_for_error(type_of_bits(_py, bits));
+    let msg = format!("'{type_name}' object cannot be interpreted as an integer");
+    Err(raise_exception::<_>(_py, "TypeError", &msg))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_collect(generation_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let generation = match gc_int_arg(_py, generation_bits, "generation") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if generation < 0 {
+            return raise_exception::<_>(_py, "ValueError", "generation must be non-negative");
+        }
+        let collected = crate::object::weakref::weakref_collect_for_gc(_py) as i64;
+        let mut state = gc_state().lock().unwrap();
+        state.count = (0, 0, 0);
+        MoltObject::from_int(collected).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_enable() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let mut state = gc_state().lock().unwrap();
+        state.enabled = true;
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_disable() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let mut state = gc_state().lock().unwrap();
+        state.enabled = false;
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_isenabled() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state = gc_state().lock().unwrap();
+        MoltObject::from_bool(state.enabled).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_set_threshold(th0_bits: u64, th1_bits: u64, th2_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let th0 = match gc_int_arg(_py, th0_bits, "threshold0") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let th1 = match gc_int_arg(_py, th1_bits, "threshold1") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let th2 = match gc_int_arg(_py, th2_bits, "threshold2") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let mut state = gc_state().lock().unwrap();
+        state.thresholds = (th0, th1, th2);
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_get_threshold() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state = gc_state().lock().unwrap();
+        let (th0, th1, th2) = state.thresholds;
+        let th0_bits = MoltObject::from_int(th0).bits();
+        let th1_bits = MoltObject::from_int(th1).bits();
+        let th2_bits = MoltObject::from_int(th2).bits();
+        let tuple_ptr = alloc_tuple(_py, &[th0_bits, th1_bits, th2_bits]);
+        dec_ref_bits(_py, th0_bits);
+        dec_ref_bits(_py, th1_bits);
+        dec_ref_bits(_py, th2_bits);
+        if tuple_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_set_debug(flags_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let flags = match gc_int_arg(_py, flags_bits, "flags") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let mut state = gc_state().lock().unwrap();
+        state.debug_flags = flags;
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_get_debug() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state = gc_state().lock().unwrap();
+        MoltObject::from_int(state.debug_flags).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gc_get_count() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state = gc_state().lock().unwrap();
+        let (c0, c1, c2) = state.count;
+        let c0_bits = MoltObject::from_int(c0).bits();
+        let c1_bits = MoltObject::from_int(c1).bits();
+        let c2_bits = MoltObject::from_int(c2).bits();
+        let tuple_ptr = alloc_tuple(_py, &[c0_bits, c1_bits, c2_bits]);
+        dec_ref_bits(_py, c0_bits);
+        dec_ref_bits(_py, c1_bits);
+        dec_ref_bits(_py, c2_bits);
+        if tuple_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_getrecursionlimit() -> u64 {
+    crate::with_gil_entry!(_py, {
+        MoltObject::from_int(recursion_limit_get() as i64).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_setrecursionlimit(limit_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(limit_bits);
+        let limit = if let Some(value) = to_i64(obj) {
+            if value < 1 {
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "recursion limit must be greater or equal than 1",
+                );
+            }
+            value as usize
+        } else if let Some(big_ptr) = bigint_ptr_from_bits(limit_bits) {
+            let big = unsafe { bigint_ref(big_ptr) };
+            if big.is_negative() {
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "recursion limit must be greater or equal than 1",
+                );
+            }
+            let Some(value) = big.to_usize() else {
+                return raise_exception::<_>(
+                    _py,
+                    "OverflowError",
+                    "cannot fit 'int' into an index-sized integer",
+                );
+            };
+            value
+        } else {
+            let type_name = class_name_for_error(type_of_bits(_py, limit_bits));
+            let msg = format!("'{type_name}' object cannot be interpreted as an integer");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        let depth = RECURSION_DEPTH.with(|depth| depth.get());
+        if limit <= depth {
+            let msg = format!(
+                "cannot set the recursion limit to {limit} at the recursion depth {depth}: the limit is too low"
+            );
+            return raise_exception::<_>(_py, "RecursionError", &msg);
+        }
+        recursion_limit_set(limit);
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_getargv() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let args_guard = runtime_state(_py).argv.lock().unwrap();
+        // On WASM, molt_set_argv may not have been called (no C main stub).
+        // Fall back to std::env::args() so WASI args are still visible.
+        let env_args_storage;
+        let args: &Vec<Vec<u8>> = if args_guard.is_empty() {
+            env_args_storage = std::env::args()
+                .map(|s| s.into_bytes())
+                .collect::<Vec<_>>();
+            &env_args_storage
+        } else {
+            &args_guard
+        };
+        let mut elems = Vec::with_capacity(args.len());
+        for arg in args.iter() {
+            let ptr = alloc_string(_py, arg);
+            if ptr.is_null() {
+                for bits in elems {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            elems.push(MoltObject::from_ptr(ptr).bits());
+        }
+        let list_ptr = alloc_list(_py, &elems);
+        if list_ptr.is_null() {
+            for bits in elems {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        for bits in elems {
+            dec_ref_bits(_py, bits);
+        }
+        MoltObject::from_ptr(list_ptr).bits()
+    })
+}
+
+fn trace_sys_version() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_SYS_VERSION").as_deref() == Ok("1"))
+}
+
+fn env_sys_version_info() -> Option<PythonVersionInfo> {
+    let raw = std::env::var("MOLT_SYS_VERSION_INFO").ok()?;
+    if trace_sys_version() {
+        eprintln!("molt sys version: env raw={raw}");
+    }
+    let mut parts = raw.split(',');
+    let major = parts.next()?.trim().parse::<i64>().ok()?;
+    let minor = parts.next()?.trim().parse::<i64>().ok()?;
+    let micro = parts.next()?.trim().parse::<i64>().ok()?;
+    let releaselevel = parts.next()?.trim().to_string();
+    let serial = parts.next()?.trim().parse::<i64>().ok()?;
+    if major < 0 || minor < 0 || micro < 0 || serial < 0 {
+        return None;
+    }
+    if releaselevel.is_empty() {
+        return None;
+    }
+    let info = PythonVersionInfo {
+        major,
+        minor,
+        micro,
+        releaselevel,
+        serial,
+    };
+    if trace_sys_version() {
+        eprintln!(
+            "molt sys version: parsed {}.{}.{} {} {}",
+            info.major, info.minor, info.micro, info.releaselevel, info.serial
+        );
+    }
+    Some(info)
+}
+
+fn default_sys_version_info() -> PythonVersionInfo {
+    env_sys_version_info().unwrap_or_else(|| PythonVersionInfo {
+        major: 3,
+        minor: 12,
+        micro: 0,
+        releaselevel: "final".to_string(),
+        serial: 0,
+    })
+}
+
+fn format_sys_version(info: &PythonVersionInfo) -> String {
+    let base = format!("{}.{}.{}", info.major, info.minor, info.micro);
+    let suffix = match info.releaselevel.as_str() {
+        "alpha" => format!("a{}", info.serial),
+        "beta" => format!("b{}", info.serial),
+        "candidate" => format!("rc{}", info.serial),
+        "final" => String::new(),
+        other => format!("{other}{}", info.serial),
+    };
+    if suffix.is_empty() {
+        format!("{base} (molt)")
+    } else {
+        format!("{base}{suffix} (molt)")
+    }
+}
+
+const DEFAULT_SYS_API_VERSION: i64 = 1013;
+const SYS_HEX_RELEASELEVEL_ALPHA: i64 = 0xA;
+const SYS_HEX_RELEASELEVEL_BETA: i64 = 0xB;
+const SYS_HEX_RELEASELEVEL_CANDIDATE: i64 = 0xC;
+const SYS_HEX_RELEASELEVEL_FINAL: i64 = 0xF;
+
+fn releaselevel_hex_nibble(releaselevel: &str) -> i64 {
+    match releaselevel {
+        "alpha" => SYS_HEX_RELEASELEVEL_ALPHA,
+        "beta" => SYS_HEX_RELEASELEVEL_BETA,
+        "candidate" | "rc" => SYS_HEX_RELEASELEVEL_CANDIDATE,
+        "final" => SYS_HEX_RELEASELEVEL_FINAL,
+        _ => SYS_HEX_RELEASELEVEL_FINAL,
+    }
+}
+
+fn sys_hexversion_from_info(info: &PythonVersionInfo) -> i64 {
+    let major = (info.major & 0xFF) << 24;
+    let minor = (info.minor & 0xFF) << 16;
+    let micro = (info.micro & 0xFF) << 8;
+    let releaselevel = releaselevel_hex_nibble(&info.releaselevel) << 4;
+    let serial = info.serial & 0xF;
+    major | minor | micro | releaselevel | serial
+}
+
+fn sys_api_version() -> i64 {
+    std::env::var("MOLT_SYS_API_VERSION")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<i64>().ok())
+        .filter(|value| *value >= 0)
+        .unwrap_or(DEFAULT_SYS_API_VERSION)
+}
+
+fn sys_abiflags() -> String {
+    std::env::var("MOLT_SYS_ABIFLAGS").unwrap_or_default()
+}
+
+fn sys_implementation_name() -> String {
+    match std::env::var("MOLT_SYS_IMPLEMENTATION_NAME") {
+        Ok(raw) if !raw.trim().is_empty() => raw,
+        _ => "molt".to_string(),
+    }
+}
+
+fn sys_cache_tag(name: &str, info: &PythonVersionInfo) -> String {
+    match std::env::var("MOLT_SYS_CACHE_TAG") {
+        Ok(raw) if !raw.is_empty() => raw,
+        _ => format!("{name}-{}{}", info.major, info.minor),
+    }
+}
+
+const DEFAULT_SYS_FLAGS_INT_MAX_STR_DIGITS: i64 = 0;
+
+fn env_flag_level(var: &str) -> Option<i64> {
+    let raw = std::env::var(var).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Some(1);
+    }
+    match trimmed.parse::<i64>() {
+        Ok(value) if value > 0 => Some(value),
+        Ok(_) => Some(0),
+        Err(_) => Some(1),
+    }
+}
+
+fn env_flag_bool(var: &str) -> Option<i64> {
+    env_flag_level(var).map(|value| if value == 0 { 0 } else { 1 })
+}
+
+fn env_non_negative_i64(var: &str) -> Option<i64> {
+    std::env::var(var)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<i64>().ok())
+        .filter(|value| *value >= 0)
+}
+
+fn sys_flags_hash_randomization() -> i64 {
+    match std::env::var("PYTHONHASHSEED") {
+        Ok(value) => {
+            if value == "random" {
+                return 1;
+            }
+            let seed: u32 = value.parse().unwrap_or_else(|_| fatal_hash_seed(&value));
+            if seed == 0 { 0 } else { 1 }
+        }
+        Err(_) => 1,
+    }
+}
+
+fn current_sys_version_info(state: &RuntimeState) -> (PythonVersionInfo, bool) {
+    let mut guard = state.sys_version_info.lock().unwrap();
+    if let Some(existing) = guard.as_ref() {
+        (existing.clone(), false)
+    } else {
+        let init = default_sys_version_info();
+        *guard = Some(init.clone());
+        (init, true)
+    }
+}
+
+fn alloc_sys_version_info_tuple(_py: &PyToken<'_>, info: &PythonVersionInfo) -> Option<u64> {
+    let release_ptr = alloc_string(_py, info.releaselevel.as_bytes());
+    if release_ptr.is_null() {
+        return None;
+    }
+    let release_bits = MoltObject::from_ptr(release_ptr).bits();
+    let elems = [
+        MoltObject::from_int(info.major).bits(),
+        MoltObject::from_int(info.minor).bits(),
+        MoltObject::from_int(info.micro).bits(),
+        release_bits,
+        MoltObject::from_int(info.serial).bits(),
+    ];
+    let tuple_ptr = alloc_tuple(_py, &elems);
+    if tuple_ptr.is_null() {
+        dec_ref_bits(_py, release_bits);
+        return None;
+    }
+    for bits in elems {
+        dec_ref_bits(_py, bits);
+    }
+    Some(MoltObject::from_ptr(tuple_ptr).bits())
+}
+
+fn dict_set_bytes_key(_py: &PyToken<'_>, dict_ptr: *mut u8, key: &[u8], value_bits: u64) -> bool {
+    let key_ptr = alloc_string(_py, key);
+    if key_ptr.is_null() {
+        return false;
+    }
+    let key_bits = MoltObject::from_ptr(key_ptr).bits();
+    unsafe {
+        dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
+    }
+    dec_ref_bits(_py, key_bits);
+    true
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_set_version_info(
+    major_bits: u64,
+    minor_bits: u64,
+    micro_bits: u64,
+    releaselevel_bits: u64,
+    serial_bits: u64,
+    version_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let major = index_i64_from_obj(_py, major_bits, "major must be int");
+        let minor = index_i64_from_obj(_py, minor_bits, "minor must be int");
+        let micro = index_i64_from_obj(_py, micro_bits, "micro must be int");
+        let serial = index_i64_from_obj(_py, serial_bits, "serial must be int");
+        if major < 0 || minor < 0 || micro < 0 || serial < 0 {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "sys.version_info must be non-negative integers",
+            );
+        }
+
+        let Some(release_ptr) = obj_from_bits(releaselevel_bits).as_ptr() else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "sys.version_info releaselevel must be str",
+            );
+        };
+        unsafe {
+            if object_type_id(release_ptr) != TYPE_ID_STRING {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "sys.version_info releaselevel must be str",
+                );
+            }
+        }
+        let release_bytes = unsafe {
+            std::slice::from_raw_parts(string_bytes(release_ptr), string_len(release_ptr))
+        };
+        let releaselevel = String::from_utf8_lossy(release_bytes).into_owned();
+
+        let Some(version_ptr) = obj_from_bits(version_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "sys.version must be str");
+        };
+        unsafe {
+            if object_type_id(version_ptr) != TYPE_ID_STRING {
+                return raise_exception::<_>(_py, "TypeError", "sys.version must be str");
+            }
+        }
+        let version_bytes = unsafe {
+            std::slice::from_raw_parts(string_bytes(version_ptr), string_len(version_ptr))
+        };
+        let mut version = String::from_utf8_lossy(version_bytes).into_owned();
+
+        let mut info = PythonVersionInfo {
+            major,
+            minor,
+            micro,
+            releaselevel,
+            serial,
+        };
+        let mut info_overridden_from_env = false;
+        if let Some(env_info) = env_sys_version_info() {
+            if env_info != info {
+                info_overridden_from_env = true;
+                if trace_sys_version() {
+                    eprintln!(
+                        "molt sys version: overriding set payload with env {}.{}.{} {} {}",
+                        env_info.major,
+                        env_info.minor,
+                        env_info.micro,
+                        env_info.releaselevel,
+                        env_info.serial
+                    );
+                }
+            }
+            info = env_info;
+        }
+
+        let mut version_from_env = false;
+        if let Ok(env_version) = std::env::var("MOLT_SYS_VERSION")
+            && !env_version.is_empty()
+        {
+            version = env_version;
+            version_from_env = true;
+        }
+        if !version_from_env && (version.is_empty() || info_overridden_from_env) {
+            version = format_sys_version(&info);
+        }
+        if trace_sys_version() {
+            eprintln!(
+                "molt sys version: set called {}.{}.{} {} {}",
+                info.major, info.minor, info.micro, info.releaselevel, info.serial
+            );
+        }
+
+        let state = runtime_state(_py);
+        let default_info = default_sys_version_info();
+        {
+            let mut guard = state.sys_version_info.lock().unwrap();
+            if let Some(existing) = guard.as_ref()
+                && existing != &info
+                && existing != &default_info
+            {
+                return raise_exception::<_>(_py, "RuntimeError", "sys.version_info already set");
+            }
+            *guard = Some(info.clone());
+        }
+        {
+            let mut guard = state.sys_version.lock().unwrap();
+            if let Some(existing) = guard.as_ref()
+                && existing != &version
+            {
+                return raise_exception::<_>(_py, "RuntimeError", "sys.version already set");
+            }
+            *guard = Some(version.clone());
+        }
+        // If the sys module already exists, keep its version metadata in sync.
+        let sys_bits = {
+            let cache = crate::builtins::exceptions::internals::module_cache(_py);
+            cache.lock().unwrap().get("sys").copied()
+        };
+        if trace_sys_version() {
+            eprintln!("molt sys version: sys module cached={}", sys_bits.is_some());
+        }
+        if let Some(bits) = sys_bits
+            && let Some(sys_ptr) = obj_from_bits(bits).as_ptr()
+        {
+            unsafe {
+                let dict_bits = module_dict_bits(sys_ptr);
+                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                    let version_info_bits = molt_sys_version_info();
+                    let version_bits = molt_sys_version();
+                    let hexversion_bits = molt_sys_hexversion();
+                    let api_version_bits = molt_sys_api_version();
+                    let abiflags_bits = molt_sys_abiflags();
+                    let implementation_bits = molt_sys_implementation_payload();
+                    let version_info_key = intern_static_name(
+                        _py,
+                        &runtime_state(_py).interned.sys_version_info,
+                        b"version_info",
+                    );
+                    let version_key = intern_static_name(
+                        _py,
+                        &runtime_state(_py).interned.sys_version,
+                        b"version",
+                    );
+                    dict_set_in_place(_py, dict_ptr, version_info_key, version_info_bits);
+                    dict_set_in_place(_py, dict_ptr, version_key, version_bits);
+                    let wrote_hexversion =
+                        dict_set_bytes_key(_py, dict_ptr, b"hexversion", hexversion_bits);
+                    let wrote_api_version =
+                        dict_set_bytes_key(_py, dict_ptr, b"api_version", api_version_bits);
+                    let wrote_abiflags =
+                        dict_set_bytes_key(_py, dict_ptr, b"abiflags", abiflags_bits);
+                    let wrote_implementation =
+                        dict_set_bytes_key(_py, dict_ptr, b"implementation", implementation_bits);
+                    dec_ref_bits(_py, version_info_key);
+                    dec_ref_bits(_py, version_key);
+                    dec_ref_bits(_py, version_info_bits);
+                    dec_ref_bits(_py, version_bits);
+                    dec_ref_bits(_py, hexversion_bits);
+                    dec_ref_bits(_py, api_version_bits);
+                    dec_ref_bits(_py, abiflags_bits);
+                    dec_ref_bits(_py, implementation_bits);
+                    if !(wrote_hexversion
+                        && wrote_api_version
+                        && wrote_abiflags
+                        && wrote_implementation)
+                    {
+                        return MoltObject::none().bits();
+                    }
+                    if trace_sys_version() {
+                        eprintln!("molt sys version: sys dict updated");
+                    }
+                }
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_version_info() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state = runtime_state(_py);
+        let (info, initialized) = current_sys_version_info(state);
+        if trace_sys_version() {
+            eprintln!(
+                "molt sys version: get info {}.{}.{} {} {} init={}",
+                info.major, info.minor, info.micro, info.releaselevel, info.serial, initialized
+            );
+        }
+        alloc_sys_version_info_tuple(_py, &info).unwrap_or_else(|| MoltObject::none().bits())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_version() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state = runtime_state(_py);
+        let (info, _) = current_sys_version_info(state);
+        let version = {
+            let mut guard = state.sys_version.lock().unwrap();
+            if let Some(existing) = guard.as_ref() {
+                existing.clone()
+            } else {
+                let computed = format_sys_version(&info);
+                *guard = Some(computed.clone());
+                computed
+            }
+        };
+        let ptr = alloc_string(_py, version.as_bytes());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_hexversion() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state = runtime_state(_py);
+        let (info, _) = current_sys_version_info(state);
+        MoltObject::from_int(sys_hexversion_from_info(&info)).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_api_version() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_int(sys_api_version()).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_abiflags() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let abiflags = sys_abiflags();
+        let ptr = alloc_string(_py, abiflags.as_bytes());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_implementation_payload() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let state = runtime_state(_py);
+        let (info, _) = current_sys_version_info(state);
+        let name = sys_implementation_name();
+        let cache_tag = sys_cache_tag(&name, &info);
+        let hexversion_bits = MoltObject::from_int(sys_hexversion_from_info(&info)).bits();
+
+        let name_ptr = alloc_string(_py, name.as_bytes());
+        if name_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let cache_tag_ptr = alloc_string(_py, cache_tag.as_bytes());
+        if cache_tag_ptr.is_null() {
+            dec_ref_bits(_py, MoltObject::from_ptr(name_ptr).bits());
+            return MoltObject::none().bits();
+        }
+
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let cache_tag_bits = MoltObject::from_ptr(cache_tag_ptr).bits();
+        let Some(version_bits) = alloc_sys_version_info_tuple(_py, &info) else {
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, cache_tag_bits);
+            return MoltObject::none().bits();
+        };
+
+        let keys_and_values: [(&[u8], u64); 4] = [
+            (b"name", name_bits),
+            (b"cache_tag", cache_tag_bits),
+            (b"version", version_bits),
+            (b"hexversion", hexversion_bits),
+        ];
+        let mut pairs: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
+        let mut owned: Vec<u64> = vec![name_bits, cache_tag_bits, version_bits, hexversion_bits];
+
+        for (key, value_bits) in keys_and_values {
+            let key_ptr = alloc_string(_py, key);
+            if key_ptr.is_null() {
+                for bits in owned {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let key_bits = MoltObject::from_ptr(key_ptr).bits();
+            pairs.push(key_bits);
+            pairs.push(value_bits);
+            owned.push(key_bits);
+        }
+
+        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+        for bits in owned {
+            dec_ref_bits(_py, bits);
+        }
+        if dict_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(dict_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_flags_payload() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let keys_and_values: [(&[u8], i64); 19] = [
+            (b"debug", env_flag_bool("PYTHONDEBUG").unwrap_or(0)),
+            (b"inspect", env_flag_bool("PYTHONINSPECT").unwrap_or(0)),
+            (b"interactive", 0),
+            (b"optimize", env_flag_level("PYTHONOPTIMIZE").unwrap_or(0)),
+            (
+                b"dont_write_bytecode",
+                env_flag_bool("PYTHONDONTWRITEBYTECODE").unwrap_or(0),
+            ),
+            (
+                b"no_user_site",
+                env_flag_bool("PYTHONNOUSERSITE").unwrap_or(0),
+            ),
+            (b"no_site", 0),
+            (b"ignore_environment", 0),
+            (b"verbose", env_flag_level("PYTHONVERBOSE").unwrap_or(0)),
+            (b"bytes_warning", 0),
+            (b"quiet", 0),
+            (b"hash_randomization", sys_flags_hash_randomization()),
+            (b"isolated", 0),
+            (b"dev_mode", env_flag_bool("PYTHONDEVMODE").unwrap_or(0)),
+            (b"utf8_mode", env_flag_bool("PYTHONUTF8").unwrap_or(0)),
+            (
+                b"warn_default_encoding",
+                env_flag_bool("PYTHONWARNDEFAULTENCODING").unwrap_or(0),
+            ),
+            (b"safe_path", env_flag_bool("PYTHONSAFEPATH").unwrap_or(0)),
+            (
+                b"int_max_str_digits",
+                env_non_negative_i64("PYTHONINTMAXSTRDIGITS")
+                    .unwrap_or(DEFAULT_SYS_FLAGS_INT_MAX_STR_DIGITS),
+            ),
+            (b"gil", 1),
+        ];
+        let mut pairs: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
+        let mut owned: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
+
+        for (key, value) in keys_and_values {
+            let key_ptr = alloc_string(_py, key);
+            if key_ptr.is_null() {
+                for bits in owned {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let key_bits = MoltObject::from_ptr(key_ptr).bits();
+            let value_bits = MoltObject::from_int(value).bits();
+            pairs.push(key_bits);
+            pairs.push(value_bits);
+            owned.push(key_bits);
+            owned.push(value_bits);
+        }
+
+        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
+        for bits in owned {
+            dec_ref_bits(_py, bits);
+        }
+        if dict_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(dict_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sys_executable() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let executable = match std::env::var("MOLT_SYS_EXECUTABLE") {
+            Ok(val) if !val.is_empty() => val.into_bytes(),
+            _ => runtime_state(_py)
+                .argv
+                .lock()
+                .unwrap()
+                .first()
+                .cloned()
+                .unwrap_or_default(),
+        };
+        let ptr = alloc_string(_py, &executable);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// Caller must ensure `argv` points to `argc` null-terminated strings.
+pub unsafe extern "C" fn molt_set_argv(argc: i32, argv: *const *const u8) {
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let mut args = Vec::new();
+            if argc > 0 && !argv.is_null() {
+                for idx in 0..argc {
+                    let ptr = *argv.add(idx as usize);
+                    if ptr.is_null() {
+                        args.push(Vec::new());
+                        continue;
+                    }
+                    let bytes = CStr::from_ptr(ptr as *const i8).to_bytes();
+                    let (decoded, _) = decode_bytes_text("utf-8", "surrogateescape", bytes)
+                        .expect("argv decode must succeed for utf-8+surrogateescape");
+                    args.push(decoded);
+                }
+            }
+            let trace_argv = matches!(std::env::var("MOLT_TRACE_ARGV").ok().as_deref(), Some("1"));
+            if trace_argv {
+                eprintln!("molt_set_argv argc={argc} argv0={:?}", args.first());
+            }
+            *runtime_state(_py).argv.lock().unwrap() = args;
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[unsafe(no_mangle)]
+/// # Safety
+/// Caller must ensure `argv` points to `argc` null-terminated UTF-16 strings.
+pub unsafe extern "C" fn molt_set_argv_utf16(argc: i32, argv: *const *const u16) {
+    crate::with_gil_entry!(_py, {
+        let mut args = Vec::new();
+        if argc > 0 && !argv.is_null() {
+            for idx in 0..argc {
+                let ptr = *argv.add(idx as usize);
+                if ptr.is_null() {
+                    args.push(Vec::new());
+                    continue;
+                }
+                let mut len = 0usize;
+                while *ptr.add(len) != 0 {
+                    len += 1;
+                }
+                let slice = std::slice::from_raw_parts(ptr, len);
+                let mut raw = Vec::with_capacity(slice.len() * 2);
+                for &unit in slice {
+                    raw.push((unit & 0x00FF) as u8);
+                    raw.push((unit >> 8) as u8);
+                }
+                let (decoded, _) = decode_bytes_text("utf-16-le", "surrogatepass", &raw)
+                    .expect("argv decode must succeed for utf-16-le+surrogatepass");
+                args.push(decoded);
+            }
+        }
+        *runtime_state(_py).argv.lock().unwrap() = args;
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_getpid() -> u64 {
+    crate::with_gil_entry!(_py, {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let pid = unsafe { crate::molt_getpid_host() };
+            let pid = if pid < 0 { 0 } else { pid };
+            MoltObject::from_int(pid).bits()
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            MoltObject::from_int(std::process::id() as i64).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_signal_raise(sig_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(sig) = to_i64(obj_from_bits(sig_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "signal number must be int");
+        };
+        if sig < i32::MIN as i64 || sig > i32::MAX as i64 {
+            return raise_exception::<_>(_py, "ValueError", "signal number out of range");
+        }
+        let sig_i32 = sig as i32;
+        #[cfg(all(unix, not(target_arch = "wasm32")))]
+        {
+            let rc = unsafe { libc::raise(sig_i32) };
+            if rc != 0 {
+                return raise_exception::<_>(
+                    _py,
+                    "OSError",
+                    &std::io::Error::last_os_error().to_string(),
+                );
+            }
+            MoltObject::none().bits()
+        }
+        #[cfg(any(not(unix), target_arch = "wasm32"))]
+        {
+            if sig_i32 == 2 {
+                return raise_exception::<_>(_py, "KeyboardInterrupt", "signal interrupt");
+            }
+            MoltObject::none().bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_monotonic() -> u64 {
+    crate::with_gil_entry!(_py, {
+        MoltObject::from_float(monotonic_now_secs(_py)).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_perf_counter() -> u64 {
+    crate::with_gil_entry!(_py, {
+        MoltObject::from_float(monotonic_now_secs(_py)).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_monotonic_ns() -> u64 {
+    crate::with_gil_entry!(_py, {
+        int_bits_from_bigint(_py, BigInt::from(monotonic_now_nanos(_py)))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_perf_counter_ns() -> u64 {
+    crate::with_gil_entry!(_py, {
+        int_bits_from_bigint(_py, BigInt::from(monotonic_now_nanos(_py)))
+    })
+}
+
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+fn process_time_duration() -> Result<std::time::Duration, String> {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    if ts.tv_sec < 0 || ts.tv_nsec < 0 {
+        return Err("process time before epoch".to_string());
+    }
+    Ok(std::time::Duration::new(
+        ts.tv_sec as u64,
+        ts.tv_nsec as u32,
+    ))
+}
+
+#[cfg(all(not(target_arch = "wasm32"), windows))]
+fn process_time_duration() -> Result<std::time::Duration, String> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+
+    let mut creation = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut exit = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut kernel = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut user = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let handle = unsafe { GetCurrentProcess() };
+    let ok = unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let kernel_100ns = ((kernel.dwHighDateTime as u64) << 32) | kernel.dwLowDateTime as u64;
+    let user_100ns = ((user.dwHighDateTime as u64) << 32) | user.dwLowDateTime as u64;
+    let total_100ns = kernel_100ns.saturating_add(user_100ns);
+    let secs = total_100ns / 10_000_000;
+    let nanos = (total_100ns % 10_000_000) * 100;
+    Ok(std::time::Duration::new(secs, nanos as u32))
+}
+
+#[cfg(any(target_arch = "wasm32", not(any(unix, windows))))]
+fn process_time_duration() -> Result<std::time::Duration, String> {
+    Err("process_time unavailable".to_string())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_process_time() -> u64 {
+    crate::with_gil_entry!(_py, {
+        match process_time_duration() {
+            Ok(duration) => MoltObject::from_float(duration.as_secs_f64()).bits(),
+            Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_process_time_ns() -> u64 {
+    crate::with_gil_entry!(_py, {
+        match process_time_duration() {
+            Ok(duration) => int_bits_from_bigint(_py, BigInt::from(duration.as_nanos())),
+            Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_time() -> u64 {
+    crate::with_gil_entry!(_py, {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if require_time_wall_capability::<u64>(_py).is_err() {
+                return MoltObject::none().bits();
+            }
+        }
+        let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(now) => now,
+            Err(_) => {
+                return raise_exception::<_>(_py, "OSError", "system time before epoch");
+            }
+        };
+        MoltObject::from_float(now.as_secs_f64()).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_time_ns() -> u64 {
+    crate::with_gil_entry!(_py, {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if require_time_wall_capability::<u64>(_py).is_err() {
+                return MoltObject::none().bits();
+            }
+        }
+        let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(now) => now,
+            Err(_) => {
+                return raise_exception::<_>(_py, "OSError", "system time before epoch");
+            }
+        };
+        int_bits_from_bigint(_py, BigInt::from(now.as_nanos()))
+    })
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TimeParts {
+    year: i32,
+    month: i32,
+    day: i32,
+    hour: i32,
+    minute: i32,
+    second: i32,
+    wday: i32,
+    yday: i32,
+    isdst: i32,
+}
+
+fn time_parts_to_tuple(_py: &PyToken<'_>, parts: TimeParts) -> u64 {
+    let elems = [
+        MoltObject::from_int(parts.year as i64).bits(),
+        MoltObject::from_int(parts.month as i64).bits(),
+        MoltObject::from_int(parts.day as i64).bits(),
+        MoltObject::from_int(parts.hour as i64).bits(),
+        MoltObject::from_int(parts.minute as i64).bits(),
+        MoltObject::from_int(parts.second as i64).bits(),
+        MoltObject::from_int(parts.wday as i64).bits(),
+        MoltObject::from_int(parts.yday as i64).bits(),
+        MoltObject::from_int(parts.isdst as i64).bits(),
+    ];
+    let tuple_ptr = alloc_tuple(_py, &elems);
+    if tuple_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(tuple_ptr).bits()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn time_parts_from_tm(tm: &libc::tm) -> TimeParts {
+    let wday = (tm.tm_wday + 6).rem_euclid(7);
+    TimeParts {
+        year: tm.tm_year + 1900,
+        month: tm.tm_mon + 1,
+        day: tm.tm_mday,
+        hour: tm.tm_hour,
+        minute: tm.tm_min,
+        second: tm.tm_sec,
+        wday,
+        yday: tm.tm_yday + 1,
+        isdst: tm.tm_isdst,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn tm_from_time_parts(_py: &PyToken<'_>, parts: TimeParts) -> Result<libc::tm, u64> {
+    let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
+    tm.tm_sec = parts.second;
+    tm.tm_min = parts.minute;
+    tm.tm_hour = parts.hour;
+    tm.tm_mday = parts.day;
+    tm.tm_mon = parts.month - 1;
+    tm.tm_year = parts.year - 1900;
+    tm.tm_wday = (parts.wday + 1).rem_euclid(7);
+    tm.tm_yday = parts.yday - 1;
+    tm.tm_isdst = parts.isdst;
+    if tm.tm_mon < 0 || tm.tm_mon > 11 {
+        return Err(raise_exception::<_>(
+            _py,
+            "ValueError",
+            "strftime() argument 2 out of range",
+        ));
+    }
+    Ok(tm)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn day_of_year(year: i32, month: i32, day: i32) -> i32 {
+    const DAYS_BEFORE_MONTH: [[i32; 13]; 2] = [
+        [0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334],
+        [0, 0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335],
+    ];
+    let leap = if is_leap_year(year) { 1 } else { 0 };
+    let m = month.clamp(1, 12) as usize;
+    DAYS_BEFORE_MONTH[leap][m] + day
+}
+
+#[cfg(target_arch = "wasm32")]
+fn civil_from_days(days: i64) -> (i32, i32, i32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let mut y = (yoe + era * 400) as i32;
+    let doy = (doe - (365 * yoe + yoe / 4 - yoe / 100)) as i32;
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1);
+    let m = (mp + if mp < 10 { 3 } else { -9 });
+    if m <= 2 {
+        y += 1;
+    }
+    (y, m, d)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn time_parts_from_epoch_utc(secs: i64) -> TimeParts {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let hour = (rem / 3600) as i32;
+    let minute = ((rem % 3600) / 60) as i32;
+    let second = (rem % 60) as i32;
+    let (year, month, day) = civil_from_days(days);
+    let yday = day_of_year(year, month, day);
+    let wday = ((days + 3).rem_euclid(7)) as i32;
+    TimeParts {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        wday,
+        yday,
+        isdst: 0,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn timezone_west_wasm() -> Result<i64, String> {
+    let offset = unsafe { crate::molt_time_timezone_host() };
+    if offset == i64::MIN {
+        return Err("timezone unavailable".to_string());
+    }
+    Ok(offset)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn local_offset_west_wasm(secs: i64) -> Result<i64, String> {
+    let offset = unsafe { crate::molt_time_local_offset_host(secs) };
+    if offset == i64::MIN {
+        return Err("localtime failed".to_string());
+    }
+    Ok(offset)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn tzname_label_wasm(which: i32) -> Result<String, String> {
+    let mut buf = vec![0u8; 256];
+    let mut out_len: u32 = 0;
+    let status = unsafe {
+        crate::molt_time_tzname_host(
+            which,
+            buf.as_mut_ptr() as u32,
+            buf.len() as u32,
+            (&mut out_len as *mut u32) as u32,
+        )
+    };
+    if status != 0 {
+        return Err("tzname unavailable".to_string());
+    }
+    let out_len = usize::try_from(out_len).map_err(|_| "tzname unavailable".to_string())?;
+    if out_len > buf.len() {
+        return Err("tzname unavailable".to_string());
+    }
+    buf.truncate(out_len);
+    String::from_utf8(buf).map_err(|_| "tzname unavailable".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn tzname_wasm() -> Result<(String, String), String> {
+    let std_name = tzname_label_wasm(0)?;
+    let dst_name = tzname_label_wasm(1)?;
+    Ok((std_name, dst_name))
+}
+
+fn current_epoch_secs_i64() -> Result<i64, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "system time before epoch".to_string())?;
+    Ok(i64::try_from(now.as_secs()).unwrap_or(i64::MAX))
+}
+
+fn parse_time_seconds(_py: &PyToken<'_>, secs_bits: u64) -> Result<i64, u64> {
+    let obj = obj_from_bits(secs_bits);
+    if obj.is_none() {
+        let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(now) => now,
+            Err(_) => {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "OSError",
+                    "system time before epoch",
+                ));
+            }
+        };
+        let secs = now.as_secs();
+        let secs = i64::try_from(secs).unwrap_or(i64::MAX);
+        return Ok(secs);
+    }
+    let Some(val) = to_f64(obj) else {
+        let type_name = class_name_for_error(type_of_bits(_py, secs_bits));
+        let msg = format!("an integer is required (got type {type_name})");
+        return Err(raise_exception::<_>(_py, "TypeError", &msg));
+    };
+    if !val.is_finite() {
+        return Err(raise_exception::<_>(
+            _py,
+            "OverflowError",
+            "timestamp out of range for platform time_t",
+        ));
+    }
+    let secs = val.trunc();
+    let (min, max) = time_t_bounds();
+    if secs < min as f64 || secs > max as f64 {
+        return Err(raise_exception::<_>(
+            _py,
+            "OverflowError",
+            "timestamp out of range for platform time_t",
+        ));
+    }
+    Ok(secs as i64)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn time_t_bounds() -> (i128, i128) {
+    let size = std::mem::size_of::<libc::time_t>();
+    if size == 4 {
+        (i32::MIN as i128, i32::MAX as i128)
+    } else {
+        (i64::MIN as i128, i64::MAX as i128)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn time_t_bounds() -> (i128, i128) {
+    (i64::MIN as i128, i64::MAX as i128)
+}
+
+fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
+    let mut y = year as i64;
+    let m = month as i64;
+    let d = day as i64;
+    y -= if m <= 2 { 1 } else { 0 };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = m + if m > 2 { -3 } else { 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn tm_to_epoch_seconds(tm: &libc::tm) -> i64 {
+    let year = tm.tm_year + 1900;
+    let month = tm.tm_mon + 1;
+    let day = tm.tm_mday;
+    let days = days_from_civil(year, month, day);
+    let seconds = (tm.tm_hour as i64) * 3600 + (tm.tm_min as i64) * 60 + (tm.tm_sec as i64);
+    days.saturating_mul(86_400).saturating_add(seconds)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn offset_west_from_secs(secs: i64) -> Result<i64, String> {
+    let secs = secs as libc::time_t;
+    let local_tm = localtime_tm(secs)?;
+    let utc_tm = gmtime_tm(secs)?;
+    let local_secs = tm_to_epoch_seconds(&local_tm);
+    let utc_secs = tm_to_epoch_seconds(&utc_tm);
+    Ok(utc_secs.saturating_sub(local_secs))
+}
+
+fn parse_time_tuple(_py: &PyToken<'_>, tuple_bits: u64) -> Result<TimeParts, u64> {
+    let obj = obj_from_bits(tuple_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "strftime() argument 2 must be tuple",
+        ));
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_TUPLE {
+            let type_name = class_name_for_error(type_of_bits(_py, tuple_bits));
+            let msg = format!("strftime() argument 2 must be tuple, not {type_name}");
+            return Err(raise_exception::<_>(_py, "TypeError", &msg));
+        }
+        let elems = seq_vec_ref(ptr);
+        if elems.len() != 9 {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "time tuple must have exactly 9 elements",
+            ));
+        }
+        let mut vals = [0i64; 9];
+        for (idx, slot) in vals.iter_mut().enumerate() {
+            let bits = elems[idx];
+            let Some(val) = to_i64(obj_from_bits(bits)) else {
+                let type_name = class_name_for_error(type_of_bits(_py, bits));
+                let msg = format!("an integer is required (got type {type_name})");
+                return Err(raise_exception::<_>(_py, "TypeError", &msg));
+            };
+            if val < i32::MIN as i64 || val > i32::MAX as i64 {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "strftime() argument 2 out of range",
+                ));
+            }
+            *slot = val;
+        }
+        let year = vals[0] as i32;
+        let month = vals[1] as i32;
+        let day = vals[2] as i32;
+        let hour = vals[3] as i32;
+        let minute = vals[4] as i32;
+        let second = vals[5] as i32;
+        let wday = vals[6] as i32;
+        let yday = vals[7] as i32;
+        let isdst = vals[8] as i32;
+        if !(1..=12).contains(&month)
+            || !(1..=31).contains(&day)
+            || !(0..=23).contains(&hour)
+            || !(0..=59).contains(&minute)
+            || !(0..=60).contains(&second)
+            || !(0..=6).contains(&wday)
+            || !(1..=366).contains(&yday)
+        {
+            return Err(raise_exception::<_>(
+                _py,
+                "ValueError",
+                "strftime() argument 2 out of range",
+            ));
+        }
+        if ![-1, 0, 1].contains(&isdst) {
+            return Err(raise_exception::<_>(
+                _py,
+                "ValueError",
+                "strftime() argument 2 out of range",
+            ));
+        }
+        Ok(TimeParts {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            wday,
+            yday,
+            isdst,
+        })
+    }
+}
+
+fn asctime_from_parts(parts: TimeParts) -> Result<String, String> {
+    const WEEKDAY_ABBR: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const MONTH_ABBR: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    if !(0..=6).contains(&parts.wday)
+        || !(1..=12).contains(&parts.month)
+        || !(1..=31).contains(&parts.day)
+    {
+        return Err("time tuple elements out of range".to_string());
+    }
+    let wday = WEEKDAY_ABBR[parts.wday as usize];
+    let month = MONTH_ABBR[(parts.month - 1) as usize];
+    Ok(format!(
+        "{wday} {month} {:2} {:02}:{:02}:{:02} {:04}",
+        parts.day, parts.hour, parts.minute, parts.second, parts.year
+    ))
+}
+
+fn parse_mktime_tuple(_py: &PyToken<'_>, tuple_bits: u64) -> Result<TimeParts, u64> {
+    let obj = obj_from_bits(tuple_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "Tuple or struct_time argument required",
+        ));
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_TUPLE {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "Tuple or struct_time argument required",
+            ));
+        }
+        let elems = seq_vec_ref(ptr);
+        if elems.len() != 9 {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "mktime(): illegal time tuple argument",
+            ));
+        }
+        let mut vals = [0i64; 9];
+        for (idx, slot) in vals.iter_mut().enumerate() {
+            let bits = elems[idx];
+            let Some(val) = to_i64(obj_from_bits(bits)) else {
+                let type_name = class_name_for_error(type_of_bits(_py, bits));
+                let msg = format!("an integer is required (got type {type_name})");
+                return Err(raise_exception::<_>(_py, "TypeError", &msg));
+            };
+            if val < i32::MIN as i64 || val > i32::MAX as i64 {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "OverflowError",
+                    "mktime(): argument out of range",
+                ));
+            }
+            *slot = val;
+        }
+        Ok(TimeParts {
+            year: vals[0] as i32,
+            month: vals[1] as i32,
+            day: vals[2] as i32,
+            hour: vals[3] as i32,
+            minute: vals[4] as i32,
+            second: vals[5] as i32,
+            wday: vals[6] as i32,
+            yday: vals[7] as i32,
+            isdst: vals[8] as i32,
+        })
+    }
+}
+
+fn parse_timegm_tuple(
+    _py: &PyToken<'_>,
+    tuple_bits: u64,
+) -> Result<(i32, i32, i32, i32, i32, i32), u64> {
+    let obj = obj_from_bits(tuple_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "Tuple or struct_time argument required",
+        ));
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_TUPLE {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "Tuple or struct_time argument required",
+            ));
+        }
+        let elems = seq_vec_ref(ptr);
+        if elems.len() < 6 {
+            let msg = format!(
+                "not enough values to unpack (expected 6, got {})",
+                elems.len()
+            );
+            return Err(raise_exception::<_>(_py, "ValueError", &msg));
+        }
+        let mut vals = [0i64; 6];
+        for (idx, slot) in vals.iter_mut().enumerate() {
+            let bits = elems[idx];
+            let Some(val) = to_i64(obj_from_bits(bits)) else {
+                let type_name = class_name_for_error(type_of_bits(_py, bits));
+                let msg = format!("an integer is required (got type {type_name})");
+                return Err(raise_exception::<_>(_py, "TypeError", &msg));
+            };
+            if val < i32::MIN as i64 || val > i32::MAX as i64 {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "OverflowError",
+                    "timegm(): argument out of range",
+                ));
+            }
+            *slot = val;
+        }
+        Ok((
+            vals[0] as i32,
+            vals[1] as i32,
+            vals[2] as i32,
+            vals[3] as i32,
+            vals[4] as i32,
+            vals[5] as i32,
+        ))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn localtime_tm(secs: libc::time_t) -> Result<libc::tm, String> {
+    #[cfg(unix)]
+    unsafe {
+        let mut out = std::mem::zeroed::<libc::tm>();
+        if libc::localtime_r(&secs as *const libc::time_t, &mut out).is_null() {
+            return Err("localtime failed".to_string());
+        }
+        Ok(out)
+    }
+    #[cfg(windows)]
+    unsafe {
+        let mut out = std::mem::zeroed::<libc::tm>();
+        let rc = libc::localtime_s(&mut out as *mut libc::tm, &secs as *const libc::time_t);
+        if rc != 0 {
+            return Err("localtime failed".to_string());
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn gmtime_tm(secs: libc::time_t) -> Result<libc::tm, String> {
+    #[cfg(unix)]
+    unsafe {
+        let mut out = std::mem::zeroed::<libc::tm>();
+        if libc::gmtime_r(&secs as *const libc::time_t, &mut out).is_null() {
+            return Err("gmtime failed".to_string());
+        }
+        Ok(out)
+    }
+    #[cfg(windows)]
+    unsafe {
+        let mut out = std::mem::zeroed::<libc::tm>();
+        let rc = libc::gmtime_s(&mut out as *mut libc::tm, &secs as *const libc::time_t);
+        if rc != 0 {
+            return Err("gmtime failed".to_string());
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn strftime_wasm(format: &str, parts: TimeParts) -> Result<String, String> {
+    const WEEKDAY_SHORT: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const WEEKDAY_LONG: [&str; 7] = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ];
+    const MONTH_SHORT: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    const MONTH_LONG: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+
+    fn push_num(out: &mut String, val: i32, width: usize, pad: char) {
+        let mut buf = [pad as u8; 12];
+        let mut idx = buf.len();
+        let mut n = val.unsigned_abs();
+        if n == 0 {
+            idx -= 1;
+            buf[idx] = b'0';
+        } else {
+            while n > 0 {
+                let digit = (n % 10) as u8;
+                idx -= 1;
+                buf[idx] = b'0' + digit;
+                n /= 10;
+            }
+        }
+        let len = buf.len() - idx;
+        let needed = width.saturating_sub(len + if val < 0 { 1 } else { 0 });
+        for _ in 0..needed {
+            out.push(pad);
+        }
+        if val < 0 {
+            out.push('-');
+        }
+        out.push_str(std::str::from_utf8(&buf[idx..]).unwrap_or("0"));
+    }
+
+    fn jan1_wday_mon0(yday: i32, wday_mon0: i32) -> i32 {
+        let offset = (yday - 1).rem_euclid(7);
+        (wday_mon0 - offset).rem_euclid(7)
+    }
+
+    fn week_number_sun(yday: i32, jan1_wday_mon0: i32) -> i32 {
+        let jan1_sun0 = (jan1_wday_mon0 + 1).rem_euclid(7);
+        let first_sunday = 1 + (7 - jan1_sun0).rem_euclid(7);
+        if yday < first_sunday {
+            0
+        } else {
+            1 + (yday - first_sunday) / 7
+        }
+    }
+
+    fn week_number_mon(yday: i32, jan1_wday_mon0: i32) -> i32 {
+        let first_monday = 1 + (7 - jan1_wday_mon0).rem_euclid(7);
+        if yday < first_monday {
+            0
+        } else {
+            1 + (yday - first_monday) / 7
+        }
+    }
+
+    fn weeks_in_year(year: i32, jan1_wday_mon0: i32) -> i32 {
+        let jan1_mon1 = jan1_wday_mon0 + 1;
+        if jan1_mon1 == 4 || (is_leap_year(year) && jan1_mon1 == 3) {
+            53
+        } else {
+            52
+        }
+    }
+
+    fn iso_week_date(year: i32, yday: i32, wday_mon0: i32) -> (i32, i32, i32) {
+        let weekday = wday_mon0 + 1;
+        let mut week = (yday - weekday + 10) / 7;
+        let jan1_wday = jan1_wday_mon0(yday, wday_mon0);
+        let mut iso_year = year;
+        let max_week = weeks_in_year(year, jan1_wday);
+        if week < 1 {
+            iso_year -= 1;
+            let prev_days = if is_leap_year(iso_year) { 366 } else { 365 };
+            let prev_jan1 = (jan1_wday - (prev_days % 7)).rem_euclid(7);
+            week = weeks_in_year(iso_year, prev_jan1);
+        } else if week > max_week {
+            iso_year += 1;
+            week = 1;
+        }
+        (iso_year, week, weekday)
+    }
+
+    let mut out = String::with_capacity(format.len() + 16);
+    let mut iter = format.chars();
+    while let Some(ch) = iter.next() {
+        if ch != '%' {
+            out.push(ch);
+            continue;
+        }
+        let Some(spec) = iter.next() else {
+            out.push('%');
+            break;
+        };
+        match spec {
+            '%' => out.push('%'),
+            'a' => out.push_str(WEEKDAY_SHORT[parts.wday as usize]),
+            'A' => out.push_str(WEEKDAY_LONG[parts.wday as usize]),
+            'b' | 'h' => out.push_str(MONTH_SHORT[(parts.month - 1) as usize]),
+            'B' => out.push_str(MONTH_LONG[(parts.month - 1) as usize]),
+            'C' => {
+                let century = parts.year.div_euclid(100);
+                push_num(&mut out, century, 2, '0');
+            }
+            'd' => push_num(&mut out, parts.day, 2, '0'),
+            'e' => push_num(&mut out, parts.day, 2, ' '),
+            'H' => push_num(&mut out, parts.hour, 2, '0'),
+            'I' => {
+                let mut hour = parts.hour % 12;
+                if hour == 0 {
+                    hour = 12;
+                }
+                push_num(&mut out, hour, 2, '0');
+            }
+            'k' => push_num(&mut out, parts.hour, 2, ' '),
+            'l' => {
+                let mut hour = parts.hour % 12;
+                if hour == 0 {
+                    hour = 12;
+                }
+                push_num(&mut out, hour, 2, ' ');
+            }
+            'j' => push_num(&mut out, parts.yday, 3, '0'),
+            'm' => push_num(&mut out, parts.month, 2, '0'),
+            'M' => push_num(&mut out, parts.minute, 2, '0'),
+            'p' => out.push_str(if parts.hour < 12 { "AM" } else { "PM" }),
+            'S' => push_num(&mut out, parts.second, 2, '0'),
+            'U' => {
+                let jan1 = jan1_wday_mon0(parts.yday, parts.wday);
+                let week = week_number_sun(parts.yday, jan1);
+                push_num(&mut out, week, 2, '0');
+            }
+            'W' => {
+                let jan1 = jan1_wday_mon0(parts.yday, parts.wday);
+                let week = week_number_mon(parts.yday, jan1);
+                push_num(&mut out, week, 2, '0');
+            }
+            'w' => {
+                let wday_sun0 = (parts.wday + 1).rem_euclid(7);
+                push_num(&mut out, wday_sun0, 1, '0');
+            }
+            'u' => {
+                let wday_mon1 = parts.wday + 1;
+                push_num(&mut out, wday_mon1, 1, '0');
+            }
+            'x' => {
+                push_num(&mut out, parts.month, 2, '0');
+                out.push('/');
+                push_num(&mut out, parts.day, 2, '0');
+                out.push('/');
+                let yy = parts.year.rem_euclid(100);
+                push_num(&mut out, yy, 2, '0');
+            }
+            'X' => {
+                push_num(&mut out, parts.hour, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.minute, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.second, 2, '0');
+            }
+            'y' => {
+                let yy = parts.year.rem_euclid(100);
+                push_num(&mut out, yy, 2, '0');
+            }
+            'Y' => push_num(&mut out, parts.year, 4, '0'),
+            'Z' => out.push_str("UTC"),
+            'z' => out.push_str("+0000"),
+            'c' => {
+                out.push_str(WEEKDAY_SHORT[parts.wday as usize]);
+                out.push(' ');
+                out.push_str(MONTH_SHORT[(parts.month - 1) as usize]);
+                out.push(' ');
+                push_num(&mut out, parts.day, 2, ' ');
+                out.push(' ');
+                push_num(&mut out, parts.hour, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.minute, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.second, 2, '0');
+                out.push(' ');
+                push_num(&mut out, parts.year, 4, '0');
+            }
+            'D' => {
+                push_num(&mut out, parts.month, 2, '0');
+                out.push('/');
+                push_num(&mut out, parts.day, 2, '0');
+                out.push('/');
+                let yy = parts.year.rem_euclid(100);
+                push_num(&mut out, yy, 2, '0');
+            }
+            'F' => {
+                push_num(&mut out, parts.year, 4, '0');
+                out.push('-');
+                push_num(&mut out, parts.month, 2, '0');
+                out.push('-');
+                push_num(&mut out, parts.day, 2, '0');
+            }
+            'R' => {
+                push_num(&mut out, parts.hour, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.minute, 2, '0');
+            }
+            'r' => {
+                let mut hour = parts.hour % 12;
+                if hour == 0 {
+                    hour = 12;
+                }
+                push_num(&mut out, hour, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.minute, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.second, 2, '0');
+                out.push(' ');
+                out.push_str(if parts.hour < 12 { "AM" } else { "PM" });
+            }
+            'T' => {
+                push_num(&mut out, parts.hour, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.minute, 2, '0');
+                out.push(':');
+                push_num(&mut out, parts.second, 2, '0');
+            }
+            'n' => out.push('\n'),
+            't' => out.push('\t'),
+            'G' | 'g' | 'V' => {
+                let (iso_year, iso_week, _) = iso_week_date(parts.year, parts.yday, parts.wday);
+                match spec {
+                    'G' => push_num(&mut out, iso_year, 4, '0'),
+                    'g' => {
+                        let yy = iso_year.rem_euclid(100);
+                        push_num(&mut out, yy, 2, '0');
+                    }
+                    _ => push_num(&mut out, iso_week, 2, '0'),
+                }
+            }
+            _ => {
+                return Err(format!("unsupported strftime directive %{spec}"));
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_localtime(secs_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(secs_bits);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if obj.is_none() && require_time_wall_capability::<u64>(_py).is_err() {
+                return MoltObject::none().bits();
+            }
+        }
+        let secs = match parse_time_seconds(_py, secs_bits) {
+            Ok(val) => val,
+            Err(bits) => return bits,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let secs = secs as libc::time_t;
+            let tm = match localtime_tm(secs) {
+                Ok(tm) => tm,
+                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+            };
+            let parts = time_parts_from_tm(&tm);
+            time_parts_to_tuple(_py, parts)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let offset_west = match local_offset_west_wasm(secs) {
+                Ok(value) => value,
+                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+            };
+            let mut parts = time_parts_from_epoch_utc(secs.saturating_sub(offset_west));
+            let std_offset_west = timezone_west_wasm().unwrap_or(offset_west);
+            parts.isdst = if offset_west != std_offset_west { 1 } else { 0 };
+            time_parts_to_tuple(_py, parts)
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_gmtime(secs_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(secs_bits);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if obj.is_none() && require_time_wall_capability::<u64>(_py).is_err() {
+                return MoltObject::none().bits();
+            }
+        }
+        let secs = match parse_time_seconds(_py, secs_bits) {
+            Ok(val) => val,
+            Err(bits) => return bits,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let secs = secs as libc::time_t;
+            let tm = match gmtime_tm(secs) {
+                Ok(tm) => tm,
+                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+            };
+            let parts = time_parts_from_tm(&tm);
+            time_parts_to_tuple(_py, parts)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let parts = time_parts_from_epoch_utc(secs);
+            time_parts_to_tuple(_py, parts)
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_strftime(fmt_bits: u64, time_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let fmt_obj = obj_from_bits(fmt_bits);
+        if fmt_obj.is_none() {
+            return raise_exception::<_>(_py, "TypeError", "strftime() format must be str");
+        }
+        let Some(fmt) = string_obj_to_owned(fmt_obj) else {
+            let type_name = class_name_for_error(type_of_bits(_py, fmt_bits));
+            let msg = format!("strftime() format must be str, not {type_name}");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        if fmt.as_bytes().contains(&0) {
+            return raise_exception::<_>(_py, "ValueError", "embedded null character");
+        }
+        let parts = match parse_time_tuple(_py, time_bits) {
+            Ok(parts) => parts,
+            Err(bits) => return bits,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let tm = match tm_from_time_parts(_py, parts) {
+                Ok(tm) => tm,
+                Err(bits) => return bits,
+            };
+            let c_fmt = match CString::new(fmt) {
+                Ok(c) => c,
+                Err(_) => {
+                    return raise_exception::<_>(_py, "ValueError", "embedded null character");
+                }
+            };
+            let mut buf = vec![0u8; 128];
+            loop {
+                let len = unsafe {
+                    libc::strftime(
+                        buf.as_mut_ptr() as *mut libc::c_char,
+                        buf.len(),
+                        c_fmt.as_ptr(),
+                        &tm as *const libc::tm,
+                    )
+                };
+                if len == 0 {
+                    if buf.len() >= 1_048_576 {
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "strftime() result too large",
+                        );
+                    }
+                    buf.resize(buf.len() * 2, 0);
+                    continue;
+                }
+                let slice = &buf[..len];
+                let Ok(text) = std::str::from_utf8(slice) else {
+                    return raise_exception::<_>(
+                        _py,
+                        "UnicodeError",
+                        "strftime() produced non-UTF-8 output",
+                    );
+                };
+                let ptr = alloc_string(_py, text.as_bytes());
+                if ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(ptr).bits();
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let out = match strftime_wasm(&fmt, parts) {
+                Ok(out) => out,
+                Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+            };
+            let ptr = alloc_string(_py, out.as_bytes());
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn tzname_native() -> Result<(String, String), String> {
+    #[cfg(unix)]
+    unsafe {
+        unsafe extern "C" {
+            fn tzset();
+            static mut tzname: [*mut libc::c_char; 2];
+        }
+        tzset();
+        let std_ptr = tzname[0];
+        let dst_ptr = tzname[1];
+        if std_ptr.is_null() || dst_ptr.is_null() {
+            return Err("tzname unavailable".to_string());
+        }
+        let std_name = CStr::from_ptr(std_ptr).to_string_lossy().into_owned();
+        let dst_name = CStr::from_ptr(dst_ptr).to_string_lossy().into_owned();
+        Ok((std_name, dst_name))
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Time::{
+            GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
+        };
+        let mut info = TIME_ZONE_INFORMATION {
+            Bias: 0,
+            StandardName: [0u16; 32],
+            StandardDate: std::mem::zeroed(),
+            StandardBias: 0,
+            DaylightName: [0u16; 32],
+            DaylightDate: std::mem::zeroed(),
+            DaylightBias: 0,
+        };
+        let status = GetTimeZoneInformation(&mut info as *mut TIME_ZONE_INFORMATION);
+        if status == TIME_ZONE_ID_INVALID {
+            return Err("tzname unavailable".to_string());
+        }
+        let std_len = info
+            .StandardName
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(info.StandardName.len());
+        let dst_len = info
+            .DaylightName
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(info.DaylightName.len());
+        let std_name = String::from_utf16_lossy(&info.StandardName[..std_len]);
+        let dst_name = String::from_utf16_lossy(&info.DaylightName[..dst_len]);
+        return Ok((std_name, dst_name));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn timezone_native() -> Result<i64, String> {
+    #[cfg(unix)]
+    unsafe {
+        unsafe extern "C" {
+            fn tzset();
+            static mut timezone: libc::c_long;
+        }
+        tzset();
+        Ok(timezone)
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Time::{
+            GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
+        };
+        let mut info = TIME_ZONE_INFORMATION {
+            Bias: 0,
+            StandardName: [0u16; 32],
+            StandardDate: std::mem::zeroed(),
+            StandardBias: 0,
+            DaylightName: [0u16; 32],
+            DaylightDate: std::mem::zeroed(),
+            DaylightBias: 0,
+        };
+        let status = GetTimeZoneInformation(&mut info as *mut TIME_ZONE_INFORMATION);
+        if status == TIME_ZONE_ID_INVALID {
+            return Err("timezone unavailable".to_string());
+        }
+        let bias = info.Bias + info.StandardBias;
+        return Ok((bias as i64) * 60);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn daylight_native() -> Result<i64, String> {
+    #[cfg(unix)]
+    unsafe {
+        unsafe extern "C" {
+            fn tzset();
+            static mut daylight: libc::c_int;
+        }
+        tzset();
+        Ok(if daylight != 0 { 1 } else { 0 })
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Time::{
+            GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
+        };
+        let mut info = TIME_ZONE_INFORMATION {
+            Bias: 0,
+            StandardName: [0u16; 32],
+            StandardDate: std::mem::zeroed(),
+            StandardBias: 0,
+            DaylightName: [0u16; 32],
+            DaylightDate: std::mem::zeroed(),
+            DaylightBias: 0,
+        };
+        let status = GetTimeZoneInformation(&mut info as *mut TIME_ZONE_INFORMATION);
+        if status == TIME_ZONE_ID_INVALID {
+            return Err("daylight unavailable".to_string());
+        }
+        return Ok(if info.DaylightDate.wMonth != 0 { 1 } else { 0 });
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sample_offset_west_native(year: i32, month: i32, day: i32) -> Result<i64, String> {
+    let days = days_from_civil(year, month, day);
+    let secs = days.saturating_mul(86_400).saturating_add(12 * 3600);
+    offset_west_from_secs(secs)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn altzone_native() -> Result<i64, String> {
+    let std_offset = timezone_native()?;
+    if daylight_native()? == 0 {
+        return Ok(std_offset);
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Time::{
+            GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
+        };
+        let mut info = TIME_ZONE_INFORMATION {
+            Bias: 0,
+            StandardName: [0u16; 32],
+            StandardDate: std::mem::zeroed(),
+            StandardBias: 0,
+            DaylightName: [0u16; 32],
+            DaylightDate: std::mem::zeroed(),
+            DaylightBias: 0,
+        };
+        let status = GetTimeZoneInformation(&mut info as *mut TIME_ZONE_INFORMATION);
+        if status == TIME_ZONE_ID_INVALID {
+            return Err("altzone unavailable".to_string());
+        }
+        let bias = info.Bias + info.DaylightBias;
+        return Ok((bias as i64) * 60);
+    }
+    #[cfg(unix)]
+    {
+        let now = current_epoch_secs_i64()?;
+        let local_tm = localtime_tm(now as libc::time_t)?;
+        let year = local_tm.tm_year + 1900;
+        let jan = sample_offset_west_native(year, 1, 1).unwrap_or(std_offset);
+        let jul = sample_offset_west_native(year, 7, 1).unwrap_or(std_offset);
+        if jan != std_offset && jul == std_offset {
+            return Ok(jan);
+        }
+        if jul != std_offset && jan == std_offset {
+            return Ok(jul);
+        }
+        if jan != jul {
+            return Ok(std::cmp::min(jan, jul));
+        }
+        Ok(jan)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn sample_offset_west_wasm(year: i32, month: i32, day: i32) -> Result<i64, String> {
+    let days = days_from_civil(year, month, day);
+    let secs = days.saturating_mul(86_400).saturating_add(12 * 3600);
+    local_offset_west_wasm(secs)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn daylight_wasm() -> Result<i64, String> {
+    let year = time_parts_from_epoch_utc(current_epoch_secs_i64()?).year;
+    let jan = sample_offset_west_wasm(year, 1, 1)?;
+    let jul = sample_offset_west_wasm(year, 7, 1)?;
+    Ok(if jan != jul { 1 } else { 0 })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn altzone_wasm() -> Result<i64, String> {
+    let std_offset = timezone_west_wasm()?;
+    if daylight_wasm()? == 0 {
+        return Ok(std_offset);
+    }
+    let year = time_parts_from_epoch_utc(current_epoch_secs_i64()?).year;
+    let jan = sample_offset_west_wasm(year, 1, 1).unwrap_or(std_offset);
+    let jul = sample_offset_west_wasm(year, 7, 1).unwrap_or(std_offset);
+    if jan != std_offset && jul == std_offset {
+        return Ok(jan);
+    }
+    if jul != std_offset && jan == std_offset {
+        return Ok(jul);
+    }
+    if jan != jul {
+        return Ok(std::cmp::min(jan, jul));
+    }
+    Ok(jan)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn mktime_native(parts: TimeParts) -> f64 {
+    let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
+    tm.tm_sec = parts.second;
+    tm.tm_min = parts.minute;
+    tm.tm_hour = parts.hour;
+    tm.tm_mday = parts.day;
+    tm.tm_mon = parts.month - 1;
+    tm.tm_year = parts.year - 1900;
+    tm.tm_wday = (parts.wday + 1).rem_euclid(7);
+    tm.tm_yday = parts.yday - 1;
+    tm.tm_isdst = parts.isdst;
+    let out = unsafe { libc::mktime(&mut tm as *mut libc::tm) };
+    out as f64
+}
+
+#[cfg(target_arch = "wasm32")]
+fn mktime_wasm(parts: TimeParts) -> Result<f64, String> {
+    let days = days_from_civil(parts.year, parts.month, parts.day);
+    let local_secs = days
+        .saturating_mul(86_400)
+        .saturating_add((parts.hour as i64).saturating_mul(3600))
+        .saturating_add((parts.minute as i64).saturating_mul(60))
+        .saturating_add(parts.second as i64);
+    let std_offset = timezone_west_wasm()?;
+    let utc_secs = if parts.isdst > 0 {
+        let dst_offset = altzone_wasm().unwrap_or(std_offset);
+        local_secs.saturating_add(dst_offset)
+    } else if parts.isdst == 0 {
+        local_secs.saturating_add(std_offset)
+    } else {
+        let mut guess = local_secs.saturating_add(std_offset);
+        for _ in 0..3 {
+            let offset = local_offset_west_wasm(guess).unwrap_or(std_offset);
+            let next = local_secs.saturating_add(offset);
+            if next == guess {
+                break;
+            }
+            guess = next;
+        }
+        guess
+    };
+    Ok(utc_secs as f64)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_timezone() -> u64 {
+    crate::with_gil_entry!(_py, {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            match timezone_native() {
+                Ok(val) => MoltObject::from_int(val).bits(),
+                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            match timezone_west_wasm() {
+                Ok(val) => MoltObject::from_int(val).bits(),
+                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_daylight() -> u64 {
+    crate::with_gil_entry!(_py, {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            match daylight_native() {
+                Ok(val) => MoltObject::from_int(val).bits(),
+                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            match daylight_wasm() {
+                Ok(val) => MoltObject::from_int(val).bits(),
+                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_altzone() -> u64 {
+    crate::with_gil_entry!(_py, {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            match altzone_native() {
+                Ok(val) => MoltObject::from_int(val).bits(),
+                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            match altzone_wasm() {
+                Ok(val) => MoltObject::from_int(val).bits(),
+                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_tzname() -> u64 {
+    crate::with_gil_entry!(_py, {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (std_name, dst_name) = match tzname_native() {
+                Ok(res) => res,
+                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+            };
+            let std_ptr = alloc_string(_py, std_name.as_bytes());
+            if std_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let dst_ptr = alloc_string(_py, dst_name.as_bytes());
+            if dst_ptr.is_null() {
+                dec_ref_bits(_py, MoltObject::from_ptr(std_ptr).bits());
+                return MoltObject::none().bits();
+            }
+            let std_bits = MoltObject::from_ptr(std_ptr).bits();
+            let dst_bits = MoltObject::from_ptr(dst_ptr).bits();
+            let tuple_ptr = alloc_tuple(_py, &[std_bits, dst_bits]);
+            dec_ref_bits(_py, std_bits);
+            dec_ref_bits(_py, dst_bits);
+            if tuple_ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(tuple_ptr).bits()
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let (std_name, dst_name) = match tzname_wasm() {
+                Ok(res) => res,
+                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+            };
+            let std_ptr = alloc_string(_py, std_name.as_bytes());
+            if std_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let dst_ptr = alloc_string(_py, dst_name.as_bytes());
+            if dst_ptr.is_null() {
+                dec_ref_bits(_py, MoltObject::from_ptr(std_ptr).bits());
+                return MoltObject::none().bits();
+            }
+            let std_bits = MoltObject::from_ptr(std_ptr).bits();
+            let dst_bits = MoltObject::from_ptr(dst_ptr).bits();
+            let tuple_ptr = alloc_tuple(_py, &[std_bits, dst_bits]);
+            dec_ref_bits(_py, std_bits);
+            dec_ref_bits(_py, dst_bits);
+            if tuple_ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(tuple_ptr).bits()
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_asctime(time_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let parts = match parse_time_tuple(_py, time_bits) {
+            Ok(parts) => parts,
+            Err(bits) => return bits,
+        };
+        let text = match asctime_from_parts(parts) {
+            Ok(text) => text,
+            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+        };
+        let ptr = alloc_string(_py, text.as_bytes());
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_mktime(time_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let parts = match parse_mktime_tuple(_py, time_bits) {
+            Ok(parts) => parts,
+            Err(bits) => return bits,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            MoltObject::from_float(mktime_native(parts)).bits()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            match mktime_wasm(parts) {
+                Ok(out) => MoltObject::from_float(out).bits(),
+                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_timegm(time_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let (year, month, day, hour, minute, second) = match parse_timegm_tuple(_py, time_bits) {
+            Ok(parts) => parts,
+            Err(bits) => return bits,
+        };
+        let days = days_from_civil(year, month, day);
+        let seconds = days
+            .saturating_mul(86_400)
+            .saturating_add((hour as i64).saturating_mul(3600))
+            .saturating_add((minute as i64).saturating_mul(60))
+            .saturating_add(second as i64);
+        MoltObject::from_int(seconds).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_time_get_clock_info(name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "unknown clock");
+        };
+        let (name_value, implementation, resolution, monotonic, adjustable) = match name.as_str() {
+            "monotonic" | "perf_counter" => (name.as_str(), "molt", 1e-9f64, true, false),
+            "process_time" => ("process_time", "molt", 1e-9f64, true, false),
+            "time" => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if require_time_wall_capability::<u64>(_py).is_err() {
+                    return MoltObject::none().bits();
+                }
+                ("time", "molt", 1e-6f64, false, true)
+            }
+            _ => return raise_exception::<_>(_py, "ValueError", "unknown clock"),
+        };
+        let name_ptr = alloc_string(_py, name_value.as_bytes());
+        if name_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let impl_ptr = alloc_string(_py, implementation.as_bytes());
+        if impl_ptr.is_null() {
+            dec_ref_bits(_py, MoltObject::from_ptr(name_ptr).bits());
+            return MoltObject::none().bits();
+        }
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let impl_bits = MoltObject::from_ptr(impl_ptr).bits();
+        let resolution_bits = MoltObject::from_float(resolution).bits();
+        let monotonic_bits = MoltObject::from_bool(monotonic).bits();
+        let adjustable_bits = MoltObject::from_bool(adjustable).bits();
+        let tuple_ptr = alloc_tuple(
+            _py,
+            &[
+                name_bits,
+                impl_bits,
+                resolution_bits,
+                monotonic_bits,
+                adjustable_bits,
+            ],
+        );
+        dec_ref_bits(_py, name_bits);
+        dec_ref_bits(_py, impl_bits);
+        if tuple_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+fn traceback_limit_from_bits(_py: &PyToken<'_>, limit_bits: u64) -> Result<Option<usize>, u64> {
+    let obj = obj_from_bits(limit_bits);
+    if obj.is_none() {
+        return Ok(None);
+    }
+    let Some(limit) = to_i64(obj) else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "limit must be an integer",
+        ));
+    };
+    if limit < 0 {
+        return Ok(Some(0));
+    }
+    Ok(Some(limit as usize))
+}
+
+fn traceback_frames(
+    _py: &PyToken<'_>,
+    tb_bits: u64,
+    limit: Option<usize>,
+) -> Vec<(String, i64, String)> {
+    if obj_from_bits(tb_bits).is_none() {
+        return Vec::new();
+    }
+    let tb_frame_bits =
+        intern_static_name(_py, &runtime_state(_py).interned.tb_frame_name, b"tb_frame");
+    let tb_lineno_bits = intern_static_name(
+        _py,
+        &runtime_state(_py).interned.tb_lineno_name,
+        b"tb_lineno",
+    );
+    let tb_next_bits =
+        intern_static_name(_py, &runtime_state(_py).interned.tb_next_name, b"tb_next");
+    let f_code_bits = intern_static_name(_py, &runtime_state(_py).interned.f_code_name, b"f_code");
+    let f_lineno_bits =
+        intern_static_name(_py, &runtime_state(_py).interned.f_lineno_name, b"f_lineno");
+    let mut out: Vec<(String, i64, String)> = Vec::new();
+    let mut current_bits = tb_bits;
+    let mut depth = 0usize;
+    while !obj_from_bits(current_bits).is_none() {
+        if let Some(max) = limit
+            && out.len() >= max
+        {
+            break;
+        }
+        if depth > 512 {
+            break;
+        }
+        let tb_obj = obj_from_bits(current_bits);
+        let Some(tb_ptr) = tb_obj.as_ptr() else {
+            break;
+        };
+        let (frame_bits, line, next_bits, had_tb_fields) = unsafe {
+            let dict_bits = instance_dict_bits(tb_ptr);
+            let mut frame_bits = MoltObject::none().bits();
+            let mut line = 0i64;
+            let mut next_bits = MoltObject::none().bits();
+            let mut had_tb_fields = false;
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                && object_type_id(dict_ptr) == TYPE_ID_DICT
+            {
+                if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_frame_bits) {
+                    frame_bits = bits;
+                    had_tb_fields = true;
+                }
+                if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_lineno_bits) {
+                    if let Some(val) = to_i64(obj_from_bits(bits)) {
+                        line = val;
+                    }
+                    had_tb_fields = true;
+                }
+                if let Some(bits) = dict_get_in_place(_py, dict_ptr, tb_next_bits) {
+                    next_bits = bits;
+                    had_tb_fields = true;
+                }
+            }
+            (frame_bits, line, next_bits, had_tb_fields)
+        };
+        if !had_tb_fields {
+            break;
+        }
+        let (filename, func_name, frame_line) = unsafe {
+            let mut filename = "<unknown>".to_string();
+            let mut func_name = "<module>".to_string();
+            let mut frame_line = line;
+            if let Some(frame_ptr) = obj_from_bits(frame_bits).as_ptr() {
+                let dict_bits = instance_dict_bits(frame_ptr);
+                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                    && object_type_id(dict_ptr) == TYPE_ID_DICT
+                {
+                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_lineno_bits)
+                        && let Some(val) = to_i64(obj_from_bits(bits))
+                    {
+                        frame_line = val;
+                    }
+                    if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_code_bits)
+                        && let Some(code_ptr) = obj_from_bits(bits).as_ptr()
+                        && object_type_id(code_ptr) == TYPE_ID_CODE
+                    {
+                        let filename_bits = code_filename_bits(code_ptr);
+                        if let Some(name) = string_obj_to_owned(obj_from_bits(filename_bits)) {
+                            filename = name;
+                        }
+                        let name_bits = code_name_bits(code_ptr);
+                        if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits))
+                            && !name.is_empty()
+                        {
+                            func_name = name;
+                        }
+                    }
+                }
+            }
+            (filename, func_name, frame_line)
+        };
+        let final_line = if line > 0 { line } else { frame_line };
+        out.push((filename, final_line, func_name));
+        current_bits = next_bits;
+        depth += 1;
+    }
+    out
+}
+
+fn traceback_source_line_native(_py: &PyToken<'_>, filename: &str, lineno: i64) -> String {
+    if lineno <= 0 {
+        return String::new();
+    }
+    if !has_capability(_py, "fs.read") {
+        return String::new();
+    }
+    let Ok(file) = std::fs::File::open(filename) else {
+        return String::new();
+    };
+    let reader = BufReader::new(file);
+    let target = lineno as usize;
+    for (idx, line_result) in reader.lines().enumerate() {
+        if idx + 1 == target {
+            if let Ok(line) = line_result {
+                return line;
+            }
+            return String::new();
+        }
+    }
+    String::new()
+}
+
+fn traceback_line_trim_bounds(line: &str) -> Option<(i64, i64)> {
+    if line.is_empty() {
+        return None;
+    }
+    let chars: Vec<char> = line.chars().collect();
+    if chars.is_empty() {
+        return None;
+    }
+    let mut start = 0usize;
+    while start < chars.len() && chars[start].is_whitespace() {
+        start += 1;
+    }
+    let mut end = chars.len();
+    while end > start && chars[end - 1].is_whitespace() {
+        end -= 1;
+    }
+    if end <= start {
+        return None;
+    }
+    Some((start as i64, end as i64))
+}
+
+fn traceback_infer_column_offsets(line: &str) -> (i64, i64) {
+    if line.is_empty() {
+        return (0, 0);
+    }
+    let chars: Vec<char> = line.chars().collect();
+    if chars.is_empty() {
+        return (0, 0);
+    }
+    let mut start = 0usize;
+    while start < chars.len() && chars[start].is_whitespace() {
+        start += 1;
+    }
+    if start >= chars.len() {
+        return (0, 0);
+    }
+    let mut end = chars.len();
+    while end > start && chars[end - 1].is_whitespace() {
+        end -= 1;
+    }
+    let trimmed: String = chars[start..end].iter().collect();
+    let mut highlighted_start = start;
+    if let Some(rest) = trimmed
+        .strip_prefix("return ")
+        .or_else(|| trimmed.strip_prefix("raise "))
+        .or_else(|| trimmed.strip_prefix("yield "))
+        .or_else(|| trimmed.strip_prefix("await "))
+        .or_else(|| trimmed.strip_prefix("assert "))
+    {
+        highlighted_start = end.saturating_sub(rest.chars().count());
+        while highlighted_start < end && chars[highlighted_start].is_whitespace() {
+            highlighted_start += 1;
+        }
+    } else {
+        let trimmed_chars: Vec<char> = trimmed.chars().collect();
+        for idx in 0..trimmed_chars.len() {
+            if trimmed_chars[idx] != '=' {
+                continue;
+            }
+            let prev = if idx > 0 {
+                Some(trimmed_chars[idx - 1])
+            } else {
+                None
+            };
+            let next = if idx + 1 < trimmed_chars.len() {
+                Some(trimmed_chars[idx + 1])
+            } else {
+                None
+            };
+            if matches!(prev, Some('=' | '!' | '<' | '>' | ':')) || matches!(next, Some('=')) {
+                continue;
+            }
+            let mut rhs_start = start + idx + 1;
+            while rhs_start < end && chars[rhs_start].is_whitespace() {
+                rhs_start += 1;
+            }
+            if rhs_start < end {
+                highlighted_start = rhs_start;
+            }
+            break;
+        }
+    }
+    let col = highlighted_start as i64;
+    let end_col = end.max(highlighted_start) as i64;
+    if end_col <= col {
+        (col, col + 1)
+    } else {
+        (col, end_col)
+    }
+}
+
+fn traceback_format_caret_line_native(line: &str, mut colno: i64, mut end_colno: i64) -> String {
+    if line.is_empty() || colno < 0 {
+        return String::new();
+    }
+    let text_len = line.chars().count() as i64;
+    if text_len <= 0 {
+        return String::new();
+    }
+    if end_colno < colno {
+        end_colno = colno;
+    }
+    if colno > text_len {
+        colno = text_len;
+    }
+    if end_colno > text_len {
+        end_colno = text_len;
+    }
+    let Some((trim_start, trim_end)) = traceback_line_trim_bounds(line) else {
+        return String::new();
+    };
+    if colno < trim_start {
+        colno = trim_start;
+    }
+    if end_colno > trim_end {
+        end_colno = trim_end;
+    }
+    if end_colno <= colno {
+        return String::new();
+    }
+    let width = end_colno - colno;
+    let col_usize = colno as usize;
+    let mut out = String::with_capacity((4 + colno + width + 1) as usize);
+    out.push_str("    ");
+    for ch in line.chars().take(col_usize) {
+        if ch == '\t' {
+            out.push('\t');
+        } else {
+            out.push(' ');
+        }
+    }
+    for _ in 0..width {
+        out.push('^');
+    }
+    out.push('\n');
+    out
+}
+
+#[cfg(test)]
+mod traceback_format_tests {
+    use super::{traceback_format_caret_line_native, traceback_infer_column_offsets};
+
+    #[test]
+    fn infer_column_offsets_prefers_rhs_for_assignment() {
+        let (col, end_col) = traceback_infer_column_offsets("total = left + right   ");
+        assert_eq!(col, 8);
+        assert!(end_col > col);
+    }
+
+    #[test]
+    fn infer_column_offsets_skips_return_keyword() {
+        let (col, end_col) = traceback_infer_column_offsets("    return value");
+        assert_eq!(col, 11);
+        assert_eq!(end_col, 16);
+    }
+
+    #[test]
+    fn caret_line_preserves_tabs_for_alignment() {
+        let line = "\titem = source";
+        let caret = traceback_format_caret_line_native(line, 1, 5);
+        assert!(caret.starts_with("    \t"));
+        assert!(caret.contains("^^^^"));
+    }
+
+    #[test]
+    fn caret_line_omits_invalid_ranges() {
+        let line = "value = source";
+        assert!(traceback_format_caret_line_native(line, 0, 0).is_empty());
+        assert!(traceback_format_caret_line_native(line, 10, 5).is_empty());
+    }
+}
+
+fn traceback_format_exception_only_line(
+    _py: &PyToken<'_>,
+    exc_type_bits: u64,
+    value_bits: u64,
+) -> String {
+    let value_obj = obj_from_bits(value_bits);
+    if let Some(exc_ptr) = value_obj.as_ptr() {
+        unsafe {
+            if object_type_id(exc_ptr) == TYPE_ID_EXCEPTION {
+                let mut kind = "Exception".to_string();
+                let class_bits = exception_class_bits(exc_ptr);
+                if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+                    && object_type_id(class_ptr) == TYPE_ID_TYPE
+                {
+                    let name_bits = class_name_bits(class_ptr);
+                    if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) {
+                        kind = name;
+                    }
+                }
+                let message = format_exception_message(_py, exc_ptr);
+                if message.is_empty() {
+                    return format!("{kind}\n");
+                }
+                return format!("{kind}: {message}\n");
+            }
+        }
+    }
+    let type_name = if !obj_from_bits(exc_type_bits).is_none() {
+        if let Some(tp_ptr) = obj_from_bits(exc_type_bits).as_ptr() {
+            unsafe {
+                if object_type_id(tp_ptr) == TYPE_ID_TYPE {
+                    let name_bits = class_name_bits(tp_ptr);
+                    if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) {
+                        name
+                    } else {
+                        "Exception".to_string()
+                    }
+                } else {
+                    class_name_for_error(type_of_bits(_py, exc_type_bits))
+                }
+            }
+        } else {
+            "Exception".to_string()
+        }
+    } else if !value_obj.is_none() {
+        class_name_for_error(type_of_bits(_py, value_bits))
+    } else {
+        "Exception".to_string()
+    };
+    if value_obj.is_none() {
+        return format!("{type_name}\n");
+    }
+    let text = format_obj_str(_py, value_obj);
+    if text.is_empty() {
+        format!("{type_name}\n")
+    } else {
+        format!("{type_name}: {text}\n")
+    }
+}
+
+fn traceback_exception_type_bits(_py: &PyToken<'_>, value_bits: u64) -> u64 {
+    if let Some(ptr) = obj_from_bits(value_bits).as_ptr() {
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_EXCEPTION {
+                return exception_class_bits(ptr);
+            }
+        }
+    }
+    if obj_from_bits(value_bits).is_none() {
+        MoltObject::none().bits()
+    } else {
+        type_of_bits(_py, value_bits)
+    }
+}
+
+fn traceback_exception_trace_bits(value_bits: u64) -> u64 {
+    if let Some(ptr) = obj_from_bits(value_bits).as_ptr() {
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_EXCEPTION {
+                return exception_trace_bits(ptr);
+            }
+        }
+    }
+    MoltObject::none().bits()
+}
+
+fn traceback_append_exception_single_lines(
+    _py: &PyToken<'_>,
+    exc_type_bits: u64,
+    value_bits: u64,
+    tb_bits: u64,
+    limit: Option<usize>,
+    out: &mut Vec<String>,
+) {
+    if !obj_from_bits(tb_bits).is_none() {
+        out.push("Traceback (most recent call last):\n".to_string());
+        let payload = traceback_payload_from_source(_py, tb_bits, limit);
+        out.extend(traceback_payload_to_formatted_lines(_py, &payload));
+    }
+    out.push(traceback_format_exception_only_line(
+        _py,
+        exc_type_bits,
+        value_bits,
+    ));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn traceback_append_exception_chain_lines(
+    _py: &PyToken<'_>,
+    exc_type_bits: u64,
+    value_bits: u64,
+    tb_bits: u64,
+    limit: Option<usize>,
+    chain: bool,
+    seen: &mut HashSet<u64>,
+    out: &mut Vec<String>,
+) {
+    if obj_from_bits(value_bits).is_none() || !chain {
+        traceback_append_exception_single_lines(
+            _py,
+            exc_type_bits,
+            value_bits,
+            tb_bits,
+            limit,
+            out,
+        );
+        return;
+    }
+    if seen.contains(&value_bits) {
+        traceback_append_exception_single_lines(
+            _py,
+            exc_type_bits,
+            value_bits,
+            tb_bits,
+            limit,
+            out,
+        );
+        return;
+    }
+    seen.insert(value_bits);
+    if let Some(ptr) = obj_from_bits(value_bits).as_ptr() {
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_EXCEPTION {
+                let cause_bits = exception_cause_bits(ptr);
+                if !obj_from_bits(cause_bits).is_none() {
+                    let cause_type_bits = traceback_exception_type_bits(_py, cause_bits);
+                    let cause_tb_bits = traceback_exception_trace_bits(cause_bits);
+                    traceback_append_exception_chain_lines(
+                        _py,
+                        cause_type_bits,
+                        cause_bits,
+                        cause_tb_bits,
+                        limit,
+                        chain,
+                        seen,
+                        out,
+                    );
+                    out.push(
+                        "The above exception was the direct cause of the following exception:\n\n"
+                            .to_string(),
+                    );
+                    traceback_append_exception_single_lines(
+                        _py,
+                        exc_type_bits,
+                        value_bits,
+                        tb_bits,
+                        limit,
+                        out,
+                    );
+                    return;
+                }
+                let context_bits = exception_context_bits(ptr);
+                let suppress_context = is_truthy(_py, obj_from_bits(exception_suppress_bits(ptr)));
+                if !suppress_context && !obj_from_bits(context_bits).is_none() {
+                    let context_type_bits = traceback_exception_type_bits(_py, context_bits);
+                    let context_tb_bits = traceback_exception_trace_bits(context_bits);
+                    traceback_append_exception_chain_lines(
+                        _py,
+                        context_type_bits,
+                        context_bits,
+                        context_tb_bits,
+                        limit,
+                        chain,
+                        seen,
+                        out,
+                    );
+                    out.push(
+                        "During handling of the above exception, another exception occurred:\n\n"
+                            .to_string(),
+                    );
+                    traceback_append_exception_single_lines(
+                        _py,
+                        exc_type_bits,
+                        value_bits,
+                        tb_bits,
+                        limit,
+                        out,
+                    );
+                    return;
+                }
+            }
+        }
+    }
+    traceback_append_exception_single_lines(_py, exc_type_bits, value_bits, tb_bits, limit, out);
+}
+
+fn traceback_lines_to_list(_py: &PyToken<'_>, lines: &[String]) -> u64 {
+    let mut bits_vec: Vec<u64> = Vec::with_capacity(lines.len());
+    for line in lines {
+        let ptr = alloc_string(_py, line.as_bytes());
+        if ptr.is_null() {
+            for bits in bits_vec {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        bits_vec.push(MoltObject::from_ptr(ptr).bits());
+    }
+    let list_ptr = alloc_list(_py, bits_vec.as_slice());
+    for bits in bits_vec {
+        dec_ref_bits(_py, bits);
+    }
+    if list_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(list_ptr).bits()
+    }
+}
+
+#[derive(Clone)]
+struct TracebackPayloadFrame {
+    filename: String,
+    lineno: i64,
+    end_lineno: i64,
+    colno: i64,
+    end_colno: i64,
+    name: String,
+    line: String,
+}
+
+#[derive(Clone)]
+struct TracebackExceptionChainNode {
+    value_bits: u64,
+    frames: Vec<TracebackPayloadFrame>,
+    suppress_context: bool,
+    cause_index: Option<usize>,
+    context_index: Option<usize>,
+}
+
+fn traceback_split_molt_symbol(name: &str) -> (String, String) {
+    if let Some((module_hint, func)) = name.split_once("__")
+        && !module_hint.is_empty()
+    {
+        let func_name = if func.is_empty() { name } else { func };
+        return (format!("<molt:{module_hint}>"), func_name.to_string());
+    }
+    ("<molt>".to_string(), name.to_string())
+}
+
+fn traceback_payload_from_traceback(
+    _py: &PyToken<'_>,
+    source_bits: u64,
+    limit: Option<usize>,
+) -> Vec<TracebackPayloadFrame> {
+    let mut out: Vec<TracebackPayloadFrame> = Vec::new();
+    for (filename, lineno, name) in traceback_frames(_py, source_bits, limit) {
+        let line = traceback_source_line_native(_py, &filename, lineno);
+        let (colno, end_colno) = traceback_infer_column_offsets(&line);
+        out.push(TracebackPayloadFrame {
+            filename,
+            lineno,
+            end_lineno: lineno,
+            colno,
+            end_colno,
+            name,
+            line,
+        });
+    }
+    out
+}
+
+fn traceback_payload_from_frame_chain(
+    _py: &PyToken<'_>,
+    source_bits: u64,
+    limit: Option<usize>,
+) -> Vec<TracebackPayloadFrame> {
+    if obj_from_bits(source_bits).is_none() {
+        return Vec::new();
+    }
+    static F_BACK_NAME: AtomicU64 = AtomicU64::new(0);
+    let f_back_name = intern_static_name(_py, &F_BACK_NAME, b"f_back");
+    let f_code_name = intern_static_name(_py, &runtime_state(_py).interned.f_code_name, b"f_code");
+    let f_lineno_name =
+        intern_static_name(_py, &runtime_state(_py).interned.f_lineno_name, b"f_lineno");
+    let mut out: Vec<TracebackPayloadFrame> = Vec::new();
+    let mut current_bits = source_bits;
+    let mut depth = 0usize;
+    while !obj_from_bits(current_bits).is_none() {
+        if depth > 1024 {
+            break;
+        }
+        let Some(frame_ptr) = obj_from_bits(current_bits).as_ptr() else {
+            break;
+        };
+        let (code_bits, lineno, back_bits, had_frame_fields) = unsafe {
+            let dict_bits = instance_dict_bits(frame_ptr);
+            let mut code_bits = MoltObject::none().bits();
+            let mut lineno = 0i64;
+            let mut back_bits = MoltObject::none().bits();
+            let mut had_frame_fields = false;
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                && object_type_id(dict_ptr) == TYPE_ID_DICT
+            {
+                if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_code_name) {
+                    code_bits = bits;
+                    had_frame_fields = true;
+                }
+                if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_lineno_name) {
+                    if let Some(value) = to_i64(obj_from_bits(bits)) {
+                        lineno = value;
+                    }
+                    had_frame_fields = true;
+                }
+                if let Some(bits) = dict_get_in_place(_py, dict_ptr, f_back_name) {
+                    back_bits = bits;
+                    had_frame_fields = true;
+                }
+            }
+            (code_bits, lineno, back_bits, had_frame_fields)
+        };
+        if !had_frame_fields {
+            break;
+        }
+
+        let mut filename = "<unknown>".to_string();
+        let mut name = "<module>".to_string();
+        if let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() {
+            unsafe {
+                if object_type_id(code_ptr) == TYPE_ID_CODE {
+                    let filename_bits = code_filename_bits(code_ptr);
+                    if let Some(value) = string_obj_to_owned(obj_from_bits(filename_bits)) {
+                        filename = value;
+                    }
+                    let name_bits = code_name_bits(code_ptr);
+                    if let Some(value) = string_obj_to_owned(obj_from_bits(name_bits))
+                        && !value.is_empty()
+                    {
+                        name = value;
+                    }
+                }
+            }
+        }
+        let line = traceback_source_line_native(_py, &filename, lineno);
+        let (colno, end_colno) = traceback_infer_column_offsets(&line);
+        out.push(TracebackPayloadFrame {
+            filename,
+            lineno,
+            end_lineno: lineno,
+            colno,
+            end_colno,
+            name,
+            line,
+        });
+        current_bits = back_bits;
+        depth += 1;
+    }
+    out.reverse();
+    if let Some(max) = limit
+        && out.len() > max
+    {
+        return out[out.len() - max..].to_vec();
+    }
+    out
+}
+
+fn traceback_payload_from_entry(
+    _py: &PyToken<'_>,
+    entry_bits: u64,
+) -> Option<TracebackPayloadFrame> {
+    if obj_from_bits(entry_bits).is_none() {
+        return None;
+    }
+    let entry_obj = obj_from_bits(entry_bits);
+    if let Some(entry_ptr) = entry_obj.as_ptr() {
+        unsafe {
+            let type_id = object_type_id(entry_ptr);
+            if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                let elems = seq_vec_ref(entry_ptr);
+                if elems.is_empty() {
+                    return None;
+                }
+                if elems.len() == 1 {
+                    return traceback_payload_from_entry(_py, elems[0]);
+                }
+                if elems.len() >= 7 {
+                    let filename = format_obj_str(_py, obj_from_bits(elems[0]));
+                    let lineno = to_i64(obj_from_bits(elems[1])).unwrap_or(0);
+                    let end_lineno = to_i64(obj_from_bits(elems[2])).unwrap_or(lineno);
+                    let mut colno = to_i64(obj_from_bits(elems[3])).unwrap_or(0);
+                    let mut end_colno = to_i64(obj_from_bits(elems[4])).unwrap_or(colno.max(0));
+                    let name = format_obj_str(_py, obj_from_bits(elems[5]));
+                    let line = if obj_from_bits(elems[6]).is_none() {
+                        String::new()
+                    } else {
+                        format_obj_str(_py, obj_from_bits(elems[6]))
+                    };
+                    if !line.is_empty() && (colno < 0 || end_colno <= colno) {
+                        let inferred = traceback_infer_column_offsets(&line);
+                        colno = inferred.0;
+                        end_colno = inferred.1;
+                    }
+                    return Some(TracebackPayloadFrame {
+                        filename,
+                        lineno,
+                        end_lineno,
+                        colno,
+                        end_colno,
+                        name,
+                        line,
+                    });
+                }
+                if elems.len() >= 4 {
+                    let filename = format_obj_str(_py, obj_from_bits(elems[0]));
+                    let lineno = to_i64(obj_from_bits(elems[1])).unwrap_or(0);
+                    let name = format_obj_str(_py, obj_from_bits(elems[2]));
+                    let line = if obj_from_bits(elems[3]).is_none() {
+                        String::new()
+                    } else {
+                        format_obj_str(_py, obj_from_bits(elems[3]))
+                    };
+                    let (colno, end_colno) = traceback_infer_column_offsets(&line);
+                    return Some(TracebackPayloadFrame {
+                        filename,
+                        lineno,
+                        end_lineno: lineno,
+                        colno,
+                        end_colno,
+                        name,
+                        line,
+                    });
+                }
+                if elems.len() >= 3 {
+                    let filename = format_obj_str(_py, obj_from_bits(elems[0]));
+                    let lineno = to_i64(obj_from_bits(elems[1])).unwrap_or(0);
+                    let name = format_obj_str(_py, obj_from_bits(elems[2]));
+                    let line = traceback_source_line_native(_py, &filename, lineno);
+                    let (colno, end_colno) = traceback_infer_column_offsets(&line);
+                    return Some(TracebackPayloadFrame {
+                        filename,
+                        lineno,
+                        end_lineno: lineno,
+                        colno,
+                        end_colno,
+                        name,
+                        line,
+                    });
+                }
+                if elems.len() == 2 {
+                    let first_obj = obj_from_bits(elems[0]);
+                    let second_obj = obj_from_bits(elems[1]);
+                    if let (Some(filename), Some(lineno)) =
+                        (string_obj_to_owned(first_obj), to_i64(second_obj))
+                    {
+                        return Some(TracebackPayloadFrame {
+                            filename,
+                            lineno,
+                            end_lineno: lineno,
+                            colno: 0,
+                            end_colno: 0,
+                            name: "<module>".to_string(),
+                            line: String::new(),
+                        });
+                    }
+                    if let (Some(lineno), Some(filename)) =
+                        (to_i64(first_obj), string_obj_to_owned(second_obj))
+                    {
+                        return Some(TracebackPayloadFrame {
+                            filename,
+                            lineno,
+                            end_lineno: lineno,
+                            colno: 0,
+                            end_colno: 0,
+                            name: "<module>".to_string(),
+                            line: String::new(),
+                        });
+                    }
+                    if let (Some(symbol), Some(_name)) = (
+                        string_obj_to_owned(first_obj),
+                        string_obj_to_owned(second_obj),
+                    ) {
+                        let (filename, name) = traceback_split_molt_symbol(&symbol);
+                        return Some(TracebackPayloadFrame {
+                            filename,
+                            lineno: 0,
+                            end_lineno: 0,
+                            colno: 0,
+                            end_colno: 0,
+                            name,
+                            line: String::new(),
+                        });
+                    }
+                }
+                return None;
+            }
+            if type_id == TYPE_ID_DICT {
+                static FILENAME_NAME: AtomicU64 = AtomicU64::new(0);
+                static LINENO_NAME: AtomicU64 = AtomicU64::new(0);
+                static NAME_NAME: AtomicU64 = AtomicU64::new(0);
+                static LINE_NAME: AtomicU64 = AtomicU64::new(0);
+                static END_LINENO_NAME: AtomicU64 = AtomicU64::new(0);
+                static COLNO_NAME: AtomicU64 = AtomicU64::new(0);
+                static END_COLNO_NAME: AtomicU64 = AtomicU64::new(0);
+                let filename_key = intern_static_name(_py, &FILENAME_NAME, b"filename");
+                let lineno_key = intern_static_name(_py, &LINENO_NAME, b"lineno");
+                let name_key = intern_static_name(_py, &NAME_NAME, b"name");
+                let line_key = intern_static_name(_py, &LINE_NAME, b"line");
+                let end_lineno_key = intern_static_name(_py, &END_LINENO_NAME, b"end_lineno");
+                let colno_key = intern_static_name(_py, &COLNO_NAME, b"colno");
+                let end_colno_key = intern_static_name(_py, &END_COLNO_NAME, b"end_colno");
+                let filename_bits = dict_get_in_place(_py, entry_ptr, filename_key)?;
+                let lineno_bits = dict_get_in_place(_py, entry_ptr, lineno_key)?;
+                let filename = format_obj_str(_py, obj_from_bits(filename_bits));
+                let lineno = to_i64(obj_from_bits(lineno_bits)).unwrap_or(0);
+                let name = dict_get_in_place(_py, entry_ptr, name_key)
+                    .map(|bits| format_obj_str(_py, obj_from_bits(bits)))
+                    .unwrap_or_else(|| "<module>".to_string());
+                let line = dict_get_in_place(_py, entry_ptr, line_key)
+                    .map(|bits| format_obj_str(_py, obj_from_bits(bits)))
+                    .unwrap_or_else(|| traceback_source_line_native(_py, &filename, lineno));
+                let (mut colno, mut end_colno) = traceback_infer_column_offsets(&line);
+                if let Some(value) = dict_get_in_place(_py, entry_ptr, colno_key)
+                    .and_then(|bits| to_i64(obj_from_bits(bits)))
+                {
+                    colno = value;
+                }
+                if let Some(value) = dict_get_in_place(_py, entry_ptr, end_colno_key)
+                    .and_then(|bits| to_i64(obj_from_bits(bits)))
+                {
+                    end_colno = value;
+                }
+                if !line.is_empty() && (colno < 0 || end_colno <= colno) {
+                    let inferred = traceback_infer_column_offsets(&line);
+                    colno = inferred.0;
+                    end_colno = inferred.1;
+                }
+                let end_lineno = dict_get_in_place(_py, entry_ptr, end_lineno_key)
+                    .and_then(|bits| to_i64(obj_from_bits(bits)))
+                    .unwrap_or(lineno);
+                return Some(TracebackPayloadFrame {
+                    filename,
+                    lineno,
+                    end_lineno,
+                    colno,
+                    end_colno,
+                    name,
+                    line,
+                });
+            }
+        }
+    }
+
+    if let Some(value) = string_obj_to_owned(entry_obj) {
+        let (filename, name) = traceback_split_molt_symbol(&value);
+        return Some(TracebackPayloadFrame {
+            filename,
+            lineno: 0,
+            end_lineno: 0,
+            colno: 0,
+            end_colno: 0,
+            name,
+            line: String::new(),
+        });
+    }
+
+    let mut from_tb = traceback_payload_from_traceback(_py, entry_bits, Some(1));
+    if let Some(frame) = from_tb.pop() {
+        return Some(frame);
+    }
+    let mut from_frame = traceback_payload_from_frame_chain(_py, entry_bits, Some(1));
+    from_frame.pop()
+}
+
+fn traceback_payload_from_entries(
+    _py: &PyToken<'_>,
+    source_bits: u64,
+    limit: Option<usize>,
+) -> Vec<TracebackPayloadFrame> {
+    let Some(source_ptr) = obj_from_bits(source_bits).as_ptr() else {
+        return Vec::new();
+    };
+    let type_id = unsafe { object_type_id(source_ptr) };
+    if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
+        return Vec::new();
+    }
+    let elems: Vec<u64> = unsafe { seq_vec_ref(source_ptr).to_vec() };
+    let mut out: Vec<TracebackPayloadFrame> = Vec::new();
+    for bits in elems {
+        if let Some(frame) = traceback_payload_from_entry(_py, bits) {
+            out.push(frame);
+            if let Some(max) = limit
+                && out.len() >= max
+            {
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn traceback_payload_from_source(
+    _py: &PyToken<'_>,
+    source_bits: u64,
+    limit: Option<usize>,
+) -> Vec<TracebackPayloadFrame> {
+    if obj_from_bits(source_bits).is_none() {
+        return Vec::new();
+    }
+    let from_entries = traceback_payload_from_entries(_py, source_bits, limit);
+    if !from_entries.is_empty() {
+        return from_entries;
+    }
+    let from_tb = traceback_payload_from_traceback(_py, source_bits, limit);
+    if !from_tb.is_empty() {
+        return from_tb;
+    }
+    let from_frame = traceback_payload_from_frame_chain(_py, source_bits, limit);
+    if !from_frame.is_empty() {
+        return from_frame;
+    }
+    if let Some(frame) = traceback_payload_from_entry(_py, source_bits) {
+        return vec![frame];
+    }
+    Vec::new()
+}
+
+fn traceback_payload_to_list(_py: &PyToken<'_>, payload: &[TracebackPayloadFrame]) -> u64 {
+    let mut tuples: Vec<u64> = Vec::new();
+    for frame in payload {
+        let filename_ptr = alloc_string(_py, frame.filename.as_bytes());
+        if filename_ptr.is_null() {
+            for bits in tuples {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let name_ptr = alloc_string(_py, frame.name.as_bytes());
+        if name_ptr.is_null() {
+            dec_ref_bits(_py, MoltObject::from_ptr(filename_ptr).bits());
+            for bits in tuples {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let line_ptr = alloc_string(_py, frame.line.as_bytes());
+        if line_ptr.is_null() {
+            dec_ref_bits(_py, MoltObject::from_ptr(filename_ptr).bits());
+            dec_ref_bits(_py, MoltObject::from_ptr(name_ptr).bits());
+            for bits in tuples {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
+        let lineno_bits = MoltObject::from_int(frame.lineno).bits();
+        let end_lineno_bits = MoltObject::from_int(frame.end_lineno).bits();
+        let colno_bits = MoltObject::from_int(frame.colno).bits();
+        let end_colno_bits = MoltObject::from_int(frame.end_colno).bits();
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let line_bits = MoltObject::from_ptr(line_ptr).bits();
+        let tuple_ptr = alloc_tuple(
+            _py,
+            &[
+                filename_bits,
+                lineno_bits,
+                end_lineno_bits,
+                colno_bits,
+                end_colno_bits,
+                name_bits,
+                line_bits,
+            ],
+        );
+        dec_ref_bits(_py, filename_bits);
+        dec_ref_bits(_py, end_lineno_bits);
+        dec_ref_bits(_py, colno_bits);
+        dec_ref_bits(_py, end_colno_bits);
+        dec_ref_bits(_py, name_bits);
+        dec_ref_bits(_py, line_bits);
+        if tuple_ptr.is_null() {
+            for bits in tuples {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        tuples.push(MoltObject::from_ptr(tuple_ptr).bits());
+    }
+    let list_ptr = alloc_list(_py, tuples.as_slice());
+    for bits in tuples {
+        dec_ref_bits(_py, bits);
+    }
+    if list_ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(list_ptr).bits()
+    }
+}
+
+fn traceback_payload_frame_source_lines(
+    _py: &PyToken<'_>,
+    frame: &TracebackPayloadFrame,
+) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut first_line = frame.line.clone();
+    let mut first_colno = frame.colno;
+    let mut first_end_colno = frame.end_colno;
+    if first_line.is_empty() {
+        first_line = traceback_source_line_native(_py, &frame.filename, frame.lineno);
+        if first_line.is_empty() {
+            return lines;
+        }
+        if first_colno < 0 || first_end_colno <= first_colno {
+            let (col, end_col) = traceback_infer_column_offsets(&first_line);
+            first_colno = col;
+            first_end_colno = end_col;
+        }
+    }
+
+    let span_end = frame.end_lineno.max(frame.lineno);
+    if span_end <= frame.lineno || frame.lineno <= 0 || (span_end - frame.lineno) > 64 {
+        lines.push(format!("    {}\n", first_line));
+        let caret = traceback_format_caret_line_native(&first_line, first_colno, first_end_colno);
+        if !caret.is_empty() {
+            lines.push(caret);
+        }
+        return lines;
+    }
+
+    for lineno in frame.lineno..=span_end {
+        let text = if lineno == frame.lineno {
+            first_line.clone()
+        } else {
+            traceback_source_line_native(_py, &frame.filename, lineno)
+        };
+        if text.is_empty() {
+            continue;
+        }
+        lines.push(format!("    {}\n", text));
+
+        let text_len = text.chars().count() as i64;
+        if text_len <= 0 {
+            continue;
+        }
+        let (trim_start, trim_end) = traceback_line_trim_bounds(&text).unwrap_or((0, text_len));
+        let (start, end) = if lineno == frame.lineno {
+            let start = if first_colno >= 0 {
+                first_colno
+            } else {
+                trim_start
+            };
+            let end = if lineno == span_end {
+                if first_end_colno > start {
+                    first_end_colno
+                } else {
+                    trim_end
+                }
+            } else {
+                trim_end
+            };
+            (start, end)
+        } else if lineno == span_end {
+            let end = if frame.end_colno > trim_start {
+                frame.end_colno
+            } else {
+                trim_end
+            };
+            (trim_start, end)
+        } else {
+            (trim_start, trim_end)
+        };
+        let caret = traceback_format_caret_line_native(&text, start, end);
+        if !caret.is_empty() {
+            lines.push(caret);
+        }
+    }
+
+    lines
+}
+
+fn traceback_payload_to_formatted_lines(
+    _py: &PyToken<'_>,
+    payload: &[TracebackPayloadFrame],
+) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for frame in payload {
+        lines.push(format!(
+            "  File \"{}\", line {}, in {}\n",
+            frame.filename, frame.lineno, frame.name
+        ));
+        lines.extend(traceback_payload_frame_source_lines(_py, frame));
+    }
+    lines
+}
+
+fn traceback_exception_components_payload(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    limit: Option<usize>,
+) -> Result<u64, u64> {
+    let Some(value_ptr) = obj_from_bits(value_bits).as_ptr() else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "value must be an exception instance",
+        ));
+    };
+    unsafe {
+        if object_type_id(value_ptr) != TYPE_ID_EXCEPTION {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "value must be an exception instance",
+            ));
+        }
+    }
+    let tb_bits = traceback_exception_trace_bits(value_bits);
+    let payload = traceback_payload_from_source(_py, tb_bits, limit);
+    let frames_bits = traceback_payload_to_list(_py, &payload);
+    if obj_from_bits(frames_bits).is_none() {
+        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+    }
+    let (cause_bits, context_bits, suppress_context) = unsafe {
+        let cause = exception_cause_bits(value_ptr);
+        let context = exception_context_bits(value_ptr);
+        let suppress = is_truthy(_py, obj_from_bits(exception_suppress_bits(value_ptr)));
+        (cause, context, suppress)
+    };
+    if !obj_from_bits(cause_bits).is_none() {
+        inc_ref_bits(_py, cause_bits);
+    }
+    if !obj_from_bits(context_bits).is_none() {
+        inc_ref_bits(_py, context_bits);
+    }
+    let suppress_bits = MoltObject::from_bool(suppress_context).bits();
+    let tuple_ptr = alloc_tuple(_py, &[frames_bits, cause_bits, context_bits, suppress_bits]);
+    dec_ref_bits(_py, frames_bits);
+    if !obj_from_bits(cause_bits).is_none() {
+        dec_ref_bits(_py, cause_bits);
+    }
+    if !obj_from_bits(context_bits).is_none() {
+        dec_ref_bits(_py, context_bits);
+    }
+    if tuple_ptr.is_null() {
+        Err(raise_exception::<_>(_py, "MemoryError", "out of memory"))
+    } else {
+        Ok(MoltObject::from_ptr(tuple_ptr).bits())
+    }
+}
+
+fn traceback_exception_chain_collect(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    limit: Option<usize>,
+    nodes: &mut Vec<TracebackExceptionChainNode>,
+    seen: &mut HashMap<u64, usize>,
+    depth: usize,
+) -> Result<usize, u64> {
+    if depth > 1024 {
+        return Err(raise_exception::<_>(
+            _py,
+            "RuntimeError",
+            "traceback exception chain recursion too deep",
+        ));
+    }
+    if let Some(index) = seen.get(&value_bits) {
+        return Ok(*index);
+    }
+    let Some(value_ptr) = obj_from_bits(value_bits).as_ptr() else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "value must be an exception instance",
+        ));
+    };
+    unsafe {
+        if object_type_id(value_ptr) != TYPE_ID_EXCEPTION {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "value must be an exception instance",
+            ));
+        }
+    }
+    let tb_bits = traceback_exception_trace_bits(value_bits);
+    let frames = traceback_payload_from_source(_py, tb_bits, limit);
+    let (cause_bits, context_bits, suppress_context) = unsafe {
+        let cause = exception_cause_bits(value_ptr);
+        let context = exception_context_bits(value_ptr);
+        let suppress = is_truthy(_py, obj_from_bits(exception_suppress_bits(value_ptr)));
+        (cause, context, suppress)
+    };
+    let index = nodes.len();
+    seen.insert(value_bits, index);
+    nodes.push(TracebackExceptionChainNode {
+        value_bits,
+        frames,
+        suppress_context,
+        cause_index: None,
+        context_index: None,
+    });
+
+    if !obj_from_bits(cause_bits).is_none() {
+        let Some(cause_ptr) = obj_from_bits(cause_bits).as_ptr() else {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "exception __cause__ must be an exception instance or None",
+            ));
+        };
+        unsafe {
+            if object_type_id(cause_ptr) != TYPE_ID_EXCEPTION {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "exception __cause__ must be an exception instance or None",
+                ));
+            }
+        }
+        let cause_index =
+            traceback_exception_chain_collect(_py, cause_bits, limit, nodes, seen, depth + 1)?;
+        nodes[index].cause_index = Some(cause_index);
+    }
+
+    if !suppress_context && !obj_from_bits(context_bits).is_none() {
+        let Some(context_ptr) = obj_from_bits(context_bits).as_ptr() else {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "exception __context__ must be an exception instance or None",
+            ));
+        };
+        unsafe {
+            if object_type_id(context_ptr) != TYPE_ID_EXCEPTION {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "exception __context__ must be an exception instance or None",
+                ));
+            }
+        }
+        let context_index =
+            traceback_exception_chain_collect(_py, context_bits, limit, nodes, seen, depth + 1)?;
+        nodes[index].context_index = Some(context_index);
+    }
+
+    Ok(index)
+}
+
+fn traceback_exception_chain_payload_bits(
+    _py: &PyToken<'_>,
+    value_bits: u64,
+    limit: Option<usize>,
+) -> Result<u64, u64> {
+    let mut nodes: Vec<TracebackExceptionChainNode> = Vec::new();
+    let mut seen: HashMap<u64, usize> = HashMap::new();
+    traceback_exception_chain_collect(_py, value_bits, limit, &mut nodes, &mut seen, 0)?;
+
+    let mut tuple_bits: Vec<u64> = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        let frames_bits = traceback_payload_to_list(_py, &node.frames);
+        if obj_from_bits(frames_bits).is_none() {
+            for bits in tuple_bits {
+                dec_ref_bits(_py, bits);
+            }
+            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        }
+        inc_ref_bits(_py, node.value_bits);
+        let suppress_bits = MoltObject::from_bool(node.suppress_context).bits();
+        let cause_bits = match node.cause_index {
+            Some(index) => int_bits_from_i64(_py, index as i64),
+            None => MoltObject::none().bits(),
+        };
+        let context_bits = match node.context_index {
+            Some(index) => int_bits_from_i64(_py, index as i64),
+            None => MoltObject::none().bits(),
+        };
+        let tuple_ptr = alloc_tuple(
+            _py,
+            &[
+                node.value_bits,
+                frames_bits,
+                suppress_bits,
+                cause_bits,
+                context_bits,
+            ],
+        );
+        dec_ref_bits(_py, node.value_bits);
+        dec_ref_bits(_py, frames_bits);
+        if node.cause_index.is_some() {
+            dec_ref_bits(_py, cause_bits);
+        }
+        if node.context_index.is_some() {
+            dec_ref_bits(_py, context_bits);
+        }
+        if tuple_ptr.is_null() {
+            for bits in tuple_bits {
+                dec_ref_bits(_py, bits);
+            }
+            return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+        }
+        tuple_bits.push(MoltObject::from_ptr(tuple_ptr).bits());
+    }
+
+    let list_ptr = alloc_list(_py, tuple_bits.as_slice());
+    for bits in tuple_bits {
+        dec_ref_bits(_py, bits);
+    }
+    if list_ptr.is_null() {
+        Err(raise_exception::<_>(_py, "MemoryError", "out of memory"))
+    } else {
+        Ok(MoltObject::from_ptr(list_ptr).bits())
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_traceback_payload(source_bits: u64, limit_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let limit = match traceback_limit_from_bits(_py, limit_bits) {
+            Ok(limit) => limit,
+            Err(bits) => return bits,
+        };
+        let payload = traceback_payload_from_source(_py, source_bits, limit);
+        traceback_payload_to_list(_py, &payload)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_traceback_exception_components(value_bits: u64, limit_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let limit = match traceback_limit_from_bits(_py, limit_bits) {
+            Ok(limit) => limit,
+            Err(bits) => return bits,
+        };
+        match traceback_exception_components_payload(_py, value_bits, limit) {
+            Ok(bits) => bits,
+            Err(err) => err,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_traceback_exception_chain_payload(value_bits: u64, limit_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let limit = match traceback_limit_from_bits(_py, limit_bits) {
+            Ok(limit) => limit,
+            Err(bits) => return bits,
+        };
+        match traceback_exception_chain_payload_bits(_py, value_bits, limit) {
+            Ok(bits) => bits,
+            Err(err) => err,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_traceback_source_line(filename_bits: u64, lineno_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(filename) = string_obj_to_owned(obj_from_bits(filename_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "filename must be str");
+        };
+        let Some(lineno) = to_i64(obj_from_bits(lineno_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "lineno must be int");
+        };
+        let text = traceback_source_line_native(_py, &filename, lineno);
+        let ptr = alloc_string(_py, text.as_bytes());
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_traceback_infer_col_offsets(line_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(line) = string_obj_to_owned(obj_from_bits(line_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "line must be str");
+        };
+        let (colno, end_colno) = traceback_infer_column_offsets(&line);
+        let colno_bits = MoltObject::from_int(colno).bits();
+        let end_colno_bits = MoltObject::from_int(end_colno).bits();
+        let tuple_ptr = alloc_tuple(_py, &[colno_bits, end_colno_bits]);
+        dec_ref_bits(_py, colno_bits);
+        dec_ref_bits(_py, end_colno_bits);
+        if tuple_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_traceback_format_caret_line(
+    line_bits: u64,
+    colno_bits: u64,
+    end_colno_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(line) = string_obj_to_owned(obj_from_bits(line_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "line must be str");
+        };
+        let Some(colno) = to_i64(obj_from_bits(colno_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "colno must be int");
+        };
+        let Some(end_colno) = to_i64(obj_from_bits(end_colno_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end_colno must be int");
+        };
+        let out = traceback_format_caret_line_native(&line, colno, end_colno);
+        let ptr = alloc_string(_py, out.as_bytes());
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_traceback_format_exception_only(exc_type_bits: u64, value_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let line = traceback_format_exception_only_line(_py, exc_type_bits, value_bits);
+        traceback_lines_to_list(_py, &[line])
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_traceback_format_exception(
+    exc_type_bits: u64,
+    value_bits: u64,
+    tb_bits: u64,
+    limit_bits: u64,
+    chain_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let limit = match traceback_limit_from_bits(_py, limit_bits) {
+            Ok(limit) => limit,
+            Err(bits) => return bits,
+        };
+        let chain = is_truthy(_py, obj_from_bits(chain_bits));
+        let effective_exc_type_bits = if obj_from_bits(exc_type_bits).is_none() {
+            traceback_exception_type_bits(_py, value_bits)
+        } else {
+            exc_type_bits
+        };
+        let effective_tb_bits = if obj_from_bits(tb_bits).is_none() {
+            traceback_exception_trace_bits(value_bits)
+        } else {
+            tb_bits
+        };
+        let mut seen: HashSet<u64> = HashSet::new();
+        let mut lines: Vec<String> = Vec::new();
+        traceback_append_exception_chain_lines(
+            _py,
+            effective_exc_type_bits,
+            value_bits,
+            effective_tb_bits,
+            limit,
+            chain,
+            &mut seen,
+            &mut lines,
+        );
+        traceback_lines_to_list(_py, &lines)
+    })
+}
+
+/// `traceback.format_exc(limit=None)` — format the current exception as a single
+/// string.  Equivalent to `"".join(traceback.format_exception(*sys.exc_info()))`.
+/// Returns the formatted string, or `"NoneType: None\n"` if no exception is active.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_traceback_format_exc(limit_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let limit = match traceback_limit_from_bits(_py, limit_bits) {
+            Ok(limit) => limit,
+            Err(bits) => return bits,
+        };
+        let exc_bits_opt = exception_last_bits_noinc(_py);
+        let value_bits = match exc_bits_opt {
+            Some(bits) => bits,
+            None => {
+                // No current exception — return "NoneType: None\n"
+                let s = "NoneType: None\n";
+                let ptr = alloc_string(_py, s.as_bytes());
+                if ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(ptr).bits();
+            }
+        };
+        let exc_type_bits = traceback_exception_type_bits(_py, value_bits);
+        let tb_bits = traceback_exception_trace_bits(value_bits);
+        let mut seen: HashSet<u64> = HashSet::new();
+        let mut lines: Vec<String> = Vec::new();
+        traceback_append_exception_chain_lines(
+            _py,
+            exc_type_bits,
+            value_bits,
+            tb_bits,
+            limit,
+            true, // chain
+            &mut seen,
+            &mut lines,
+        );
+        // Join all lines into a single string
+        let joined = lines.join("");
+        let ptr = alloc_string(_py, joined.as_bytes());
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_traceback_format_tb(tb_bits: u64, limit_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let limit = match traceback_limit_from_bits(_py, limit_bits) {
+            Ok(limit) => limit,
+            Err(bits) => return bits,
+        };
+        let mut lines: Vec<String> = Vec::new();
+        for (filename, line, name) in traceback_frames(_py, tb_bits, limit) {
+            lines.push(format!("  File \"{filename}\", line {line}, in {name}\n"));
+        }
+        traceback_lines_to_list(_py, &lines)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_traceback_format_stack(source_bits: u64, limit_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let limit = match traceback_limit_from_bits(_py, limit_bits) {
+            Ok(limit) => limit,
+            Err(bits) => return bits,
+        };
+        let payload = traceback_payload_from_source(_py, source_bits, limit);
+        let lines = traceback_payload_to_formatted_lines(_py, &payload);
+        traceback_lines_to_list(_py, &lines)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_traceback_extract_tb(tb_bits: u64, limit_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let limit = match traceback_limit_from_bits(_py, limit_bits) {
+            Ok(limit) => limit,
+            Err(bits) => return bits,
+        };
+        let mut tuples: Vec<u64> = Vec::new();
+        for (filename, lineno, name) in traceback_frames(_py, tb_bits, limit) {
+            let line_text = traceback_source_line_native(_py, &filename, lineno);
+            let (colno, end_colno) = traceback_infer_column_offsets(&line_text);
+            let end_lineno = lineno;
+            let filename_ptr = alloc_string(_py, filename.as_bytes());
+            if filename_ptr.is_null() {
+                for bits in tuples {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let name_ptr = alloc_string(_py, name.as_bytes());
+            if name_ptr.is_null() {
+                dec_ref_bits(_py, MoltObject::from_ptr(filename_ptr).bits());
+                for bits in tuples {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let line_ptr = alloc_string(_py, line_text.as_bytes());
+            if line_ptr.is_null() {
+                dec_ref_bits(_py, MoltObject::from_ptr(filename_ptr).bits());
+                dec_ref_bits(_py, MoltObject::from_ptr(name_ptr).bits());
+                for bits in tuples {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
+            let lineno_bits = MoltObject::from_int(lineno).bits();
+            let end_lineno_bits = MoltObject::from_int(end_lineno).bits();
+            let colno_bits = MoltObject::from_int(colno).bits();
+            let end_colno_bits = MoltObject::from_int(end_colno).bits();
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let line_bits = MoltObject::from_ptr(line_ptr).bits();
+            let tuple_ptr = alloc_tuple(
+                _py,
+                &[
+                    filename_bits,
+                    lineno_bits,
+                    end_lineno_bits,
+                    colno_bits,
+                    end_colno_bits,
+                    name_bits,
+                    line_bits,
+                ],
+            );
+            dec_ref_bits(_py, filename_bits);
+            dec_ref_bits(_py, end_lineno_bits);
+            dec_ref_bits(_py, colno_bits);
+            dec_ref_bits(_py, end_colno_bits);
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, line_bits);
+            if tuple_ptr.is_null() {
+                for bits in tuples {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+            tuples.push(MoltObject::from_ptr(tuple_ptr).bits());
+        }
+        let list_ptr = alloc_list(_py, tuples.as_slice());
+        for bits in tuples {
+            dec_ref_bits(_py, bits);
+        }
+        if list_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(list_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_recursion_guard_enter() -> i64 {
+    crate::with_gil_entry!(_py, {
+        if recursion_guard_enter() {
+            1
+        } else {
+            raise_exception::<i64>(_py, "RecursionError", "maximum recursion depth exceeded")
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_recursion_guard_exit() {
+    crate::with_gil_entry!(_py, {
+        recursion_guard_exit();
+    })
+}
+
+/// Lightweight recursion guard for direct calls to known functions.
+/// Uses global atomics only — no TLS access on the hot path.
+/// Returns 1 on success, 0 if the recursion limit is exceeded (caller must
+/// handle the error).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_recursion_enter_fast() -> i64 {
+    if crate::state::recursion::recursion_guard_enter_fast() { 1 } else { 0 }
+}
+
+/// Lightweight recursion guard exit — uses global atomics only.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_recursion_exit_fast() {
+    crate::state::recursion::recursion_guard_exit_fast();
+}
+
+/// Cold-path: raise RecursionError. Only called when molt_recursion_enter_fast
+/// returns 0. Acquires the GIL to create the exception object.
+#[unsafe(no_mangle)]
+#[cold]
+pub extern "C" fn molt_raise_recursion_error() -> u64 {
+    // Sync the fast global depth back to TLS before the GIL-holding code
+    // reads it (traceback formatting, etc.).
+    crate::state::recursion::sync_fast_depth_to_tls();
+    crate::with_gil_entry!(_py, {
+        raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded")
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_code_slots_init(count: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if runtime_state(_py).code_slots.get().is_some() {
+            return MoltObject::none().bits();
+        }
+        let Some(count) = usize::try_from(count).ok() else {
+            return raise_exception::<_>(_py, "MemoryError", "code slot count too large");
+        };
+        let slots = (0..count).map(|_| AtomicU64::new(0)).collect();
+        let _ = runtime_state(_py).code_slots.set(slots);
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_code_slot_set(code_id: u64, code_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(slots) = runtime_state(_py).code_slots.get() else {
+            return raise_exception::<_>(_py, "RuntimeError", "code slots not initialized");
+        };
+        let Some(idx) = usize::try_from(code_id).ok() else {
+            return raise_exception::<_>(_py, "IndexError", "code slot out of range");
+        };
+        if idx >= slots.len() {
+            return raise_exception::<_>(_py, "IndexError", "code slot out of range");
+        }
+        if let Some(ptr) = obj_from_bits(code_bits).as_ptr() {
+            unsafe {
+                if object_type_id(ptr) != TYPE_ID_CODE {
+                    return raise_exception::<_>(_py, "TypeError", "code slot expects code object");
+                }
+            }
+        } else {
+            return raise_exception::<_>(_py, "TypeError", "code slot expects code object");
+        }
+        if code_bits != 0 {
+            inc_ref_bits(_py, code_bits);
+        }
+        let old_bits = slots[idx].swap(code_bits, AtomicOrdering::AcqRel);
+        if old_bits != 0 {
+            dec_ref_bits(_py, old_bits);
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_trace_enter(func_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let mut code_bits = MoltObject::none().bits();
+        let func_obj = obj_from_bits(func_bits);
+        if let Some(func_ptr) = func_obj.as_ptr() {
+            unsafe {
+                match object_type_id(func_ptr) {
+                    TYPE_ID_FUNCTION => {
+                        code_bits = ensure_function_code_bits(_py, func_ptr);
+                    }
+                    TYPE_ID_BOUND_METHOD => {
+                        let bound_func_bits = bound_method_func_bits(func_ptr);
+                        if let Some(bound_ptr) = obj_from_bits(bound_func_bits).as_ptr()
+                            && object_type_id(bound_ptr) == TYPE_ID_FUNCTION
+                        {
+                            code_bits = ensure_function_code_bits(_py, bound_ptr);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        frame_stack_push(_py, code_bits);
+        code_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(slots) = runtime_state(_py).code_slots.get() else {
+            return MoltObject::none().bits();
+        };
+        let Some(idx) = usize::try_from(code_id).ok() else {
+            return MoltObject::none().bits();
+        };
+        let code_bits = if idx < slots.len() {
+            slots[idx].load(AtomicOrdering::Acquire)
+        } else {
+            MoltObject::none().bits()
+        };
+        frame_stack_push(_py, code_bits);
+        code_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_trace_exit() -> u64 {
+    crate::with_gil_entry!(_py, {
+        frame_stack_pop(_py);
+        MoltObject::none().bits()
+    })
+}
+
+/// Outlined guarded-call helper: performs recursion guard enter/exit, optional
+/// trace enter/exit, and the actual function call via function pointer dispatch.
+/// Replaces the multi-block inline sequence previously generated for every
+/// `call` op, eliminating ~3 Cranelift blocks and ~12 function-declaration/import
+/// operations per call site.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn molt_guarded_call(
+    fn_ptr: u64,
+    args_ptr: *const u64,
+    nargs: u64,
+    code_id: i64,
+) -> u64 {
+    if !recursion_guard_enter() {
+        crate::with_gil_entry!(_py, {
+            return raise_exception::<u64>(
+                _py, "RecursionError", "maximum recursion depth exceeded",
+            );
+        });
+    }
+    if code_id >= 0 {
+        crate::with_gil_entry!(_py, {
+            if let Some(slots) = runtime_state(_py).code_slots.get() {
+                let idx = code_id as usize;
+                let code_bits = if idx < slots.len() {
+                    slots[idx].load(AtomicOrdering::Acquire)
+                } else { MoltObject::none().bits() };
+                frame_stack_push(_py, code_bits);
+            } else {
+                frame_stack_push(_py, MoltObject::none().bits());
+            }
+        });
+    }
+    let result: u64 = unsafe {
+        let n = nargs as usize;
+        molt_guarded_call_dispatch(fn_ptr, args_ptr, n)
+    };
+    if code_id >= 0 {
+        crate::with_gil_entry!(_py, { frame_stack_pop(_py); });
+    }
+    recursion_guard_exit();
+    result
+}
+
+/// Outlined guarded-call helper for dynamic dispatch paths where the callee
+/// is identified by its object bits rather than a code slot id.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_guarded_call_obj(
+    fn_ptr: u64,
+    args_ptr: *const u64,
+    nargs: u64,
+    callee_bits: u64,
+) -> u64 {
+    if !recursion_guard_enter() {
+        crate::with_gil_entry!(_py, {
+            return raise_exception::<u64>(
+                _py, "RecursionError", "maximum recursion depth exceeded",
+            );
+        });
+    }
+    if callee_bits != 0 {
+        crate::with_gil_entry!(_py, {
+            let mut code_bits = MoltObject::none().bits();
+            let func_obj = obj_from_bits(callee_bits);
+            if let Some(func_ptr) = func_obj.as_ptr() {
+                unsafe {
+                    match object_type_id(func_ptr) {
+                        TYPE_ID_FUNCTION => {
+                            code_bits = ensure_function_code_bits(_py, func_ptr);
+                        }
+                        TYPE_ID_BOUND_METHOD => {
+                            let bound_func_bits = bound_method_func_bits(func_ptr);
+                            if let Some(bound_ptr) = obj_from_bits(bound_func_bits).as_ptr()
+                                && object_type_id(bound_ptr) == TYPE_ID_FUNCTION
+                            {
+                                code_bits = ensure_function_code_bits(_py, bound_ptr);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            frame_stack_push(_py, code_bits);
+        });
+    }
+    let result: u64 = unsafe {
+        let n = nargs as usize;
+        molt_guarded_call_dispatch(fn_ptr, args_ptr, n)
+    };
+    if callee_bits != 0 {
+        crate::with_gil_entry!(_py, { frame_stack_pop(_py); });
+    }
+    recursion_guard_exit();
+    result
+}
+
+/// Shared dispatch table: call fn_ptr with n arguments read from args_ptr.
+#[inline(never)]
+unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize) -> u64 {
+    unsafe {
+        match n {
+            0 => {
+                let f: extern "C" fn() -> u64 = std::mem::transmute(fn_ptr as usize);
+                f()
+            }
+            1 => {
+                let f: extern "C" fn(u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr)
+            }
+            2 => {
+                let f: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1))
+            }
+            3 => {
+                let f: extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2))
+            }
+            4 => {
+                let f: extern "C" fn(u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3))
+            }
+            5 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4))
+            }
+            6 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5))
+            }
+            7 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6))
+            }
+            8 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7))
+            }
+            9 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8))
+            }
+            10 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9))
+            }
+            11 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10))
+            }
+            12 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10), *args_ptr.add(11))
+            }
+            13 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10), *args_ptr.add(11), *args_ptr.add(12))
+            }
+            14 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10), *args_ptr.add(11), *args_ptr.add(12), *args_ptr.add(13))
+            }
+            15 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10), *args_ptr.add(11), *args_ptr.add(12), *args_ptr.add(13), *args_ptr.add(14))
+            }
+            16 => {
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10), *args_ptr.add(11), *args_ptr.add(12), *args_ptr.add(13), *args_ptr.add(14), *args_ptr.add(15))
+            }
+            _ => {
+                // Arity > 16: raise a clear error instead of silently failing.
+                // This path is only reachable if a function genuinely has 17+
+                // parameters AND is called via the direct fn_ptr dispatch table.
+                // molt_call_func_dispatch handles arbitrary arities via callargs,
+                // so this should never be reached in practice.
+                crate::with_gil_entry!(_py, {
+                    return raise_exception::<u64>(
+                        _py,
+                        "RuntimeError",
+                        &format!(
+                            "direct dispatch does not support {} arguments; \
+                             use callargs dispatch for functions with >16 parameters",
+                            n
+                        ),
+                    );
+                })
+            }
+        }
+    }
+}
+
+/// Outlined dynamic function call dispatch for the `call_func` op.
+///
+/// Handles the full Python call protocol:
+/// - Handle resolution (promises/futures)
+/// - Bound method unwrapping (extracts self + func)
+/// - Function object detection and direct fn_ptr dispatch
+/// - Closure detection (delegates to callargs for closures)
+/// - Arity matching with default arg handling
+/// - Recursion guard and tracing
+/// - Fallback to `molt_call_bind` for non-function callables
+///
+/// Arguments:
+///   func_bits: the callable (could be function, bound method, or any callable)
+///   args_ptr: pointer to array of argument bits (spilled to stack by caller)
+///   nargs: number of arguments
+///   code_id: unique code ID for this call site (tracing); 0 means no tracing
+///
+/// Returns: the call result bits
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn molt_call_func_dispatch(
+    func_bits: u64,
+    args_ptr_bits: u64,  // u64 to match WASM all-i64 ABI; cast to *const u64 below
+    nargs: u64,
+    code_id: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let n = nargs as usize;
+        let args_ptr = args_ptr_bits as usize as *const u64;
+
+        // Read arguments into an inline stack buffer to avoid heap allocation
+        // on every function call.  Falls back to Vec only for >16 args (very rare).
+        let mut inline_buf = [0u64; 16];
+        let heap_args: Vec<u64>;
+        let args_slice: &[u64] = if n <= 16 {
+            for i in 0..n { unsafe { inline_buf[i] = *args_ptr.add(i); } }
+            &inline_buf[..n]
+        } else {
+            heap_args = unsafe { (0..n).map(|i| *args_ptr.add(i)).collect() };
+            &heap_args
+        };
+
+        // --- Step 1: Bound method unwrap ---
+        // Use a [u64; 17] inline buffer for bound methods (self + up to 16 args).
+        let mut bound_buf = [0u64; 17];
+        let heap_bound: Vec<u64>;
+        let (effective_func, effective_args): (u64, &[u64]) = unsafe {
+            if let Some(ptr) = maybe_ptr_from_bits(func_bits) {
+                if object_type_id(ptr) == TYPE_ID_BOUND_METHOD {
+                    let inner = bound_method_func_bits(ptr);
+                    let self_bits = bound_method_self_bits(ptr);
+                    let combined_len = n + 1;
+                    if combined_len <= 17 {
+                        bound_buf[0] = self_bits;
+                        for i in 0..n { bound_buf[i + 1] = args_slice[i]; }
+                        (inner, &bound_buf[..combined_len])
+                    } else {
+                        let mut v = Vec::with_capacity(combined_len);
+                        v.push(self_bits);
+                        v.extend_from_slice(args_slice);
+                        heap_bound = v;
+                        (inner, &heap_bound)
+                    }
+                } else {
+                    (func_bits, args_slice)
+                }
+            } else {
+                (func_bits, args_slice)
+            }
+        };
+
+        // --- Step 2: Check if it's a plain function object ---
+        let func_ptr = match maybe_ptr_from_bits(effective_func) {
+            Some(ptr) if unsafe { object_type_id(ptr) == TYPE_ID_FUNCTION } => ptr,
+            _ => {
+                // Not a function — use the generic callargs dispatch.
+                return molt_call_func_via_callargs(func_bits, effective_args);
+            }
+        };
+
+        // --- Step 3: Check for closure ---
+        // Closures need the full callargs path for env capture setup.
+        let has_closure = unsafe { function_closure_bits(func_ptr) } != 0;
+        if has_closure {
+            return molt_call_func_via_callargs(func_bits, effective_args);
+        }
+
+        // --- Step 4: Direct call fast path ---
+        let fn_ptr_val = unsafe { function_fn_ptr(func_ptr) };
+        let func_arity = unsafe { function_arity(func_ptr) } as usize;
+        let eff_nargs = effective_args.len();
+
+        if func_arity == eff_nargs {
+            // Exact arity match — fast path.
+            return molt_call_func_direct(
+                _py, fn_ptr_val, effective_args, code_id, func_bits,
+            );
+        }
+
+        // --- Step 5: Handle missing args with defaults ---
+        // Use an inline [u64; 18] buffer for padded args (up to 16 effective + 2 defaults).
+        // This same buffer is reused for the generic __defaults__ fallback below,
+        // eliminating a second heap allocation.
+        if eff_nargs < func_arity {
+            let missing = func_arity - eff_nargs;
+            let mut padded_buf = [0u64; 18];
+            if missing <= 2 {
+                let default_kind = molt_function_default_kind(effective_func);
+                padded_buf[..eff_nargs].copy_from_slice(effective_args);
+                let mut padded_len = eff_nargs;
+
+                let filled = match (missing, default_kind) {
+                    (1, FUNC_DEFAULT_NONE) => {
+                        padded_buf[padded_len] = MoltObject::none().bits();
+                        padded_len += 1;
+                        true
+                    }
+                    (1, FUNC_DEFAULT_DICT_POP) => {
+                        padded_buf[padded_len] = MoltObject::from_int(1).bits();
+                        padded_len += 1;
+                        true
+                    }
+                    (1, FUNC_DEFAULT_DICT_UPDATE) => {
+                        padded_buf[padded_len] = missing_bits(_py);
+                        padded_len += 1;
+                        true
+                    }
+                    (1, FUNC_DEFAULT_ZERO) => {
+                        padded_buf[padded_len] = MoltObject::from_int(0).bits();
+                        padded_len += 1;
+                        true
+                    }
+                    (1, FUNC_DEFAULT_NEG_ONE) => {
+                        padded_buf[padded_len] = MoltObject::from_int(-1).bits();
+                        padded_len += 1;
+                        true
+                    }
+                    (1, FUNC_DEFAULT_MISSING) => {
+                        padded_buf[padded_len] = missing_bits(_py);
+                        padded_len += 1;
+                        true
+                    }
+                    (2, FUNC_DEFAULT_NONE2) => {
+                        padded_buf[padded_len] = MoltObject::none().bits();
+                        padded_buf[padded_len + 1] = MoltObject::none().bits();
+                        padded_len += 2;
+                        true
+                    }
+                    (2, FUNC_DEFAULT_DICT_POP) => {
+                        padded_buf[padded_len] = MoltObject::none().bits();
+                        padded_buf[padded_len + 1] = MoltObject::from_int(0).bits();
+                        padded_len += 2;
+                        true
+                    }
+                    _ => false,
+                };
+
+                if filled {
+                    return molt_call_func_direct(
+                        _py, fn_ptr_val, &padded_buf[..padded_len], code_id, func_bits,
+                    );
+                }
+            }
+
+            // Generic fallback: consult __defaults__ tuple on the function.
+            // This handles user-defined functions with keyword default
+            // arguments (e.g. `def f(a, b, lo=0, hi=100)`) that the compact
+            // default_kind encoding cannot represent.
+            // Reuses padded_buf from above to avoid a second heap allocation.
+            unsafe {
+                let defaults_bits = function_attr_bits(
+                    _py,
+                    func_ptr,
+                    intern_static_name(
+                        _py,
+                        &runtime_state(_py).interned.defaults_name,
+                        b"__defaults__",
+                    ),
+                );
+                if let Some(dbits) = defaults_bits {
+                    if !obj_from_bits(dbits).is_none() {
+                        if let Some(def_ptr) = obj_from_bits(dbits).as_ptr() {
+                            if object_type_id(def_ptr) == TYPE_ID_TUPLE {
+                                let defaults = seq_vec_ref(def_ptr);
+                                let n_defaults = defaults.len();
+                                if missing <= n_defaults {
+                                    let total = eff_nargs + missing;
+                                    if total <= 18 {
+                                        // Reuse the stack-allocated padded_buf.
+                                        padded_buf[..eff_nargs].copy_from_slice(effective_args);
+                                        let start = n_defaults - missing;
+                                        for i in 0..missing {
+                                            padded_buf[eff_nargs + i] = defaults[start + i];
+                                        }
+                                        return molt_call_func_direct(
+                                            _py, fn_ptr_val, &padded_buf[..total], code_id, func_bits,
+                                        );
+                                    } else {
+                                        // >18 padded args: fall back to Vec (extremely rare).
+                                        let mut padded = Vec::with_capacity(total);
+                                        padded.extend_from_slice(effective_args);
+                                        let start = n_defaults - missing;
+                                        for i in start..n_defaults {
+                                            padded.push(defaults[i]);
+                                        }
+                                        return molt_call_func_direct(
+                                            _py, fn_ptr_val, &padded, code_id, func_bits,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Arity mismatch we can't handle inline — fallback.
+        molt_call_func_via_callargs(func_bits, effective_args)
+    })
+}
+
+/// Direct function call through fn_ptr with recursion guard and optional tracing.
+fn molt_call_func_direct(
+    _py: &crate::concurrency::PyToken<'_>,
+    fn_ptr: u64,
+    args: &[u64],
+    code_id: u64,
+    callable_bits: u64,
+) -> u64 {
+    if !recursion_guard_enter() {
+        return raise_exception::<u64>(
+            _py, "RecursionError", "maximum recursion depth exceeded",
+        );
+    }
+    if code_id != 0 {
+        if let Some(func_ptr) = obj_from_bits(callable_bits).as_ptr() {
+            unsafe {
+                let code_bits = match object_type_id(func_ptr) {
+                    TYPE_ID_FUNCTION => ensure_function_code_bits(_py, func_ptr),
+                    TYPE_ID_BOUND_METHOD => {
+                        let bf = bound_method_func_bits(func_ptr);
+                        if let Some(bp) = obj_from_bits(bf).as_ptr() {
+                            if object_type_id(bp) == TYPE_ID_FUNCTION {
+                                ensure_function_code_bits(_py, bp)
+                            } else {
+                                MoltObject::none().bits()
+                            }
+                        } else {
+                            MoltObject::none().bits()
+                        }
+                    }
+                    _ => MoltObject::none().bits(),
+                };
+                frame_stack_push(_py, code_bits);
+            }
+        }
+    }
+    let result = unsafe { molt_guarded_call_dispatch(fn_ptr, args.as_ptr(), args.len()) };
+    if code_id != 0 {
+        frame_stack_pop(_py);
+    }
+    recursion_guard_exit();
+    result
+}
+
+/// Ultra-fast inline dispatch for `call_func` with known small arities.
+///
+/// These functions receive args as register values (no stack spill/reload),
+/// skip GIL re-acquisition (caller already holds it in the compiled code
+/// context), and do a minimal type check + direct fn_ptr call.
+///
+/// Fast path: func_bits is a non-closure TYPE_ID_FUNCTION with exact arity.
+/// Slow path: falls back to the full `molt_call_func_dispatch`.
+
+/// Direct fn_ptr call for exactly 0 args — fully inlined, no match dispatch.
+#[inline(always)]
+unsafe fn direct_call_0(fn_ptr: u64) -> u64 {
+    unsafe {
+        let f: extern "C" fn() -> u64 = std::mem::transmute(fn_ptr as usize);
+        f()
+    }
+}
+
+/// Direct fn_ptr call for exactly 1 arg — fully inlined, no match dispatch.
+#[inline(always)]
+unsafe fn direct_call_1(fn_ptr: u64, a0: u64) -> u64 {
+    unsafe {
+        let f: extern "C" fn(u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+        f(a0)
+    }
+}
+
+/// Direct fn_ptr call for exactly 2 args — fully inlined, no match dispatch.
+#[inline(always)]
+unsafe fn direct_call_2(fn_ptr: u64, a0: u64, a1: u64) -> u64 {
+    unsafe {
+        let f: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+        f(a0, a1)
+    }
+}
+
+/// Direct fn_ptr call for exactly 3 args — fully inlined, no match dispatch.
+#[inline(always)]
+unsafe fn direct_call_3(fn_ptr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
+    unsafe {
+        let f: extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+        f(a0, a1, a2)
+    }
+}
+
+/// Probe the callable: if it's a non-closure function with matching arity,
+/// return Some(fn_ptr). Otherwise None.
+#[inline(always)]
+unsafe fn probe_simple_func(func_bits: u64, expected_arity: usize) -> Option<u64> {
+    unsafe {
+        let obj = obj_from_bits(func_bits);
+        let ptr = obj.as_ptr()?;
+        if object_type_id(ptr) != TYPE_ID_FUNCTION {
+            return None;
+        }
+        if function_closure_bits(ptr) != 0 {
+            return None;
+        }
+        if (function_arity(ptr) as usize) != expected_arity {
+            return None;
+        }
+        Some(function_fn_ptr(ptr))
+    }
+}
+
+/// Fast 0-argument function call. No args — minimal dispatch.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_call_func_fast0(func_bits: u64) -> u64 {
+    unsafe {
+        if let Some(fn_ptr) = probe_simple_func(func_bits, 0) {
+            if !recursion_guard_enter() {
+                return crate::with_gil_entry!(_py, {
+                    raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded")
+                });
+            }
+            let result = direct_call_0(fn_ptr);
+            recursion_guard_exit();
+            return result;
+        }
+    }
+    // Slow path
+    let args: [u64; 0] = [];
+    molt_call_func_dispatch(func_bits, args.as_ptr() as u64, 0, 0)
+}
+
+/// Fast 1-argument function call. Args passed in registers — no stack spill.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_call_func_fast1(func_bits: u64, a0: u64) -> u64 {
+    unsafe {
+        if let Some(fn_ptr) = probe_simple_func(func_bits, 1) {
+            if !recursion_guard_enter() {
+                return crate::with_gil_entry!(_py, {
+                    raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded")
+                });
+            }
+            let result = direct_call_1(fn_ptr, a0);
+            recursion_guard_exit();
+            return result;
+        }
+    }
+    // Slow path
+    let args = [a0];
+    molt_call_func_dispatch(func_bits, args.as_ptr() as u64, 1, 0)
+}
+
+/// Fast 2-argument function call. Args passed in registers — no stack spill.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_call_func_fast2(func_bits: u64, a0: u64, a1: u64) -> u64 {
+    unsafe {
+        if let Some(fn_ptr) = probe_simple_func(func_bits, 2) {
+            if !recursion_guard_enter() {
+                return crate::with_gil_entry!(_py, {
+                    raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded")
+                });
+            }
+            let result = direct_call_2(fn_ptr, a0, a1);
+            recursion_guard_exit();
+            return result;
+        }
+    }
+    // Slow path
+    let args = [a0, a1];
+    molt_call_func_dispatch(func_bits, args.as_ptr() as u64, 2, 0)
+}
+
+/// Fast 3-argument function call. Args passed in registers — no stack spill.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_call_func_fast3(func_bits: u64, a0: u64, a1: u64, a2: u64) -> u64 {
+    unsafe {
+        if let Some(fn_ptr) = probe_simple_func(func_bits, 3) {
+            if !recursion_guard_enter() {
+                return crate::with_gil_entry!(_py, {
+                    raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded")
+                });
+            }
+            let result = direct_call_3(fn_ptr, a0, a1, a2);
+            recursion_guard_exit();
+            return result;
+        }
+    }
+    // Slow path
+    let args = [a0, a1, a2];
+    molt_call_func_dispatch(func_bits, args.as_ptr() as u64, 3, 0)
+}
+
+/// Fallback: build a CallArgs and dispatch through `molt_call_bind`.
+fn molt_call_func_via_callargs(callable_bits: u64, args: &[u64]) -> u64 {
+    let nargs = args.len() as u64;
+    let pos_cap = MoltObject::from_int(nargs as i64).bits();
+    let kw_cap = MoltObject::from_int(0).bits();
+    let callargs_bits = molt_callargs_new(pos_cap, kw_cap);
+    for &arg in args {
+        unsafe { molt_callargs_push_pos(callargs_bits, arg) };
+    }
+    molt_call_bind(callable_bits, callargs_bits)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_trace_set_line(line_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let line_obj = obj_from_bits(line_bits);
+        let line = if line_obj.is_int() || line_obj.is_bool() {
+            to_i64(line_obj).unwrap_or(0)
+        } else {
+            line_bits as i64
+        };
+        frame_stack_set_line(line);
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_repr_builtin(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { molt_repr_from_obj(val_bits) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_format_builtin(val_bits: u64, spec_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(val_bits);
+        let spec_obj = obj_from_bits(spec_bits);
+        let Some(spec_ptr) = spec_obj.as_ptr() else {
+            let msg = format!(
+                "format() argument 2 must be str, not {}",
+                type_name(_py, spec_obj)
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        unsafe {
+            if object_type_id(spec_ptr) != TYPE_ID_STRING {
+                let msg = format!(
+                    "format() argument 2 must be str, not {}",
+                    type_name(_py, spec_obj)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+        }
+        let spec_text = string_obj_to_owned(spec_obj).unwrap_or_default();
+        if let Some(obj_ptr) = obj.as_ptr() {
+            unsafe {
+                let type_id = object_type_id(obj_ptr);
+                if type_id == TYPE_ID_OBJECT || type_id == TYPE_ID_DATACLASS {
+                    let class_bits = object_class_bits(obj_ptr);
+                    if class_bits != 0
+                        && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+                        && object_type_id(class_ptr) == TYPE_ID_TYPE
+                    {
+                        let format_bits = intern_static_name(
+                            _py,
+                            &runtime_state(_py).interned.format_name,
+                            b"__format__",
+                        );
+                        if let Some(call_bits) =
+                            class_attr_lookup(_py, class_ptr, class_ptr, Some(obj_ptr), format_bits)
+                        {
+                            return call_callable1(_py, call_bits, spec_bits);
+                        }
+                    }
+                }
+            }
+        }
+        let supports_format = obj.as_int().is_some()
+            || obj.as_bool().is_some()
+            || obj.as_float().is_some()
+            || bigint_ptr_from_bits(obj.bits()).is_some()
+            || obj
+                .as_ptr()
+                .map(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
+                .unwrap_or(false)
+            || obj
+                .as_ptr()
+                .map(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_COMPLEX })
+                .unwrap_or(false);
+        if supports_format {
+            return molt_string_format(val_bits, spec_bits);
+        }
+        if spec_text.is_empty() {
+            return molt_str_from_obj(val_bits);
+        }
+        let type_label = type_name(_py, obj);
+        let msg = format!("unsupported format string passed to {type_label}.__format__");
+        raise_exception::<_>(_py, "TypeError", &msg)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_callable_builtin(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { molt_is_callable(val_bits) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_round_builtin(val_bits: u64, ndigits_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        let has_ndigits = ndigits_bits != missing;
+        let has_ndigits_bits = MoltObject::from_bool(has_ndigits).bits();
+        let ndigits = if has_ndigits {
+            ndigits_bits
+        } else {
+            MoltObject::none().bits()
+        };
+        molt_round(val_bits, ndigits, has_ndigits_bits)
+    })
+}
+
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_any_builtin(iter_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let iter_obj = molt_iter(iter_bits);
+        if obj_from_bits(iter_obj).is_none() {
+            return raise_not_iterable(_py, iter_bits);
+        }
+        loop {
+            let pair_bits = molt_iter_next(iter_obj);
+            let pair_obj = obj_from_bits(pair_bits);
+            let Some(pair_ptr) = pair_obj.as_ptr() else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+            };
+            unsafe {
+                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+                }
+                let elems = seq_vec_ref(pair_ptr);
+                if elems.len() < 2 {
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+                }
+                let val_bits = elems[0];
+                let done_bits = elems[1];
+                if is_truthy(_py, obj_from_bits(done_bits)) {
+                    return MoltObject::from_bool(false).bits();
+                }
+                if is_truthy(_py, obj_from_bits(val_bits)) {
+                    return MoltObject::from_bool(true).bits();
+                }
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_all_builtin(iter_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let iter_obj = molt_iter(iter_bits);
+        if obj_from_bits(iter_obj).is_none() {
+            return raise_not_iterable(_py, iter_bits);
+        }
+        loop {
+            let pair_bits = molt_iter_next(iter_obj);
+            let pair_obj = obj_from_bits(pair_bits);
+            let Some(pair_ptr) = pair_obj.as_ptr() else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+            };
+            unsafe {
+                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+                }
+                let elems = seq_vec_ref(pair_ptr);
+                if elems.len() < 2 {
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+                }
+                let val_bits = elems[0];
+                let done_bits = elems[1];
+                if is_truthy(_py, obj_from_bits(done_bits)) {
+                    return MoltObject::from_bool(true).bits();
+                }
+                if !is_truthy(_py, obj_from_bits(val_bits)) {
+                    return MoltObject::from_bool(false).bits();
+                }
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_abs_builtin(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(val_bits);
+        if let Some(i) = to_i64(obj) {
+            return int_bits_from_i128(_py, (i as i128).abs());
+        }
+        if let Some(big) = to_bigint(obj) {
+            let abs_val = big.abs();
+            if let Some(i) = bigint_to_inline(&abs_val) {
+                return MoltObject::from_int(i).bits();
+            }
+            return bigint_bits(_py, abs_val);
+        }
+        if let Some(f) = to_f64(obj) {
+            return MoltObject::from_float(f.abs()).bits();
+        }
+        if let Some(ptr) = complex_ptr_from_bits(val_bits) {
+            let value = unsafe { *complex_ref(ptr) };
+            return MoltObject::from_float(value.re.hypot(value.im)).bits();
+        }
+        if let Some(ptr) = maybe_ptr_from_bits(val_bits)
+            && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__abs__")
+        {
+            unsafe {
+                let call_bits = attr_lookup_ptr(_py, ptr, name_bits);
+                dec_ref_bits(_py, name_bits);
+                if let Some(call_bits) = call_bits {
+                    let res_bits = call_callable0(_py, call_bits);
+                    dec_ref_bits(_py, call_bits);
+                    return res_bits;
+                }
+            }
+        }
+        let type_name = class_name_for_error(type_of_bits(_py, val_bits));
+        let msg = format!("bad operand type for abs(): '{type_name}'");
+        raise_exception::<_>(_py, "TypeError", &msg)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(a_bits);
+        let rhs = obj_from_bits(b_bits);
+        // If either operand is a float, skip ALL integer paths so that
+        // divmod(7, 2.0) returns (3.0, 1.0) instead of (3, 1).
+        // Note: to_i64 / to_bigint coerce exact-integer floats (e.g. 2.0 -> 2),
+        // so we must guard the bigint path too, not just the i64 fast path.
+        let either_float = lhs.is_float() || rhs.is_float();
+        if !either_float && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+            if ri == 0 {
+                return raise_exception::<_>(
+                    _py,
+                    "ZeroDivisionError",
+                    "integer division or modulo by zero",
+                );
+            }
+            let li128 = li as i128;
+            let ri128 = ri as i128;
+            let mut rem = li128 % ri128;
+            if rem != 0 && (rem > 0) != (ri128 > 0) {
+                rem += ri128;
+            }
+            let quot = (li128 - rem) / ri128;
+            let q_bits = int_bits_from_i128(_py, quot);
+            let r_bits = int_bits_from_i128(_py, rem);
+            let tuple_ptr = alloc_tuple(_py, &[q_bits, r_bits]);
+            if tuple_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(tuple_ptr).bits();
+        }
+        if !either_float && let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
+            if r_big.is_zero() {
+                return raise_exception::<_>(
+                    _py,
+                    "ZeroDivisionError",
+                    "integer division or modulo by zero",
+                );
+            }
+            let quot = l_big.div_floor(&r_big);
+            let rem = l_big.mod_floor(&r_big);
+            let q_bits = if let Some(i) = bigint_to_inline(&quot) {
+                MoltObject::from_int(i).bits()
+            } else {
+                bigint_bits(_py, quot)
+            };
+            let r_bits = if let Some(i) = bigint_to_inline(&rem) {
+                MoltObject::from_int(i).bits()
+            } else {
+                bigint_bits(_py, rem)
+            };
+            let tuple_ptr = alloc_tuple(_py, &[q_bits, r_bits]);
+            if tuple_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(tuple_ptr).bits();
+        }
+        if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
+            if rf == 0.0 {
+                return raise_exception::<_>(_py, "ZeroDivisionError", "float divmod()");
+            }
+            let quot = (lf / rf).floor();
+            let mut rem = lf % rf;
+            if rem != 0.0 && (rem > 0.0) != (rf > 0.0) {
+                rem += rf;
+            }
+            let q_bits = MoltObject::from_float(quot).bits();
+            let r_bits = MoltObject::from_float(rem).bits();
+            let tuple_ptr = alloc_tuple(_py, &[q_bits, r_bits]);
+            if tuple_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(tuple_ptr).bits();
+        }
+        let left = class_name_for_error(type_of_bits(_py, a_bits));
+        let right = class_name_for_error(type_of_bits(_py, b_bits));
+        let msg = format!("unsupported operand type(s) for divmod(): '{left}' and '{right}'");
+        raise_exception::<_>(_py, "TypeError", &msg)
+    })
+}
+
+#[inline]
+fn minmax_compare(_py: &PyToken<'_>, best_key_bits: u64, cand_key_bits: u64) -> CompareOutcome {
+    compare_objects(
+        _py,
+        obj_from_bits(cand_key_bits),
+        obj_from_bits(best_key_bits),
+    )
+}
+
+fn molt_minmax_builtin(
+    _py: &PyToken<'_>,
+    args_bits: u64,
+    key_bits: u64,
+    default_bits: u64,
+    want_max: bool,
+    name: &str,
+) -> u64 {
+    let missing = missing_bits(_py);
+    let args_obj = obj_from_bits(args_bits);
+    let Some(args_ptr) = args_obj.as_ptr() else {
+        let msg = format!("{name} expected at least 1 argument, got 0");
+        return raise_exception::<_>(_py, "TypeError", &msg);
+    };
+    unsafe {
+        if object_type_id(args_ptr) != TYPE_ID_TUPLE {
+            let msg = format!("{name} expected at least 1 argument, got 0");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
+        let args = seq_vec_ref(args_ptr);
+        if args.is_empty() {
+            let msg = format!("{name} expected at least 1 argument, got 0");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
+        let has_default = default_bits != missing;
+        if args.len() > 1 && has_default {
+            let msg =
+                format!("Cannot specify a default for {name}() with multiple positional arguments");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
+        let use_key = !obj_from_bits(key_bits).is_none();
+        let mut best_bits;
+        let mut best_key_bits: u64;
+        if args.len() == 1 {
+            let iter_bits = molt_iter(args[0]);
+            if obj_from_bits(iter_bits).is_none() {
+                return raise_not_iterable(_py, args[0]);
+            }
+            let pair_bits = molt_iter_next(iter_bits);
+            let pair_obj = obj_from_bits(pair_bits);
+            let Some(pair_ptr) = pair_obj.as_ptr() else {
+                return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+            };
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+            }
+            let elems = seq_vec_ref(pair_ptr);
+            if elems.len() < 2 {
+                return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+            }
+            let val_bits = elems[0];
+            let done_bits = elems[1];
+            if is_truthy(_py, obj_from_bits(done_bits)) {
+                if has_default {
+                    inc_ref_bits(_py, default_bits);
+                    return default_bits;
+                }
+                let msg = format!("{name}() iterable argument is empty");
+                return raise_exception::<_>(_py, "ValueError", &msg);
+            }
+            best_bits = val_bits;
+            if use_key {
+                best_key_bits = call_callable1(_py, key_bits, best_bits);
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+            } else {
+                best_key_bits = best_bits;
+            }
+            loop {
+                let pair_bits = molt_iter_next(iter_bits);
+                let pair_obj = obj_from_bits(pair_bits);
+                let Some(pair_ptr) = pair_obj.as_ptr() else {
+                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+                };
+                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+                }
+                let elems = seq_vec_ref(pair_ptr);
+                if elems.len() < 2 {
+                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+                }
+                let val_bits = elems[0];
+                let done_bits = elems[1];
+                if is_truthy(_py, obj_from_bits(done_bits)) {
+                    if use_key {
+                        dec_ref_bits(_py, best_key_bits);
+                    }
+                    inc_ref_bits(_py, best_bits);
+                    return best_bits;
+                }
+                let cand_key_bits = if use_key {
+                    let res_bits = call_callable1(_py, key_bits, val_bits);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    res_bits
+                } else {
+                    val_bits
+                };
+                let replace = match minmax_compare(_py, best_key_bits, cand_key_bits) {
+                    CompareOutcome::Ordered(ordering) => {
+                        if want_max {
+                            ordering == Ordering::Greater
+                        } else {
+                            ordering == Ordering::Less
+                        }
+                    }
+                    CompareOutcome::Unordered => false,
+                    CompareOutcome::NotComparable => {
+                        if use_key {
+                            dec_ref_bits(_py, best_key_bits);
+                            dec_ref_bits(_py, cand_key_bits);
+                        }
+                        return compare_type_error(
+                            _py,
+                            obj_from_bits(cand_key_bits),
+                            obj_from_bits(best_key_bits),
+                            if want_max { ">" } else { "<" },
+                        );
+                    }
+                    CompareOutcome::Error => {
+                        if use_key {
+                            dec_ref_bits(_py, best_key_bits);
+                            dec_ref_bits(_py, cand_key_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
+                };
+                if replace {
+                    if use_key {
+                        dec_ref_bits(_py, best_key_bits);
+                    }
+                    best_bits = val_bits;
+                    best_key_bits = cand_key_bits;
+                } else if use_key {
+                    dec_ref_bits(_py, cand_key_bits);
+                }
+            }
+        }
+        best_bits = args[0];
+        if use_key {
+            best_key_bits = call_callable1(_py, key_bits, best_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+        } else {
+            best_key_bits = best_bits;
+        }
+        for &val_bits in args.iter().skip(1) {
+            let cand_key_bits = if use_key {
+                let res_bits = call_callable1(_py, key_bits, val_bits);
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                res_bits
+            } else {
+                val_bits
+            };
+            let replace = match minmax_compare(_py, best_key_bits, cand_key_bits) {
+                CompareOutcome::Ordered(ordering) => {
+                    if want_max {
+                        ordering == Ordering::Greater
+                    } else {
+                        ordering == Ordering::Less
+                    }
+                }
+                CompareOutcome::Unordered => false,
+                CompareOutcome::NotComparable => {
+                    if use_key {
+                        dec_ref_bits(_py, best_key_bits);
+                        dec_ref_bits(_py, cand_key_bits);
+                    }
+                    return compare_type_error(
+                        _py,
+                        obj_from_bits(cand_key_bits),
+                        obj_from_bits(best_key_bits),
+                        if want_max { ">" } else { "<" },
+                    );
+                }
+                CompareOutcome::Error => {
+                    if use_key {
+                        dec_ref_bits(_py, best_key_bits);
+                        dec_ref_bits(_py, cand_key_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+            };
+            if replace {
+                if use_key {
+                    dec_ref_bits(_py, best_key_bits);
+                }
+                best_bits = val_bits;
+                best_key_bits = cand_key_bits;
+            } else if use_key {
+                dec_ref_bits(_py, cand_key_bits);
+            }
+        }
+        if use_key {
+            dec_ref_bits(_py, best_key_bits);
+        }
+        inc_ref_bits(_py, best_bits);
+        best_bits
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_min_builtin(args_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        molt_minmax_builtin(_py, args_bits, key_bits, default_bits, false, "min")
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_max_builtin(args_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        molt_minmax_builtin(_py, args_bits, key_bits, default_bits, true, "max")
+    })
+}
+
+
+struct SortItem {
+    key_bits: u64,
+    value_bits: u64,
+}
+
+enum SortError {
+    NotComparable(u64, u64),
+    Exception,
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sorted_builtin(iter_bits: u64, key_bits: u64, reverse_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let iter_obj = molt_iter(iter_bits);
+        if obj_from_bits(iter_obj).is_none() {
+            return raise_not_iterable(_py, iter_bits);
+        }
+        let use_key = !obj_from_bits(key_bits).is_none();
+        let reverse = is_truthy(_py, obj_from_bits(reverse_bits));
+        let mut items: Vec<SortItem> = Vec::new();
+        loop {
+            let pair_bits = molt_iter_next(iter_obj);
+            let pair_obj = obj_from_bits(pair_bits);
+            let Some(pair_ptr) = pair_obj.as_ptr() else {
+                if use_key {
+                    for item in items.drain(..) {
+                        dec_ref_bits(_py, item.key_bits);
+                    }
+                }
+                // If an exception is pending, propagate it; otherwise the
+                // iterator returned a non-pointer sentinel — treat as done
+                // and fall through to build the (possibly empty) sorted list.
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                break;
+            };
+            unsafe {
+                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                    if use_key {
+                        for item in items.drain(..) {
+                            dec_ref_bits(_py, item.key_bits);
+                        }
+                    }
+                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+                }
+                let elems = seq_vec_ref(pair_ptr);
+                if elems.len() < 2 {
+                    if use_key {
+                        for item in items.drain(..) {
+                            dec_ref_bits(_py, item.key_bits);
+                        }
+                    }
+                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+                }
+                let val_bits = elems[0];
+                let done_bits = elems[1];
+                if is_truthy(_py, obj_from_bits(done_bits)) {
+                    break;
+                }
+                let key_val_bits = if use_key {
+                    let res_bits = call_callable1(_py, key_bits, val_bits);
+                    if exception_pending(_py) {
+                        for item in items.drain(..) {
+                            dec_ref_bits(_py, item.key_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
+                    res_bits
+                } else {
+                    val_bits
+                };
+                items.push(SortItem {
+                    key_bits: key_val_bits,
+                    value_bits: val_bits,
+                });
+            }
+        }
+        let mut error: Option<SortError> = None;
+        items.sort_by(|left, right| {
+            if error.is_some() {
+                return Ordering::Equal;
+            }
+            let outcome = compare_objects(
+                _py,
+                obj_from_bits(left.key_bits),
+                obj_from_bits(right.key_bits),
+            );
+            match outcome {
+                CompareOutcome::Ordered(ordering) => {
+                    if reverse {
+                        ordering.reverse()
+                    } else {
+                        ordering
+                    }
+                }
+                CompareOutcome::Unordered => Ordering::Equal,
+                CompareOutcome::NotComparable => {
+                    error = Some(SortError::NotComparable(left.key_bits, right.key_bits));
+                    Ordering::Equal
+                }
+                CompareOutcome::Error => {
+                    error = Some(SortError::Exception);
+                    Ordering::Equal
+                }
+            }
+        });
+        if let Some(error) = error {
+            if use_key {
+                for item in items.drain(..) {
+                    dec_ref_bits(_py, item.key_bits);
+                }
+            }
+            match error {
+                SortError::NotComparable(left_bits, right_bits) => {
+                    let msg = format!(
+                        "'<' not supported between instances of '{}' and '{}'",
+                        type_name(_py, obj_from_bits(left_bits)),
+                        type_name(_py, obj_from_bits(right_bits)),
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                SortError::Exception => {
+                    return MoltObject::none().bits();
+                }
+            }
+        }
+        let mut out: Vec<u64> = Vec::with_capacity(items.len());
+        for item in items.iter() {
+            out.push(item.value_bits);
+        }
+        if use_key {
+            for item in items.drain(..) {
+                dec_ref_bits(_py, item.key_bits);
+            }
+        }
+        let list_ptr = alloc_list(_py, &out);
+        if list_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(list_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let start_obj = obj_from_bits(start_bits);
+        if let Some(ptr) = start_obj.as_ptr() {
+            unsafe {
+                let type_id = object_type_id(ptr);
+                if type_id == TYPE_ID_STRING {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "sum() can't sum strings [use ''.join(seq) instead]",
+                    );
+                }
+                if type_id == TYPE_ID_BYTES {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "sum() can't sum bytes [use b''.join(seq) instead]",
+                    );
+                }
+                if type_id == TYPE_ID_BYTEARRAY {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "sum() can't sum bytearray [use b''.join(seq) instead]",
+                    );
+                }
+            }
+        }
+        // Fast path: if the iterable is a list or tuple of integers, sum
+        // directly without going through the iterator protocol.  This avoids
+        // allocating a (value, done) tuple per element.
+        {
+            let iter_obj_check = obj_from_bits(iter_bits);
+            if let Some(ptr) = iter_obj_check.as_ptr() {
+                let type_id = unsafe { object_type_id(ptr) };
+                if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                    let elems = unsafe { seq_vec_ref(ptr) };
+                    let start_int = to_i64(start_obj);
+                    if let Some(_) = start_int {
+                        let mut acc128 = start_int.unwrap() as i128;
+                        let mut all_int = true;
+                        for &bits in elems.iter() {
+                            let elem = obj_from_bits(bits);
+                            if let Some(i) = to_i64(elem) {
+                                acc128 += i as i128;
+                            } else {
+                                all_int = false;
+                                break;
+                            }
+                        }
+                        if all_int {
+                            use crate::builtins::numbers::int_bits_from_i128;
+                            return int_bits_from_i128(_py, acc128);
+                        }
+                    }
+                }
+            }
+        }
+        let iter_obj = molt_iter(iter_bits);
+        if obj_from_bits(iter_obj).is_none() {
+            return raise_not_iterable(_py, iter_bits);
+        }
+        // CPython >= 3.12 uses Neumaier compensated summation for float sums.
+        // Detect float accumulation and switch to compensated mode.
+        let mut total_bits = start_bits;
+        let mut total_owned = false;
+        let start_f = to_f64(start_obj);
+        // If start is a number, try Neumaier compensated path.
+        if let Some(start_val) = start_f {
+            let mut fsum = start_val;
+            let mut comp = 0.0_f64; // Neumaier compensation term
+            let mut all_numeric = true;
+            let mut has_float = start_obj.as_float().is_some();
+            loop {
+                let pair_bits = molt_iter_next(iter_obj);
+                let pair_obj = obj_from_bits(pair_bits);
+                let Some(pair_ptr) = pair_obj.as_ptr() else {
+                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+                };
+                unsafe {
+                    if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "object is not an iterator",
+                        );
+                    }
+                    let elems = seq_vec_ref(pair_ptr);
+                    if elems.len() < 2 {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "object is not an iterator",
+                        );
+                    }
+                    let val_bits = elems[0];
+                    let done_bits = elems[1];
+                    if is_truthy(_py, obj_from_bits(done_bits)) {
+                        if all_numeric {
+                            let result = fsum + comp;
+                            if has_float {
+                                return MoltObject::from_float(result).bits();
+                            } else {
+                                return MoltObject::from_int(result as i64).bits();
+                            }
+                        }
+                        if !total_owned {
+                            inc_ref_bits(_py, total_bits);
+                        }
+                        return total_bits;
+                    }
+                    let val_obj = obj_from_bits(val_bits);
+                    if all_numeric {
+                        // Check if value is float-coercible and stay in compensated mode
+                        let item_f = if let Some(f) = val_obj.as_float() {
+                            has_float = true;
+                            Some(f)
+                        } else if let Some(i) = to_i64(val_obj) {
+                            Some(i as f64)
+                        } else {
+                            None
+                        };
+                        if let Some(x) = item_f {
+                            // Neumaier compensated summation step
+                            let t = fsum + x;
+                            if fsum.abs() >= x.abs() {
+                                comp += (fsum - t) + x;
+                            } else {
+                                comp += (x - t) + fsum;
+                            }
+                            fsum = t;
+                            total_bits = MoltObject::from_float(fsum).bits();
+                            total_owned = true;
+                            continue;
+                        }
+                        // Non-numeric value: fall back to generic sum.
+                        // total_owned must be set here because the done-check
+                        // at the top of the next iteration reads it.
+                        all_numeric = false;
+                        total_bits = MoltObject::from_float(fsum + comp).bits();
+                        #[allow(unused_assignments)]
+                        { total_owned = true; }
+                    }
+                    let next_bits = molt_add(total_bits, val_bits);
+                    if obj_from_bits(next_bits).is_none() {
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
+                        return binary_type_error(
+                            _py,
+                            obj_from_bits(total_bits),
+                            obj_from_bits(val_bits),
+                            "+",
+                        );
+                    }
+                    total_bits = next_bits;
+                    total_owned = true;
+                }
+            }
+        }
+        // Non-numeric start: generic path
+        loop {
+            let pair_bits = molt_iter_next(iter_obj);
+            let pair_obj = obj_from_bits(pair_bits);
+            let Some(pair_ptr) = pair_obj.as_ptr() else {
+                return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+            };
+            unsafe {
+                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+                }
+                let elems = seq_vec_ref(pair_ptr);
+                if elems.len() < 2 {
+                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+                }
+                let val_bits = elems[0];
+                let done_bits = elems[1];
+                if is_truthy(_py, obj_from_bits(done_bits)) {
+                    if !total_owned {
+                        inc_ref_bits(_py, total_bits);
+                    }
+                    return total_bits;
+                }
+                let next_bits = molt_add(total_bits, val_bits);
+                if obj_from_bits(next_bits).is_none() {
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    return binary_type_error(
+                        _py,
+                        obj_from_bits(total_bits),
+                        obj_from_bits(val_bits),
+                        "+",
+                    );
+                }
+                total_bits = next_bits;
+                total_owned = true;
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        if default_bits == missing {
+            return molt_get_attr_name(obj_bits, name_bits);
+        }
+        molt_get_attr_name_default(obj_bits, name_bits, default_bits)
+    })
+}
+
+/// Python `setattr(obj, name, value)` builtin.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_setattr_builtin(obj_bits: u64, name_bits: u64, val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        molt_object_setattr(obj_bits, name_bits, val_bits);
+        MoltObject::none().bits()
+    })
+}
+
+/// Python `delattr(obj, name)` builtin.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_delattr_builtin(obj_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let res = molt_object_delattr(obj_bits, name_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        res
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_vars_builtin(obj_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        if obj_bits == missing {
+            // CPython parity: vars() == locals() when called with no arguments.
+            // Note: `molt_locals_builtin` is safe to call here; `with_gil_entry` is
+            // re-entrant and uses the existing token.
+            return crate::molt_locals_builtin();
+        }
+        let dict_name_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.dict_name, b"__dict__");
+        let dict_bits = molt_get_attr_name_default(obj_bits, dict_name_bits, missing);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if dict_bits == missing {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "vars() argument must have __dict__ attribute",
+            );
+        }
+        dict_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_getstate(_self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(ptr) = obj_from_bits(_self_bits).as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        let type_id = unsafe { object_type_id(ptr) };
+        if type_id != crate::TYPE_ID_OBJECT && type_id != crate::TYPE_ID_DATACLASS {
+            return MoltObject::none().bits();
+        }
+
+        // 1. Collect __dict__ entries.
+        let mut dict_state_bits: Option<u64> = None;
+        let dict_bits = if type_id == crate::TYPE_ID_DATACLASS {
+            unsafe { crate::dataclass_dict_bits(ptr) }
+        } else {
+            unsafe { crate::instance_dict_bits(ptr) }
+        };
+        if dict_bits != 0
+            && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+            && unsafe { object_type_id(dict_ptr) } == crate::TYPE_ID_DICT
+            && !unsafe { crate::dict_order(dict_ptr).is_empty() }
+        {
+            inc_ref_bits(_py, dict_bits);
+            dict_state_bits = Some(dict_bits);
+        }
+
+        // 2. Collect typed/slot field values.
+        let slot_state_bits = if type_id == crate::TYPE_ID_DATACLASS {
+            dataclass_getstate_slot_state(_py, ptr)
+        } else {
+            object_getstate_slot_state(_py, ptr)
+        };
+
+        // 3. Combine following CPython's (dict, slots) tuple convention.
+        match (dict_state_bits, slot_state_bits) {
+            (Some(d), Some(s)) => {
+                let tuple_ptr = crate::alloc_tuple(_py, &[d, s]);
+                dec_ref_bits(_py, d);
+                dec_ref_bits(_py, s);
+                if tuple_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                MoltObject::from_ptr(tuple_ptr).bits()
+            }
+            (None, Some(s)) => {
+                let none_bits = MoltObject::none().bits();
+                let tuple_ptr = crate::alloc_tuple(_py, &[none_bits, s]);
+                dec_ref_bits(_py, s);
+                if tuple_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                MoltObject::from_ptr(tuple_ptr).bits()
+            }
+            (Some(d), None) => d,
+            (None, None) => {
+                // CPython returns self.__dict__ which may be empty {}.
+                let dict_ptr = crate::alloc_dict_with_pairs(_py, &[]);
+                if dict_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                MoltObject::from_ptr(dict_ptr).bits()
+            }
+        }
+    })
+}
+
+/// Extract typed field values from `__molt_field_offsets__` into a new dict.
+fn object_getstate_slot_state(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<u64> {
+    let class_bits = unsafe { object_class_bits(ptr) };
+    let class_ptr = obj_from_bits(class_bits).as_ptr()?;
+    if unsafe { object_type_id(class_ptr) } != crate::TYPE_ID_TYPE {
+        return None;
+    }
+    let class_dict_bits = unsafe { crate::class_dict_bits(class_ptr) };
+    let class_dict_ptr = obj_from_bits(class_dict_bits).as_ptr()?;
+    if unsafe { object_type_id(class_dict_ptr) } != crate::TYPE_ID_DICT {
+        return None;
+    }
+    let offsets_name_bits =
+        crate::builtins::attr::attr_name_bits_from_bytes(_py, b"__molt_field_offsets__")?;
+    let offsets_bits = unsafe { crate::dict_get_in_place(_py, class_dict_ptr, offsets_name_bits) };
+    dec_ref_bits(_py, offsets_name_bits);
+    if exception_pending(_py) {
+        return None;
+    }
+    let offsets_bits = offsets_bits?;
+    let offsets_ptr = obj_from_bits(offsets_bits).as_ptr()?;
+    if unsafe { object_type_id(offsets_ptr) } != crate::TYPE_ID_DICT {
+        return None;
+    }
+
+    let state_ptr = crate::alloc_dict_with_pairs(_py, &[]);
+    if state_ptr.is_null() {
+        return None;
+    }
+    let state_bits = MoltObject::from_ptr(state_ptr).bits();
+    let mut wrote_any = false;
+    let pairs = unsafe { crate::dict_order(offsets_ptr).to_vec() };
+    let mut idx = 0usize;
+    while idx + 1 < pairs.len() {
+        let name_bits = pairs[idx];
+        let offset_bits = pairs[idx + 1];
+        idx += 2;
+        let offset = obj_from_bits(offset_bits).as_int().filter(|&v| v >= 0)?;
+        let value_bits = unsafe { crate::object_field_get_ptr_raw(_py, ptr, offset as usize) };
+        if exception_pending(_py) {
+            dec_ref_bits(_py, state_bits);
+            return None;
+        }
+        if crate::builtins::methods::is_missing_bits(_py, value_bits) {
+            dec_ref_bits(_py, value_bits);
+            continue;
+        }
+        unsafe {
+            crate::dict_set_in_place(_py, state_ptr, name_bits, value_bits);
+        }
+        dec_ref_bits(_py, value_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, state_bits);
+            return None;
+        }
+        wrote_any = true;
+    }
+    if !wrote_any {
+        dec_ref_bits(_py, state_bits);
+        return None;
+    }
+    Some(state_bits)
+}
+
+/// Extract dataclass field values from the descriptor layout into a new dict.
+fn dataclass_getstate_slot_state(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<u64> {
+    let desc_ptr = unsafe { crate::dataclass_desc_ptr(ptr) };
+    if desc_ptr.is_null() {
+        return None;
+    }
+    let field_values = unsafe { crate::dataclass_fields_ref(ptr) };
+    let field_names = unsafe { &(*desc_ptr).field_names };
+    if field_names.is_empty() {
+        return None;
+    }
+
+    let state_ptr = crate::alloc_dict_with_pairs(_py, &[]);
+    if state_ptr.is_null() {
+        return None;
+    }
+    let state_bits = MoltObject::from_ptr(state_ptr).bits();
+    let mut wrote_any = false;
+    for (name, &value_bits) in field_names.iter().zip(field_values.iter()) {
+        if crate::builtins::methods::is_missing_bits(_py, value_bits) {
+            continue;
+        }
+        let Some(name_bits) =
+            crate::builtins::attr::attr_name_bits_from_bytes(_py, name.as_bytes())
+        else {
+            dec_ref_bits(_py, state_bits);
+            return None;
+        };
+        unsafe {
+            crate::dict_set_in_place(_py, state_ptr, name_bits, value_bits);
+        }
+        dec_ref_bits(_py, name_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, state_bits);
+            return None;
+        }
+        wrote_any = true;
+    }
+    if !wrote_any {
+        dec_ref_bits(_py, state_bits);
+        return None;
+    }
+    Some(state_bits)
+}
+
+fn dir_runtime_python_at_least(_py: &PyToken<'_>, major: i64, minor: i64) -> bool {
+    let state = runtime_state(_py);
+    let guard = state.sys_version_info.lock().unwrap();
+    let (runtime_major, runtime_minor) = guard
+        .as_ref()
+        .map(|info| (info.major, info.minor))
+        .unwrap_or((3, 12));
+    runtime_major > major || (runtime_major == major && runtime_minor >= minor)
+}
+
+fn dir_add_builtin_method_surface(
+    _py: &PyToken<'_>,
+    target_class_bits: u64,
+    add_name: &mut dyn FnMut(&[u8]) -> bool,
+) -> bool {
+    let builtins = builtin_classes(_py);
+    if target_class_bits == builtins.str {
+        for name in [
+            &b"capitalize"[..],
+            &b"casefold"[..],
+            &b"center"[..],
+            &b"count"[..],
+            &b"encode"[..],
+            &b"endswith"[..],
+            &b"expandtabs"[..],
+            &b"find"[..],
+            &b"format"[..],
+            &b"format_map"[..],
+            &b"index"[..],
+            &b"isalnum"[..],
+            &b"isalpha"[..],
+            &b"isascii"[..],
+            &b"isdecimal"[..],
+            &b"isdigit"[..],
+            &b"isidentifier"[..],
+            &b"islower"[..],
+            &b"isnumeric"[..],
+            &b"isprintable"[..],
+            &b"isspace"[..],
+            &b"istitle"[..],
+            &b"isupper"[..],
+            &b"join"[..],
+            &b"ljust"[..],
+            &b"lower"[..],
+            &b"lstrip"[..],
+            &b"maketrans"[..],
+            &b"partition"[..],
+            &b"removeprefix"[..],
+            &b"removesuffix"[..],
+            &b"replace"[..],
+            &b"rfind"[..],
+            &b"rindex"[..],
+            &b"rjust"[..],
+            &b"rpartition"[..],
+            &b"rsplit"[..],
+            &b"rstrip"[..],
+            &b"split"[..],
+            &b"splitlines"[..],
+            &b"startswith"[..],
+            &b"strip"[..],
+            &b"swapcase"[..],
+            &b"title"[..],
+            &b"translate"[..],
+            &b"upper"[..],
+            &b"zfill"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if target_class_bits == builtins.bytes {
+        for name in [
+            &b"capitalize"[..],
+            &b"center"[..],
+            &b"count"[..],
+            &b"decode"[..],
+            &b"endswith"[..],
+            &b"expandtabs"[..],
+            &b"find"[..],
+            &b"fromhex"[..],
+            &b"hex"[..],
+            &b"index"[..],
+            &b"isalnum"[..],
+            &b"isalpha"[..],
+            &b"isascii"[..],
+            &b"isdigit"[..],
+            &b"islower"[..],
+            &b"isspace"[..],
+            &b"istitle"[..],
+            &b"isupper"[..],
+            &b"join"[..],
+            &b"ljust"[..],
+            &b"lower"[..],
+            &b"lstrip"[..],
+            &b"maketrans"[..],
+            &b"partition"[..],
+            &b"removeprefix"[..],
+            &b"removesuffix"[..],
+            &b"replace"[..],
+            &b"rfind"[..],
+            &b"rindex"[..],
+            &b"rjust"[..],
+            &b"rpartition"[..],
+            &b"rsplit"[..],
+            &b"rstrip"[..],
+            &b"split"[..],
+            &b"splitlines"[..],
+            &b"startswith"[..],
+            &b"strip"[..],
+            &b"swapcase"[..],
+            &b"title"[..],
+            &b"translate"[..],
+            &b"upper"[..],
+            &b"zfill"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if target_class_bits == builtins.bytearray {
+        for name in [
+            &b"append"[..],
+            &b"capitalize"[..],
+            &b"center"[..],
+            &b"clear"[..],
+            &b"copy"[..],
+            &b"count"[..],
+            &b"decode"[..],
+            &b"endswith"[..],
+            &b"expandtabs"[..],
+            &b"extend"[..],
+            &b"find"[..],
+            &b"fromhex"[..],
+            &b"hex"[..],
+            &b"index"[..],
+            &b"insert"[..],
+            &b"isalnum"[..],
+            &b"isalpha"[..],
+            &b"isascii"[..],
+            &b"isdigit"[..],
+            &b"islower"[..],
+            &b"isspace"[..],
+            &b"istitle"[..],
+            &b"isupper"[..],
+            &b"join"[..],
+            &b"ljust"[..],
+            &b"lower"[..],
+            &b"lstrip"[..],
+            &b"maketrans"[..],
+            &b"partition"[..],
+            &b"pop"[..],
+            &b"remove"[..],
+            &b"removeprefix"[..],
+            &b"removesuffix"[..],
+            &b"replace"[..],
+            &b"reverse"[..],
+            &b"rfind"[..],
+            &b"rindex"[..],
+            &b"rjust"[..],
+            &b"rpartition"[..],
+            &b"rsplit"[..],
+            &b"rstrip"[..],
+            &b"split"[..],
+            &b"splitlines"[..],
+            &b"startswith"[..],
+            &b"strip"[..],
+            &b"swapcase"[..],
+            &b"title"[..],
+            &b"translate"[..],
+            &b"upper"[..],
+            &b"zfill"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        if dir_runtime_python_at_least(_py, 3, 14) && !add_name(&b"resize"[..]) {
+            return false;
+        }
+        return true;
+    }
+    if target_class_bits == builtins.int || target_class_bits == builtins.bool {
+        for name in [
+            &b"as_integer_ratio"[..],
+            &b"bit_count"[..],
+            &b"bit_length"[..],
+            &b"conjugate"[..],
+            &b"from_bytes"[..],
+            &b"is_integer"[..],
+            &b"to_bytes"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if target_class_bits == builtins.float {
+        for name in [
+            &b"as_integer_ratio"[..],
+            &b"conjugate"[..],
+            &b"fromhex"[..],
+            &b"hex"[..],
+            &b"is_integer"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        if dir_runtime_python_at_least(_py, 3, 14) && !add_name(&b"from_number"[..]) {
+            return false;
+        }
+        return true;
+    }
+    if target_class_bits == builtins.complex {
+        if !add_name(&b"conjugate"[..]) {
+            return false;
+        }
+        if dir_runtime_python_at_least(_py, 3, 14) && !add_name(&b"from_number"[..]) {
+            return false;
+        }
+        return true;
+    }
+    if target_class_bits == builtins.list {
+        for name in [
+            &b"append"[..],
+            &b"clear"[..],
+            &b"copy"[..],
+            &b"count"[..],
+            &b"extend"[..],
+            &b"index"[..],
+            &b"insert"[..],
+            &b"pop"[..],
+            &b"remove"[..],
+            &b"reverse"[..],
+            &b"sort"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if target_class_bits == builtins.tuple {
+        return add_name(&b"count"[..]) && add_name(&b"index"[..]);
+    }
+    if target_class_bits == builtins.range {
+        return add_name(&b"count"[..]) && add_name(&b"index"[..]);
+    }
+    if target_class_bits == builtins.dict {
+        for name in [
+            &b"clear"[..],
+            &b"copy"[..],
+            &b"fromkeys"[..],
+            &b"get"[..],
+            &b"items"[..],
+            &b"keys"[..],
+            &b"pop"[..],
+            &b"popitem"[..],
+            &b"setdefault"[..],
+            &b"update"[..],
+            &b"values"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if target_class_bits == builtins.set {
+        for name in [
+            &b"add"[..],
+            &b"clear"[..],
+            &b"copy"[..],
+            &b"difference"[..],
+            &b"difference_update"[..],
+            &b"discard"[..],
+            &b"intersection"[..],
+            &b"intersection_update"[..],
+            &b"isdisjoint"[..],
+            &b"issubset"[..],
+            &b"issuperset"[..],
+            &b"pop"[..],
+            &b"remove"[..],
+            &b"symmetric_difference"[..],
+            &b"symmetric_difference_update"[..],
+            &b"union"[..],
+            &b"update"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if target_class_bits == builtins.frozenset {
+        for name in [
+            &b"copy"[..],
+            &b"difference"[..],
+            &b"intersection"[..],
+            &b"isdisjoint"[..],
+            &b"issubset"[..],
+            &b"issuperset"[..],
+            &b"symmetric_difference"[..],
+            &b"union"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if target_class_bits == builtins.memoryview {
+        for name in [
+            &b"_from_flags"[..],
+            &b"cast"[..],
+            &b"hex"[..],
+            &b"release"[..],
+            &b"tobytes"[..],
+            &b"tolist"[..],
+            &b"toreadonly"[..],
+        ] {
+            if !add_name(name) {
+                return false;
+            }
+        }
+        if dir_runtime_python_at_least(_py, 3, 14)
+            && (!add_name(&b"count"[..]) || !add_name(&b"index"[..]))
+        {
+            return false;
+        }
+        return true;
+    }
+    if target_class_bits == builtins.property {
+        return add_name(&b"getter"[..]) && add_name(&b"setter"[..]) && add_name(&b"deleter"[..]);
+    }
+    if target_class_bits == builtins.base_exception_group
+        || issubclass_bits(target_class_bits, builtins.base_exception_group)
+    {
+        return add_name(&b"add_note"[..])
+            && add_name(&b"with_traceback"[..])
+            && add_name(&b"derive"[..])
+            && add_name(&b"split"[..])
+            && add_name(&b"subgroup"[..]);
+    }
+    if target_class_bits == builtins.base_exception
+        || issubclass_bits(target_class_bits, builtins.base_exception)
+    {
+        return add_name(&b"add_note"[..]) && add_name(&b"with_traceback"[..]);
+    }
+    if target_class_bits == builtins.slice {
+        return add_name(&b"indices"[..]);
+    }
+    if target_class_bits == builtins.type_obj {
+        return add_name(&b"mro"[..]);
+    }
+    true
+}
+
+unsafe fn dir_default_collect(_py: &PyToken<'_>, obj_bits: u64) -> u64 {
+    unsafe {
+        crate::gil_assert();
+
+        let mut names: Vec<u64> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut extra_owned: Vec<u64> = Vec::new();
+
+        if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
+            let type_id = object_type_id(obj_ptr);
+            if type_id == TYPE_ID_TYPE {
+                dir_collect_from_class_bits(obj_bits, &mut seen, &mut names);
+            } else {
+                dir_collect_from_instance(_py, obj_ptr, &mut seen, &mut names);
+                dir_collect_from_class_bits(type_of_bits(_py, obj_bits), &mut seen, &mut names);
+            }
+        } else {
+            dir_collect_from_class_bits(type_of_bits(_py, obj_bits), &mut seen, &mut names);
+        }
+
+        // Our runtime keeps many builtin methods in fast method caches rather than in
+        // `type.__dict__`. CPython's dir() includes those names, so ensure they're visible.
+        let mut add_name = |name: &[u8]| -> bool {
+            let Ok(name_str) = std::str::from_utf8(name) else {
+                return true;
+            };
+            if !seen.insert(name_str.to_string()) {
+                return true;
+            }
+            let Some(bits) = attr_name_bits_from_bytes(_py, name) else {
+                return false;
+            };
+            extra_owned.push(bits);
+            names.push(bits);
+            true
+        };
+
+        // Object surface (ordering-critical names appear early in CPython's sorted dir()).
+        for name in [
+            &b"__class__"[..],
+            &b"__delattr__"[..],
+            &b"__dir__"[..],
+            &b"__doc__"[..],
+            &b"__eq__"[..],
+            &b"__format__"[..],
+            &b"__ge__"[..],
+            &b"__getattribute__"[..],
+            &b"__getstate__"[..],
+            &b"__gt__"[..],
+            &b"__hash__"[..],
+            &b"__init__"[..],
+            &b"__init_subclass__"[..],
+            &b"__le__"[..],
+            &b"__lt__"[..],
+            &b"__ne__"[..],
+            &b"__new__"[..],
+            &b"__repr__"[..],
+            &b"__setattr__"[..],
+            &b"__str__"[..],
+        ] {
+            if !add_name(name) {
+                for owned in extra_owned {
+                    dec_ref_bits(_py, owned);
+                }
+                return MoltObject::none().bits();
+            }
+        }
+
+        let builtins = builtin_classes(_py);
+        let target_class_bits = if maybe_ptr_from_bits(obj_bits)
+            .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_TYPE)
+        {
+            obj_bits
+        } else {
+            type_of_bits(_py, obj_bits)
+        };
+
+        if target_class_bits == builtins.int || target_class_bits == builtins.bool {
+            for name in [
+                &b"__abs__"[..],
+                &b"__add__"[..],
+                &b"__and__"[..],
+                &b"__bool__"[..],
+                &b"__ceil__"[..],
+                &b"__divmod__"[..],
+            ] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        } else if target_class_bits == builtins.str {
+            for name in [&b"__add__"[..], &b"__contains__"[..], &b"__getitem__"[..]] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        } else if target_class_bits == builtins.list {
+            for name in [
+                &b"__add__"[..],
+                &b"__class_getitem__"[..],
+                &b"__contains__"[..],
+                &b"__delitem__"[..],
+            ] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        } else if target_class_bits == builtins.dict {
+            for name in [
+                &b"__class_getitem__"[..],
+                &b"__contains__"[..],
+                &b"__delitem__"[..],
+                &b"__getitem__"[..],
+            ] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        } else if target_class_bits == builtins.none_type && !add_name(&b"__bool__"[..]) {
+            for owned in extra_owned {
+                dec_ref_bits(_py, owned);
+            }
+            return MoltObject::none().bits();
+        }
+        if !dir_add_builtin_method_surface(_py, target_class_bits, &mut add_name) {
+            for owned in extra_owned {
+                dec_ref_bits(_py, owned);
+            }
+            return MoltObject::none().bits();
+        }
+
+        // Hide names that CPython deliberately excludes from dir() output (even though the
+        // attributes exist).
+        let hide_module = is_builtin_class_bits(_py, target_class_bits);
+        names.retain(|&bits| {
+            let Some(name) = string_obj_to_owned(obj_from_bits(bits)) else {
+                return true;
+            };
+            if name == "__mro__" || name == "__bases__" || name == "__text_signature__" {
+                return false;
+            }
+            if name.starts_with("__molt_") {
+                return false;
+            }
+            if hide_module && name == "__module__" {
+                return false;
+            }
+            true
+        });
+
+        let list_ptr = alloc_list(_py, &names);
+        for owned in extra_owned {
+            dec_ref_bits(_py, owned);
+        }
+        if list_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let list_bits = MoltObject::from_ptr(list_ptr).bits();
+        let none_bits = MoltObject::none().bits();
+        let reverse_bits = MoltObject::from_int(0).bits();
+        let _ = molt_list_sort(list_bits, none_bits, reverse_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        list_bits
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_dir_method(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { unsafe { dir_default_collect(_py, self_bits) } })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_format_method(self_bits: u64, spec_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let spec_obj = obj_from_bits(spec_bits);
+        let Some(spec) = string_obj_to_owned(spec_obj) else {
+            return raise_exception::<_>(_py, "TypeError", "format_spec must be str");
+        };
+        if spec.is_empty() {
+            return molt_str_from_obj(self_bits);
+        }
+        let type_label = type_name(_py, obj_from_bits(self_bits));
+        let msg = format!("unsupported format string passed to {type_label}.__format__");
+        raise_exception::<_>(_py, "TypeError", &msg)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_lt_method(_self_bits: u64, _other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { not_implemented_bits(_py) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_le_method(_self_bits: u64, _other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { not_implemented_bits(_py) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_gt_method(_self_bits: u64, _other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { not_implemented_bits(_py) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_ge_method(_self_bits: u64, _other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { not_implemented_bits(_py) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_bool_method(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        MoltObject::from_bool(is_truthy(_py, obj_from_bits(self_bits))).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_ceil_method(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        inc_ref_bits(_py, self_bits);
+        self_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_abs_method(self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { molt_abs_builtin(self_bits) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_add_method(self_bits: u64, other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let builtins = builtin_classes(_py);
+        let other_ty = type_of_bits(_py, other_bits);
+        if other_ty != builtins.int && other_ty != builtins.bool {
+            return not_implemented_bits(_py);
+        }
+        molt_add(self_bits, other_bits)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_and_method(self_bits: u64, other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let builtins = builtin_classes(_py);
+        let other_ty = type_of_bits(_py, other_bits);
+        if other_ty != builtins.int && other_ty != builtins.bool {
+            return not_implemented_bits(_py);
+        }
+        molt_bit_and(self_bits, other_bits)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_divmod_method(self_bits: u64, other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let builtins = builtin_classes(_py);
+        let other_ty = type_of_bits(_py, other_bits);
+        if other_ty != builtins.int && other_ty != builtins.bool {
+            return not_implemented_bits(_py);
+        }
+        molt_divmod_builtin(self_bits, other_bits)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_str_add_method(self_bits: u64, other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let builtins = builtin_classes(_py);
+        let other_ty = type_of_bits(_py, other_bits);
+        if other_ty != builtins.str {
+            return not_implemented_bits(_py);
+        }
+        molt_add(self_bits, other_bits)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        if obj_bits == missing {
+            // CPython: dir() (no args) lists the caller's local scope.
+            unsafe {
+                // Note: `molt_locals_builtin` is safe to call here; `with_gil_entry` is
+                // re-entrant and many runtime helpers rely on nested calls.
+                let locals_bits = crate::molt_locals_builtin();
+                if exception_pending(_py) {
+                    if !obj_from_bits(locals_bits).is_none() {
+                        dec_ref_bits(_py, locals_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                let list_bits = list_from_iter_bits(_py, locals_bits)
+                    .unwrap_or_else(|| MoltObject::none().bits());
+                if !obj_from_bits(locals_bits).is_none() {
+                    dec_ref_bits(_py, locals_bits);
+                }
+                if obj_from_bits(list_bits).is_none() || exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                let none_bits = MoltObject::none().bits();
+                let reverse_bits = MoltObject::from_int(0).bits();
+                let _ = molt_list_sort(list_bits, none_bits, reverse_bits);
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                return list_bits;
+            }
+        }
+
+        let mut names: Vec<u64> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut extra_owned: Vec<u64> = Vec::new();
+        let _obj = obj_from_bits(obj_bits);
+        if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
+            unsafe {
+                // CPython's dir() respects user-defined `__dir__`, but it must *not* dispatch
+                // to our internal fast-path method-cache implementation (which would recurse
+                // back into this builtin).
+                //
+                // So: only consult instance `__dict__` and the class `__dict__` MRO chain,
+                // skipping method caches entirely.
+                static DIR_NAME: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                let dir_name_bits = intern_static_name(_py, &DIR_NAME, b"__dir__");
+                let mut override_bits: u64 = 0;
+
+                let dict_bits = instance_dict_bits(obj_ptr);
+                if dict_bits != 0
+                    && !obj_from_bits(dict_bits).is_none()
+                    && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                    && object_type_id(dict_ptr) == TYPE_ID_DICT
+                    && let Some(val_bits) = dict_get_in_place(_py, dict_ptr, dir_name_bits)
+                {
+                    inc_ref_bits(_py, val_bits);
+                    override_bits = val_bits;
+                }
+
+                if override_bits == 0 {
+                    let class_bits = type_of_bits(_py, obj_bits);
+                    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+                        && let Some(attr_bits) =
+                            class_attr_lookup_raw_mro(_py, class_ptr, dir_name_bits)
+                    {
+                        let bound_opt = descriptor_bind(_py, attr_bits, class_ptr, Some(obj_ptr));
+                        dec_ref_bits(_py, attr_bits);
+
+                        if exception_pending(_py) {
+                            // `descriptor_bind` can create a temporary bound object; avoid leaks.
+                            if let Some(bound_bits) = bound_opt
+                                && !obj_from_bits(bound_bits).is_none()
+                            {
+                                dec_ref_bits(_py, bound_bits);
+                            }
+                            return MoltObject::none().bits();
+                        }
+
+                        if let Some(bound_bits) = bound_opt {
+                            override_bits = bound_bits;
+                        }
+                    }
+                }
+
+                if override_bits != 0 && !obj_from_bits(override_bits).is_none() {
+                    let res_bits = call_callable0(_py, override_bits);
+                    dec_ref_bits(_py, override_bits);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    return res_bits;
+                }
+                let type_id = object_type_id(obj_ptr);
+                if type_id == TYPE_ID_TYPE {
+                    dir_collect_from_class_bits(obj_bits, &mut seen, &mut names);
+                } else {
+                    dir_collect_from_instance(_py, obj_ptr, &mut seen, &mut names);
+                    dir_collect_from_class_bits(type_of_bits(_py, obj_bits), &mut seen, &mut names);
+                }
+            }
+        } else {
+            unsafe {
+                dir_collect_from_class_bits(type_of_bits(_py, obj_bits), &mut seen, &mut names);
+            }
+        }
+
+        // Our runtime keeps many builtin methods in fast method caches rather than in
+        // `type.__dict__`. CPython's dir() includes those names, so ensure they're visible.
+        let mut add_name = |name: &[u8]| -> bool {
+            let Ok(name_str) = std::str::from_utf8(name) else {
+                return true;
+            };
+            if !seen.insert(name_str.to_string()) {
+                return true;
+            }
+            let Some(bits) = attr_name_bits_from_bytes(_py, name) else {
+                return false;
+            };
+            extra_owned.push(bits);
+            names.push(bits);
+            true
+        };
+
+        // Object surface (ordering-critical names appear early in CPython's sorted dir()).
+        for name in [
+            &b"__class__"[..],
+            &b"__delattr__"[..],
+            &b"__dir__"[..],
+            &b"__doc__"[..],
+            &b"__eq__"[..],
+            &b"__format__"[..],
+            &b"__ge__"[..],
+            &b"__getattribute__"[..],
+            &b"__getstate__"[..],
+            &b"__gt__"[..],
+            &b"__hash__"[..],
+            &b"__init__"[..],
+            &b"__init_subclass__"[..],
+            &b"__le__"[..],
+            &b"__lt__"[..],
+            &b"__ne__"[..],
+            &b"__new__"[..],
+            &b"__repr__"[..],
+            &b"__setattr__"[..],
+            &b"__str__"[..],
+        ] {
+            if !add_name(name) {
+                for owned in extra_owned {
+                    dec_ref_bits(_py, owned);
+                }
+                return MoltObject::none().bits();
+            }
+        }
+
+        let builtins = builtin_classes(_py);
+        let target_class_bits = if maybe_ptr_from_bits(obj_bits)
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE })
+        {
+            obj_bits
+        } else {
+            type_of_bits(_py, obj_bits)
+        };
+
+        if target_class_bits == builtins.int || target_class_bits == builtins.bool {
+            for name in [
+                &b"__abs__"[..],
+                &b"__add__"[..],
+                &b"__and__"[..],
+                &b"__bool__"[..],
+                &b"__ceil__"[..],
+                &b"__divmod__"[..],
+            ] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        } else if target_class_bits == builtins.str {
+            for name in [&b"__add__"[..], &b"__contains__"[..], &b"__getitem__"[..]] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        } else if target_class_bits == builtins.list {
+            for name in [
+                &b"__add__"[..],
+                &b"__class_getitem__"[..],
+                &b"__contains__"[..],
+                &b"__delitem__"[..],
+            ] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        } else if target_class_bits == builtins.dict {
+            for name in [
+                &b"__class_getitem__"[..],
+                &b"__contains__"[..],
+                &b"__delitem__"[..],
+                &b"__getitem__"[..],
+            ] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        } else if target_class_bits == builtins.none_type && !add_name(&b"__bool__"[..]) {
+            for owned in extra_owned {
+                dec_ref_bits(_py, owned);
+            }
+            return MoltObject::none().bits();
+        }
+        if !dir_add_builtin_method_surface(_py, target_class_bits, &mut add_name) {
+            for owned in extra_owned {
+                dec_ref_bits(_py, owned);
+            }
+            return MoltObject::none().bits();
+        }
+
+        // Hide names that CPython deliberately excludes from dir() output (even though the
+        // attributes exist).
+        let hide_module = is_builtin_class_bits(_py, target_class_bits);
+        names.retain(|&bits| {
+            let Some(name) = string_obj_to_owned(obj_from_bits(bits)) else {
+                return true;
+            };
+            if name == "__mro__" || name == "__bases__" || name == "__text_signature__" {
+                return false;
+            }
+            if name.starts_with("__molt_") {
+                return false;
+            }
+            if hide_module && name == "__module__" {
+                return false;
+            }
+            true
+        });
+
+        let list_ptr = alloc_list(_py, &names);
+        for owned in extra_owned {
+            dec_ref_bits(_py, owned);
+        }
+        if list_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let list_bits = MoltObject::from_ptr(list_ptr).bits();
+        let none_bits = MoltObject::none().bits();
+        let reverse_bits = MoltObject::from_int(0).bits();
+        let _ = molt_list_sort(list_bits, none_bits, reverse_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        list_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_init(_self_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_init_subclass(_cls_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let name_obj = obj_from_bits(name_bits);
+        let Some(name_ptr) = name_obj.as_ptr() else {
+            return raise_attr_name_type_error(_py, name_bits);
+        };
+        unsafe {
+            if object_type_id(name_ptr) != TYPE_ID_STRING {
+                return raise_attr_name_type_error(_py, name_bits);
+            }
+            let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
+                .unwrap_or_else(|| "<attr>".to_string());
+            if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
+                let type_id = object_type_id(obj_ptr);
+                let found = match type_id {
+                    TYPE_ID_OBJECT => object_attr_lookup_raw(_py, obj_ptr, name_bits),
+                    TYPE_ID_DATACLASS => dataclass_attr_lookup_raw(_py, obj_ptr, name_bits),
+                    _ => attr_lookup_ptr(_py, obj_ptr, name_bits),
+                };
+                if let Some(val) = found {
+                    return val;
+                }
+                if exception_pending(_py) {
+                    let exc_bits = molt_exception_last();
+                    molt_exception_clear();
+                    let _ = molt_raise(exc_bits);
+                    dec_ref_bits(_py, exc_bits);
+                    return MoltObject::none().bits();
+                }
+                if type_id == TYPE_ID_DATACLASS {
+                    let desc_ptr = dataclass_desc_ptr(obj_ptr);
+                    if !desc_ptr.is_null() && (*desc_ptr).slots {
+                        let name = &(*desc_ptr).name;
+                        let type_label = if name.is_empty() {
+                            "dataclass"
+                        } else {
+                            name.as_str()
+                        };
+                        return attr_error_with_obj(
+                            _py,
+                            type_label,
+                            &attr_name,
+                            MoltObject::from_ptr(obj_ptr).bits(),
+                        ) as u64;
+                    }
+                    let type_label = if !desc_ptr.is_null() {
+                        let name = &(*desc_ptr).name;
+                        if name.is_empty() {
+                            "dataclass"
+                        } else {
+                            name.as_str()
+                        }
+                    } else {
+                        "dataclass"
+                    };
+                    return attr_error_with_obj(
+                        _py,
+                        type_label,
+                        &attr_name,
+                        MoltObject::from_ptr(obj_ptr).bits(),
+                    ) as u64;
+                }
+                if type_id == TYPE_ID_TYPE {
+                    let class_name = string_obj_to_owned(obj_from_bits(class_name_bits(obj_ptr)))
+                        .unwrap_or_default();
+                    let msg = format!("type object '{class_name}' has no attribute '{attr_name}'");
+                    return attr_error_with_obj_message(
+                        _py,
+                        &msg,
+                        &attr_name,
+                        MoltObject::from_ptr(obj_ptr).bits(),
+                    ) as u64;
+                }
+                return attr_error_with_obj(
+                    _py,
+                    type_name(_py, MoltObject::from_ptr(obj_ptr)),
+                    &attr_name,
+                    MoltObject::from_ptr(obj_ptr).bits(),
+                ) as u64;
+            }
+            let obj = obj_from_bits(obj_bits);
+            if (obj.is_int() || obj.is_bool())
+                && let Some(func_bits) = crate::builtins::methods::int_method_bits(_py, &attr_name)
+            {
+                return crate::molt_bound_method_new(func_bits, obj_bits);
+            }
+            if obj.is_float()
+                && let Some(func_bits) = crate::builtins::methods::float_method_bits(_py, &attr_name)
+            {
+                return crate::molt_bound_method_new(func_bits, obj_bits);
+            }
+            // Inline int/float/bool: fall back to class-based resolution
+            // so that inherited methods (e.g. object.__init__) are found.
+            {
+                let builtins = builtin_classes(_py);
+                let class_bits = if obj.is_float() {
+                    builtins.float
+                } else if obj.is_bool() {
+                    builtins.bool
+                } else if obj.is_int() {
+                    builtins.int
+                } else {
+                    0
+                };
+                if class_bits != 0 {
+                    if let Some(func_bits) = crate::builtins::methods::builtin_class_method_bits(_py, class_bits, &attr_name) {
+                        return crate::molt_bound_method_new(func_bits, obj_bits);
+                    }
+                    if let Some(func_bits) = crate::builtins::methods::builtin_class_method_bits(_py, builtins.object, &attr_name) {
+                        return crate::molt_bound_method_new(func_bits, obj_bits);
+                    }
+                }
+            }
+            attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits) as u64
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_type_getattribute(obj_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let name_obj = obj_from_bits(name_bits);
+        let Some(name_ptr) = name_obj.as_ptr() else {
+            return raise_attr_name_type_error(_py, name_bits);
+        };
+        unsafe {
+            if object_type_id(name_ptr) != TYPE_ID_STRING {
+                return raise_attr_name_type_error(_py, name_bits);
+            }
+            let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
+                .unwrap_or_else(|| "<attr>".to_string());
+            if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
+                let type_id = object_type_id(obj_ptr);
+                if type_id != TYPE_ID_TYPE {
+                    return molt_object_getattribute(obj_bits, name_bits);
+                }
+                let found = crate::builtins::attributes::type_attr_lookup_ptr_default(
+                    _py, obj_ptr, name_bits,
+                );
+                if let Some(val) = found {
+                    return val;
+                }
+                if exception_pending(_py) {
+                    let exc_bits = molt_exception_last();
+                    molt_exception_clear();
+                    let _ = molt_raise(exc_bits);
+                    dec_ref_bits(_py, exc_bits);
+                    return MoltObject::none().bits();
+                }
+                let class_name = string_obj_to_owned(obj_from_bits(class_name_bits(obj_ptr)))
+                    .unwrap_or_default();
+                let msg = format!("type object '{class_name}' has no attribute '{attr_name}'");
+                return attr_error_with_message(_py, &msg) as u64;
+            }
+            let obj = obj_from_bits(obj_bits);
+            attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits) as u64
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_type_call(cls_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let cls_obj = obj_from_bits(cls_bits);
+        let Some(cls_ptr) = cls_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "type.__call__ expects type");
+        };
+        unsafe {
+            if object_type_id(cls_ptr) != TYPE_ID_TYPE {
+                return raise_exception::<_>(_py, "TypeError", "type.__call__ expects type");
+            }
+            if matches!(
+                std::env::var("MOLT_TRACE_TYPE_CALL").ok().as_deref(),
+                Some("1")
+            ) {
+                let class_name = string_obj_to_owned(obj_from_bits(class_name_bits(cls_ptr)))
+                    .unwrap_or_default();
+                let builtins = builtin_classes(_py);
+                let kind = if cls_bits == builtins.type_obj {
+                    "builtins.type"
+                } else {
+                    "type"
+                };
+                eprintln!(
+                    "molt direct: type.__call__ invoked kind={} name={} cls_bits={} (no builder args forwarded)",
+                    kind, class_name, cls_bits
+                );
+            }
+            call_class_init_with_args(_py, cls_ptr, &[])
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_setattr(obj_bits: u64, name_bits: u64, val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let name_obj = obj_from_bits(name_bits);
+        let Some(name_ptr) = name_obj.as_ptr() else {
+            return raise_attr_name_type_error(_py, name_bits);
+        };
+        unsafe {
+            if object_type_id(name_ptr) != TYPE_ID_STRING {
+                return raise_attr_name_type_error(_py, name_bits);
+            }
+            let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
+                .unwrap_or_else(|| "<attr>".to_string());
+            let Some(attr_bits) = attr_name_bits_from_bytes(_py, attr_name.as_bytes()) else {
+                return MoltObject::none().bits();
+            };
+            if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
+                let type_id = object_type_id(obj_ptr);
+                if type_id == TYPE_ID_TYPE {
+                    dec_ref_bits(_py, attr_bits);
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "can't apply this __setattr__ to type object",
+                    );
+                }
+                let class_bits = object_class_bits(obj_ptr);
+                let builtins = builtin_classes(_py);
+                let is_dict_subclass =
+                    type_id == TYPE_ID_DICT && class_bits != 0 && class_bits != builtins.dict;
+                let res = if type_id == TYPE_ID_OBJECT || is_dict_subclass {
+                    object_setattr_raw(_py, obj_ptr, attr_bits, &attr_name, val_bits)
+                } else if type_id == TYPE_ID_DATACLASS {
+                    dataclass_setattr_raw_unchecked(_py, obj_ptr, attr_bits, &attr_name, val_bits)
+                } else {
+                    let bytes = string_bytes(name_ptr);
+                    let len = string_len(name_ptr);
+                    molt_set_attr_generic(obj_ptr, bytes, len as u64, val_bits)
+                };
+                dec_ref_bits(_py, attr_bits);
+                return res as u64;
+            }
+            let obj = obj_from_bits(obj_bits);
+            let res = attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits) as u64;
+            dec_ref_bits(_py, attr_bits);
+            res
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_delattr(obj_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let name_obj = obj_from_bits(name_bits);
+        let Some(name_ptr) = name_obj.as_ptr() else {
+            return raise_attr_name_type_error(_py, name_bits);
+        };
+        unsafe {
+            if object_type_id(name_ptr) != TYPE_ID_STRING {
+                return raise_attr_name_type_error(_py, name_bits);
+            }
+            let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
+                .unwrap_or_else(|| "<attr>".to_string());
+            let Some(attr_bits) = attr_name_bits_from_bytes(_py, attr_name.as_bytes()) else {
+                return MoltObject::none().bits();
+            };
+            if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
+                let type_id = object_type_id(obj_ptr);
+                if type_id == TYPE_ID_TYPE {
+                    dec_ref_bits(_py, attr_bits);
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "can't apply this __delattr__ to type object",
+                    );
+                }
+                let class_bits = object_class_bits(obj_ptr);
+                let builtins = builtin_classes(_py);
+                let is_dict_subclass =
+                    type_id == TYPE_ID_DICT && class_bits != 0 && class_bits != builtins.dict;
+                let res = if type_id == TYPE_ID_OBJECT || is_dict_subclass {
+                    object_delattr_raw(_py, obj_ptr, attr_bits, &attr_name)
+                } else if type_id == TYPE_ID_DATACLASS {
+                    dataclass_delattr_raw_unchecked(_py, obj_ptr, attr_bits, &attr_name)
+                } else {
+                    del_attr_ptr(_py, obj_ptr, attr_bits, &attr_name)
+                };
+                dec_ref_bits(_py, attr_bits);
+                return res as u64;
+            }
+            let obj = obj_from_bits(obj_bits);
+            let res = attr_error(_py, type_name(_py, obj), &attr_name) as u64;
+            dec_ref_bits(_py, attr_bits);
+            res
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_eq(self_bits: u64, other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if self_bits == other_bits {
+            return MoltObject::from_bool(true).bits();
+        }
+        not_implemented_bits(_py)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_ne(self_bits: u64, other_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if self_bits == other_bits {
+            return MoltObject::from_bool(false).bits();
+        }
+        not_implemented_bits(_py)
+    })
+}
+
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_print_builtin(
+    args_bits: u64,
+    sep_bits: u64,
+    end_bits: u64,
+    file_bits: u64,
+    flush_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        fn print_string_arg_bits(
+            _py: &PyToken<'_>,
+            bits: u64,
+            default: &[u8],
+            label: &str,
+        ) -> Option<u64> {
+            let obj = obj_from_bits(bits);
+            if obj.is_none() {
+                let ptr = alloc_string(_py, default);
+                if ptr.is_null() {
+                    return None;
+                }
+                return Some(MoltObject::from_ptr(ptr).bits());
+            }
+            let Some(ptr) = obj.as_ptr() else {
+                let msg = format!(
+                    "{} must be None or a string, not {}",
+                    label,
+                    type_name(_py, obj)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            };
+            unsafe {
+                if object_type_id(ptr) != TYPE_ID_STRING {
+                    let msg = format!(
+                        "{} must be None or a string, not {}",
+                        label,
+                        type_name(_py, obj)
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+            }
+            inc_ref_bits(_py, bits);
+            Some(bits)
+        }
+
+        fn string_bits_is_empty(bits: u64) -> bool {
+            let obj = obj_from_bits(bits);
+            let Some(ptr) = obj.as_ptr() else {
+                return false;
+            };
+            unsafe { string_len(ptr) == 0 }
+        }
+
+        fn string_bits_contains_newline(bits: u64) -> bool {
+            let obj = obj_from_bits(bits);
+            let Some(ptr) = obj.as_ptr() else {
+                return false;
+            };
+            unsafe {
+                let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+                bytes.contains(&b'\n')
+            }
+        }
+
+        fn encode_print_bytes(
+            _py: &PyToken<'_>,
+            bits: u64,
+            encoding: &str,
+            errors: &str,
+        ) -> Result<Vec<u8>, u64> {
+            let obj = obj_from_bits(bits);
+            let Some(ptr) = obj.as_ptr() else {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "print expects a string",
+                ));
+            };
+            unsafe {
+                if object_type_id(ptr) != TYPE_ID_STRING {
+                    return Err(raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "print expects a string",
+                    ));
+                }
+                let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+                match encode_string_with_errors(bytes, encoding, Some(errors)) {
+                    Ok(out) => Ok(out),
+                    Err(EncodeError::UnknownEncoding(name)) => {
+                        let msg = format!("unknown encoding: {name}");
+                        Err(raise_exception::<_>(_py, "LookupError", &msg))
+                    }
+                    Err(EncodeError::UnknownErrorHandler(name)) => {
+                        let msg = format!("unknown error handler name '{name}'");
+                        Err(raise_exception::<_>(_py, "LookupError", &msg))
+                    }
+                    Err(EncodeError::InvalidChar {
+                        encoding,
+                        code,
+                        pos,
+                        limit,
+                    }) => {
+                        let reason = encode_error_reason(encoding, code, limit);
+                        Err(raise_unicode_encode_error::<_>(
+                            _py,
+                            encoding,
+                            bits,
+                            pos,
+                            pos + 1,
+                            &reason,
+                        ))
+                    }
+                }
+            }
+        }
+
+        let args_obj = obj_from_bits(args_bits);
+        let Some(args_ptr) = args_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "print expects a tuple");
+        };
+        unsafe {
+            if object_type_id(args_ptr) != TYPE_ID_TUPLE {
+                return raise_exception::<_>(_py, "TypeError", "print expects a tuple");
+            }
+            let mut sep_bits_opt = match print_string_arg_bits(_py, sep_bits, b" ", "sep") {
+                Some(bits) => Some(bits),
+                None => return MoltObject::none().bits(),
+            };
+            let mut end_bits_opt = match print_string_arg_bits(_py, end_bits, b"\n", "end") {
+                Some(bits) => Some(bits),
+                None => {
+                    if let Some(bits) = sep_bits_opt {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+            };
+            if let Some(bits) = sep_bits_opt
+                && string_bits_is_empty(bits)
+            {
+                dec_ref_bits(_py, bits);
+                sep_bits_opt = None;
+            }
+            if let Some(bits) = end_bits_opt
+                && string_bits_is_empty(bits)
+            {
+                dec_ref_bits(_py, bits);
+                end_bits_opt = None;
+            }
+
+            let mut resolved_file_bits = file_bits;
+            let mut sys_found = false;
+            let mut file_from_sys = false;
+            if obj_from_bits(resolved_file_bits).is_none() {
+                let sys_name_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.sys_name, b"sys");
+                if !obj_from_bits(sys_name_bits).is_none() {
+                    let sys_bits = molt_module_cache_get(sys_name_bits);
+                    if !obj_from_bits(sys_bits).is_none() {
+                        sys_found = true;
+                        let stdout_name_bits = intern_static_name(
+                            _py,
+                            &runtime_state(_py).interned.stdout_name,
+                            b"stdout",
+                        );
+                        resolved_file_bits = molt_module_get_attr(sys_bits, stdout_name_bits);
+                        dec_ref_bits(_py, sys_bits);
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
+                        file_from_sys = true;
+                    }
+                }
+            }
+
+            let elems = seq_vec_ref(args_ptr);
+            let do_flush = is_truthy(_py, obj_from_bits(flush_bits));
+
+            if obj_from_bits(resolved_file_bits).is_none() && !sys_found {
+                let encoding = "utf-8";
+                let errors = "surrogateescape";
+                let mut stdout = std::io::stdout();
+                let mut wrote_newline = false;
+                let sep_bytes = if let Some(bits) = sep_bits_opt {
+                    match encode_print_bytes(_py, bits, encoding, errors) {
+                        Ok(bytes) => Some(bytes),
+                        Err(bits) => {
+                            if let Some(end_bits) = end_bits_opt {
+                                dec_ref_bits(_py, end_bits);
+                            }
+                            dec_ref_bits(_py, bits);
+                            return bits;
+                        }
+                    }
+                } else {
+                    None
+                };
+                let end_bytes = if let Some(bits) = end_bits_opt {
+                    match encode_print_bytes(_py, bits, encoding, errors) {
+                        Ok(bytes) => Some(bytes),
+                        Err(bits) => {
+                            if let Some(sep_bits) = sep_bits_opt {
+                                dec_ref_bits(_py, sep_bits);
+                            }
+                            dec_ref_bits(_py, bits);
+                            return bits;
+                        }
+                    }
+                } else {
+                    None
+                };
+                for (idx, &val_bits) in elems.iter().enumerate() {
+                    if idx > 0
+                        && let Some(bytes) = sep_bytes.as_deref()
+                    {
+                        if bytes.contains(&b'\n') {
+                            wrote_newline = true;
+                        }
+                        let _ = stdout.write_all(bytes);
+                    }
+                    let str_bits = molt_str_from_obj(val_bits);
+                    if exception_pending(_py) {
+                        if let Some(sep_bits) = sep_bits_opt {
+                            dec_ref_bits(_py, sep_bits);
+                        }
+                        if let Some(end_bits) = end_bits_opt {
+                            dec_ref_bits(_py, end_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
+                    let bytes = match encode_print_bytes(_py, str_bits, encoding, errors) {
+                        Ok(bytes) => bytes,
+                        Err(bits) => {
+                            dec_ref_bits(_py, str_bits);
+                            if let Some(sep_bits) = sep_bits_opt {
+                                dec_ref_bits(_py, sep_bits);
+                            }
+                            if let Some(end_bits) = end_bits_opt {
+                                dec_ref_bits(_py, end_bits);
+                            }
+                            return bits;
+                        }
+                    };
+                    if bytes.contains(&b'\n') {
+                        wrote_newline = true;
+                    }
+                    let _ = stdout.write_all(&bytes);
+                    dec_ref_bits(_py, str_bits);
+                }
+                if let Some(bytes) = end_bytes.as_deref() {
+                    if bytes.contains(&b'\n') {
+                        wrote_newline = true;
+                    }
+                    let _ = stdout.write_all(bytes);
+                }
+                if do_flush || wrote_newline {
+                    let _ = stdout.flush();
+                }
+                if let Some(bits) = sep_bits_opt {
+                    dec_ref_bits(_py, bits);
+                }
+                if let Some(bits) = end_bits_opt {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
+
+            let sep_bits = sep_bits_opt;
+            let end_bits = end_bits_opt;
+            let end_has_newline = end_bits.map(string_bits_contains_newline).unwrap_or(false);
+
+            let mut write_bits = MoltObject::none().bits();
+            let mut use_file_handle = false;
+            if let Some(ptr) = obj_from_bits(resolved_file_bits).as_ptr() {
+                use_file_handle = object_type_id(ptr) == TYPE_ID_FILE_HANDLE;
+            }
+            if !use_file_handle {
+                let write_name_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.write_name, b"write");
+                write_bits = molt_get_attr_name(resolved_file_bits, write_name_bits);
+                if exception_pending(_py) {
+                    if let Some(bits) = sep_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if let Some(bits) = end_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if file_from_sys {
+                        dec_ref_bits(_py, resolved_file_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+
+            for (idx, &val_bits) in elems.iter().enumerate() {
+                if idx > 0
+                    && let Some(bits) = sep_bits
+                {
+                    if use_file_handle {
+                        let _ = molt_file_write(resolved_file_bits, bits);
+                    } else {
+                        let res_bits = call_callable1(_py, write_bits, bits);
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    if exception_pending(_py) {
+                        if !use_file_handle {
+                            dec_ref_bits(_py, write_bits);
+                        }
+                        if let Some(bits) = sep_bits {
+                            dec_ref_bits(_py, bits);
+                        }
+                        if let Some(bits) = end_bits {
+                            dec_ref_bits(_py, bits);
+                        }
+                        if file_from_sys {
+                            dec_ref_bits(_py, resolved_file_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
+                }
+                let str_bits = molt_str_from_obj(val_bits);
+                if exception_pending(_py) {
+                    if !use_file_handle {
+                        dec_ref_bits(_py, write_bits);
+                    }
+                    if let Some(bits) = sep_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if let Some(bits) = end_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if file_from_sys {
+                        dec_ref_bits(_py, resolved_file_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                if use_file_handle {
+                    let _ = molt_file_write(resolved_file_bits, str_bits);
+                } else {
+                    let res_bits = call_callable1(_py, write_bits, str_bits);
+                    dec_ref_bits(_py, res_bits);
+                }
+                dec_ref_bits(_py, str_bits);
+                if exception_pending(_py) {
+                    if !use_file_handle {
+                        dec_ref_bits(_py, write_bits);
+                    }
+                    if let Some(bits) = sep_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if let Some(bits) = end_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if file_from_sys {
+                        dec_ref_bits(_py, resolved_file_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+            if let Some(bits) = end_bits {
+                if use_file_handle {
+                    let _ = molt_file_write(resolved_file_bits, bits);
+                } else {
+                    let res_bits = call_callable1(_py, write_bits, bits);
+                    dec_ref_bits(_py, res_bits);
+                }
+                if exception_pending(_py) {
+                    if !use_file_handle {
+                        dec_ref_bits(_py, write_bits);
+                    }
+                    if let Some(bits) = sep_bits {
+                        dec_ref_bits(_py, bits);
+                    }
+                    dec_ref_bits(_py, bits);
+                    if file_from_sys {
+                        dec_ref_bits(_py, resolved_file_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+            if !use_file_handle {
+                dec_ref_bits(_py, write_bits);
+            }
+            if let Some(bits) = sep_bits {
+                dec_ref_bits(_py, bits);
+            }
+            if let Some(bits) = end_bits {
+                dec_ref_bits(_py, bits);
+            }
+
+            if do_flush || (file_from_sys && use_file_handle && end_has_newline) {
+                if use_file_handle {
+                    let _ = molt_file_flush(resolved_file_bits);
+                } else {
+                    let flush_name_bits =
+                        intern_static_name(_py, &runtime_state(_py).interned.flush_name, b"flush");
+                    let flush_method_bits = molt_get_attr_name(resolved_file_bits, flush_name_bits);
+                    if exception_pending(_py) {
+                        if file_from_sys {
+                            dec_ref_bits(_py, resolved_file_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
+                    let flush_res_bits = call_callable0(_py, flush_method_bits);
+                    dec_ref_bits(_py, flush_method_bits);
+                    dec_ref_bits(_py, flush_res_bits);
+                    if exception_pending(_py) {
+                        if file_from_sys {
+                            dec_ref_bits(_py, resolved_file_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
+                }
+            }
+            if file_from_sys {
+                dec_ref_bits(_py, resolved_file_bits);
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let sys_name_bits = intern_static_name(_py, &runtime_state(_py).interned.sys_name, b"sys");
+        if obj_from_bits(sys_name_bits).is_none() {
+            return raise_exception::<_>(_py, "RuntimeError", "sys module name missing");
+        }
+        let sys_bits = molt_module_cache_get(sys_name_bits);
+        if obj_from_bits(sys_bits).is_none() {
+            return raise_exception::<_>(_py, "RuntimeError", "sys module unavailable");
+        }
+
+        let stdout_name_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.stdout_name, b"stdout");
+        let stdout_bits = molt_module_get_attr(sys_bits, stdout_name_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, sys_bits);
+            return MoltObject::none().bits();
+        }
+        if obj_from_bits(stdout_bits).is_none() {
+            dec_ref_bits(_py, sys_bits);
+            return raise_exception::<_>(_py, "RuntimeError", "sys.stdout unavailable");
+        }
+
+        let prompt_str_bits = molt_str_from_obj(prompt_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, stdout_bits);
+            dec_ref_bits(_py, sys_bits);
+            return MoltObject::none().bits();
+        }
+
+        let mut stdout_is_handle = false;
+        if let Some(ptr) = obj_from_bits(stdout_bits).as_ptr() {
+            unsafe {
+                stdout_is_handle = object_type_id(ptr) == TYPE_ID_FILE_HANDLE;
+            }
+        }
+
+        if stdout_is_handle {
+            let _ = molt_file_write(stdout_bits, prompt_str_bits);
+        } else {
+            let write_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.write_name, b"write");
+            let write_method_bits = molt_get_attr_name(stdout_bits, write_name_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, prompt_str_bits);
+                dec_ref_bits(_py, stdout_bits);
+                dec_ref_bits(_py, sys_bits);
+                return MoltObject::none().bits();
+            }
+            let write_res_bits = unsafe { call_callable1(_py, write_method_bits, prompt_str_bits) };
+            dec_ref_bits(_py, write_method_bits);
+            dec_ref_bits(_py, write_res_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, prompt_str_bits);
+                dec_ref_bits(_py, stdout_bits);
+                dec_ref_bits(_py, sys_bits);
+                return MoltObject::none().bits();
+            }
+        }
+
+        // Match CPython: flush stdout after writing the prompt.
+        if stdout_is_handle {
+            let _ = molt_file_flush(stdout_bits);
+        } else {
+            let missing = missing_bits(_py);
+            let flush_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.flush_name, b"flush");
+            let flush_bits = molt_getattr_builtin(stdout_bits, flush_name_bits, missing);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, prompt_str_bits);
+                dec_ref_bits(_py, stdout_bits);
+                dec_ref_bits(_py, sys_bits);
+                return MoltObject::none().bits();
+            }
+            if flush_bits != missing {
+                let callable_bits = molt_is_callable(flush_bits);
+                let is_callable = is_truthy(_py, obj_from_bits(callable_bits));
+                dec_ref_bits(_py, callable_bits);
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, flush_bits);
+                    dec_ref_bits(_py, prompt_str_bits);
+                    dec_ref_bits(_py, stdout_bits);
+                    dec_ref_bits(_py, sys_bits);
+                    return MoltObject::none().bits();
+                }
+                if is_callable {
+                    let flush_res_bits = unsafe { call_callable0(_py, flush_bits) };
+                    dec_ref_bits(_py, flush_res_bits);
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, flush_bits);
+                        dec_ref_bits(_py, prompt_str_bits);
+                        dec_ref_bits(_py, stdout_bits);
+                        dec_ref_bits(_py, sys_bits);
+                        return MoltObject::none().bits();
+                    }
+                }
+                dec_ref_bits(_py, flush_bits);
+            }
+        }
+
+        dec_ref_bits(_py, prompt_str_bits);
+        dec_ref_bits(_py, stdout_bits);
+
+        let stdin_name_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.stdin_name, b"stdin");
+        let stdin_bits = molt_module_get_attr(sys_bits, stdin_name_bits);
+        dec_ref_bits(_py, sys_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if obj_from_bits(stdin_bits).is_none() {
+            return raise_exception::<_>(_py, "RuntimeError", "sys.stdin unavailable");
+        }
+
+        let mut stdin_is_handle = false;
+        if let Some(ptr) = obj_from_bits(stdin_bits).as_ptr() {
+            unsafe {
+                stdin_is_handle = object_type_id(ptr) == TYPE_ID_FILE_HANDLE;
+            }
+        }
+        let line_bits = if stdin_is_handle {
+            molt_file_readline(stdin_bits, MoltObject::from_int(-1).bits())
+        } else {
+            let readline_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.readline_name, b"readline");
+            let method_bits = molt_get_attr_name(stdin_bits, readline_name_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, stdin_bits);
+                return MoltObject::none().bits();
+            }
+            let out_bits = unsafe { call_callable0(_py, method_bits) };
+            dec_ref_bits(_py, method_bits);
+            out_bits
+        };
+        dec_ref_bits(_py, stdin_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+
+        let Some(line_ptr) = obj_from_bits(line_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "input() returned non-string");
+        };
+        unsafe {
+            if object_type_id(line_ptr) != TYPE_ID_STRING {
+                return raise_exception::<_>(_py, "TypeError", "input() returned non-string");
+            }
+            let bytes = std::slice::from_raw_parts(string_bytes(line_ptr), string_len(line_ptr));
+            if bytes.is_empty() {
+                dec_ref_bits(_py, line_bits);
+                return raise_exception::<_>(_py, "EOFError", "");
+            }
+            let mut end = bytes.len();
+            if bytes[end - 1] == b'\n' {
+                end -= 1;
+                if end > 0 && bytes[end - 1] == b'\r' {
+                    end -= 1;
+                }
+            } else if bytes[end - 1] == b'\r' {
+                end -= 1;
+            }
+            if end == bytes.len() {
+                return line_bits;
+            }
+            let out_ptr = alloc_string(_py, &bytes[..end]);
+            dec_ref_bits(_py, line_bits);
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_super_builtin(type_bits: u64, obj_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { molt_super_new(type_bits, obj_bits) })
+}
+
+// ---------------------------------------------------------------------------
+// Type-constructor builtins: thin `extern "C"` wrappers so the compiler can
+// emit direct calls to `molt_<type>_builtin` for Python's builtin types.
+// ---------------------------------------------------------------------------
+
+/// `int(x=0, base=10)` — wraps `molt_int_from_obj`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_builtin(val_bits: u64, base_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        if val_bits == missing {
+            // int() with no args => 0
+            return MoltObject::from_int(0).bits();
+        }
+        let has_base = base_bits != missing;
+        let has_base_bits = if has_base { 1u64 } else { 0u64 };
+        let actual_base = if has_base {
+            base_bits
+        } else {
+            MoltObject::from_int(10).bits()
+        };
+        molt_int_from_obj(val_bits, actual_base, has_base_bits)
+    })
+}
+
+/// `float(x=0.0)` — wraps `molt_float_from_obj`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_builtin(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        if val_bits == missing {
+            return MoltObject::from_float(0.0).bits();
+        }
+        molt_float_from_obj(val_bits)
+    })
+}
+
+/// `bool(x=False)` — wraps `is_truthy`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bool_builtin(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        if val_bits == missing {
+            return MoltObject::from_bool(false).bits();
+        }
+        MoltObject::from_bool(is_truthy(_py, obj_from_bits(val_bits))).bits()
+    })
+}
+
+/// `str(object='')` — wraps `molt_str_from_obj`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_str_builtin(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        if val_bits == missing {
+            let ptr = alloc_string(_py, b"");
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        molt_str_from_obj(val_bits)
+    })
+}
+
+/// `bytes(source=b'')` — wraps `molt_bytes_from_obj`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytes_builtin(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        if val_bits == missing {
+            let ptr = alloc_bytes(_py, &[]);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        molt_bytes_from_obj(val_bits)
+    })
+}
+
+/// `bytearray(source=bytearray())` — wraps `molt_bytearray_from_obj`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bytearray_builtin(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        if val_bits == missing {
+            let ptr = alloc_bytearray(_py, &[]);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        molt_bytearray_from_obj(val_bits)
+    })
+}
+
+/// `list(iterable=())` — constructs a list from an iterable.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_builtin(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        if val_bits == missing {
+            let ptr = alloc_list(_py, &[]);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        unsafe {
+            let Some(bits) = list_from_iter_bits(_py, val_bits) else {
+                return MoltObject::none().bits();
+            };
+            bits
+        }
+    })
+}
+
+/// `tuple(iterable=())` — constructs a tuple from an iterable.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tuple_builtin(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        if val_bits == missing {
+            let ptr = alloc_tuple(_py, &[]);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        unsafe {
+            let Some(bits) = tuple_from_iter_bits(_py, val_bits) else {
+                return MoltObject::none().bits();
+            };
+            bits
+        }
+    })
+}
+
+/// `dict(mapping_or_iterable=None)` — wraps `molt_dict_from_obj`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_dict_builtin(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        if val_bits == missing {
+            return molt_dict_new(0);
+        }
+        molt_dict_from_obj(val_bits)
+    })
+}
+
+/// `set(iterable=())` — constructs a set from an iterable.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_set_builtin(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        if val_bits == missing {
+            return molt_set_new(0);
+        }
+        let set_bits = molt_set_new(0);
+        if obj_from_bits(set_bits).is_none() {
+            return MoltObject::none().bits();
+        }
+        let _ = molt_set_update(set_bits, val_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, set_bits);
+            return MoltObject::none().bits();
+        }
+        set_bits
+    })
+}
+
+/// `frozenset(iterable=())` — constructs a frozenset from an iterable.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_frozenset_builtin(val_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        if val_bits == missing {
+            return molt_frozenset_new(0);
+        }
+        unsafe {
+            let Some(bits) = frozenset_from_iter_bits(_py, val_bits) else {
+                return MoltObject::none().bits();
+            };
+            bits
+        }
+    })
+}
+
+/// `range(stop)` / `range(start, stop[, step])` — wraps `molt_range_new`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_range_builtin(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        if start_bits == missing {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "range expected at least 1 argument, got 0",
+            );
+        }
+        if stop_bits == missing {
+            // range(stop) — single-arg form
+            let zero = MoltObject::from_int(0).bits();
+            let one = MoltObject::from_int(1).bits();
+            return molt_range_new(zero, start_bits, one);
+        }
+        let actual_step = if step_bits == missing {
+            MoltObject::from_int(1).bits()
+        } else {
+            step_bits
+        };
+        molt_range_new(start_bits, stop_bits, actual_step)
+    })
+}
+
+/// `slice(stop)` / `slice(start, stop[, step])` — wraps `molt_slice_new`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_slice_builtin(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        let none = MoltObject::none().bits();
+        if start_bits == missing {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "slice expected at least 1 argument, got 0",
+            );
+        }
+        if stop_bits == missing {
+            // slice(stop) — single-arg form
+            return molt_slice_new(none, start_bits, none);
+        }
+        let actual_step = if step_bits == missing { none } else { step_bits };
+        molt_slice_new(start_bits, stop_bits, actual_step)
+    })
+}
+
+/// `object()` — wraps `molt_object_new`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_builtin() -> u64 {
+    molt_object_new()
+}
+
+/// `type(object)` — wraps `molt_builtin_type`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_type_builtin(val_bits: u64) -> u64 {
+    molt_builtin_type(val_bits)
+}
+
+/// `complex(real=0, imag=0)` — wraps `molt_complex_from_obj`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_complex_builtin(real_bits: u64, imag_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        let actual_real = if real_bits == missing {
+            MoltObject::from_int(0).bits()
+        } else {
+            real_bits
+        };
+        let has_imag = imag_bits != missing;
+        let has_imag_bits = if has_imag { 1u64 } else { 0u64 };
+        let actual_imag = if has_imag {
+            imag_bits
+        } else {
+            MoltObject::from_int(0).bits()
+        };
+        molt_complex_from_obj(actual_real, actual_imag, has_imag_bits)
+    })
+}
+
+/// `memoryview(obj)` — wraps `molt_memoryview_new`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_memoryview_builtin(val_bits: u64) -> u64 {
+    molt_memoryview_new(val_bits)
+}
+
+/// `classmethod(func)` — wraps `molt_classmethod_new`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_classmethod_builtin(func_bits: u64) -> u64 {
+    molt_classmethod_new(func_bits)
+}
+
+/// `staticmethod(func)` — wraps `molt_staticmethod_new`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_staticmethod_builtin(func_bits: u64) -> u64 {
+    molt_staticmethod_new(func_bits)
+}
+
+/// `property(fget=None, fset=None, fdel=None)` — wraps `molt_property_new`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_property_builtin(
+    get_bits: u64,
+    set_bits: u64,
+    del_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let missing = missing_bits(_py);
+        let none = MoltObject::none().bits();
+        let g = if get_bits == missing { none } else { get_bits };
+        let s = if set_bits == missing { none } else { set_bits };
+        let d = if del_bits == missing { none } else { del_bits };
+        molt_property_new(g, s, d)
+    })
+}
+
+/// `isinstance(obj, classinfo)` — wraps `molt_isinstance`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_isinstance_builtin(val_bits: u64, class_bits: u64) -> u64 {
+    molt_isinstance(val_bits, class_bits)
+}
+
+/// `issubclass(sub, classinfo)` — wraps `molt_issubclass`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_issubclass_builtin(sub_bits: u64, class_bits: u64) -> u64 {
+    molt_issubclass(sub_bits, class_bits)
+}
+
+/// `hasattr(obj, name)` — wraps `molt_has_attr_name`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_hasattr_builtin(obj_bits: u64, name_bits: u64) -> u64 {
+    molt_has_attr_name(obj_bits, name_bits)
+}
+
+/// `aiter(async_iterable)` — wraps `molt_aiter`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_aiter_builtin(obj_bits: u64) -> u64 {
+    molt_aiter(obj_bits)
+}
+
+/// `iter(object)` — wraps `molt_iter_checked`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_iter_builtin(obj_bits: u64) -> u64 {
+    molt_iter_checked(obj_bits)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(obj_bits);
+        let start_obj = obj_from_bits(start_bits);
+        let end_obj = obj_from_bits(end_bits);
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                let type_id = object_type_id(ptr);
+                if type_id == TYPE_ID_STRING {
+                    let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+                    let total_chars =
+                        utf8_codepoint_count_cached(_py, bytes, Some(ptr as usize)) as isize;
+                    let start = match decode_slice_bound(_py, start_obj, total_chars, 0) {
+                        Ok(v) => v,
+                        Err(err) => return slice_error(_py, err),
+                    };
+                    let end = match decode_slice_bound(_py, end_obj, total_chars, total_chars) {
+                        Ok(v) => v,
+                        Err(err) => return slice_error(_py, err),
+                    };
+                    if end < start {
+                        let out = alloc_string(_py, &[]);
+                        if out.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        return MoltObject::from_ptr(out).bits();
+                    }
+                    let start_byte = utf8_char_to_byte_index_cached(
+                        _py,
+                        bytes,
+                        start as i64,
+                        Some(ptr as usize),
+                    );
+                    let end_byte =
+                        utf8_char_to_byte_index_cached(_py, bytes, end as i64, Some(ptr as usize));
+                    let slice = &bytes[start_byte..end_byte];
+                    let out = alloc_string(_py, slice);
+                    if out.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_ptr(out).bits();
+                }
+                if type_id == TYPE_ID_BYTES {
+                    let len = bytes_len(ptr) as isize;
+                    let start = match decode_slice_bound(_py, start_obj, len, 0) {
+                        Ok(v) => v,
+                        Err(err) => return slice_error(_py, err),
+                    };
+                    let end = match decode_slice_bound(_py, end_obj, len, len) {
+                        Ok(v) => v,
+                        Err(err) => return slice_error(_py, err),
+                    };
+                    if end < start {
+                        let out = alloc_bytes(_py, &[]);
+                        if out.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        return MoltObject::from_ptr(out).bits();
+                    }
+                    let bytes = std::slice::from_raw_parts(bytes_data(ptr), len as usize);
+                    let slice = &bytes[start as usize..end as usize];
+                    let out = alloc_bytes(_py, slice);
+                    if out.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_ptr(out).bits();
+                }
+                if type_id == TYPE_ID_BYTEARRAY {
+                    let len = bytes_len(ptr) as isize;
+                    let start = match decode_slice_bound(_py, start_obj, len, 0) {
+                        Ok(v) => v,
+                        Err(err) => return slice_error(_py, err),
+                    };
+                    let end = match decode_slice_bound(_py, end_obj, len, len) {
+                        Ok(v) => v,
+                        Err(err) => return slice_error(_py, err),
+                    };
+                    if end < start {
+                        let out = alloc_bytearray(_py, &[]);
+                        if out.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        return MoltObject::from_ptr(out).bits();
+                    }
+                    let bytes = std::slice::from_raw_parts(bytes_data(ptr), len as usize);
+                    let slice = &bytes[start as usize..end as usize];
+                    let out = alloc_bytearray(_py, slice);
+                    if out.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_ptr(out).bits();
+                }
+                if type_id == TYPE_ID_MEMORYVIEW {
+                    let len = memoryview_len(ptr) as isize;
+                    let start = match decode_slice_bound(_py, start_obj, len, 0) {
+                        Ok(v) => v,
+                        Err(err) => return slice_error(_py, err),
+                    };
+                    let end = match decode_slice_bound(_py, end_obj, len, len) {
+                        Ok(v) => v,
+                        Err(err) => return slice_error(_py, err),
+                    };
+                    if end < start {
+                        let base_offset = memoryview_offset(ptr);
+                        let stride = memoryview_stride(ptr);
+                        let out_ptr = alloc_memoryview(
+                            _py,
+                            memoryview_owner_bits(ptr),
+                            base_offset + start * stride,
+                            0,
+                            memoryview_itemsize(ptr),
+                            stride,
+                            memoryview_readonly(ptr),
+                            memoryview_format_bits(ptr),
+                        );
+                        if out_ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        return MoltObject::from_ptr(out_ptr).bits();
+                    }
+                    let base_offset = memoryview_offset(ptr);
+                    let new_offset = base_offset + start * memoryview_stride(ptr);
+                    let new_len = (end - start) as usize;
+                    let out_ptr = alloc_memoryview(
+                        _py,
+                        memoryview_owner_bits(ptr),
+                        new_offset,
+                        new_len,
+                        memoryview_itemsize(ptr),
+                        memoryview_stride(ptr),
+                        memoryview_readonly(ptr),
+                        memoryview_format_bits(ptr),
+                    );
+                    if out_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_ptr(out_ptr).bits();
+                }
+                if type_id == TYPE_ID_LIST {
+                    let len = list_len(ptr) as isize;
+                    let start = match decode_slice_bound(_py, start_obj, len, 0) {
+                        Ok(v) => v,
+                        Err(err) => return slice_error(_py, err),
+                    };
+                    let end = match decode_slice_bound(_py, end_obj, len, len) {
+                        Ok(v) => v,
+                        Err(err) => return slice_error(_py, err),
+                    };
+                    if end < start {
+                        let out = alloc_list(_py, &[]);
+                        if out.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        return MoltObject::from_ptr(out).bits();
+                    }
+                    let elems = seq_vec_ref(ptr);
+                    let slice = &elems[start as usize..end as usize];
+                    let out = alloc_list(_py, slice);
+                    if out.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_ptr(out).bits();
+                }
+                if type_id == TYPE_ID_TUPLE {
+                    let len = tuple_len(ptr) as isize;
+                    let start = match decode_slice_bound(_py, start_obj, len, 0) {
+                        Ok(v) => v,
+                        Err(err) => return slice_error(_py, err),
+                    };
+                    let end = match decode_slice_bound(_py, end_obj, len, len) {
+                        Ok(v) => v,
+                        Err(err) => return slice_error(_py, err),
+                    };
+                    if end < start {
+                        let out = alloc_tuple(_py, &[]);
+                        if out.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        return MoltObject::from_ptr(out).bits();
+                    }
+                    let elems = seq_vec_ref(ptr);
+                    let slice = &elems[start as usize..end as usize];
+                    let out = alloc_tuple(_py, slice);
+                    if out.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_ptr(out).bits();
+                }
+            }
+        }
+        let slice_bits = molt_slice_new(start_bits, end_bits, MoltObject::none().bits());
+        if obj_from_bits(slice_bits).is_none() {
+            return MoltObject::none().bits();
+        }
+        let res_bits = molt_index(obj_bits, slice_bits);
+        dec_ref_bits(_py, slice_bits);
+        res_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_intarray_from_seq(bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(bits);
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                let type_id = object_type_id(ptr);
+                let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                    seq_vec_ref(ptr)
+                } else {
+                    return MoltObject::none().bits();
+                };
+                let mut out = Vec::with_capacity(elems.len());
+                for &elem in elems {
+                    let val = MoltObject::from_bits(elem);
+                    if let Some(i) = val.as_int() {
+                        out.push(i);
+                    } else {
+                        return MoltObject::none().bits();
+                    }
+                }
+                let out_ptr = alloc_intarray(_py, &out);
+                if out_ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_ptr(out_ptr).bits();
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tuple_from_list(bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(bits);
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                let type_id = object_type_id(ptr);
+                if type_id == TYPE_ID_TUPLE {
+                    inc_ref_bits(_py, bits);
+                    return bits;
+                }
+                if type_id == TYPE_ID_LIST {
+                    let elems = seq_vec_ref(ptr);
+                    let out_ptr = alloc_tuple(_py, elems);
+                    if out_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_ptr(out_ptr).bits();
+                }
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum EncodingKind {
+    Utf8,
+    Utf8Sig,
+    Cp1252,
+    Cp437,
+    Cp850,
+    Cp860,
+    Cp862,
+    Cp863,
+    Cp865,
+    Cp866,
+    Cp874,
+    Cp1250,
+    Cp1251,
+    Cp1253,
+    Cp1254,
+    Cp1255,
+    Cp1256,
+    Cp1257,
+    Koi8R,
+    Koi8U,
+    Iso8859_2,
+    Iso8859_3,
+    Iso8859_4,
+    Iso8859_5,
+    Iso8859_6,
+    Iso8859_7,
+    Iso8859_8,
+    Iso8859_10,
+    Iso8859_15,
+    MacRoman,
+    Latin1,
+    Ascii,
+    UnicodeEscape,
+    Utf16,
+    Utf16LE,
+    Utf16BE,
+    Utf32,
+    Utf32LE,
+    Utf32BE,
+}
+
+impl EncodingKind {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            EncodingKind::Utf8 => "utf-8",
+            EncodingKind::Utf8Sig => "utf-8-sig",
+            EncodingKind::Cp1252 => "cp1252",
+            EncodingKind::Cp437 => "cp437",
+            EncodingKind::Cp850 => "cp850",
+            EncodingKind::Cp860 => "cp860",
+            EncodingKind::Cp862 => "cp862",
+            EncodingKind::Cp863 => "cp863",
+            EncodingKind::Cp865 => "cp865",
+            EncodingKind::Cp866 => "cp866",
+            EncodingKind::Cp874 => "cp874",
+            EncodingKind::Cp1250 => "cp1250",
+            EncodingKind::Cp1251 => "cp1251",
+            EncodingKind::Cp1253 => "cp1253",
+            EncodingKind::Cp1254 => "cp1254",
+            EncodingKind::Cp1255 => "cp1255",
+            EncodingKind::Cp1256 => "cp1256",
+            EncodingKind::Cp1257 => "cp1257",
+            EncodingKind::Koi8R => "koi8-r",
+            EncodingKind::Koi8U => "koi8-u",
+            EncodingKind::Iso8859_2 => "iso8859-2",
+            EncodingKind::Iso8859_3 => "iso8859-3",
+            EncodingKind::Iso8859_4 => "iso8859-4",
+            EncodingKind::Iso8859_5 => "iso8859-5",
+            EncodingKind::Iso8859_6 => "iso8859-6",
+            EncodingKind::Iso8859_7 => "iso8859-7",
+            EncodingKind::Iso8859_8 => "iso8859-8",
+            EncodingKind::Iso8859_10 => "iso8859-10",
+            EncodingKind::Iso8859_15 => "iso8859-15",
+            EncodingKind::MacRoman => "mac-roman",
+            EncodingKind::Latin1 => "latin-1",
+            EncodingKind::Ascii => "ascii",
+            EncodingKind::UnicodeEscape => "unicode-escape",
+            EncodingKind::Utf16 => "utf-16",
+            EncodingKind::Utf16LE => "utf-16-le",
+            EncodingKind::Utf16BE => "utf-16-be",
+            EncodingKind::Utf32 => "utf-32",
+            EncodingKind::Utf32LE => "utf-32-le",
+            EncodingKind::Utf32BE => "utf-32-be",
+        }
+    }
+
+    fn ordinal_limit(self) -> u32 {
+        match self {
+            EncodingKind::Ascii => 128,
+            EncodingKind::Latin1 => 256,
+            EncodingKind::UnicodeEscape => u32::MAX,
+            EncodingKind::Cp1252 => u32::MAX,
+            EncodingKind::Cp437 => u32::MAX,
+            EncodingKind::Cp850 => u32::MAX,
+            EncodingKind::Cp860 => u32::MAX,
+            EncodingKind::Cp862 => u32::MAX,
+            EncodingKind::Cp863 => u32::MAX,
+            EncodingKind::Cp865 => u32::MAX,
+            EncodingKind::Cp866 => u32::MAX,
+            EncodingKind::Cp874 => u32::MAX,
+            EncodingKind::Cp1250 => u32::MAX,
+            EncodingKind::Cp1251 => u32::MAX,
+            EncodingKind::Cp1253 => u32::MAX,
+            EncodingKind::Cp1254 => u32::MAX,
+            EncodingKind::Cp1255 => u32::MAX,
+            EncodingKind::Cp1256 => u32::MAX,
+            EncodingKind::Cp1257 => u32::MAX,
+            EncodingKind::Koi8R => u32::MAX,
+            EncodingKind::Koi8U => u32::MAX,
+            EncodingKind::Iso8859_2 => u32::MAX,
+            EncodingKind::Iso8859_3 => u32::MAX,
+            EncodingKind::Iso8859_4 => u32::MAX,
+            EncodingKind::Iso8859_5 => u32::MAX,
+            EncodingKind::Iso8859_6 => u32::MAX,
+            EncodingKind::Iso8859_7 => u32::MAX,
+            EncodingKind::Iso8859_8 => u32::MAX,
+            EncodingKind::Iso8859_10 => u32::MAX,
+            EncodingKind::Iso8859_15 => u32::MAX,
+            EncodingKind::MacRoman => u32::MAX,
+            EncodingKind::Utf8
+            | EncodingKind::Utf8Sig
+            | EncodingKind::Utf16
+            | EncodingKind::Utf16LE
+            | EncodingKind::Utf16BE
+            | EncodingKind::Utf32
+            | EncodingKind::Utf32LE
+            | EncodingKind::Utf32BE => u32::MAX,
+        }
+    }
+}
+
+pub(crate) fn encoding_kind_name(kind: EncodingKind) -> &'static str {
+    kind.name()
+}
+
+pub(crate) enum EncodeError {
+    UnknownEncoding(String),
+    UnknownErrorHandler(String),
+    InvalidChar {
+        encoding: &'static str,
+        code: u32,
+        pos: usize,
+        limit: u32,
+    },
+}
+
+pub(crate) fn normalize_encoding(name: &str) -> Option<EncodingKind> {
+    let normalized = name.to_ascii_lowercase().replace('_', "-");
+    match normalized.as_str() {
+        "utf-8" | "utf8" => Some(EncodingKind::Utf8),
+        "utf-8-sig" | "utf8-sig" => Some(EncodingKind::Utf8Sig),
+        "cp1252" | "cp-1252" | "windows-1252" => Some(EncodingKind::Cp1252),
+        "cp437" | "ibm437" | "437" => Some(EncodingKind::Cp437),
+        "cp850" | "ibm850" | "850" | "cp-850" => Some(EncodingKind::Cp850),
+        "cp860" | "ibm860" | "860" | "cp-860" => Some(EncodingKind::Cp860),
+        "cp862" | "ibm862" | "862" | "cp-862" => Some(EncodingKind::Cp862),
+        "cp863" | "ibm863" | "863" | "cp-863" => Some(EncodingKind::Cp863),
+        "cp865" | "ibm865" | "865" | "cp-865" => Some(EncodingKind::Cp865),
+        "cp866" | "ibm866" | "866" | "cp-866" => Some(EncodingKind::Cp866),
+        "cp874" | "cp-874" | "windows-874" => Some(EncodingKind::Cp874),
+        "cp1250" | "cp-1250" | "windows-1250" => Some(EncodingKind::Cp1250),
+        "cp1251" | "cp-1251" | "windows-1251" => Some(EncodingKind::Cp1251),
+        "cp1253" | "cp-1253" | "windows-1253" => Some(EncodingKind::Cp1253),
+        "cp1254" | "cp-1254" | "windows-1254" => Some(EncodingKind::Cp1254),
+        "cp1255" | "cp-1255" | "windows-1255" => Some(EncodingKind::Cp1255),
+        "cp1256" | "cp-1256" | "windows-1256" => Some(EncodingKind::Cp1256),
+        "cp1257" | "cp-1257" | "windows-1257" => Some(EncodingKind::Cp1257),
+        "koi8-r" | "koi8r" | "koi8_r" => Some(EncodingKind::Koi8R),
+        "koi8-u" | "koi8u" | "koi8_u" => Some(EncodingKind::Koi8U),
+        "iso-8859-2" | "iso8859-2" | "latin2" | "latin-2" => Some(EncodingKind::Iso8859_2),
+        "iso-8859-3" | "iso8859-3" | "latin3" | "latin-3" => Some(EncodingKind::Iso8859_3),
+        "iso-8859-4" | "iso8859-4" | "latin4" | "latin-4" => Some(EncodingKind::Iso8859_4),
+        "iso-8859-5" | "iso8859-5" | "cyrillic" => Some(EncodingKind::Iso8859_5),
+        "iso-8859-6" | "iso8859-6" | "arabic" => Some(EncodingKind::Iso8859_6),
+        "iso-8859-7" | "iso8859-7" | "greek" => Some(EncodingKind::Iso8859_7),
+        "iso-8859-8" | "iso8859-8" | "hebrew" => Some(EncodingKind::Iso8859_8),
+        "iso-8859-10" | "iso8859-10" | "latin6" | "latin-6" => Some(EncodingKind::Iso8859_10),
+        "iso-8859-15" | "iso8859-15" | "latin9" | "latin-9" | "latin_9" => {
+            Some(EncodingKind::Iso8859_15)
+        }
+        "mac-roman" | "macroman" | "mac_roman" => Some(EncodingKind::MacRoman),
+        "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => Some(EncodingKind::Latin1),
+        "ascii" | "us-ascii" => Some(EncodingKind::Ascii),
+        "unicode-escape" | "unicodeescape" => Some(EncodingKind::UnicodeEscape),
+        "utf-16" | "utf16" => Some(EncodingKind::Utf16),
+        "utf-16le" | "utf-16-le" | "utf16le" => Some(EncodingKind::Utf16LE),
+        "utf-16be" | "utf-16-be" | "utf16be" => Some(EncodingKind::Utf16BE),
+        "utf-32" | "utf32" => Some(EncodingKind::Utf32),
+        "utf-32le" | "utf-32-le" | "utf32le" => Some(EncodingKind::Utf32LE),
+        "utf-32be" | "utf-32-be" | "utf32be" => Some(EncodingKind::Utf32BE),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Endian {
+    Little,
+    Big,
+}
+
+fn native_endian() -> Endian {
+    if cfg!(target_endian = "big") {
+        Endian::Big
+    } else {
+        Endian::Little
+    }
+}
+
+fn push_u16(out: &mut Vec<u8>, val: u16, endian: Endian) {
+    match endian {
+        Endian::Little => out.extend_from_slice(&val.to_le_bytes()),
+        Endian::Big => out.extend_from_slice(&val.to_be_bytes()),
+    }
+}
+
+fn push_u32(out: &mut Vec<u8>, val: u32, endian: Endian) {
+    match endian {
+        Endian::Little => out.extend_from_slice(&val.to_le_bytes()),
+        Endian::Big => out.extend_from_slice(&val.to_be_bytes()),
+    }
+}
+
+#[allow(dead_code)]
+fn encode_utf16(text: &str, endian: Endian, with_bom: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len().saturating_mul(2) + if with_bom { 2 } else { 0 });
+    if with_bom {
+        push_u16(&mut out, 0xFEFF, endian);
+    }
+    for code in text.encode_utf16() {
+        push_u16(&mut out, code, endian);
+    }
+    out
+}
+
+#[allow(dead_code)]
+fn encode_utf32(text: &str, endian: Endian, with_bom: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len().saturating_mul(4) + if with_bom { 4 } else { 0 });
+    if with_bom {
+        push_u32(&mut out, 0x0000_FEFF, endian);
+    }
+    for ch in text.chars() {
+        push_u32(&mut out, ch as u32, endian);
+    }
+    out
+}
+
+fn is_surrogate(code: u32) -> bool {
+    (0xD800..=0xDFFF).contains(&code)
+}
+
+fn unicode_escape_codepoint(code: u32) -> String {
+    if code <= 0xFF {
+        format!("\\x{code:02x}")
+    } else if code <= 0xFFFF {
+        format!("\\u{code:04x}")
+    } else {
+        format!("\\U{code:08x}")
+    }
+}
+
+fn unicode_name_escape(code: u32) -> String {
+    #[cfg(feature = "stdlib_unicode_names")]
+    if let Some(ch) = char::from_u32(code)
+        && let Some(name) = unicode_names2::name(ch)
+    {
+        return format!("\\N{{{name}}}");
+    }
+    unicode_escape_codepoint(code)
+}
+
+fn unicode_escape(ch: char) -> String {
+    unicode_escape_codepoint(ch as u32)
+}
+
+pub(crate) fn encode_error_reason(encoding: &str, code: u32, limit: u32) -> String {
+    if encoding == "charmap" {
+        return "character maps to <undefined>".to_string();
+    }
+    if is_surrogate(code) && encoding.starts_with("utf-") {
+        return "surrogates not allowed".to_string();
+    }
+    format!("ordinal not in range({limit})")
+}
+
+#[allow(dead_code)]
+fn push_backslash_bytes(out: &mut String, bytes: &[u8]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for &byte in bytes {
+        out.push('\\');
+        out.push('x');
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+}
+
+fn push_backslash_bytes_vec(out: &mut Vec<u8>, bytes: &[u8]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for &byte in bytes {
+        out.push(b'\\');
+        out.push(b'x');
+        out.push(HEX[(byte >> 4) as usize]);
+        out.push(HEX[(byte & 0x0f) as usize]);
+    }
+}
+
+fn push_hex_escape(out: &mut Vec<u8>, prefix: u8, code: u32, width: usize) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.push(b'\\');
+    out.push(prefix);
+    for shift in (0..width).rev() {
+        let nibble = ((code >> (shift * 4)) & 0x0f) as usize;
+        out.push(HEX[nibble]);
+    }
+}
+
+fn xmlcharref_bytes(code: u32, buf: &mut [u8; 16]) -> &[u8] {
+    buf[0] = b'&';
+    buf[1] = b'#';
+    let mut digits = [0u8; 10];
+    let mut idx = digits.len();
+    let mut value = code;
+    loop {
+        idx = idx.saturating_sub(1);
+        digits[idx] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    let digits_len = digits.len() - idx;
+    buf[2..2 + digits_len].copy_from_slice(&digits[idx..]);
+    buf[2 + digits_len] = b';';
+    &buf[..2 + digits_len + 1]
+}
+
+fn push_xmlcharref_ascii(out: &mut Vec<u8>, code: u32) {
+    let mut buf = [0u8; 16];
+    let bytes = xmlcharref_bytes(code, &mut buf);
+    out.extend_from_slice(bytes);
+}
+
+fn push_xmlcharref_utf16(out: &mut Vec<u8>, code: u32, endian: Endian) {
+    let mut buf = [0u8; 16];
+    let bytes = xmlcharref_bytes(code, &mut buf);
+    for &byte in bytes {
+        push_u16(out, byte as u16, endian);
+    }
+}
+
+fn push_xmlcharref_utf32(out: &mut Vec<u8>, code: u32, endian: Endian) {
+    let mut buf = [0u8; 16];
+    let bytes = xmlcharref_bytes(code, &mut buf);
+    for &byte in bytes {
+        push_u32(out, byte as u32, endian);
+    }
+}
+
+fn encode_cp1252_byte(code: u32) -> Option<u8> {
+    if code <= 0x7F || (0xA0..=0xFF).contains(&code) {
+        return Some(code as u8);
+    }
+    match code {
+        0x20AC => Some(0x80),
+        0x201A => Some(0x82),
+        0x0192 => Some(0x83),
+        0x201E => Some(0x84),
+        0x2026 => Some(0x85),
+        0x2020 => Some(0x86),
+        0x2021 => Some(0x87),
+        0x02C6 => Some(0x88),
+        0x2030 => Some(0x89),
+        0x0160 => Some(0x8A),
+        0x2039 => Some(0x8B),
+        0x0152 => Some(0x8C),
+        0x017D => Some(0x8E),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x2022 => Some(0x95),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x02DC => Some(0x98),
+        0x2122 => Some(0x99),
+        0x0161 => Some(0x9A),
+        0x203A => Some(0x9B),
+        0x0153 => Some(0x9C),
+        0x017E => Some(0x9E),
+        0x0178 => Some(0x9F),
+        _ => None,
+    }
+}
+
+fn encode_cp437_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xFF),
+        0x00A1 => Some(0xAD),
+        0x00A2 => Some(0x9B),
+        0x00A3 => Some(0x9C),
+        0x00A5 => Some(0x9D),
+        0x00AA => Some(0xA6),
+        0x00AB => Some(0xAE),
+        0x00AC => Some(0xAA),
+        0x00B0 => Some(0xF8),
+        0x00B1 => Some(0xF1),
+        0x00B2 => Some(0xFD),
+        0x00B5 => Some(0xE6),
+        0x00B7 => Some(0xFA),
+        0x00BA => Some(0xA7),
+        0x00BB => Some(0xAF),
+        0x00BC => Some(0xAC),
+        0x00BD => Some(0xAB),
+        0x00BF => Some(0xA8),
+        0x00C4 => Some(0x8E),
+        0x00C5 => Some(0x8F),
+        0x00C6 => Some(0x92),
+        0x00C7 => Some(0x80),
+        0x00C9 => Some(0x90),
+        0x00D1 => Some(0xA5),
+        0x00D6 => Some(0x99),
+        0x00DC => Some(0x9A),
+        0x00DF => Some(0xE1),
+        0x00E0 => Some(0x85),
+        0x00E1 => Some(0xA0),
+        0x00E2 => Some(0x83),
+        0x00E4 => Some(0x84),
+        0x00E5 => Some(0x86),
+        0x00E6 => Some(0x91),
+        0x00E7 => Some(0x87),
+        0x00E8 => Some(0x8A),
+        0x00E9 => Some(0x82),
+        0x00EA => Some(0x88),
+        0x00EB => Some(0x89),
+        0x00EC => Some(0x8D),
+        0x00ED => Some(0xA1),
+        0x00EE => Some(0x8C),
+        0x00EF => Some(0x8B),
+        0x00F1 => Some(0xA4),
+        0x00F2 => Some(0x95),
+        0x00F3 => Some(0xA2),
+        0x00F4 => Some(0x93),
+        0x00F6 => Some(0x94),
+        0x00F7 => Some(0xF6),
+        0x00F9 => Some(0x97),
+        0x00FA => Some(0xA3),
+        0x00FB => Some(0x96),
+        0x00FC => Some(0x81),
+        0x00FF => Some(0x98),
+        0x0192 => Some(0x9F),
+        0x0393 => Some(0xE2),
+        0x0398 => Some(0xE9),
+        0x03A3 => Some(0xE4),
+        0x03A6 => Some(0xE8),
+        0x03A9 => Some(0xEA),
+        0x03B1 => Some(0xE0),
+        0x03B4 => Some(0xEB),
+        0x03B5 => Some(0xEE),
+        0x03C0 => Some(0xE3),
+        0x03C3 => Some(0xE5),
+        0x03C4 => Some(0xE7),
+        0x03C6 => Some(0xED),
+        0x207F => Some(0xFC),
+        0x20A7 => Some(0x9E),
+        0x2219 => Some(0xF9),
+        0x221A => Some(0xFB),
+        0x221E => Some(0xEC),
+        0x2229 => Some(0xEF),
+        0x2248 => Some(0xF7),
+        0x2261 => Some(0xF0),
+        0x2264 => Some(0xF3),
+        0x2265 => Some(0xF2),
+        0x2310 => Some(0xA9),
+        0x2320 => Some(0xF4),
+        0x2321 => Some(0xF5),
+        0x2500 => Some(0xC4),
+        0x2502 => Some(0xB3),
+        0x250C => Some(0xDA),
+        0x2510 => Some(0xBF),
+        0x2514 => Some(0xC0),
+        0x2518 => Some(0xD9),
+        0x251C => Some(0xC3),
+        0x2524 => Some(0xB4),
+        0x252C => Some(0xC2),
+        0x2534 => Some(0xC1),
+        0x253C => Some(0xC5),
+        0x2550 => Some(0xCD),
+        0x2551 => Some(0xBA),
+        0x2552 => Some(0xD5),
+        0x2553 => Some(0xD6),
+        0x2554 => Some(0xC9),
+        0x2555 => Some(0xB8),
+        0x2556 => Some(0xB7),
+        0x2557 => Some(0xBB),
+        0x2558 => Some(0xD4),
+        0x2559 => Some(0xD3),
+        0x255A => Some(0xC8),
+        0x255B => Some(0xBE),
+        0x255C => Some(0xBD),
+        0x255D => Some(0xBC),
+        0x255E => Some(0xC6),
+        0x255F => Some(0xC7),
+        0x2560 => Some(0xCC),
+        0x2561 => Some(0xB5),
+        0x2562 => Some(0xB6),
+        0x2563 => Some(0xB9),
+        0x2564 => Some(0xD1),
+        0x2565 => Some(0xD2),
+        0x2566 => Some(0xCB),
+        0x2567 => Some(0xCF),
+        0x2568 => Some(0xD0),
+        0x2569 => Some(0xCA),
+        0x256A => Some(0xD8),
+        0x256B => Some(0xD7),
+        0x256C => Some(0xCE),
+        0x2580 => Some(0xDF),
+        0x2584 => Some(0xDC),
+        0x2588 => Some(0xDB),
+        0x258C => Some(0xDD),
+        0x2590 => Some(0xDE),
+        0x2591 => Some(0xB0),
+        0x2592 => Some(0xB1),
+        0x2593 => Some(0xB2),
+        0x25A0 => Some(0xFE),
+        _ => None,
+    }
+}
+
+fn encode_cp850_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xFF),
+        0x00A1 => Some(0xAD),
+        0x00A2 => Some(0xBD),
+        0x00A3 => Some(0x9C),
+        0x00A4 => Some(0xCF),
+        0x00A5 => Some(0xBE),
+        0x00A6 => Some(0xDD),
+        0x00A7 => Some(0xF5),
+        0x00A8 => Some(0xF9),
+        0x00A9 => Some(0xB8),
+        0x00AA => Some(0xA6),
+        0x00AB => Some(0xAE),
+        0x00AC => Some(0xAA),
+        0x00AD => Some(0xF0),
+        0x00AE => Some(0xA9),
+        0x00AF => Some(0xEE),
+        0x00B0 => Some(0xF8),
+        0x00B1 => Some(0xF1),
+        0x00B2 => Some(0xFD),
+        0x00B3 => Some(0xFC),
+        0x00B4 => Some(0xEF),
+        0x00B5 => Some(0xE6),
+        0x00B6 => Some(0xF4),
+        0x00B7 => Some(0xFA),
+        0x00B8 => Some(0xF7),
+        0x00B9 => Some(0xFB),
+        0x00BA => Some(0xA7),
+        0x00BB => Some(0xAF),
+        0x00BC => Some(0xAC),
+        0x00BD => Some(0xAB),
+        0x00BE => Some(0xF3),
+        0x00BF => Some(0xA8),
+        0x00C0 => Some(0xB7),
+        0x00C1 => Some(0xB5),
+        0x00C2 => Some(0xB6),
+        0x00C3 => Some(0xC7),
+        0x00C4 => Some(0x8E),
+        0x00C5 => Some(0x8F),
+        0x00C6 => Some(0x92),
+        0x00C7 => Some(0x80),
+        0x00C8 => Some(0xD4),
+        0x00C9 => Some(0x90),
+        0x00CA => Some(0xD2),
+        0x00CB => Some(0xD3),
+        0x00CC => Some(0xDE),
+        0x00CD => Some(0xD6),
+        0x00CE => Some(0xD7),
+        0x00CF => Some(0xD8),
+        0x00D0 => Some(0xD1),
+        0x00D1 => Some(0xA5),
+        0x00D2 => Some(0xE3),
+        0x00D3 => Some(0xE0),
+        0x00D4 => Some(0xE2),
+        0x00D5 => Some(0xE5),
+        0x00D6 => Some(0x99),
+        0x00D7 => Some(0x9E),
+        0x00D8 => Some(0x9D),
+        0x00D9 => Some(0xEB),
+        0x00DA => Some(0xE9),
+        0x00DB => Some(0xEA),
+        0x00DC => Some(0x9A),
+        0x00DD => Some(0xED),
+        0x00DE => Some(0xE8),
+        0x00DF => Some(0xE1),
+        0x00E0 => Some(0x85),
+        0x00E1 => Some(0xA0),
+        0x00E2 => Some(0x83),
+        0x00E3 => Some(0xC6),
+        0x00E4 => Some(0x84),
+        0x00E5 => Some(0x86),
+        0x00E6 => Some(0x91),
+        0x00E7 => Some(0x87),
+        0x00E8 => Some(0x8A),
+        0x00E9 => Some(0x82),
+        0x00EA => Some(0x88),
+        0x00EB => Some(0x89),
+        0x00EC => Some(0x8D),
+        0x00ED => Some(0xA1),
+        0x00EE => Some(0x8C),
+        0x00EF => Some(0x8B),
+        0x00F0 => Some(0xD0),
+        0x00F1 => Some(0xA4),
+        0x00F2 => Some(0x95),
+        0x00F3 => Some(0xA2),
+        0x00F4 => Some(0x93),
+        0x00F5 => Some(0xE4),
+        0x00F6 => Some(0x94),
+        0x00F7 => Some(0xF6),
+        0x00F8 => Some(0x9B),
+        0x00F9 => Some(0x97),
+        0x00FA => Some(0xA3),
+        0x00FB => Some(0x96),
+        0x00FC => Some(0x81),
+        0x00FD => Some(0xEC),
+        0x00FE => Some(0xE7),
+        0x00FF => Some(0x98),
+        0x0131 => Some(0xD5),
+        0x0192 => Some(0x9F),
+        0x2017 => Some(0xF2),
+        0x2500 => Some(0xC4),
+        0x2502 => Some(0xB3),
+        0x250C => Some(0xDA),
+        0x2510 => Some(0xBF),
+        0x2514 => Some(0xC0),
+        0x2518 => Some(0xD9),
+        0x251C => Some(0xC3),
+        0x2524 => Some(0xB4),
+        0x252C => Some(0xC2),
+        0x2534 => Some(0xC1),
+        0x253C => Some(0xC5),
+        0x2550 => Some(0xCD),
+        0x2551 => Some(0xBA),
+        0x2554 => Some(0xC9),
+        0x2557 => Some(0xBB),
+        0x255A => Some(0xC8),
+        0x255D => Some(0xBC),
+        0x2560 => Some(0xCC),
+        0x2563 => Some(0xB9),
+        0x2566 => Some(0xCB),
+        0x2569 => Some(0xCA),
+        0x256C => Some(0xCE),
+        0x2580 => Some(0xDF),
+        0x2584 => Some(0xDC),
+        0x2588 => Some(0xDB),
+        0x2591 => Some(0xB0),
+        0x2592 => Some(0xB1),
+        0x2593 => Some(0xB2),
+        0x25A0 => Some(0xFE),
+        _ => None,
+    }
+}
+
+fn encode_cp865_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xFF),
+        0x00A1 => Some(0xAD),
+        0x00A3 => Some(0x9C),
+        0x00A4 => Some(0xAF),
+        0x00AA => Some(0xA6),
+        0x00AB => Some(0xAE),
+        0x00AC => Some(0xAA),
+        0x00B0 => Some(0xF8),
+        0x00B1 => Some(0xF1),
+        0x00B2 => Some(0xFD),
+        0x00B5 => Some(0xE6),
+        0x00B7 => Some(0xFA),
+        0x00BA => Some(0xA7),
+        0x00BC => Some(0xAC),
+        0x00BD => Some(0xAB),
+        0x00BF => Some(0xA8),
+        0x00C4 => Some(0x8E),
+        0x00C5 => Some(0x8F),
+        0x00C6 => Some(0x92),
+        0x00C7 => Some(0x80),
+        0x00C9 => Some(0x90),
+        0x00D1 => Some(0xA5),
+        0x00D6 => Some(0x99),
+        0x00D8 => Some(0x9D),
+        0x00DC => Some(0x9A),
+        0x00DF => Some(0xE1),
+        0x00E0 => Some(0x85),
+        0x00E1 => Some(0xA0),
+        0x00E2 => Some(0x83),
+        0x00E4 => Some(0x84),
+        0x00E5 => Some(0x86),
+        0x00E6 => Some(0x91),
+        0x00E7 => Some(0x87),
+        0x00E8 => Some(0x8A),
+        0x00E9 => Some(0x82),
+        0x00EA => Some(0x88),
+        0x00EB => Some(0x89),
+        0x00EC => Some(0x8D),
+        0x00ED => Some(0xA1),
+        0x00EE => Some(0x8C),
+        0x00EF => Some(0x8B),
+        0x00F1 => Some(0xA4),
+        0x00F2 => Some(0x95),
+        0x00F3 => Some(0xA2),
+        0x00F4 => Some(0x93),
+        0x00F6 => Some(0x94),
+        0x00F7 => Some(0xF6),
+        0x00F8 => Some(0x9B),
+        0x00F9 => Some(0x97),
+        0x00FA => Some(0xA3),
+        0x00FB => Some(0x96),
+        0x00FC => Some(0x81),
+        0x00FF => Some(0x98),
+        0x0192 => Some(0x9F),
+        0x0393 => Some(0xE2),
+        0x0398 => Some(0xE9),
+        0x03A3 => Some(0xE4),
+        0x03A6 => Some(0xE8),
+        0x03A9 => Some(0xEA),
+        0x03B1 => Some(0xE0),
+        0x03B4 => Some(0xEB),
+        0x03B5 => Some(0xEE),
+        0x03C0 => Some(0xE3),
+        0x03C3 => Some(0xE5),
+        0x03C4 => Some(0xE7),
+        0x03C6 => Some(0xED),
+        0x207F => Some(0xFC),
+        0x20A7 => Some(0x9E),
+        0x2219 => Some(0xF9),
+        0x221A => Some(0xFB),
+        0x221E => Some(0xEC),
+        0x2229 => Some(0xEF),
+        0x2248 => Some(0xF7),
+        0x2261 => Some(0xF0),
+        0x2264 => Some(0xF3),
+        0x2265 => Some(0xF2),
+        0x2310 => Some(0xA9),
+        0x2320 => Some(0xF4),
+        0x2321 => Some(0xF5),
+        0x2500 => Some(0xC4),
+        0x2502 => Some(0xB3),
+        0x250C => Some(0xDA),
+        0x2510 => Some(0xBF),
+        0x2514 => Some(0xC0),
+        0x2518 => Some(0xD9),
+        0x251C => Some(0xC3),
+        0x2524 => Some(0xB4),
+        0x252C => Some(0xC2),
+        0x2534 => Some(0xC1),
+        0x253C => Some(0xC5),
+        0x2550 => Some(0xCD),
+        0x2551 => Some(0xBA),
+        0x2552 => Some(0xD5),
+        0x2553 => Some(0xD6),
+        0x2554 => Some(0xC9),
+        0x2555 => Some(0xB8),
+        0x2556 => Some(0xB7),
+        0x2557 => Some(0xBB),
+        0x2558 => Some(0xD4),
+        0x2559 => Some(0xD3),
+        0x255A => Some(0xC8),
+        0x255B => Some(0xBE),
+        0x255C => Some(0xBD),
+        0x255D => Some(0xBC),
+        0x255E => Some(0xC6),
+        0x255F => Some(0xC7),
+        0x2560 => Some(0xCC),
+        0x2561 => Some(0xB5),
+        0x2562 => Some(0xB6),
+        0x2563 => Some(0xB9),
+        0x2564 => Some(0xD1),
+        0x2565 => Some(0xD2),
+        0x2566 => Some(0xCB),
+        0x2567 => Some(0xCF),
+        0x2568 => Some(0xD0),
+        0x2569 => Some(0xCA),
+        0x256A => Some(0xD8),
+        0x256B => Some(0xD7),
+        0x256C => Some(0xCE),
+        0x2580 => Some(0xDF),
+        0x2584 => Some(0xDC),
+        0x2588 => Some(0xDB),
+        0x258C => Some(0xDD),
+        0x2590 => Some(0xDE),
+        0x2591 => Some(0xB0),
+        0x2592 => Some(0xB1),
+        0x2593 => Some(0xB2),
+        0x25A0 => Some(0xFE),
+        _ => None,
+    }
+}
+
+fn encode_cp874_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xA0),
+        0x0E01 => Some(0xA1),
+        0x0E02 => Some(0xA2),
+        0x0E03 => Some(0xA3),
+        0x0E04 => Some(0xA4),
+        0x0E05 => Some(0xA5),
+        0x0E06 => Some(0xA6),
+        0x0E07 => Some(0xA7),
+        0x0E08 => Some(0xA8),
+        0x0E09 => Some(0xA9),
+        0x0E0A => Some(0xAA),
+        0x0E0B => Some(0xAB),
+        0x0E0C => Some(0xAC),
+        0x0E0D => Some(0xAD),
+        0x0E0E => Some(0xAE),
+        0x0E0F => Some(0xAF),
+        0x0E10 => Some(0xB0),
+        0x0E11 => Some(0xB1),
+        0x0E12 => Some(0xB2),
+        0x0E13 => Some(0xB3),
+        0x0E14 => Some(0xB4),
+        0x0E15 => Some(0xB5),
+        0x0E16 => Some(0xB6),
+        0x0E17 => Some(0xB7),
+        0x0E18 => Some(0xB8),
+        0x0E19 => Some(0xB9),
+        0x0E1A => Some(0xBA),
+        0x0E1B => Some(0xBB),
+        0x0E1C => Some(0xBC),
+        0x0E1D => Some(0xBD),
+        0x0E1E => Some(0xBE),
+        0x0E1F => Some(0xBF),
+        0x0E20 => Some(0xC0),
+        0x0E21 => Some(0xC1),
+        0x0E22 => Some(0xC2),
+        0x0E23 => Some(0xC3),
+        0x0E24 => Some(0xC4),
+        0x0E25 => Some(0xC5),
+        0x0E26 => Some(0xC6),
+        0x0E27 => Some(0xC7),
+        0x0E28 => Some(0xC8),
+        0x0E29 => Some(0xC9),
+        0x0E2A => Some(0xCA),
+        0x0E2B => Some(0xCB),
+        0x0E2C => Some(0xCC),
+        0x0E2D => Some(0xCD),
+        0x0E2E => Some(0xCE),
+        0x0E2F => Some(0xCF),
+        0x0E30 => Some(0xD0),
+        0x0E31 => Some(0xD1),
+        0x0E32 => Some(0xD2),
+        0x0E33 => Some(0xD3),
+        0x0E34 => Some(0xD4),
+        0x0E35 => Some(0xD5),
+        0x0E36 => Some(0xD6),
+        0x0E37 => Some(0xD7),
+        0x0E38 => Some(0xD8),
+        0x0E39 => Some(0xD9),
+        0x0E3A => Some(0xDA),
+        0x0E3F => Some(0xDF),
+        0x0E40 => Some(0xE0),
+        0x0E41 => Some(0xE1),
+        0x0E42 => Some(0xE2),
+        0x0E43 => Some(0xE3),
+        0x0E44 => Some(0xE4),
+        0x0E45 => Some(0xE5),
+        0x0E46 => Some(0xE6),
+        0x0E47 => Some(0xE7),
+        0x0E48 => Some(0xE8),
+        0x0E49 => Some(0xE9),
+        0x0E4A => Some(0xEA),
+        0x0E4B => Some(0xEB),
+        0x0E4C => Some(0xEC),
+        0x0E4D => Some(0xED),
+        0x0E4E => Some(0xEE),
+        0x0E4F => Some(0xEF),
+        0x0E50 => Some(0xF0),
+        0x0E51 => Some(0xF1),
+        0x0E52 => Some(0xF2),
+        0x0E53 => Some(0xF3),
+        0x0E54 => Some(0xF4),
+        0x0E55 => Some(0xF5),
+        0x0E56 => Some(0xF6),
+        0x0E57 => Some(0xF7),
+        0x0E58 => Some(0xF8),
+        0x0E59 => Some(0xF9),
+        0x0E5A => Some(0xFA),
+        0x0E5B => Some(0xFB),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x2022 => Some(0x95),
+        0x2026 => Some(0x85),
+        0x20AC => Some(0x80),
+        _ => None,
+    }
+}
+
+fn encode_cp1250_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xA0),
+        0x00A4 => Some(0xA4),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00A9 => Some(0xA9),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B4 => Some(0xB4),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00B8 => Some(0xB8),
+        0x00BB => Some(0xBB),
+        0x00C1 => Some(0xC1),
+        0x00C2 => Some(0xC2),
+        0x00C4 => Some(0xC4),
+        0x00C7 => Some(0xC7),
+        0x00C9 => Some(0xC9),
+        0x00CB => Some(0xCB),
+        0x00CD => Some(0xCD),
+        0x00CE => Some(0xCE),
+        0x00D3 => Some(0xD3),
+        0x00D4 => Some(0xD4),
+        0x00D6 => Some(0xD6),
+        0x00D7 => Some(0xD7),
+        0x00DA => Some(0xDA),
+        0x00DC => Some(0xDC),
+        0x00DD => Some(0xDD),
+        0x00DF => Some(0xDF),
+        0x00E1 => Some(0xE1),
+        0x00E2 => Some(0xE2),
+        0x00E4 => Some(0xE4),
+        0x00E7 => Some(0xE7),
+        0x00E9 => Some(0xE9),
+        0x00EB => Some(0xEB),
+        0x00ED => Some(0xED),
+        0x00EE => Some(0xEE),
+        0x00F3 => Some(0xF3),
+        0x00F4 => Some(0xF4),
+        0x00F6 => Some(0xF6),
+        0x00F7 => Some(0xF7),
+        0x00FA => Some(0xFA),
+        0x00FC => Some(0xFC),
+        0x00FD => Some(0xFD),
+        0x0102 => Some(0xC3),
+        0x0103 => Some(0xE3),
+        0x0104 => Some(0xA5),
+        0x0105 => Some(0xB9),
+        0x0106 => Some(0xC6),
+        0x0107 => Some(0xE6),
+        0x010C => Some(0xC8),
+        0x010D => Some(0xE8),
+        0x010E => Some(0xCF),
+        0x010F => Some(0xEF),
+        0x0110 => Some(0xD0),
+        0x0111 => Some(0xF0),
+        0x0118 => Some(0xCA),
+        0x0119 => Some(0xEA),
+        0x011A => Some(0xCC),
+        0x011B => Some(0xEC),
+        0x0139 => Some(0xC5),
+        0x013A => Some(0xE5),
+        0x013D => Some(0xBC),
+        0x013E => Some(0xBE),
+        0x0141 => Some(0xA3),
+        0x0142 => Some(0xB3),
+        0x0143 => Some(0xD1),
+        0x0144 => Some(0xF1),
+        0x0147 => Some(0xD2),
+        0x0148 => Some(0xF2),
+        0x0150 => Some(0xD5),
+        0x0151 => Some(0xF5),
+        0x0154 => Some(0xC0),
+        0x0155 => Some(0xE0),
+        0x0158 => Some(0xD8),
+        0x0159 => Some(0xF8),
+        0x015A => Some(0x8C),
+        0x015B => Some(0x9C),
+        0x015E => Some(0xAA),
+        0x015F => Some(0xBA),
+        0x0160 => Some(0x8A),
+        0x0161 => Some(0x9A),
+        0x0162 => Some(0xDE),
+        0x0163 => Some(0xFE),
+        0x0164 => Some(0x8D),
+        0x0165 => Some(0x9D),
+        0x016E => Some(0xD9),
+        0x016F => Some(0xF9),
+        0x0170 => Some(0xDB),
+        0x0171 => Some(0xFB),
+        0x0179 => Some(0x8F),
+        0x017A => Some(0x9F),
+        0x017B => Some(0xAF),
+        0x017C => Some(0xBF),
+        0x017D => Some(0x8E),
+        0x017E => Some(0x9E),
+        0x02C7 => Some(0xA1),
+        0x02D8 => Some(0xA2),
+        0x02D9 => Some(0xFF),
+        0x02DB => Some(0xB2),
+        0x02DD => Some(0xBD),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201A => Some(0x82),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x201E => Some(0x84),
+        0x2020 => Some(0x86),
+        0x2021 => Some(0x87),
+        0x2022 => Some(0x95),
+        0x2026 => Some(0x85),
+        0x2030 => Some(0x89),
+        0x2039 => Some(0x8B),
+        0x203A => Some(0x9B),
+        0x20AC => Some(0x80),
+        0x2122 => Some(0x99),
+        _ => None,
+    }
+}
+
+fn encode_cp1251_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xA0),
+        0x00A4 => Some(0xA4),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A9 => Some(0xA9),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00BB => Some(0xBB),
+        0x0401 => Some(0xA8),
+        0x0402 => Some(0x80),
+        0x0403 => Some(0x81),
+        0x0404 => Some(0xAA),
+        0x0405 => Some(0xBD),
+        0x0406 => Some(0xB2),
+        0x0407 => Some(0xAF),
+        0x0408 => Some(0xA3),
+        0x0409 => Some(0x8A),
+        0x040A => Some(0x8C),
+        0x040B => Some(0x8E),
+        0x040C => Some(0x8D),
+        0x040E => Some(0xA1),
+        0x040F => Some(0x8F),
+        0x0410 => Some(0xC0),
+        0x0411 => Some(0xC1),
+        0x0412 => Some(0xC2),
+        0x0413 => Some(0xC3),
+        0x0414 => Some(0xC4),
+        0x0415 => Some(0xC5),
+        0x0416 => Some(0xC6),
+        0x0417 => Some(0xC7),
+        0x0418 => Some(0xC8),
+        0x0419 => Some(0xC9),
+        0x041A => Some(0xCA),
+        0x041B => Some(0xCB),
+        0x041C => Some(0xCC),
+        0x041D => Some(0xCD),
+        0x041E => Some(0xCE),
+        0x041F => Some(0xCF),
+        0x0420 => Some(0xD0),
+        0x0421 => Some(0xD1),
+        0x0422 => Some(0xD2),
+        0x0423 => Some(0xD3),
+        0x0424 => Some(0xD4),
+        0x0425 => Some(0xD5),
+        0x0426 => Some(0xD6),
+        0x0427 => Some(0xD7),
+        0x0428 => Some(0xD8),
+        0x0429 => Some(0xD9),
+        0x042A => Some(0xDA),
+        0x042B => Some(0xDB),
+        0x042C => Some(0xDC),
+        0x042D => Some(0xDD),
+        0x042E => Some(0xDE),
+        0x042F => Some(0xDF),
+        0x0430 => Some(0xE0),
+        0x0431 => Some(0xE1),
+        0x0432 => Some(0xE2),
+        0x0433 => Some(0xE3),
+        0x0434 => Some(0xE4),
+        0x0435 => Some(0xE5),
+        0x0436 => Some(0xE6),
+        0x0437 => Some(0xE7),
+        0x0438 => Some(0xE8),
+        0x0439 => Some(0xE9),
+        0x043A => Some(0xEA),
+        0x043B => Some(0xEB),
+        0x043C => Some(0xEC),
+        0x043D => Some(0xED),
+        0x043E => Some(0xEE),
+        0x043F => Some(0xEF),
+        0x0440 => Some(0xF0),
+        0x0441 => Some(0xF1),
+        0x0442 => Some(0xF2),
+        0x0443 => Some(0xF3),
+        0x0444 => Some(0xF4),
+        0x0445 => Some(0xF5),
+        0x0446 => Some(0xF6),
+        0x0447 => Some(0xF7),
+        0x0448 => Some(0xF8),
+        0x0449 => Some(0xF9),
+        0x044A => Some(0xFA),
+        0x044B => Some(0xFB),
+        0x044C => Some(0xFC),
+        0x044D => Some(0xFD),
+        0x044E => Some(0xFE),
+        0x044F => Some(0xFF),
+        0x0451 => Some(0xB8),
+        0x0452 => Some(0x90),
+        0x0453 => Some(0x83),
+        0x0454 => Some(0xBA),
+        0x0455 => Some(0xBE),
+        0x0456 => Some(0xB3),
+        0x0457 => Some(0xBF),
+        0x0458 => Some(0xBC),
+        0x0459 => Some(0x9A),
+        0x045A => Some(0x9C),
+        0x045B => Some(0x9E),
+        0x045C => Some(0x9D),
+        0x045E => Some(0xA2),
+        0x045F => Some(0x9F),
+        0x0490 => Some(0xA5),
+        0x0491 => Some(0xB4),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201A => Some(0x82),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x201E => Some(0x84),
+        0x2020 => Some(0x86),
+        0x2021 => Some(0x87),
+        0x2022 => Some(0x95),
+        0x2026 => Some(0x85),
+        0x2030 => Some(0x89),
+        0x2039 => Some(0x8B),
+        0x203A => Some(0x9B),
+        0x20AC => Some(0x88),
+        0x2116 => Some(0xB9),
+        0x2122 => Some(0x99),
+        _ => None,
+    }
+}
+
+fn encode_cp866_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xFF),
+        0x00A4 => Some(0xFD),
+        0x00B0 => Some(0xF8),
+        0x00B7 => Some(0xFA),
+        0x0401 => Some(0xF0),
+        0x0404 => Some(0xF2),
+        0x0407 => Some(0xF4),
+        0x040E => Some(0xF6),
+        0x0410 => Some(0x80),
+        0x0411 => Some(0x81),
+        0x0412 => Some(0x82),
+        0x0413 => Some(0x83),
+        0x0414 => Some(0x84),
+        0x0415 => Some(0x85),
+        0x0416 => Some(0x86),
+        0x0417 => Some(0x87),
+        0x0418 => Some(0x88),
+        0x0419 => Some(0x89),
+        0x041A => Some(0x8A),
+        0x041B => Some(0x8B),
+        0x041C => Some(0x8C),
+        0x041D => Some(0x8D),
+        0x041E => Some(0x8E),
+        0x041F => Some(0x8F),
+        0x0420 => Some(0x90),
+        0x0421 => Some(0x91),
+        0x0422 => Some(0x92),
+        0x0423 => Some(0x93),
+        0x0424 => Some(0x94),
+        0x0425 => Some(0x95),
+        0x0426 => Some(0x96),
+        0x0427 => Some(0x97),
+        0x0428 => Some(0x98),
+        0x0429 => Some(0x99),
+        0x042A => Some(0x9A),
+        0x042B => Some(0x9B),
+        0x042C => Some(0x9C),
+        0x042D => Some(0x9D),
+        0x042E => Some(0x9E),
+        0x042F => Some(0x9F),
+        0x0430 => Some(0xA0),
+        0x0431 => Some(0xA1),
+        0x0432 => Some(0xA2),
+        0x0433 => Some(0xA3),
+        0x0434 => Some(0xA4),
+        0x0435 => Some(0xA5),
+        0x0436 => Some(0xA6),
+        0x0437 => Some(0xA7),
+        0x0438 => Some(0xA8),
+        0x0439 => Some(0xA9),
+        0x043A => Some(0xAA),
+        0x043B => Some(0xAB),
+        0x043C => Some(0xAC),
+        0x043D => Some(0xAD),
+        0x043E => Some(0xAE),
+        0x043F => Some(0xAF),
+        0x0440 => Some(0xE0),
+        0x0441 => Some(0xE1),
+        0x0442 => Some(0xE2),
+        0x0443 => Some(0xE3),
+        0x0444 => Some(0xE4),
+        0x0445 => Some(0xE5),
+        0x0446 => Some(0xE6),
+        0x0447 => Some(0xE7),
+        0x0448 => Some(0xE8),
+        0x0449 => Some(0xE9),
+        0x044A => Some(0xEA),
+        0x044B => Some(0xEB),
+        0x044C => Some(0xEC),
+        0x044D => Some(0xED),
+        0x044E => Some(0xEE),
+        0x044F => Some(0xEF),
+        0x0451 => Some(0xF1),
+        0x0454 => Some(0xF3),
+        0x0457 => Some(0xF5),
+        0x045E => Some(0xF7),
+        0x2116 => Some(0xFC),
+        0x2219 => Some(0xF9),
+        0x221A => Some(0xFB),
+        0x2500 => Some(0xC4),
+        0x2502 => Some(0xB3),
+        0x250C => Some(0xDA),
+        0x2510 => Some(0xBF),
+        0x2514 => Some(0xC0),
+        0x2518 => Some(0xD9),
+        0x251C => Some(0xC3),
+        0x2524 => Some(0xB4),
+        0x252C => Some(0xC2),
+        0x2534 => Some(0xC1),
+        0x253C => Some(0xC5),
+        0x2550 => Some(0xCD),
+        0x2551 => Some(0xBA),
+        0x2552 => Some(0xD5),
+        0x2553 => Some(0xD6),
+        0x2554 => Some(0xC9),
+        0x2555 => Some(0xB8),
+        0x2556 => Some(0xB7),
+        0x2557 => Some(0xBB),
+        0x2558 => Some(0xD4),
+        0x2559 => Some(0xD3),
+        0x255A => Some(0xC8),
+        0x255B => Some(0xBE),
+        0x255C => Some(0xBD),
+        0x255D => Some(0xBC),
+        0x255E => Some(0xC6),
+        0x255F => Some(0xC7),
+        0x2560 => Some(0xCC),
+        0x2561 => Some(0xB5),
+        0x2562 => Some(0xB6),
+        0x2563 => Some(0xB9),
+        0x2564 => Some(0xD1),
+        0x2565 => Some(0xD2),
+        0x2566 => Some(0xCB),
+        0x2567 => Some(0xCF),
+        0x2568 => Some(0xD0),
+        0x2569 => Some(0xCA),
+        0x256A => Some(0xD8),
+        0x256B => Some(0xD7),
+        0x256C => Some(0xCE),
+        0x2580 => Some(0xDF),
+        0x2584 => Some(0xDC),
+        0x2588 => Some(0xDB),
+        0x258C => Some(0xDD),
+        0x2590 => Some(0xDE),
+        0x2591 => Some(0xB0),
+        0x2592 => Some(0xB1),
+        0x2593 => Some(0xB2),
+        0x25A0 => Some(0xFE),
+        _ => None,
+    }
+}
+
+fn encode_cp860_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xFF),
+        0x00A1 => Some(0xAD),
+        0x00A2 => Some(0x9B),
+        0x00A3 => Some(0x9C),
+        0x00AA => Some(0xA6),
+        0x00AB => Some(0xAE),
+        0x00AC => Some(0xAA),
+        0x00B0 => Some(0xF8),
+        0x00B1 => Some(0xF1),
+        0x00B2 => Some(0xFD),
+        0x00B5 => Some(0xE6),
+        0x00B7 => Some(0xFA),
+        0x00BA => Some(0xA7),
+        0x00BB => Some(0xAF),
+        0x00BC => Some(0xAC),
+        0x00BD => Some(0xAB),
+        0x00BF => Some(0xA8),
+        0x00C0 => Some(0x91),
+        0x00C1 => Some(0x86),
+        0x00C2 => Some(0x8F),
+        0x00C3 => Some(0x8E),
+        0x00C7 => Some(0x80),
+        0x00C8 => Some(0x92),
+        0x00C9 => Some(0x90),
+        0x00CA => Some(0x89),
+        0x00CC => Some(0x98),
+        0x00CD => Some(0x8B),
+        0x00D1 => Some(0xA5),
+        0x00D2 => Some(0xA9),
+        0x00D3 => Some(0x9F),
+        0x00D4 => Some(0x8C),
+        0x00D5 => Some(0x99),
+        0x00D9 => Some(0x9D),
+        0x00DA => Some(0x96),
+        0x00DC => Some(0x9A),
+        0x00DF => Some(0xE1),
+        0x00E0 => Some(0x85),
+        0x00E1 => Some(0xA0),
+        0x00E2 => Some(0x83),
+        0x00E3 => Some(0x84),
+        0x00E7 => Some(0x87),
+        0x00E8 => Some(0x8A),
+        0x00E9 => Some(0x82),
+        0x00EA => Some(0x88),
+        0x00EC => Some(0x8D),
+        0x00ED => Some(0xA1),
+        0x00F1 => Some(0xA4),
+        0x00F2 => Some(0x95),
+        0x00F3 => Some(0xA2),
+        0x00F4 => Some(0x93),
+        0x00F5 => Some(0x94),
+        0x00F7 => Some(0xF6),
+        0x00F9 => Some(0x97),
+        0x00FA => Some(0xA3),
+        0x00FC => Some(0x81),
+        0x0393 => Some(0xE2),
+        0x0398 => Some(0xE9),
+        0x03A3 => Some(0xE4),
+        0x03A6 => Some(0xE8),
+        0x03A9 => Some(0xEA),
+        0x03B1 => Some(0xE0),
+        0x03B4 => Some(0xEB),
+        0x03B5 => Some(0xEE),
+        0x03C0 => Some(0xE3),
+        0x03C3 => Some(0xE5),
+        0x03C4 => Some(0xE7),
+        0x03C6 => Some(0xED),
+        0x207F => Some(0xFC),
+        0x20A7 => Some(0x9E),
+        0x2219 => Some(0xF9),
+        0x221A => Some(0xFB),
+        0x221E => Some(0xEC),
+        0x2229 => Some(0xEF),
+        0x2248 => Some(0xF7),
+        0x2261 => Some(0xF0),
+        0x2264 => Some(0xF3),
+        0x2265 => Some(0xF2),
+        0x2320 => Some(0xF4),
+        0x2321 => Some(0xF5),
+        0x2500 => Some(0xC4),
+        0x2502 => Some(0xB3),
+        0x250C => Some(0xDA),
+        0x2510 => Some(0xBF),
+        0x2514 => Some(0xC0),
+        0x2518 => Some(0xD9),
+        0x251C => Some(0xC3),
+        0x2524 => Some(0xB4),
+        0x252C => Some(0xC2),
+        0x2534 => Some(0xC1),
+        0x253C => Some(0xC5),
+        0x2550 => Some(0xCD),
+        0x2551 => Some(0xBA),
+        0x2552 => Some(0xD5),
+        0x2553 => Some(0xD6),
+        0x2554 => Some(0xC9),
+        0x2555 => Some(0xB8),
+        0x2556 => Some(0xB7),
+        0x2557 => Some(0xBB),
+        0x2558 => Some(0xD4),
+        0x2559 => Some(0xD3),
+        0x255A => Some(0xC8),
+        0x255B => Some(0xBE),
+        0x255C => Some(0xBD),
+        0x255D => Some(0xBC),
+        0x255E => Some(0xC6),
+        0x255F => Some(0xC7),
+        0x2560 => Some(0xCC),
+        0x2561 => Some(0xB5),
+        0x2562 => Some(0xB6),
+        0x2563 => Some(0xB9),
+        0x2564 => Some(0xD1),
+        0x2565 => Some(0xD2),
+        0x2566 => Some(0xCB),
+        0x2567 => Some(0xCF),
+        0x2568 => Some(0xD0),
+        0x2569 => Some(0xCA),
+        0x256A => Some(0xD8),
+        0x256B => Some(0xD7),
+        0x256C => Some(0xCE),
+        0x2580 => Some(0xDF),
+        0x2584 => Some(0xDC),
+        0x2588 => Some(0xDB),
+        0x258C => Some(0xDD),
+        0x2590 => Some(0xDE),
+        0x2591 => Some(0xB0),
+        0x2592 => Some(0xB1),
+        0x2593 => Some(0xB2),
+        0x25A0 => Some(0xFE),
+        _ => None,
+    }
+}
+fn encode_cp862_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xFF),
+        0x00A1 => Some(0xAD),
+        0x00A2 => Some(0x9B),
+        0x00A3 => Some(0x9C),
+        0x00A5 => Some(0x9D),
+        0x00AA => Some(0xA6),
+        0x00AB => Some(0xAE),
+        0x00AC => Some(0xAA),
+        0x00B0 => Some(0xF8),
+        0x00B1 => Some(0xF1),
+        0x00B2 => Some(0xFD),
+        0x00B5 => Some(0xE6),
+        0x00B7 => Some(0xFA),
+        0x00BA => Some(0xA7),
+        0x00BB => Some(0xAF),
+        0x00BC => Some(0xAC),
+        0x00BD => Some(0xAB),
+        0x00BF => Some(0xA8),
+        0x00D1 => Some(0xA5),
+        0x00DF => Some(0xE1),
+        0x00E1 => Some(0xA0),
+        0x00ED => Some(0xA1),
+        0x00F1 => Some(0xA4),
+        0x00F3 => Some(0xA2),
+        0x00F7 => Some(0xF6),
+        0x00FA => Some(0xA3),
+        0x0192 => Some(0x9F),
+        0x0393 => Some(0xE2),
+        0x0398 => Some(0xE9),
+        0x03A3 => Some(0xE4),
+        0x03A6 => Some(0xE8),
+        0x03A9 => Some(0xEA),
+        0x03B1 => Some(0xE0),
+        0x03B4 => Some(0xEB),
+        0x03B5 => Some(0xEE),
+        0x03C0 => Some(0xE3),
+        0x03C3 => Some(0xE5),
+        0x03C4 => Some(0xE7),
+        0x03C6 => Some(0xED),
+        0x05D0 => Some(0x80),
+        0x05D1 => Some(0x81),
+        0x05D2 => Some(0x82),
+        0x05D3 => Some(0x83),
+        0x05D4 => Some(0x84),
+        0x05D5 => Some(0x85),
+        0x05D6 => Some(0x86),
+        0x05D7 => Some(0x87),
+        0x05D8 => Some(0x88),
+        0x05D9 => Some(0x89),
+        0x05DA => Some(0x8A),
+        0x05DB => Some(0x8B),
+        0x05DC => Some(0x8C),
+        0x05DD => Some(0x8D),
+        0x05DE => Some(0x8E),
+        0x05DF => Some(0x8F),
+        0x05E0 => Some(0x90),
+        0x05E1 => Some(0x91),
+        0x05E2 => Some(0x92),
+        0x05E3 => Some(0x93),
+        0x05E4 => Some(0x94),
+        0x05E5 => Some(0x95),
+        0x05E6 => Some(0x96),
+        0x05E7 => Some(0x97),
+        0x05E8 => Some(0x98),
+        0x05E9 => Some(0x99),
+        0x05EA => Some(0x9A),
+        0x207F => Some(0xFC),
+        0x20A7 => Some(0x9E),
+        0x2219 => Some(0xF9),
+        0x221A => Some(0xFB),
+        0x221E => Some(0xEC),
+        0x2229 => Some(0xEF),
+        0x2248 => Some(0xF7),
+        0x2261 => Some(0xF0),
+        0x2264 => Some(0xF3),
+        0x2265 => Some(0xF2),
+        0x2310 => Some(0xA9),
+        0x2320 => Some(0xF4),
+        0x2321 => Some(0xF5),
+        0x2500 => Some(0xC4),
+        0x2502 => Some(0xB3),
+        0x250C => Some(0xDA),
+        0x2510 => Some(0xBF),
+        0x2514 => Some(0xC0),
+        0x2518 => Some(0xD9),
+        0x251C => Some(0xC3),
+        0x2524 => Some(0xB4),
+        0x252C => Some(0xC2),
+        0x2534 => Some(0xC1),
+        0x253C => Some(0xC5),
+        0x2550 => Some(0xCD),
+        0x2551 => Some(0xBA),
+        0x2552 => Some(0xD5),
+        0x2553 => Some(0xD6),
+        0x2554 => Some(0xC9),
+        0x2555 => Some(0xB8),
+        0x2556 => Some(0xB7),
+        0x2557 => Some(0xBB),
+        0x2558 => Some(0xD4),
+        0x2559 => Some(0xD3),
+        0x255A => Some(0xC8),
+        0x255B => Some(0xBE),
+        0x255C => Some(0xBD),
+        0x255D => Some(0xBC),
+        0x255E => Some(0xC6),
+        0x255F => Some(0xC7),
+        0x2560 => Some(0xCC),
+        0x2561 => Some(0xB5),
+        0x2562 => Some(0xB6),
+        0x2563 => Some(0xB9),
+        0x2564 => Some(0xD1),
+        0x2565 => Some(0xD2),
+        0x2566 => Some(0xCB),
+        0x2567 => Some(0xCF),
+        0x2568 => Some(0xD0),
+        0x2569 => Some(0xCA),
+        0x256A => Some(0xD8),
+        0x256B => Some(0xD7),
+        0x256C => Some(0xCE),
+        0x2580 => Some(0xDF),
+        0x2584 => Some(0xDC),
+        0x2588 => Some(0xDB),
+        0x258C => Some(0xDD),
+        0x2590 => Some(0xDE),
+        0x2591 => Some(0xB0),
+        0x2592 => Some(0xB1),
+        0x2593 => Some(0xB2),
+        0x25A0 => Some(0xFE),
+        _ => None,
+    }
+}
+fn encode_cp863_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xFF),
+        0x00A2 => Some(0x9B),
+        0x00A3 => Some(0x9C),
+        0x00A4 => Some(0x98),
+        0x00A6 => Some(0xA0),
+        0x00A7 => Some(0x8F),
+        0x00A8 => Some(0xA4),
+        0x00AB => Some(0xAE),
+        0x00AC => Some(0xAA),
+        0x00AF => Some(0xA7),
+        0x00B0 => Some(0xF8),
+        0x00B1 => Some(0xF1),
+        0x00B2 => Some(0xFD),
+        0x00B3 => Some(0xA6),
+        0x00B4 => Some(0xA1),
+        0x00B5 => Some(0xE6),
+        0x00B6 => Some(0x86),
+        0x00B7 => Some(0xFA),
+        0x00B8 => Some(0xA5),
+        0x00BB => Some(0xAF),
+        0x00BC => Some(0xAC),
+        0x00BD => Some(0xAB),
+        0x00BE => Some(0xAD),
+        0x00C0 => Some(0x8E),
+        0x00C2 => Some(0x84),
+        0x00C7 => Some(0x80),
+        0x00C8 => Some(0x91),
+        0x00C9 => Some(0x90),
+        0x00CA => Some(0x92),
+        0x00CB => Some(0x94),
+        0x00CE => Some(0xA8),
+        0x00CF => Some(0x95),
+        0x00D4 => Some(0x99),
+        0x00D9 => Some(0x9D),
+        0x00DB => Some(0x9E),
+        0x00DC => Some(0x9A),
+        0x00DF => Some(0xE1),
+        0x00E0 => Some(0x85),
+        0x00E2 => Some(0x83),
+        0x00E7 => Some(0x87),
+        0x00E8 => Some(0x8A),
+        0x00E9 => Some(0x82),
+        0x00EA => Some(0x88),
+        0x00EB => Some(0x89),
+        0x00EE => Some(0x8C),
+        0x00EF => Some(0x8B),
+        0x00F3 => Some(0xA2),
+        0x00F4 => Some(0x93),
+        0x00F7 => Some(0xF6),
+        0x00F9 => Some(0x97),
+        0x00FA => Some(0xA3),
+        0x00FB => Some(0x96),
+        0x00FC => Some(0x81),
+        0x0192 => Some(0x9F),
+        0x0393 => Some(0xE2),
+        0x0398 => Some(0xE9),
+        0x03A3 => Some(0xE4),
+        0x03A6 => Some(0xE8),
+        0x03A9 => Some(0xEA),
+        0x03B1 => Some(0xE0),
+        0x03B4 => Some(0xEB),
+        0x03B5 => Some(0xEE),
+        0x03C0 => Some(0xE3),
+        0x03C3 => Some(0xE5),
+        0x03C4 => Some(0xE7),
+        0x03C6 => Some(0xED),
+        0x2017 => Some(0x8D),
+        0x207F => Some(0xFC),
+        0x2219 => Some(0xF9),
+        0x221A => Some(0xFB),
+        0x221E => Some(0xEC),
+        0x2229 => Some(0xEF),
+        0x2248 => Some(0xF7),
+        0x2261 => Some(0xF0),
+        0x2264 => Some(0xF3),
+        0x2265 => Some(0xF2),
+        0x2310 => Some(0xA9),
+        0x2320 => Some(0xF4),
+        0x2321 => Some(0xF5),
+        0x2500 => Some(0xC4),
+        0x2502 => Some(0xB3),
+        0x250C => Some(0xDA),
+        0x2510 => Some(0xBF),
+        0x2514 => Some(0xC0),
+        0x2518 => Some(0xD9),
+        0x251C => Some(0xC3),
+        0x2524 => Some(0xB4),
+        0x252C => Some(0xC2),
+        0x2534 => Some(0xC1),
+        0x253C => Some(0xC5),
+        0x2550 => Some(0xCD),
+        0x2551 => Some(0xBA),
+        0x2552 => Some(0xD5),
+        0x2553 => Some(0xD6),
+        0x2554 => Some(0xC9),
+        0x2555 => Some(0xB8),
+        0x2556 => Some(0xB7),
+        0x2557 => Some(0xBB),
+        0x2558 => Some(0xD4),
+        0x2559 => Some(0xD3),
+        0x255A => Some(0xC8),
+        0x255B => Some(0xBE),
+        0x255C => Some(0xBD),
+        0x255D => Some(0xBC),
+        0x255E => Some(0xC6),
+        0x255F => Some(0xC7),
+        0x2560 => Some(0xCC),
+        0x2561 => Some(0xB5),
+        0x2562 => Some(0xB6),
+        0x2563 => Some(0xB9),
+        0x2564 => Some(0xD1),
+        0x2565 => Some(0xD2),
+        0x2566 => Some(0xCB),
+        0x2567 => Some(0xCF),
+        0x2568 => Some(0xD0),
+        0x2569 => Some(0xCA),
+        0x256A => Some(0xD8),
+        0x256B => Some(0xD7),
+        0x256C => Some(0xCE),
+        0x2580 => Some(0xDF),
+        0x2584 => Some(0xDC),
+        0x2588 => Some(0xDB),
+        0x258C => Some(0xDD),
+        0x2590 => Some(0xDE),
+        0x2591 => Some(0xB0),
+        0x2592 => Some(0xB1),
+        0x2593 => Some(0xB2),
+        0x25A0 => Some(0xFE),
+        _ => None,
+    }
+}
+fn encode_cp1253_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xA0),
+        0x00A3 => Some(0xA3),
+        0x00A4 => Some(0xA4),
+        0x00A5 => Some(0xA5),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00A9 => Some(0xA9),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00BB => Some(0xBB),
+        0x00BD => Some(0xBD),
+        0x0192 => Some(0x83),
+        0x0384 => Some(0xB4),
+        0x0385 => Some(0xA1),
+        0x0386 => Some(0xA2),
+        0x0388 => Some(0xB8),
+        0x0389 => Some(0xB9),
+        0x038A => Some(0xBA),
+        0x038C => Some(0xBC),
+        0x038E => Some(0xBE),
+        0x038F => Some(0xBF),
+        0x0390 => Some(0xC0),
+        0x0391 => Some(0xC1),
+        0x0392 => Some(0xC2),
+        0x0393 => Some(0xC3),
+        0x0394 => Some(0xC4),
+        0x0395 => Some(0xC5),
+        0x0396 => Some(0xC6),
+        0x0397 => Some(0xC7),
+        0x0398 => Some(0xC8),
+        0x0399 => Some(0xC9),
+        0x039A => Some(0xCA),
+        0x039B => Some(0xCB),
+        0x039C => Some(0xCC),
+        0x039D => Some(0xCD),
+        0x039E => Some(0xCE),
+        0x039F => Some(0xCF),
+        0x03A0 => Some(0xD0),
+        0x03A1 => Some(0xD1),
+        0x03A3 => Some(0xD3),
+        0x03A4 => Some(0xD4),
+        0x03A5 => Some(0xD5),
+        0x03A6 => Some(0xD6),
+        0x03A7 => Some(0xD7),
+        0x03A8 => Some(0xD8),
+        0x03A9 => Some(0xD9),
+        0x03AA => Some(0xDA),
+        0x03AB => Some(0xDB),
+        0x03AC => Some(0xDC),
+        0x03AD => Some(0xDD),
+        0x03AE => Some(0xDE),
+        0x03AF => Some(0xDF),
+        0x03B0 => Some(0xE0),
+        0x03B1 => Some(0xE1),
+        0x03B2 => Some(0xE2),
+        0x03B3 => Some(0xE3),
+        0x03B4 => Some(0xE4),
+        0x03B5 => Some(0xE5),
+        0x03B6 => Some(0xE6),
+        0x03B7 => Some(0xE7),
+        0x03B8 => Some(0xE8),
+        0x03B9 => Some(0xE9),
+        0x03BA => Some(0xEA),
+        0x03BB => Some(0xEB),
+        0x03BC => Some(0xEC),
+        0x03BD => Some(0xED),
+        0x03BE => Some(0xEE),
+        0x03BF => Some(0xEF),
+        0x03C0 => Some(0xF0),
+        0x03C1 => Some(0xF1),
+        0x03C2 => Some(0xF2),
+        0x03C3 => Some(0xF3),
+        0x03C4 => Some(0xF4),
+        0x03C5 => Some(0xF5),
+        0x03C6 => Some(0xF6),
+        0x03C7 => Some(0xF7),
+        0x03C8 => Some(0xF8),
+        0x03C9 => Some(0xF9),
+        0x03CA => Some(0xFA),
+        0x03CB => Some(0xFB),
+        0x03CC => Some(0xFC),
+        0x03CD => Some(0xFD),
+        0x03CE => Some(0xFE),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x2015 => Some(0xAF),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201A => Some(0x82),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x201E => Some(0x84),
+        0x2020 => Some(0x86),
+        0x2021 => Some(0x87),
+        0x2022 => Some(0x95),
+        0x2026 => Some(0x85),
+        0x2030 => Some(0x89),
+        0x2039 => Some(0x8B),
+        0x203A => Some(0x9B),
+        0x20AC => Some(0x80),
+        0x2122 => Some(0x99),
+        _ => None,
+    }
+}
+fn encode_cp1254_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xA0),
+        0x00A1 => Some(0xA1),
+        0x00A2 => Some(0xA2),
+        0x00A3 => Some(0xA3),
+        0x00A4 => Some(0xA4),
+        0x00A5 => Some(0xA5),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00A9 => Some(0xA9),
+        0x00AA => Some(0xAA),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00AF => Some(0xAF),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B4 => Some(0xB4),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00B8 => Some(0xB8),
+        0x00B9 => Some(0xB9),
+        0x00BA => Some(0xBA),
+        0x00BB => Some(0xBB),
+        0x00BC => Some(0xBC),
+        0x00BD => Some(0xBD),
+        0x00BE => Some(0xBE),
+        0x00BF => Some(0xBF),
+        0x00C0 => Some(0xC0),
+        0x00C1 => Some(0xC1),
+        0x00C2 => Some(0xC2),
+        0x00C3 => Some(0xC3),
+        0x00C4 => Some(0xC4),
+        0x00C5 => Some(0xC5),
+        0x00C6 => Some(0xC6),
+        0x00C7 => Some(0xC7),
+        0x00C8 => Some(0xC8),
+        0x00C9 => Some(0xC9),
+        0x00CA => Some(0xCA),
+        0x00CB => Some(0xCB),
+        0x00CC => Some(0xCC),
+        0x00CD => Some(0xCD),
+        0x00CE => Some(0xCE),
+        0x00CF => Some(0xCF),
+        0x00D1 => Some(0xD1),
+        0x00D2 => Some(0xD2),
+        0x00D3 => Some(0xD3),
+        0x00D4 => Some(0xD4),
+        0x00D5 => Some(0xD5),
+        0x00D6 => Some(0xD6),
+        0x00D7 => Some(0xD7),
+        0x00D8 => Some(0xD8),
+        0x00D9 => Some(0xD9),
+        0x00DA => Some(0xDA),
+        0x00DB => Some(0xDB),
+        0x00DC => Some(0xDC),
+        0x00DF => Some(0xDF),
+        0x00E0 => Some(0xE0),
+        0x00E1 => Some(0xE1),
+        0x00E2 => Some(0xE2),
+        0x00E3 => Some(0xE3),
+        0x00E4 => Some(0xE4),
+        0x00E5 => Some(0xE5),
+        0x00E6 => Some(0xE6),
+        0x00E7 => Some(0xE7),
+        0x00E8 => Some(0xE8),
+        0x00E9 => Some(0xE9),
+        0x00EA => Some(0xEA),
+        0x00EB => Some(0xEB),
+        0x00EC => Some(0xEC),
+        0x00ED => Some(0xED),
+        0x00EE => Some(0xEE),
+        0x00EF => Some(0xEF),
+        0x00F1 => Some(0xF1),
+        0x00F2 => Some(0xF2),
+        0x00F3 => Some(0xF3),
+        0x00F4 => Some(0xF4),
+        0x00F5 => Some(0xF5),
+        0x00F6 => Some(0xF6),
+        0x00F7 => Some(0xF7),
+        0x00F8 => Some(0xF8),
+        0x00F9 => Some(0xF9),
+        0x00FA => Some(0xFA),
+        0x00FB => Some(0xFB),
+        0x00FC => Some(0xFC),
+        0x00FF => Some(0xFF),
+        0x011E => Some(0xD0),
+        0x011F => Some(0xF0),
+        0x0130 => Some(0xDD),
+        0x0131 => Some(0xFD),
+        0x0152 => Some(0x8C),
+        0x0153 => Some(0x9C),
+        0x015E => Some(0xDE),
+        0x015F => Some(0xFE),
+        0x0160 => Some(0x8A),
+        0x0161 => Some(0x9A),
+        0x0178 => Some(0x9F),
+        0x0192 => Some(0x83),
+        0x02C6 => Some(0x88),
+        0x02DC => Some(0x98),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201A => Some(0x82),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x201E => Some(0x84),
+        0x2020 => Some(0x86),
+        0x2021 => Some(0x87),
+        0x2022 => Some(0x95),
+        0x2026 => Some(0x85),
+        0x2030 => Some(0x89),
+        0x2039 => Some(0x8B),
+        0x203A => Some(0x9B),
+        0x20AC => Some(0x80),
+        0x2122 => Some(0x99),
+        _ => None,
+    }
+}
+fn encode_cp1255_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xA0),
+        0x00A1 => Some(0xA1),
+        0x00A2 => Some(0xA2),
+        0x00A3 => Some(0xA3),
+        0x00A5 => Some(0xA5),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00A9 => Some(0xA9),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00AF => Some(0xAF),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B4 => Some(0xB4),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00B8 => Some(0xB8),
+        0x00B9 => Some(0xB9),
+        0x00BB => Some(0xBB),
+        0x00BC => Some(0xBC),
+        0x00BD => Some(0xBD),
+        0x00BE => Some(0xBE),
+        0x00BF => Some(0xBF),
+        0x00D7 => Some(0xAA),
+        0x00F7 => Some(0xBA),
+        0x0192 => Some(0x83),
+        0x02C6 => Some(0x88),
+        0x02DC => Some(0x98),
+        0x05B0 => Some(0xC0),
+        0x05B1 => Some(0xC1),
+        0x05B2 => Some(0xC2),
+        0x05B3 => Some(0xC3),
+        0x05B4 => Some(0xC4),
+        0x05B5 => Some(0xC5),
+        0x05B6 => Some(0xC6),
+        0x05B7 => Some(0xC7),
+        0x05B8 => Some(0xC8),
+        0x05B9 => Some(0xC9),
+        0x05BB => Some(0xCB),
+        0x05BC => Some(0xCC),
+        0x05BD => Some(0xCD),
+        0x05BE => Some(0xCE),
+        0x05BF => Some(0xCF),
+        0x05C0 => Some(0xD0),
+        0x05C1 => Some(0xD1),
+        0x05C2 => Some(0xD2),
+        0x05C3 => Some(0xD3),
+        0x05D0 => Some(0xE0),
+        0x05D1 => Some(0xE1),
+        0x05D2 => Some(0xE2),
+        0x05D3 => Some(0xE3),
+        0x05D4 => Some(0xE4),
+        0x05D5 => Some(0xE5),
+        0x05D6 => Some(0xE6),
+        0x05D7 => Some(0xE7),
+        0x05D8 => Some(0xE8),
+        0x05D9 => Some(0xE9),
+        0x05DA => Some(0xEA),
+        0x05DB => Some(0xEB),
+        0x05DC => Some(0xEC),
+        0x05DD => Some(0xED),
+        0x05DE => Some(0xEE),
+        0x05DF => Some(0xEF),
+        0x05E0 => Some(0xF0),
+        0x05E1 => Some(0xF1),
+        0x05E2 => Some(0xF2),
+        0x05E3 => Some(0xF3),
+        0x05E4 => Some(0xF4),
+        0x05E5 => Some(0xF5),
+        0x05E6 => Some(0xF6),
+        0x05E7 => Some(0xF7),
+        0x05E8 => Some(0xF8),
+        0x05E9 => Some(0xF9),
+        0x05EA => Some(0xFA),
+        0x05F0 => Some(0xD4),
+        0x05F1 => Some(0xD5),
+        0x05F2 => Some(0xD6),
+        0x05F3 => Some(0xD7),
+        0x05F4 => Some(0xD8),
+        0x200E => Some(0xFD),
+        0x200F => Some(0xFE),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201A => Some(0x82),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x201E => Some(0x84),
+        0x2020 => Some(0x86),
+        0x2021 => Some(0x87),
+        0x2022 => Some(0x95),
+        0x2026 => Some(0x85),
+        0x2030 => Some(0x89),
+        0x2039 => Some(0x8B),
+        0x203A => Some(0x9B),
+        0x20AA => Some(0xA4),
+        0x20AC => Some(0x80),
+        0x2122 => Some(0x99),
+        _ => None,
+    }
+}
+fn encode_cp1256_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xA0),
+        0x00A2 => Some(0xA2),
+        0x00A3 => Some(0xA3),
+        0x00A4 => Some(0xA4),
+        0x00A5 => Some(0xA5),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00A9 => Some(0xA9),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00AF => Some(0xAF),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B4 => Some(0xB4),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00B8 => Some(0xB8),
+        0x00B9 => Some(0xB9),
+        0x00BB => Some(0xBB),
+        0x00BC => Some(0xBC),
+        0x00BD => Some(0xBD),
+        0x00BE => Some(0xBE),
+        0x00D7 => Some(0xD7),
+        0x00E0 => Some(0xE0),
+        0x00E2 => Some(0xE2),
+        0x00E7 => Some(0xE7),
+        0x00E8 => Some(0xE8),
+        0x00E9 => Some(0xE9),
+        0x00EA => Some(0xEA),
+        0x00EB => Some(0xEB),
+        0x00EE => Some(0xEE),
+        0x00EF => Some(0xEF),
+        0x00F4 => Some(0xF4),
+        0x00F7 => Some(0xF7),
+        0x00F9 => Some(0xF9),
+        0x00FB => Some(0xFB),
+        0x00FC => Some(0xFC),
+        0x0152 => Some(0x8C),
+        0x0153 => Some(0x9C),
+        0x0192 => Some(0x83),
+        0x02C6 => Some(0x88),
+        0x060C => Some(0xA1),
+        0x061B => Some(0xBA),
+        0x061F => Some(0xBF),
+        0x0621 => Some(0xC1),
+        0x0622 => Some(0xC2),
+        0x0623 => Some(0xC3),
+        0x0624 => Some(0xC4),
+        0x0625 => Some(0xC5),
+        0x0626 => Some(0xC6),
+        0x0627 => Some(0xC7),
+        0x0628 => Some(0xC8),
+        0x0629 => Some(0xC9),
+        0x062A => Some(0xCA),
+        0x062B => Some(0xCB),
+        0x062C => Some(0xCC),
+        0x062D => Some(0xCD),
+        0x062E => Some(0xCE),
+        0x062F => Some(0xCF),
+        0x0630 => Some(0xD0),
+        0x0631 => Some(0xD1),
+        0x0632 => Some(0xD2),
+        0x0633 => Some(0xD3),
+        0x0634 => Some(0xD4),
+        0x0635 => Some(0xD5),
+        0x0636 => Some(0xD6),
+        0x0637 => Some(0xD8),
+        0x0638 => Some(0xD9),
+        0x0639 => Some(0xDA),
+        0x063A => Some(0xDB),
+        0x0640 => Some(0xDC),
+        0x0641 => Some(0xDD),
+        0x0642 => Some(0xDE),
+        0x0643 => Some(0xDF),
+        0x0644 => Some(0xE1),
+        0x0645 => Some(0xE3),
+        0x0646 => Some(0xE4),
+        0x0647 => Some(0xE5),
+        0x0648 => Some(0xE6),
+        0x0649 => Some(0xEC),
+        0x064A => Some(0xED),
+        0x064B => Some(0xF0),
+        0x064C => Some(0xF1),
+        0x064D => Some(0xF2),
+        0x064E => Some(0xF3),
+        0x064F => Some(0xF5),
+        0x0650 => Some(0xF6),
+        0x0651 => Some(0xF8),
+        0x0652 => Some(0xFA),
+        0x0679 => Some(0x8A),
+        0x067E => Some(0x81),
+        0x0686 => Some(0x8D),
+        0x0688 => Some(0x8F),
+        0x0691 => Some(0x9A),
+        0x0698 => Some(0x8E),
+        0x06A9 => Some(0x98),
+        0x06AF => Some(0x90),
+        0x06BA => Some(0x9F),
+        0x06BE => Some(0xAA),
+        0x06C1 => Some(0xC0),
+        0x06D2 => Some(0xFF),
+        0x200C => Some(0x9D),
+        0x200D => Some(0x9E),
+        0x200E => Some(0xFD),
+        0x200F => Some(0xFE),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201A => Some(0x82),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x201E => Some(0x84),
+        0x2020 => Some(0x86),
+        0x2021 => Some(0x87),
+        0x2022 => Some(0x95),
+        0x2026 => Some(0x85),
+        0x2030 => Some(0x89),
+        0x2039 => Some(0x8B),
+        0x203A => Some(0x9B),
+        0x20AC => Some(0x80),
+        0x2122 => Some(0x99),
+        _ => None,
+    }
+}
+fn encode_cp1257_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xA0),
+        0x00A2 => Some(0xA2),
+        0x00A3 => Some(0xA3),
+        0x00A4 => Some(0xA4),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0x8D),
+        0x00A9 => Some(0xA9),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00AF => Some(0x9D),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B4 => Some(0xB4),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00B8 => Some(0x8F),
+        0x00B9 => Some(0xB9),
+        0x00BB => Some(0xBB),
+        0x00BC => Some(0xBC),
+        0x00BD => Some(0xBD),
+        0x00BE => Some(0xBE),
+        0x00C4 => Some(0xC4),
+        0x00C5 => Some(0xC5),
+        0x00C6 => Some(0xAF),
+        0x00C9 => Some(0xC9),
+        0x00D3 => Some(0xD3),
+        0x00D5 => Some(0xD5),
+        0x00D6 => Some(0xD6),
+        0x00D7 => Some(0xD7),
+        0x00D8 => Some(0xA8),
+        0x00DC => Some(0xDC),
+        0x00DF => Some(0xDF),
+        0x00E4 => Some(0xE4),
+        0x00E5 => Some(0xE5),
+        0x00E6 => Some(0xBF),
+        0x00E9 => Some(0xE9),
+        0x00F3 => Some(0xF3),
+        0x00F5 => Some(0xF5),
+        0x00F6 => Some(0xF6),
+        0x00F7 => Some(0xF7),
+        0x00F8 => Some(0xB8),
+        0x00FC => Some(0xFC),
+        0x0100 => Some(0xC2),
+        0x0101 => Some(0xE2),
+        0x0104 => Some(0xC0),
+        0x0105 => Some(0xE0),
+        0x0106 => Some(0xC3),
+        0x0107 => Some(0xE3),
+        0x010C => Some(0xC8),
+        0x010D => Some(0xE8),
+        0x0112 => Some(0xC7),
+        0x0113 => Some(0xE7),
+        0x0116 => Some(0xCB),
+        0x0117 => Some(0xEB),
+        0x0118 => Some(0xC6),
+        0x0119 => Some(0xE6),
+        0x0122 => Some(0xCC),
+        0x0123 => Some(0xEC),
+        0x012A => Some(0xCE),
+        0x012B => Some(0xEE),
+        0x012E => Some(0xC1),
+        0x012F => Some(0xE1),
+        0x0136 => Some(0xCD),
+        0x0137 => Some(0xED),
+        0x013B => Some(0xCF),
+        0x013C => Some(0xEF),
+        0x0141 => Some(0xD9),
+        0x0142 => Some(0xF9),
+        0x0143 => Some(0xD1),
+        0x0144 => Some(0xF1),
+        0x0145 => Some(0xD2),
+        0x0146 => Some(0xF2),
+        0x014C => Some(0xD4),
+        0x014D => Some(0xF4),
+        0x0156 => Some(0xAA),
+        0x0157 => Some(0xBA),
+        0x015A => Some(0xDA),
+        0x015B => Some(0xFA),
+        0x0160 => Some(0xD0),
+        0x0161 => Some(0xF0),
+        0x016A => Some(0xDB),
+        0x016B => Some(0xFB),
+        0x0172 => Some(0xD8),
+        0x0173 => Some(0xF8),
+        0x0179 => Some(0xCA),
+        0x017A => Some(0xEA),
+        0x017B => Some(0xDD),
+        0x017C => Some(0xFD),
+        0x017D => Some(0xDE),
+        0x017E => Some(0xFE),
+        0x02C7 => Some(0x8E),
+        0x02D9 => Some(0xFF),
+        0x02DB => Some(0x9E),
+        0x2013 => Some(0x96),
+        0x2014 => Some(0x97),
+        0x2018 => Some(0x91),
+        0x2019 => Some(0x92),
+        0x201A => Some(0x82),
+        0x201C => Some(0x93),
+        0x201D => Some(0x94),
+        0x201E => Some(0x84),
+        0x2020 => Some(0x86),
+        0x2021 => Some(0x87),
+        0x2022 => Some(0x95),
+        0x2026 => Some(0x85),
+        0x2030 => Some(0x89),
+        0x2039 => Some(0x8B),
+        0x203A => Some(0x9B),
+        0x20AC => Some(0x80),
+        0x2122 => Some(0x99),
+        _ => None,
+    }
+}
+fn encode_koi8_r_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0x9A),
+        0x00A9 => Some(0xBF),
+        0x00B0 => Some(0x9C),
+        0x00B2 => Some(0x9D),
+        0x00B7 => Some(0x9E),
+        0x00F7 => Some(0x9F),
+        0x0401 => Some(0xB3),
+        0x0410 => Some(0xE1),
+        0x0411 => Some(0xE2),
+        0x0412 => Some(0xF7),
+        0x0413 => Some(0xE7),
+        0x0414 => Some(0xE4),
+        0x0415 => Some(0xE5),
+        0x0416 => Some(0xF6),
+        0x0417 => Some(0xFA),
+        0x0418 => Some(0xE9),
+        0x0419 => Some(0xEA),
+        0x041A => Some(0xEB),
+        0x041B => Some(0xEC),
+        0x041C => Some(0xED),
+        0x041D => Some(0xEE),
+        0x041E => Some(0xEF),
+        0x041F => Some(0xF0),
+        0x0420 => Some(0xF2),
+        0x0421 => Some(0xF3),
+        0x0422 => Some(0xF4),
+        0x0423 => Some(0xF5),
+        0x0424 => Some(0xE6),
+        0x0425 => Some(0xE8),
+        0x0426 => Some(0xE3),
+        0x0427 => Some(0xFE),
+        0x0428 => Some(0xFB),
+        0x0429 => Some(0xFD),
+        0x042A => Some(0xFF),
+        0x042B => Some(0xF9),
+        0x042C => Some(0xF8),
+        0x042D => Some(0xFC),
+        0x042E => Some(0xE0),
+        0x042F => Some(0xF1),
+        0x0430 => Some(0xC1),
+        0x0431 => Some(0xC2),
+        0x0432 => Some(0xD7),
+        0x0433 => Some(0xC7),
+        0x0434 => Some(0xC4),
+        0x0435 => Some(0xC5),
+        0x0436 => Some(0xD6),
+        0x0437 => Some(0xDA),
+        0x0438 => Some(0xC9),
+        0x0439 => Some(0xCA),
+        0x043A => Some(0xCB),
+        0x043B => Some(0xCC),
+        0x043C => Some(0xCD),
+        0x043D => Some(0xCE),
+        0x043E => Some(0xCF),
+        0x043F => Some(0xD0),
+        0x0440 => Some(0xD2),
+        0x0441 => Some(0xD3),
+        0x0442 => Some(0xD4),
+        0x0443 => Some(0xD5),
+        0x0444 => Some(0xC6),
+        0x0445 => Some(0xC8),
+        0x0446 => Some(0xC3),
+        0x0447 => Some(0xDE),
+        0x0448 => Some(0xDB),
+        0x0449 => Some(0xDD),
+        0x044A => Some(0xDF),
+        0x044B => Some(0xD9),
+        0x044C => Some(0xD8),
+        0x044D => Some(0xDC),
+        0x044E => Some(0xC0),
+        0x044F => Some(0xD1),
+        0x0451 => Some(0xA3),
+        0x2219 => Some(0x95),
+        0x221A => Some(0x96),
+        0x2248 => Some(0x97),
+        0x2264 => Some(0x98),
+        0x2265 => Some(0x99),
+        0x2320 => Some(0x93),
+        0x2321 => Some(0x9B),
+        0x2500 => Some(0x80),
+        0x2502 => Some(0x81),
+        0x250C => Some(0x82),
+        0x2510 => Some(0x83),
+        0x2514 => Some(0x84),
+        0x2518 => Some(0x85),
+        0x251C => Some(0x86),
+        0x2524 => Some(0x87),
+        0x252C => Some(0x88),
+        0x2534 => Some(0x89),
+        0x253C => Some(0x8A),
+        0x2550 => Some(0xA0),
+        0x2551 => Some(0xA1),
+        0x2552 => Some(0xA2),
+        0x2553 => Some(0xA4),
+        0x2554 => Some(0xA5),
+        0x2555 => Some(0xA6),
+        0x2556 => Some(0xA7),
+        0x2557 => Some(0xA8),
+        0x2558 => Some(0xA9),
+        0x2559 => Some(0xAA),
+        0x255A => Some(0xAB),
+        0x255B => Some(0xAC),
+        0x255C => Some(0xAD),
+        0x255D => Some(0xAE),
+        0x255E => Some(0xAF),
+        0x255F => Some(0xB0),
+        0x2560 => Some(0xB1),
+        0x2561 => Some(0xB2),
+        0x2562 => Some(0xB4),
+        0x2563 => Some(0xB5),
+        0x2564 => Some(0xB6),
+        0x2565 => Some(0xB7),
+        0x2566 => Some(0xB8),
+        0x2567 => Some(0xB9),
+        0x2568 => Some(0xBA),
+        0x2569 => Some(0xBB),
+        0x256A => Some(0xBC),
+        0x256B => Some(0xBD),
+        0x256C => Some(0xBE),
+        0x2580 => Some(0x8B),
+        0x2584 => Some(0x8C),
+        0x2588 => Some(0x8D),
+        0x258C => Some(0x8E),
+        0x2590 => Some(0x8F),
+        0x2591 => Some(0x90),
+        0x2592 => Some(0x91),
+        0x2593 => Some(0x92),
+        0x25A0 => Some(0x94),
+        _ => None,
+    }
+}
+
+fn encode_iso8859_2_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A4 => Some(0xA4),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00AD => Some(0xAD),
+        0x00B0 => Some(0xB0),
+        0x00B4 => Some(0xB4),
+        0x00B8 => Some(0xB8),
+        0x00C1 => Some(0xC1),
+        0x00C2 => Some(0xC2),
+        0x00C4 => Some(0xC4),
+        0x00C7 => Some(0xC7),
+        0x00C9 => Some(0xC9),
+        0x00CB => Some(0xCB),
+        0x00CD => Some(0xCD),
+        0x00CE => Some(0xCE),
+        0x00D3 => Some(0xD3),
+        0x00D4 => Some(0xD4),
+        0x00D6 => Some(0xD6),
+        0x00D7 => Some(0xD7),
+        0x00DA => Some(0xDA),
+        0x00DC => Some(0xDC),
+        0x00DD => Some(0xDD),
+        0x00DF => Some(0xDF),
+        0x00E1 => Some(0xE1),
+        0x00E2 => Some(0xE2),
+        0x00E4 => Some(0xE4),
+        0x00E7 => Some(0xE7),
+        0x00E9 => Some(0xE9),
+        0x00EB => Some(0xEB),
+        0x00ED => Some(0xED),
+        0x00EE => Some(0xEE),
+        0x00F3 => Some(0xF3),
+        0x00F4 => Some(0xF4),
+        0x00F6 => Some(0xF6),
+        0x00F7 => Some(0xF7),
+        0x00FA => Some(0xFA),
+        0x00FC => Some(0xFC),
+        0x00FD => Some(0xFD),
+        0x0102 => Some(0xC3),
+        0x0103 => Some(0xE3),
+        0x0104 => Some(0xA1),
+        0x0105 => Some(0xB1),
+        0x0106 => Some(0xC6),
+        0x0107 => Some(0xE6),
+        0x010C => Some(0xC8),
+        0x010D => Some(0xE8),
+        0x010E => Some(0xCF),
+        0x010F => Some(0xEF),
+        0x0110 => Some(0xD0),
+        0x0111 => Some(0xF0),
+        0x0118 => Some(0xCA),
+        0x0119 => Some(0xEA),
+        0x011A => Some(0xCC),
+        0x011B => Some(0xEC),
+        0x0139 => Some(0xC5),
+        0x013A => Some(0xE5),
+        0x013D => Some(0xA5),
+        0x013E => Some(0xB5),
+        0x0141 => Some(0xA3),
+        0x0142 => Some(0xB3),
+        0x0143 => Some(0xD1),
+        0x0144 => Some(0xF1),
+        0x0147 => Some(0xD2),
+        0x0148 => Some(0xF2),
+        0x0150 => Some(0xD5),
+        0x0151 => Some(0xF5),
+        0x0154 => Some(0xC0),
+        0x0155 => Some(0xE0),
+        0x0158 => Some(0xD8),
+        0x0159 => Some(0xF8),
+        0x015A => Some(0xA6),
+        0x015B => Some(0xB6),
+        0x015E => Some(0xAA),
+        0x015F => Some(0xBA),
+        0x0160 => Some(0xA9),
+        0x0161 => Some(0xB9),
+        0x0162 => Some(0xDE),
+        0x0163 => Some(0xFE),
+        0x0164 => Some(0xAB),
+        0x0165 => Some(0xBB),
+        0x016E => Some(0xD9),
+        0x016F => Some(0xF9),
+        0x0170 => Some(0xDB),
+        0x0171 => Some(0xFB),
+        0x0179 => Some(0xAC),
+        0x017A => Some(0xBC),
+        0x017B => Some(0xAF),
+        0x017C => Some(0xBF),
+        0x017D => Some(0xAE),
+        0x017E => Some(0xBE),
+        0x02C7 => Some(0xB7),
+        0x02D8 => Some(0xA2),
+        0x02D9 => Some(0xFF),
+        0x02DB => Some(0xB2),
+        0x02DD => Some(0xBD),
+        _ => None,
+    }
+}
+
+fn encode_iso8859_3_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A3 => Some(0xA3),
+        0x00A4 => Some(0xA4),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00AD => Some(0xAD),
+        0x00B0 => Some(0xB0),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B4 => Some(0xB4),
+        0x00B5 => Some(0xB5),
+        0x00B7 => Some(0xB7),
+        0x00B8 => Some(0xB8),
+        0x00BD => Some(0xBD),
+        0x00C0 => Some(0xC0),
+        0x00C1 => Some(0xC1),
+        0x00C2 => Some(0xC2),
+        0x00C4 => Some(0xC4),
+        0x00C7 => Some(0xC7),
+        0x00C8 => Some(0xC8),
+        0x00C9 => Some(0xC9),
+        0x00CA => Some(0xCA),
+        0x00CB => Some(0xCB),
+        0x00CC => Some(0xCC),
+        0x00CD => Some(0xCD),
+        0x00CE => Some(0xCE),
+        0x00CF => Some(0xCF),
+        0x00D1 => Some(0xD1),
+        0x00D2 => Some(0xD2),
+        0x00D3 => Some(0xD3),
+        0x00D4 => Some(0xD4),
+        0x00D6 => Some(0xD6),
+        0x00D7 => Some(0xD7),
+        0x00D9 => Some(0xD9),
+        0x00DA => Some(0xDA),
+        0x00DB => Some(0xDB),
+        0x00DC => Some(0xDC),
+        0x00DF => Some(0xDF),
+        0x00E0 => Some(0xE0),
+        0x00E1 => Some(0xE1),
+        0x00E2 => Some(0xE2),
+        0x00E4 => Some(0xE4),
+        0x00E7 => Some(0xE7),
+        0x00E8 => Some(0xE8),
+        0x00E9 => Some(0xE9),
+        0x00EA => Some(0xEA),
+        0x00EB => Some(0xEB),
+        0x00EC => Some(0xEC),
+        0x00ED => Some(0xED),
+        0x00EE => Some(0xEE),
+        0x00EF => Some(0xEF),
+        0x00F1 => Some(0xF1),
+        0x00F2 => Some(0xF2),
+        0x00F3 => Some(0xF3),
+        0x00F4 => Some(0xF4),
+        0x00F6 => Some(0xF6),
+        0x00F7 => Some(0xF7),
+        0x00F9 => Some(0xF9),
+        0x00FA => Some(0xFA),
+        0x00FB => Some(0xFB),
+        0x00FC => Some(0xFC),
+        0x0108 => Some(0xC6),
+        0x0109 => Some(0xE6),
+        0x010A => Some(0xC5),
+        0x010B => Some(0xE5),
+        0x011C => Some(0xD8),
+        0x011D => Some(0xF8),
+        0x011E => Some(0xAB),
+        0x011F => Some(0xBB),
+        0x0120 => Some(0xD5),
+        0x0121 => Some(0xF5),
+        0x0124 => Some(0xA6),
+        0x0125 => Some(0xB6),
+        0x0126 => Some(0xA1),
+        0x0127 => Some(0xB1),
+        0x0130 => Some(0xA9),
+        0x0131 => Some(0xB9),
+        0x0134 => Some(0xAC),
+        0x0135 => Some(0xBC),
+        0x015C => Some(0xDE),
+        0x015D => Some(0xFE),
+        0x015E => Some(0xAA),
+        0x015F => Some(0xBA),
+        0x016C => Some(0xDD),
+        0x016D => Some(0xFD),
+        0x017B => Some(0xAF),
+        0x017C => Some(0xBF),
+        0x02D8 => Some(0xA2),
+        0x02D9 => Some(0xFF),
+        _ => None,
+    }
+}
+fn encode_iso8859_4_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A4 => Some(0xA4),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00AD => Some(0xAD),
+        0x00AF => Some(0xAF),
+        0x00B0 => Some(0xB0),
+        0x00B4 => Some(0xB4),
+        0x00B8 => Some(0xB8),
+        0x00C1 => Some(0xC1),
+        0x00C2 => Some(0xC2),
+        0x00C3 => Some(0xC3),
+        0x00C4 => Some(0xC4),
+        0x00C5 => Some(0xC5),
+        0x00C6 => Some(0xC6),
+        0x00C9 => Some(0xC9),
+        0x00CB => Some(0xCB),
+        0x00CD => Some(0xCD),
+        0x00CE => Some(0xCE),
+        0x00D4 => Some(0xD4),
+        0x00D5 => Some(0xD5),
+        0x00D6 => Some(0xD6),
+        0x00D7 => Some(0xD7),
+        0x00D8 => Some(0xD8),
+        0x00DA => Some(0xDA),
+        0x00DB => Some(0xDB),
+        0x00DC => Some(0xDC),
+        0x00DF => Some(0xDF),
+        0x00E1 => Some(0xE1),
+        0x00E2 => Some(0xE2),
+        0x00E3 => Some(0xE3),
+        0x00E4 => Some(0xE4),
+        0x00E5 => Some(0xE5),
+        0x00E6 => Some(0xE6),
+        0x00E9 => Some(0xE9),
+        0x00EB => Some(0xEB),
+        0x00ED => Some(0xED),
+        0x00EE => Some(0xEE),
+        0x00F4 => Some(0xF4),
+        0x00F5 => Some(0xF5),
+        0x00F6 => Some(0xF6),
+        0x00F7 => Some(0xF7),
+        0x00F8 => Some(0xF8),
+        0x00FA => Some(0xFA),
+        0x00FB => Some(0xFB),
+        0x00FC => Some(0xFC),
+        0x0100 => Some(0xC0),
+        0x0101 => Some(0xE0),
+        0x0104 => Some(0xA1),
+        0x0105 => Some(0xB1),
+        0x010C => Some(0xC8),
+        0x010D => Some(0xE8),
+        0x0110 => Some(0xD0),
+        0x0111 => Some(0xF0),
+        0x0112 => Some(0xAA),
+        0x0113 => Some(0xBA),
+        0x0116 => Some(0xCC),
+        0x0117 => Some(0xEC),
+        0x0118 => Some(0xCA),
+        0x0119 => Some(0xEA),
+        0x0122 => Some(0xAB),
+        0x0123 => Some(0xBB),
+        0x0128 => Some(0xA5),
+        0x0129 => Some(0xB5),
+        0x012A => Some(0xCF),
+        0x012B => Some(0xEF),
+        0x012E => Some(0xC7),
+        0x012F => Some(0xE7),
+        0x0136 => Some(0xD3),
+        0x0137 => Some(0xF3),
+        0x0138 => Some(0xA2),
+        0x013B => Some(0xA6),
+        0x013C => Some(0xB6),
+        0x0145 => Some(0xD1),
+        0x0146 => Some(0xF1),
+        0x014A => Some(0xBD),
+        0x014B => Some(0xBF),
+        0x014C => Some(0xD2),
+        0x014D => Some(0xF2),
+        0x0156 => Some(0xA3),
+        0x0157 => Some(0xB3),
+        0x0160 => Some(0xA9),
+        0x0161 => Some(0xB9),
+        0x0166 => Some(0xAC),
+        0x0167 => Some(0xBC),
+        0x0168 => Some(0xDD),
+        0x0169 => Some(0xFD),
+        0x016A => Some(0xDE),
+        0x016B => Some(0xFE),
+        0x0172 => Some(0xD9),
+        0x0173 => Some(0xF9),
+        0x017D => Some(0xAE),
+        0x017E => Some(0xBE),
+        0x02C7 => Some(0xB7),
+        0x02D9 => Some(0xFF),
+        0x02DB => Some(0xB2),
+        _ => None,
+    }
+}
+fn encode_iso8859_5_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A7 => Some(0xFD),
+        0x00AD => Some(0xAD),
+        0x0401 => Some(0xA1),
+        0x0402 => Some(0xA2),
+        0x0403 => Some(0xA3),
+        0x0404 => Some(0xA4),
+        0x0405 => Some(0xA5),
+        0x0406 => Some(0xA6),
+        0x0407 => Some(0xA7),
+        0x0408 => Some(0xA8),
+        0x0409 => Some(0xA9),
+        0x040A => Some(0xAA),
+        0x040B => Some(0xAB),
+        0x040C => Some(0xAC),
+        0x040E => Some(0xAE),
+        0x040F => Some(0xAF),
+        0x0410 => Some(0xB0),
+        0x0411 => Some(0xB1),
+        0x0412 => Some(0xB2),
+        0x0413 => Some(0xB3),
+        0x0414 => Some(0xB4),
+        0x0415 => Some(0xB5),
+        0x0416 => Some(0xB6),
+        0x0417 => Some(0xB7),
+        0x0418 => Some(0xB8),
+        0x0419 => Some(0xB9),
+        0x041A => Some(0xBA),
+        0x041B => Some(0xBB),
+        0x041C => Some(0xBC),
+        0x041D => Some(0xBD),
+        0x041E => Some(0xBE),
+        0x041F => Some(0xBF),
+        0x0420 => Some(0xC0),
+        0x0421 => Some(0xC1),
+        0x0422 => Some(0xC2),
+        0x0423 => Some(0xC3),
+        0x0424 => Some(0xC4),
+        0x0425 => Some(0xC5),
+        0x0426 => Some(0xC6),
+        0x0427 => Some(0xC7),
+        0x0428 => Some(0xC8),
+        0x0429 => Some(0xC9),
+        0x042A => Some(0xCA),
+        0x042B => Some(0xCB),
+        0x042C => Some(0xCC),
+        0x042D => Some(0xCD),
+        0x042E => Some(0xCE),
+        0x042F => Some(0xCF),
+        0x0430 => Some(0xD0),
+        0x0431 => Some(0xD1),
+        0x0432 => Some(0xD2),
+        0x0433 => Some(0xD3),
+        0x0434 => Some(0xD4),
+        0x0435 => Some(0xD5),
+        0x0436 => Some(0xD6),
+        0x0437 => Some(0xD7),
+        0x0438 => Some(0xD8),
+        0x0439 => Some(0xD9),
+        0x043A => Some(0xDA),
+        0x043B => Some(0xDB),
+        0x043C => Some(0xDC),
+        0x043D => Some(0xDD),
+        0x043E => Some(0xDE),
+        0x043F => Some(0xDF),
+        0x0440 => Some(0xE0),
+        0x0441 => Some(0xE1),
+        0x0442 => Some(0xE2),
+        0x0443 => Some(0xE3),
+        0x0444 => Some(0xE4),
+        0x0445 => Some(0xE5),
+        0x0446 => Some(0xE6),
+        0x0447 => Some(0xE7),
+        0x0448 => Some(0xE8),
+        0x0449 => Some(0xE9),
+        0x044A => Some(0xEA),
+        0x044B => Some(0xEB),
+        0x044C => Some(0xEC),
+        0x044D => Some(0xED),
+        0x044E => Some(0xEE),
+        0x044F => Some(0xEF),
+        0x0451 => Some(0xF1),
+        0x0452 => Some(0xF2),
+        0x0453 => Some(0xF3),
+        0x0454 => Some(0xF4),
+        0x0455 => Some(0xF5),
+        0x0456 => Some(0xF6),
+        0x0457 => Some(0xF7),
+        0x0458 => Some(0xF8),
+        0x0459 => Some(0xF9),
+        0x045A => Some(0xFA),
+        0x045B => Some(0xFB),
+        0x045C => Some(0xFC),
+        0x045E => Some(0xFE),
+        0x045F => Some(0xFF),
+        0x2116 => Some(0xF0),
+        _ => None,
+    }
+}
+
+fn encode_iso8859_6_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A4 => Some(0xA4),
+        0x00AD => Some(0xAD),
+        0x060C => Some(0xAC),
+        0x061B => Some(0xBB),
+        0x061F => Some(0xBF),
+        0x0621 => Some(0xC1),
+        0x0622 => Some(0xC2),
+        0x0623 => Some(0xC3),
+        0x0624 => Some(0xC4),
+        0x0625 => Some(0xC5),
+        0x0626 => Some(0xC6),
+        0x0627 => Some(0xC7),
+        0x0628 => Some(0xC8),
+        0x0629 => Some(0xC9),
+        0x062A => Some(0xCA),
+        0x062B => Some(0xCB),
+        0x062C => Some(0xCC),
+        0x062D => Some(0xCD),
+        0x062E => Some(0xCE),
+        0x062F => Some(0xCF),
+        0x0630 => Some(0xD0),
+        0x0631 => Some(0xD1),
+        0x0632 => Some(0xD2),
+        0x0633 => Some(0xD3),
+        0x0634 => Some(0xD4),
+        0x0635 => Some(0xD5),
+        0x0636 => Some(0xD6),
+        0x0637 => Some(0xD7),
+        0x0638 => Some(0xD8),
+        0x0639 => Some(0xD9),
+        0x063A => Some(0xDA),
+        0x0640 => Some(0xE0),
+        0x0641 => Some(0xE1),
+        0x0642 => Some(0xE2),
+        0x0643 => Some(0xE3),
+        0x0644 => Some(0xE4),
+        0x0645 => Some(0xE5),
+        0x0646 => Some(0xE6),
+        0x0647 => Some(0xE7),
+        0x0648 => Some(0xE8),
+        0x0649 => Some(0xE9),
+        0x064A => Some(0xEA),
+        0x064B => Some(0xEB),
+        0x064C => Some(0xEC),
+        0x064D => Some(0xED),
+        0x064E => Some(0xEE),
+        0x064F => Some(0xEF),
+        0x0650 => Some(0xF0),
+        0x0651 => Some(0xF1),
+        0x0652 => Some(0xF2),
+        _ => None,
+    }
+}
+fn encode_iso8859_7_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A3 => Some(0xA3),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00A9 => Some(0xA9),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B7 => Some(0xB7),
+        0x00BB => Some(0xBB),
+        0x00BD => Some(0xBD),
+        0x037A => Some(0xAA),
+        0x0384 => Some(0xB4),
+        0x0385 => Some(0xB5),
+        0x0386 => Some(0xB6),
+        0x0388 => Some(0xB8),
+        0x0389 => Some(0xB9),
+        0x038A => Some(0xBA),
+        0x038C => Some(0xBC),
+        0x038E => Some(0xBE),
+        0x038F => Some(0xBF),
+        0x0390 => Some(0xC0),
+        0x0391 => Some(0xC1),
+        0x0392 => Some(0xC2),
+        0x0393 => Some(0xC3),
+        0x0394 => Some(0xC4),
+        0x0395 => Some(0xC5),
+        0x0396 => Some(0xC6),
+        0x0397 => Some(0xC7),
+        0x0398 => Some(0xC8),
+        0x0399 => Some(0xC9),
+        0x039A => Some(0xCA),
+        0x039B => Some(0xCB),
+        0x039C => Some(0xCC),
+        0x039D => Some(0xCD),
+        0x039E => Some(0xCE),
+        0x039F => Some(0xCF),
+        0x03A0 => Some(0xD0),
+        0x03A1 => Some(0xD1),
+        0x03A3 => Some(0xD3),
+        0x03A4 => Some(0xD4),
+        0x03A5 => Some(0xD5),
+        0x03A6 => Some(0xD6),
+        0x03A7 => Some(0xD7),
+        0x03A8 => Some(0xD8),
+        0x03A9 => Some(0xD9),
+        0x03AA => Some(0xDA),
+        0x03AB => Some(0xDB),
+        0x03AC => Some(0xDC),
+        0x03AD => Some(0xDD),
+        0x03AE => Some(0xDE),
+        0x03AF => Some(0xDF),
+        0x03B0 => Some(0xE0),
+        0x03B1 => Some(0xE1),
+        0x03B2 => Some(0xE2),
+        0x03B3 => Some(0xE3),
+        0x03B4 => Some(0xE4),
+        0x03B5 => Some(0xE5),
+        0x03B6 => Some(0xE6),
+        0x03B7 => Some(0xE7),
+        0x03B8 => Some(0xE8),
+        0x03B9 => Some(0xE9),
+        0x03BA => Some(0xEA),
+        0x03BB => Some(0xEB),
+        0x03BC => Some(0xEC),
+        0x03BD => Some(0xED),
+        0x03BE => Some(0xEE),
+        0x03BF => Some(0xEF),
+        0x03C0 => Some(0xF0),
+        0x03C1 => Some(0xF1),
+        0x03C2 => Some(0xF2),
+        0x03C3 => Some(0xF3),
+        0x03C4 => Some(0xF4),
+        0x03C5 => Some(0xF5),
+        0x03C6 => Some(0xF6),
+        0x03C7 => Some(0xF7),
+        0x03C8 => Some(0xF8),
+        0x03C9 => Some(0xF9),
+        0x03CA => Some(0xFA),
+        0x03CB => Some(0xFB),
+        0x03CC => Some(0xFC),
+        0x03CD => Some(0xFD),
+        0x03CE => Some(0xFE),
+        0x2015 => Some(0xAF),
+        0x2018 => Some(0xA1),
+        0x2019 => Some(0xA2),
+        0x20AC => Some(0xA4),
+        0x20AF => Some(0xA5),
+        _ => None,
+    }
+}
+
+fn encode_koi8_u_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0x9A),
+        0x00A9 => Some(0xBF),
+        0x00B0 => Some(0x9C),
+        0x00B2 => Some(0x9D),
+        0x00B7 => Some(0x9E),
+        0x00F7 => Some(0x9F),
+        0x0401 => Some(0xB3),
+        0x0404 => Some(0xB4),
+        0x0406 => Some(0xB6),
+        0x0407 => Some(0xB7),
+        0x0410 => Some(0xE1),
+        0x0411 => Some(0xE2),
+        0x0412 => Some(0xF7),
+        0x0413 => Some(0xE7),
+        0x0414 => Some(0xE4),
+        0x0415 => Some(0xE5),
+        0x0416 => Some(0xF6),
+        0x0417 => Some(0xFA),
+        0x0418 => Some(0xE9),
+        0x0419 => Some(0xEA),
+        0x041A => Some(0xEB),
+        0x041B => Some(0xEC),
+        0x041C => Some(0xED),
+        0x041D => Some(0xEE),
+        0x041E => Some(0xEF),
+        0x041F => Some(0xF0),
+        0x0420 => Some(0xF2),
+        0x0421 => Some(0xF3),
+        0x0422 => Some(0xF4),
+        0x0423 => Some(0xF5),
+        0x0424 => Some(0xE6),
+        0x0425 => Some(0xE8),
+        0x0426 => Some(0xE3),
+        0x0427 => Some(0xFE),
+        0x0428 => Some(0xFB),
+        0x0429 => Some(0xFD),
+        0x042A => Some(0xFF),
+        0x042B => Some(0xF9),
+        0x042C => Some(0xF8),
+        0x042D => Some(0xFC),
+        0x042E => Some(0xE0),
+        0x042F => Some(0xF1),
+        0x0430 => Some(0xC1),
+        0x0431 => Some(0xC2),
+        0x0432 => Some(0xD7),
+        0x0433 => Some(0xC7),
+        0x0434 => Some(0xC4),
+        0x0435 => Some(0xC5),
+        0x0436 => Some(0xD6),
+        0x0437 => Some(0xDA),
+        0x0438 => Some(0xC9),
+        0x0439 => Some(0xCA),
+        0x043A => Some(0xCB),
+        0x043B => Some(0xCC),
+        0x043C => Some(0xCD),
+        0x043D => Some(0xCE),
+        0x043E => Some(0xCF),
+        0x043F => Some(0xD0),
+        0x0440 => Some(0xD2),
+        0x0441 => Some(0xD3),
+        0x0442 => Some(0xD4),
+        0x0443 => Some(0xD5),
+        0x0444 => Some(0xC6),
+        0x0445 => Some(0xC8),
+        0x0446 => Some(0xC3),
+        0x0447 => Some(0xDE),
+        0x0448 => Some(0xDB),
+        0x0449 => Some(0xDD),
+        0x044A => Some(0xDF),
+        0x044B => Some(0xD9),
+        0x044C => Some(0xD8),
+        0x044D => Some(0xDC),
+        0x044E => Some(0xC0),
+        0x044F => Some(0xD1),
+        0x0451 => Some(0xA3),
+        0x0454 => Some(0xA4),
+        0x0456 => Some(0xA6),
+        0x0457 => Some(0xA7),
+        0x0490 => Some(0xBD),
+        0x0491 => Some(0xAD),
+        0x2219 => Some(0x95),
+        0x221A => Some(0x96),
+        0x2248 => Some(0x97),
+        0x2264 => Some(0x98),
+        0x2265 => Some(0x99),
+        0x2320 => Some(0x93),
+        0x2321 => Some(0x9B),
+        0x2500 => Some(0x80),
+        0x2502 => Some(0x81),
+        0x250C => Some(0x82),
+        0x2510 => Some(0x83),
+        0x2514 => Some(0x84),
+        0x2518 => Some(0x85),
+        0x251C => Some(0x86),
+        0x2524 => Some(0x87),
+        0x252C => Some(0x88),
+        0x2534 => Some(0x89),
+        0x253C => Some(0x8A),
+        0x2550 => Some(0xA0),
+        0x2551 => Some(0xA1),
+        0x2552 => Some(0xA2),
+        0x2554 => Some(0xA5),
+        0x2557 => Some(0xA8),
+        0x2558 => Some(0xA9),
+        0x2559 => Some(0xAA),
+        0x255A => Some(0xAB),
+        0x255B => Some(0xAC),
+        0x255D => Some(0xAE),
+        0x255E => Some(0xAF),
+        0x255F => Some(0xB0),
+        0x2560 => Some(0xB1),
+        0x2561 => Some(0xB2),
+        0x2563 => Some(0xB5),
+        0x2566 => Some(0xB8),
+        0x2567 => Some(0xB9),
+        0x2568 => Some(0xBA),
+        0x2569 => Some(0xBB),
+        0x256A => Some(0xBC),
+        0x256C => Some(0xBE),
+        0x2580 => Some(0x8B),
+        0x2584 => Some(0x8C),
+        0x2588 => Some(0x8D),
+        0x258C => Some(0x8E),
+        0x2590 => Some(0x8F),
+        0x2591 => Some(0x90),
+        0x2592 => Some(0x91),
+        0x2593 => Some(0x92),
+        0x25A0 => Some(0x94),
+        _ => None,
+    }
+}
+
+fn encode_iso8859_8_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A2 => Some(0xA2),
+        0x00A3 => Some(0xA3),
+        0x00A4 => Some(0xA4),
+        0x00A5 => Some(0xA5),
+        0x00A6 => Some(0xA6),
+        0x00A7 => Some(0xA7),
+        0x00A8 => Some(0xA8),
+        0x00A9 => Some(0xA9),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00AF => Some(0xAF),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B4 => Some(0xB4),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00B8 => Some(0xB8),
+        0x00B9 => Some(0xB9),
+        0x00BB => Some(0xBB),
+        0x00BC => Some(0xBC),
+        0x00BD => Some(0xBD),
+        0x00BE => Some(0xBE),
+        0x00D7 => Some(0xAA),
+        0x00F7 => Some(0xBA),
+        0x05D0 => Some(0xE0),
+        0x05D1 => Some(0xE1),
+        0x05D2 => Some(0xE2),
+        0x05D3 => Some(0xE3),
+        0x05D4 => Some(0xE4),
+        0x05D5 => Some(0xE5),
+        0x05D6 => Some(0xE6),
+        0x05D7 => Some(0xE7),
+        0x05D8 => Some(0xE8),
+        0x05D9 => Some(0xE9),
+        0x05DA => Some(0xEA),
+        0x05DB => Some(0xEB),
+        0x05DC => Some(0xEC),
+        0x05DD => Some(0xED),
+        0x05DE => Some(0xEE),
+        0x05DF => Some(0xEF),
+        0x05E0 => Some(0xF0),
+        0x05E1 => Some(0xF1),
+        0x05E2 => Some(0xF2),
+        0x05E3 => Some(0xF3),
+        0x05E4 => Some(0xF4),
+        0x05E5 => Some(0xF5),
+        0x05E6 => Some(0xF6),
+        0x05E7 => Some(0xF7),
+        0x05E8 => Some(0xF8),
+        0x05E9 => Some(0xF9),
+        0x05EA => Some(0xFA),
+        0x200E => Some(0xFD),
+        0x200F => Some(0xFE),
+        0x2017 => Some(0xDF),
+        _ => None,
+    }
+}
+fn encode_iso8859_10_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A7 => Some(0xA7),
+        0x00AD => Some(0xAD),
+        0x00B0 => Some(0xB0),
+        0x00B7 => Some(0xB7),
+        0x00C1 => Some(0xC1),
+        0x00C2 => Some(0xC2),
+        0x00C3 => Some(0xC3),
+        0x00C4 => Some(0xC4),
+        0x00C5 => Some(0xC5),
+        0x00C6 => Some(0xC6),
+        0x00C9 => Some(0xC9),
+        0x00CB => Some(0xCB),
+        0x00CD => Some(0xCD),
+        0x00CE => Some(0xCE),
+        0x00CF => Some(0xCF),
+        0x00D0 => Some(0xD0),
+        0x00D3 => Some(0xD3),
+        0x00D4 => Some(0xD4),
+        0x00D5 => Some(0xD5),
+        0x00D6 => Some(0xD6),
+        0x00D8 => Some(0xD8),
+        0x00DA => Some(0xDA),
+        0x00DB => Some(0xDB),
+        0x00DC => Some(0xDC),
+        0x00DD => Some(0xDD),
+        0x00DE => Some(0xDE),
+        0x00DF => Some(0xDF),
+        0x00E1 => Some(0xE1),
+        0x00E2 => Some(0xE2),
+        0x00E3 => Some(0xE3),
+        0x00E4 => Some(0xE4),
+        0x00E5 => Some(0xE5),
+        0x00E6 => Some(0xE6),
+        0x00E9 => Some(0xE9),
+        0x00EB => Some(0xEB),
+        0x00ED => Some(0xED),
+        0x00EE => Some(0xEE),
+        0x00EF => Some(0xEF),
+        0x00F0 => Some(0xF0),
+        0x00F3 => Some(0xF3),
+        0x00F4 => Some(0xF4),
+        0x00F5 => Some(0xF5),
+        0x00F6 => Some(0xF6),
+        0x00F8 => Some(0xF8),
+        0x00FA => Some(0xFA),
+        0x00FB => Some(0xFB),
+        0x00FC => Some(0xFC),
+        0x00FD => Some(0xFD),
+        0x00FE => Some(0xFE),
+        0x0100 => Some(0xC0),
+        0x0101 => Some(0xE0),
+        0x0104 => Some(0xA1),
+        0x0105 => Some(0xB1),
+        0x010C => Some(0xC8),
+        0x010D => Some(0xE8),
+        0x0110 => Some(0xA9),
+        0x0111 => Some(0xB9),
+        0x0112 => Some(0xA2),
+        0x0113 => Some(0xB2),
+        0x0116 => Some(0xCC),
+        0x0117 => Some(0xEC),
+        0x0118 => Some(0xCA),
+        0x0119 => Some(0xEA),
+        0x0122 => Some(0xA3),
+        0x0123 => Some(0xB3),
+        0x0128 => Some(0xA5),
+        0x0129 => Some(0xB5),
+        0x012A => Some(0xA4),
+        0x012B => Some(0xB4),
+        0x012E => Some(0xC7),
+        0x012F => Some(0xE7),
+        0x0136 => Some(0xA6),
+        0x0137 => Some(0xB6),
+        0x0138 => Some(0xFF),
+        0x013B => Some(0xA8),
+        0x013C => Some(0xB8),
+        0x0145 => Some(0xD1),
+        0x0146 => Some(0xF1),
+        0x014A => Some(0xAF),
+        0x014B => Some(0xBF),
+        0x014C => Some(0xD2),
+        0x014D => Some(0xF2),
+        0x0160 => Some(0xAA),
+        0x0161 => Some(0xBA),
+        0x0166 => Some(0xAB),
+        0x0167 => Some(0xBB),
+        0x0168 => Some(0xD7),
+        0x0169 => Some(0xF7),
+        0x016A => Some(0xAE),
+        0x016B => Some(0xBE),
+        0x0172 => Some(0xD9),
+        0x0173 => Some(0xF9),
+        0x017D => Some(0xAC),
+        0x017E => Some(0xBC),
+        0x2015 => Some(0xBD),
+        _ => None,
+    }
+}
+fn encode_iso8859_15_byte(code: u32) -> Option<u8> {
+    match code {
+        0x0080 => Some(0x80),
+        0x0081 => Some(0x81),
+        0x0082 => Some(0x82),
+        0x0083 => Some(0x83),
+        0x0084 => Some(0x84),
+        0x0085 => Some(0x85),
+        0x0086 => Some(0x86),
+        0x0087 => Some(0x87),
+        0x0088 => Some(0x88),
+        0x0089 => Some(0x89),
+        0x008A => Some(0x8A),
+        0x008B => Some(0x8B),
+        0x008C => Some(0x8C),
+        0x008D => Some(0x8D),
+        0x008E => Some(0x8E),
+        0x008F => Some(0x8F),
+        0x0090 => Some(0x90),
+        0x0091 => Some(0x91),
+        0x0092 => Some(0x92),
+        0x0093 => Some(0x93),
+        0x0094 => Some(0x94),
+        0x0095 => Some(0x95),
+        0x0096 => Some(0x96),
+        0x0097 => Some(0x97),
+        0x0098 => Some(0x98),
+        0x0099 => Some(0x99),
+        0x009A => Some(0x9A),
+        0x009B => Some(0x9B),
+        0x009C => Some(0x9C),
+        0x009D => Some(0x9D),
+        0x009E => Some(0x9E),
+        0x009F => Some(0x9F),
+        0x00A0 => Some(0xA0),
+        0x00A1 => Some(0xA1),
+        0x00A2 => Some(0xA2),
+        0x00A3 => Some(0xA3),
+        0x00A5 => Some(0xA5),
+        0x00A7 => Some(0xA7),
+        0x00A9 => Some(0xA9),
+        0x00AA => Some(0xAA),
+        0x00AB => Some(0xAB),
+        0x00AC => Some(0xAC),
+        0x00AD => Some(0xAD),
+        0x00AE => Some(0xAE),
+        0x00AF => Some(0xAF),
+        0x00B0 => Some(0xB0),
+        0x00B1 => Some(0xB1),
+        0x00B2 => Some(0xB2),
+        0x00B3 => Some(0xB3),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xB6),
+        0x00B7 => Some(0xB7),
+        0x00B9 => Some(0xB9),
+        0x00BA => Some(0xBA),
+        0x00BB => Some(0xBB),
+        0x00BF => Some(0xBF),
+        0x00C0 => Some(0xC0),
+        0x00C1 => Some(0xC1),
+        0x00C2 => Some(0xC2),
+        0x00C3 => Some(0xC3),
+        0x00C4 => Some(0xC4),
+        0x00C5 => Some(0xC5),
+        0x00C6 => Some(0xC6),
+        0x00C7 => Some(0xC7),
+        0x00C8 => Some(0xC8),
+        0x00C9 => Some(0xC9),
+        0x00CA => Some(0xCA),
+        0x00CB => Some(0xCB),
+        0x00CC => Some(0xCC),
+        0x00CD => Some(0xCD),
+        0x00CE => Some(0xCE),
+        0x00CF => Some(0xCF),
+        0x00D0 => Some(0xD0),
+        0x00D1 => Some(0xD1),
+        0x00D2 => Some(0xD2),
+        0x00D3 => Some(0xD3),
+        0x00D4 => Some(0xD4),
+        0x00D5 => Some(0xD5),
+        0x00D6 => Some(0xD6),
+        0x00D7 => Some(0xD7),
+        0x00D8 => Some(0xD8),
+        0x00D9 => Some(0xD9),
+        0x00DA => Some(0xDA),
+        0x00DB => Some(0xDB),
+        0x00DC => Some(0xDC),
+        0x00DD => Some(0xDD),
+        0x00DE => Some(0xDE),
+        0x00DF => Some(0xDF),
+        0x00E0 => Some(0xE0),
+        0x00E1 => Some(0xE1),
+        0x00E2 => Some(0xE2),
+        0x00E3 => Some(0xE3),
+        0x00E4 => Some(0xE4),
+        0x00E5 => Some(0xE5),
+        0x00E6 => Some(0xE6),
+        0x00E7 => Some(0xE7),
+        0x00E8 => Some(0xE8),
+        0x00E9 => Some(0xE9),
+        0x00EA => Some(0xEA),
+        0x00EB => Some(0xEB),
+        0x00EC => Some(0xEC),
+        0x00ED => Some(0xED),
+        0x00EE => Some(0xEE),
+        0x00EF => Some(0xEF),
+        0x00F0 => Some(0xF0),
+        0x00F1 => Some(0xF1),
+        0x00F2 => Some(0xF2),
+        0x00F3 => Some(0xF3),
+        0x00F4 => Some(0xF4),
+        0x00F5 => Some(0xF5),
+        0x00F6 => Some(0xF6),
+        0x00F7 => Some(0xF7),
+        0x00F8 => Some(0xF8),
+        0x00F9 => Some(0xF9),
+        0x00FA => Some(0xFA),
+        0x00FB => Some(0xFB),
+        0x00FC => Some(0xFC),
+        0x00FD => Some(0xFD),
+        0x00FE => Some(0xFE),
+        0x00FF => Some(0xFF),
+        0x0152 => Some(0xBC),
+        0x0153 => Some(0xBD),
+        0x0160 => Some(0xA6),
+        0x0161 => Some(0xA8),
+        0x0178 => Some(0xBE),
+        0x017D => Some(0xB4),
+        0x017E => Some(0xB8),
+        0x20AC => Some(0xA4),
+        _ => None,
+    }
+}
+
+fn encode_mac_roman_byte(code: u32) -> Option<u8> {
+    match code {
+        0x00A0 => Some(0xCA),
+        0x00A1 => Some(0xC1),
+        0x00A2 => Some(0xA2),
+        0x00A3 => Some(0xA3),
+        0x00A5 => Some(0xB4),
+        0x00A7 => Some(0xA4),
+        0x00A8 => Some(0xAC),
+        0x00A9 => Some(0xA9),
+        0x00AA => Some(0xBB),
+        0x00AB => Some(0xC7),
+        0x00AC => Some(0xC2),
+        0x00AE => Some(0xA8),
+        0x00AF => Some(0xF8),
+        0x00B0 => Some(0xA1),
+        0x00B1 => Some(0xB1),
+        0x00B4 => Some(0xAB),
+        0x00B5 => Some(0xB5),
+        0x00B6 => Some(0xA6),
+        0x00B7 => Some(0xE1),
+        0x00B8 => Some(0xFC),
+        0x00BA => Some(0xBC),
+        0x00BB => Some(0xC8),
+        0x00BF => Some(0xC0),
+        0x00C0 => Some(0xCB),
+        0x00C1 => Some(0xE7),
+        0x00C2 => Some(0xE5),
+        0x00C3 => Some(0xCC),
+        0x00C4 => Some(0x80),
+        0x00C5 => Some(0x81),
+        0x00C6 => Some(0xAE),
+        0x00C7 => Some(0x82),
+        0x00C8 => Some(0xE9),
+        0x00C9 => Some(0x83),
+        0x00CA => Some(0xE6),
+        0x00CB => Some(0xE8),
+        0x00CC => Some(0xED),
+        0x00CD => Some(0xEA),
+        0x00CE => Some(0xEB),
+        0x00CF => Some(0xEC),
+        0x00D1 => Some(0x84),
+        0x00D2 => Some(0xF1),
+        0x00D3 => Some(0xEE),
+        0x00D4 => Some(0xEF),
+        0x00D5 => Some(0xCD),
+        0x00D6 => Some(0x85),
+        0x00D8 => Some(0xAF),
+        0x00D9 => Some(0xF4),
+        0x00DA => Some(0xF2),
+        0x00DB => Some(0xF3),
+        0x00DC => Some(0x86),
+        0x00DF => Some(0xA7),
+        0x00E0 => Some(0x88),
+        0x00E1 => Some(0x87),
+        0x00E2 => Some(0x89),
+        0x00E3 => Some(0x8B),
+        0x00E4 => Some(0x8A),
+        0x00E5 => Some(0x8C),
+        0x00E6 => Some(0xBE),
+        0x00E7 => Some(0x8D),
+        0x00E8 => Some(0x8F),
+        0x00E9 => Some(0x8E),
+        0x00EA => Some(0x90),
+        0x00EB => Some(0x91),
+        0x00EC => Some(0x93),
+        0x00ED => Some(0x92),
+        0x00EE => Some(0x94),
+        0x00EF => Some(0x95),
+        0x00F1 => Some(0x96),
+        0x00F2 => Some(0x98),
+        0x00F3 => Some(0x97),
+        0x00F4 => Some(0x99),
+        0x00F5 => Some(0x9B),
+        0x00F6 => Some(0x9A),
+        0x00F7 => Some(0xD6),
+        0x00F8 => Some(0xBF),
+        0x00F9 => Some(0x9D),
+        0x00FA => Some(0x9C),
+        0x00FB => Some(0x9E),
+        0x00FC => Some(0x9F),
+        0x00FF => Some(0xD8),
+        0x0131 => Some(0xF5),
+        0x0152 => Some(0xCE),
+        0x0153 => Some(0xCF),
+        0x0178 => Some(0xD9),
+        0x0192 => Some(0xC4),
+        0x02C6 => Some(0xF6),
+        0x02C7 => Some(0xFF),
+        0x02D8 => Some(0xF9),
+        0x02D9 => Some(0xFA),
+        0x02DA => Some(0xFB),
+        0x02DB => Some(0xFE),
+        0x02DC => Some(0xF7),
+        0x02DD => Some(0xFD),
+        0x03A9 => Some(0xBD),
+        0x03C0 => Some(0xB9),
+        0x2013 => Some(0xD0),
+        0x2014 => Some(0xD1),
+        0x2018 => Some(0xD4),
+        0x2019 => Some(0xD5),
+        0x201A => Some(0xE2),
+        0x201C => Some(0xD2),
+        0x201D => Some(0xD3),
+        0x201E => Some(0xE3),
+        0x2020 => Some(0xA0),
+        0x2021 => Some(0xE0),
+        0x2022 => Some(0xA5),
+        0x2026 => Some(0xC9),
+        0x2030 => Some(0xE4),
+        0x2039 => Some(0xDC),
+        0x203A => Some(0xDD),
+        0x2044 => Some(0xDA),
+        0x20AC => Some(0xDB),
+        0x2122 => Some(0xAA),
+        0x2202 => Some(0xB6),
+        0x2206 => Some(0xC6),
+        0x220F => Some(0xB8),
+        0x2211 => Some(0xB7),
+        0x221A => Some(0xC3),
+        0x221E => Some(0xB0),
+        0x222B => Some(0xBA),
+        0x2248 => Some(0xC5),
+        0x2260 => Some(0xAD),
+        0x2264 => Some(0xB2),
+        0x2265 => Some(0xB3),
+        0x25CA => Some(0xD7),
+        0xF8FF => Some(0xF0),
+        0xFB01 => Some(0xDE),
+        0xFB02 => Some(0xDF),
+        _ => None,
+    }
+}
+
+pub(crate) fn encode_string_with_errors(
+    bytes: &[u8],
+    encoding: &str,
+    errors: Option<&str>,
+) -> Result<Vec<u8>, EncodeError> {
+    let Some(kind) = normalize_encoding(encoding) else {
+        return Err(EncodeError::UnknownEncoding(encoding.to_string()));
+    };
+    let handler = errors.unwrap_or("strict");
+    let mut unknown_handler: Option<String> = None;
+    let handler = match handler {
+        "surrogatepass" | "strict" | "surrogateescape" | "ignore" | "replace"
+        | "backslashreplace" | "namereplace" | "xmlcharrefreplace" => handler,
+        other => {
+            unknown_handler = Some(other.to_string());
+            "strict"
+        }
+    };
+    let error_encoding = match kind {
+        EncodingKind::Utf8Sig => "utf-8",
+        EncodingKind::Cp1252
+        | EncodingKind::Cp437
+        | EncodingKind::Cp850
+        | EncodingKind::Cp860
+        | EncodingKind::Cp862
+        | EncodingKind::Cp863
+        | EncodingKind::Cp865
+        | EncodingKind::Cp866
+        | EncodingKind::Cp874
+        | EncodingKind::Cp1250
+        | EncodingKind::Cp1251
+        | EncodingKind::Cp1253
+        | EncodingKind::Cp1254
+        | EncodingKind::Cp1255
+        | EncodingKind::Cp1256
+        | EncodingKind::Cp1257
+        | EncodingKind::Koi8R
+        | EncodingKind::Koi8U
+        | EncodingKind::Iso8859_2
+        | EncodingKind::Iso8859_3
+        | EncodingKind::Iso8859_4
+        | EncodingKind::Iso8859_5
+        | EncodingKind::Iso8859_6
+        | EncodingKind::Iso8859_7
+        | EncodingKind::Iso8859_8
+        | EncodingKind::Iso8859_10
+        | EncodingKind::Iso8859_15
+        | EncodingKind::MacRoman => "charmap",
+        _ => kind.name(),
+    };
+    let invalid_char_err =
+        |encoding: &'static str, code: u32, pos: usize, limit: u32| -> EncodeError {
+            if let Some(name) = unknown_handler.as_ref() {
+                EncodeError::UnknownErrorHandler(name.clone())
+            } else {
+                EncodeError::InvalidChar {
+                    encoding,
+                    code,
+                    pos,
+                    limit,
+                }
+            }
+        };
+    let encode_charmap = |map: fn(u32) -> Option<u8>| -> Result<Vec<u8>, EncodeError> {
+        let mut out = Vec::new();
+        for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+            let code = cp.to_u32();
+            if code <= 0x7F {
+                out.push(code as u8);
+                continue;
+            }
+            if let Some(byte) = map(code) {
+                out.push(byte);
+                continue;
+            }
+            match handler {
+                "ignore" => {}
+                "replace" => out.push(b'?'),
+                "backslashreplace" => {
+                    out.extend_from_slice(unicode_escape_codepoint(code).as_bytes());
+                }
+                "namereplace" => {
+                    out.extend_from_slice(unicode_name_escape(code).as_bytes());
+                }
+                "xmlcharrefreplace" => {
+                    push_xmlcharref_ascii(&mut out, code);
+                }
+                "surrogateescape" => {
+                    if (0xDC80..=0xDCFF).contains(&code) {
+                        out.push((code - 0xDC00) as u8);
+                    } else {
+                        return Err(invalid_char_err(error_encoding, code, idx, 0));
+                    }
+                }
+                "surrogatepass" | "strict" => {
+                    return Err(invalid_char_err(error_encoding, code, idx, 0));
+                }
+                other => {
+                    return Err(EncodeError::UnknownErrorHandler(other.to_string()));
+                }
+            }
+        }
+        Ok(out)
+    };
+    let mut out = Vec::new();
+    let encode_utf8 =
+        |handler: &str, bytes: &[u8], out: &mut Vec<u8>| -> Result<Vec<u8>, EncodeError> {
+            match handler {
+                "surrogatepass" => Ok(bytes.to_vec()),
+                "strict" => {
+                    if !wtf8_has_surrogates(bytes) {
+                        return Ok(bytes.to_vec());
+                    }
+                    for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+                        let code = cp.to_u32();
+                        if is_surrogate(code) {
+                            return Err(invalid_char_err(error_encoding, code, idx, 0x110000));
+                        }
+                    }
+                    Ok(bytes.to_vec())
+                }
+                "surrogateescape" => {
+                    for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+                        let code = cp.to_u32();
+                        if (0xDC80..=0xDCFF).contains(&code) {
+                            out.push((code - 0xDC00) as u8);
+                        } else if is_surrogate(code) {
+                            return Err(invalid_char_err(error_encoding, code, idx, 0x110000));
+                        } else {
+                            push_wtf8_codepoint(out, code);
+                        }
+                    }
+                    Ok(std::mem::take(out))
+                }
+                "ignore" | "replace" | "backslashreplace" | "namereplace" | "xmlcharrefreplace" => {
+                    for cp in wtf8_from_bytes(bytes).code_points() {
+                        let code = cp.to_u32();
+                        if is_surrogate(code) {
+                            match handler {
+                                "ignore" => {}
+                                "replace" => out.push(b'?'),
+                                "backslashreplace" => {
+                                    out.extend_from_slice(unicode_escape_codepoint(code).as_bytes())
+                                }
+                                "namereplace" => {
+                                    out.extend_from_slice(unicode_name_escape(code).as_bytes())
+                                }
+                                "xmlcharrefreplace" => {
+                                    push_xmlcharref_ascii(out, code);
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+                        push_wtf8_codepoint(out, code);
+                    }
+                    Ok(std::mem::take(out))
+                }
+                other => Err(EncodeError::UnknownErrorHandler(other.to_string())),
+            }
+        };
+    match kind {
+        EncodingKind::Utf8 => encode_utf8(handler, bytes, &mut out),
+        EncodingKind::Utf8Sig => {
+            let encoded = encode_utf8(handler, bytes, &mut out)?;
+            let mut with_bom = Vec::with_capacity(encoded.len() + 3);
+            with_bom.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+            with_bom.extend_from_slice(&encoded);
+            Ok(with_bom)
+        }
+        EncodingKind::Cp1252 => encode_charmap(encode_cp1252_byte),
+        EncodingKind::Cp437 => encode_charmap(encode_cp437_byte),
+        EncodingKind::Cp850 => encode_charmap(encode_cp850_byte),
+        EncodingKind::Cp860 => encode_charmap(encode_cp860_byte),
+        EncodingKind::Cp862 => encode_charmap(encode_cp862_byte),
+        EncodingKind::Cp863 => encode_charmap(encode_cp863_byte),
+        EncodingKind::Cp865 => encode_charmap(encode_cp865_byte),
+        EncodingKind::Cp866 => encode_charmap(encode_cp866_byte),
+        EncodingKind::Cp874 => encode_charmap(encode_cp874_byte),
+        EncodingKind::Cp1250 => encode_charmap(encode_cp1250_byte),
+        EncodingKind::Cp1251 => encode_charmap(encode_cp1251_byte),
+        EncodingKind::Cp1253 => encode_charmap(encode_cp1253_byte),
+        EncodingKind::Cp1254 => encode_charmap(encode_cp1254_byte),
+        EncodingKind::Cp1255 => encode_charmap(encode_cp1255_byte),
+        EncodingKind::Cp1256 => encode_charmap(encode_cp1256_byte),
+        EncodingKind::Cp1257 => encode_charmap(encode_cp1257_byte),
+        EncodingKind::Koi8R => encode_charmap(encode_koi8_r_byte),
+        EncodingKind::Koi8U => encode_charmap(encode_koi8_u_byte),
+        EncodingKind::Iso8859_2 => encode_charmap(encode_iso8859_2_byte),
+        EncodingKind::Iso8859_3 => encode_charmap(encode_iso8859_3_byte),
+        EncodingKind::Iso8859_4 => encode_charmap(encode_iso8859_4_byte),
+        EncodingKind::Iso8859_5 => encode_charmap(encode_iso8859_5_byte),
+        EncodingKind::Iso8859_6 => encode_charmap(encode_iso8859_6_byte),
+        EncodingKind::Iso8859_7 => encode_charmap(encode_iso8859_7_byte),
+        EncodingKind::Iso8859_8 => encode_charmap(encode_iso8859_8_byte),
+        EncodingKind::Iso8859_10 => encode_charmap(encode_iso8859_10_byte),
+        EncodingKind::Iso8859_15 => encode_charmap(encode_iso8859_15_byte),
+        EncodingKind::MacRoman => encode_charmap(encode_mac_roman_byte),
+        EncodingKind::Latin1 | EncodingKind::Ascii => {
+            let limit = kind.ordinal_limit();
+            for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+                let code = cp.to_u32();
+                if code < limit {
+                    out.push(code as u8);
+                    continue;
+                }
+                match handler {
+                    "ignore" => {}
+                    "replace" => out.push(b'?'),
+                    "backslashreplace" => {
+                        out.extend_from_slice(unicode_escape_codepoint(code).as_bytes());
+                    }
+                    "namereplace" => {
+                        out.extend_from_slice(unicode_name_escape(code).as_bytes());
+                    }
+                    "xmlcharrefreplace" => {
+                        push_xmlcharref_ascii(&mut out, code);
+                    }
+                    "surrogateescape" => {
+                        if (0xDC80..=0xDCFF).contains(&code) {
+                            out.push((code - 0xDC00) as u8);
+                        } else {
+                            return Err(invalid_char_err(error_encoding, code, idx, limit));
+                        }
+                    }
+                    "surrogatepass" | "strict" => {
+                        return Err(invalid_char_err(error_encoding, code, idx, limit));
+                    }
+                    other => {
+                        return Err(EncodeError::UnknownErrorHandler(other.to_string()));
+                    }
+                }
+            }
+            Ok(out)
+        }
+        EncodingKind::UnicodeEscape => {
+            for cp in wtf8_from_bytes(bytes).code_points() {
+                let code = cp.to_u32();
+                match code {
+                    0x5C => out.extend_from_slice(b"\\\\"),
+                    0x09 => out.extend_from_slice(b"\\t"),
+                    0x0A => out.extend_from_slice(b"\\n"),
+                    0x0D => out.extend_from_slice(b"\\r"),
+                    0x20..=0x7E => out.push(code as u8),
+                    _ if code <= 0xFF => push_hex_escape(&mut out, b'x', code, 2),
+                    _ if code <= 0xFFFF => push_hex_escape(&mut out, b'u', code, 4),
+                    _ => push_hex_escape(&mut out, b'U', code, 8),
+                }
+            }
+            Ok(out)
+        }
+        EncodingKind::Utf16 | EncodingKind::Utf16LE | EncodingKind::Utf16BE => {
+            let (endian, with_bom) = match kind {
+                EncodingKind::Utf16 => (native_endian(), true),
+                EncodingKind::Utf16LE => (Endian::Little, false),
+                EncodingKind::Utf16BE => (Endian::Big, false),
+                _ => (native_endian(), false),
+            };
+            if with_bom {
+                push_u16(&mut out, 0xFEFF, endian);
+            }
+            for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+                let code = cp.to_u32();
+                if is_surrogate(code) {
+                    match handler {
+                        "surrogatepass" | "surrogateescape" => {
+                            push_u16(&mut out, code as u16, endian);
+                            continue;
+                        }
+                        "ignore" => continue,
+                        "replace" => {
+                            push_u16(&mut out, 0xFFFD, endian);
+                            continue;
+                        }
+                        "backslashreplace" => {
+                            for ch in unicode_escape_codepoint(code).chars() {
+                                push_u16(&mut out, ch as u16, endian);
+                            }
+                            continue;
+                        }
+                        "namereplace" => {
+                            for ch in unicode_name_escape(code).chars() {
+                                push_u16(&mut out, ch as u16, endian);
+                            }
+                            continue;
+                        }
+                        "xmlcharrefreplace" => {
+                            push_xmlcharref_utf16(&mut out, code, endian);
+                            continue;
+                        }
+                        "strict" => {
+                            return Err(invalid_char_err(error_encoding, code, idx, 0x110000));
+                        }
+                        other => {
+                            return Err(EncodeError::UnknownErrorHandler(other.to_string()));
+                        }
+                    }
+                }
+                if code <= 0xFFFF {
+                    push_u16(&mut out, code as u16, endian);
+                } else {
+                    let val = code - 0x10000;
+                    let high = 0xD800 | ((val >> 10) as u16);
+                    let low = 0xDC00 | ((val & 0x3FF) as u16);
+                    push_u16(&mut out, high, endian);
+                    push_u16(&mut out, low, endian);
+                }
+            }
+            Ok(out)
+        }
+        EncodingKind::Utf32 | EncodingKind::Utf32LE | EncodingKind::Utf32BE => {
+            let (endian, with_bom) = match kind {
+                EncodingKind::Utf32 => (native_endian(), true),
+                EncodingKind::Utf32LE => (Endian::Little, false),
+                EncodingKind::Utf32BE => (Endian::Big, false),
+                _ => (native_endian(), false),
+            };
+            if with_bom {
+                push_u32(&mut out, 0x0000_FEFF, endian);
+            }
+            for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
+                let code = cp.to_u32();
+                if is_surrogate(code) {
+                    match handler {
+                        "surrogatepass" | "surrogateescape" => {
+                            push_u32(&mut out, code, endian);
+                            continue;
+                        }
+                        "ignore" => continue,
+                        "replace" => {
+                            push_u32(&mut out, 0xFFFD, endian);
+                            continue;
+                        }
+                        "backslashreplace" => {
+                            for ch in unicode_escape_codepoint(code).chars() {
+                                push_u32(&mut out, ch as u32, endian);
+                            }
+                            continue;
+                        }
+                        "namereplace" => {
+                            for ch in unicode_name_escape(code).chars() {
+                                push_u32(&mut out, ch as u32, endian);
+                            }
+                            continue;
+                        }
+                        "xmlcharrefreplace" => {
+                            push_xmlcharref_utf32(&mut out, code, endian);
+                            continue;
+                        }
+                        "strict" => {
+                            return Err(invalid_char_err(kind.name(), code, idx, 0x110000));
+                        }
+                        other => {
+                            return Err(EncodeError::UnknownErrorHandler(other.to_string()));
+                        }
+                    }
+                }
+                push_u32(&mut out, code, endian);
+            }
+            Ok(out)
+        }
+    }
+}
+
+pub(crate) fn decode_error_byte(label: &str, byte: u8, pos: usize, message: &str) -> String {
+    format!("'{label}' codec can't decode byte 0x{byte:02x} in position {pos}: {message}")
+}
+
+pub(crate) fn decode_error_range(label: &str, start: usize, end: usize, message: &str) -> String {
+    format!("'{label}' codec can't decode bytes in position {start}-{end}: {message}")
+}
+
+fn read_u16(bytes: &[u8], idx: usize, endian: Endian) -> u16 {
+    match endian {
+        Endian::Little => u16::from_le_bytes([bytes[idx], bytes[idx + 1]]),
+        Endian::Big => u16::from_be_bytes([bytes[idx], bytes[idx + 1]]),
+    }
+}
+
+fn read_u32(bytes: &[u8], idx: usize, endian: Endian) -> u32 {
+    match endian {
+        Endian::Little => {
+            u32::from_le_bytes([bytes[idx], bytes[idx + 1], bytes[idx + 2], bytes[idx + 3]])
+        }
+        Endian::Big => {
+            u32::from_be_bytes([bytes[idx], bytes[idx + 1], bytes[idx + 2], bytes[idx + 3]])
+        }
+    }
+}
+
+fn decode_ascii_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u8>, DecodeFailure> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for (idx, &byte) in bytes.iter().enumerate() {
+        if byte <= 0x7f {
+            out.push(byte);
+            continue;
+        }
+        match errors {
+            "ignore" => {}
+            "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+            "backslashreplace" => push_backslash_bytes_vec(&mut out, &[byte]),
+            "surrogateescape" => push_wtf8_codepoint(&mut out, 0xDC00 + byte as u32),
+            "strict" | "surrogatepass" => {
+                return Err(DecodeFailure::Byte {
+                    pos: idx,
+                    byte,
+                    message: "ordinal not in range(128)",
+                });
+            }
+            other => {
+                return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+const CP1252_DECODE_TABLE: [u16; 32] = [
+    0x20AC, 0xFFFF, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039,
+    0x0152, 0xFFFF, 0x017D, 0xFFFF, 0xFFFF, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0xFFFF, 0x017E, 0x0178,
+];
+
+const CP437_DECODE_TABLE: [u16; 128] = [
+    0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7, 0x00EA, 0x00EB, 0x00E8, 0x00EF,
+    0x00EE, 0x00EC, 0x00C4, 0x00C5, 0x00C9, 0x00E6, 0x00C6, 0x00F4, 0x00F6, 0x00F2, 0x00FB, 0x00F9,
+    0x00FF, 0x00D6, 0x00DC, 0x00A2, 0x00A3, 0x00A5, 0x20A7, 0x0192, 0x00E1, 0x00ED, 0x00F3, 0x00FA,
+    0x00F1, 0x00D1, 0x00AA, 0x00BA, 0x00BF, 0x2310, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00BB,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556, 0x2555, 0x2563, 0x2551, 0x2557,
+    0x255D, 0x255C, 0x255B, 0x2510, 0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F,
+    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567, 0x2568, 0x2564, 0x2565, 0x2559,
+    0x2558, 0x2552, 0x2553, 0x256B, 0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
+    0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4, 0x03A6, 0x0398, 0x03A9, 0x03B4,
+    0x221E, 0x03C6, 0x03B5, 0x2229, 0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248,
+    0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0,
+];
+
+const CP850_DECODE_TABLE: [u16; 128] = [
+    0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7, 0x00EA, 0x00EB, 0x00E8, 0x00EF,
+    0x00EE, 0x00EC, 0x00C4, 0x00C5, 0x00C9, 0x00E6, 0x00C6, 0x00F4, 0x00F6, 0x00F2, 0x00FB, 0x00F9,
+    0x00FF, 0x00D6, 0x00DC, 0x00F8, 0x00A3, 0x00D8, 0x00D7, 0x0192, 0x00E1, 0x00ED, 0x00F3, 0x00FA,
+    0x00F1, 0x00D1, 0x00AA, 0x00BA, 0x00BF, 0x00AE, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00BB,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x00C1, 0x00C2, 0x00C0, 0x00A9, 0x2563, 0x2551, 0x2557,
+    0x255D, 0x00A2, 0x00A5, 0x2510, 0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x00E3, 0x00C3,
+    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x00A4, 0x00F0, 0x00D0, 0x00CA, 0x00CB,
+    0x00C8, 0x0131, 0x00CD, 0x00CE, 0x00CF, 0x2518, 0x250C, 0x2588, 0x2584, 0x00A6, 0x00CC, 0x2580,
+    0x00D3, 0x00DF, 0x00D4, 0x00D2, 0x00F5, 0x00D5, 0x00B5, 0x00FE, 0x00DE, 0x00DA, 0x00DB, 0x00D9,
+    0x00FD, 0x00DD, 0x00AF, 0x00B4, 0x00AD, 0x00B1, 0x2017, 0x00BE, 0x00B6, 0x00A7, 0x00F7, 0x00B8,
+    0x00B0, 0x00A8, 0x00B7, 0x00B9, 0x00B3, 0x00B2, 0x25A0, 0x00A0,
+];
+
+const CP865_DECODE_TABLE: [u16; 128] = [
+    0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7, 0x00EA, 0x00EB, 0x00E8, 0x00EF,
+    0x00EE, 0x00EC, 0x00C4, 0x00C5, 0x00C9, 0x00E6, 0x00C6, 0x00F4, 0x00F6, 0x00F2, 0x00FB, 0x00F9,
+    0x00FF, 0x00D6, 0x00DC, 0x00F8, 0x00A3, 0x00D8, 0x20A7, 0x0192, 0x00E1, 0x00ED, 0x00F3, 0x00FA,
+    0x00F1, 0x00D1, 0x00AA, 0x00BA, 0x00BF, 0x2310, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00A4,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556, 0x2555, 0x2563, 0x2551, 0x2557,
+    0x255D, 0x255C, 0x255B, 0x2510, 0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F,
+    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567, 0x2568, 0x2564, 0x2565, 0x2559,
+    0x2558, 0x2552, 0x2553, 0x256B, 0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
+    0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4, 0x03A6, 0x0398, 0x03A9, 0x03B4,
+    0x221E, 0x03C6, 0x03B5, 0x2229, 0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248,
+    0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0,
+];
+
+const CP866_DECODE_TABLE: [u16; 128] = [
+    0x0410, 0x0411, 0x0412, 0x0413, 0x0414, 0x0415, 0x0416, 0x0417, 0x0418, 0x0419, 0x041A, 0x041B,
+    0x041C, 0x041D, 0x041E, 0x041F, 0x0420, 0x0421, 0x0422, 0x0423, 0x0424, 0x0425, 0x0426, 0x0427,
+    0x0428, 0x0429, 0x042A, 0x042B, 0x042C, 0x042D, 0x042E, 0x042F, 0x0430, 0x0431, 0x0432, 0x0433,
+    0x0434, 0x0435, 0x0436, 0x0437, 0x0438, 0x0439, 0x043A, 0x043B, 0x043C, 0x043D, 0x043E, 0x043F,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556, 0x2555, 0x2563, 0x2551, 0x2557,
+    0x255D, 0x255C, 0x255B, 0x2510, 0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F,
+    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567, 0x2568, 0x2564, 0x2565, 0x2559,
+    0x2558, 0x2552, 0x2553, 0x256B, 0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
+    0x0440, 0x0441, 0x0442, 0x0443, 0x0444, 0x0445, 0x0446, 0x0447, 0x0448, 0x0449, 0x044A, 0x044B,
+    0x044C, 0x044D, 0x044E, 0x044F, 0x0401, 0x0451, 0x0404, 0x0454, 0x0407, 0x0457, 0x040E, 0x045E,
+    0x00B0, 0x2219, 0x00B7, 0x221A, 0x2116, 0x00A4, 0x25A0, 0x00A0,
+];
+
+const CP874_DECODE_TABLE: [u16; 128] = [
+    0x20AC, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0x2026, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0x00A0, 0x0E01, 0x0E02, 0x0E03,
+    0x0E04, 0x0E05, 0x0E06, 0x0E07, 0x0E08, 0x0E09, 0x0E0A, 0x0E0B, 0x0E0C, 0x0E0D, 0x0E0E, 0x0E0F,
+    0x0E10, 0x0E11, 0x0E12, 0x0E13, 0x0E14, 0x0E15, 0x0E16, 0x0E17, 0x0E18, 0x0E19, 0x0E1A, 0x0E1B,
+    0x0E1C, 0x0E1D, 0x0E1E, 0x0E1F, 0x0E20, 0x0E21, 0x0E22, 0x0E23, 0x0E24, 0x0E25, 0x0E26, 0x0E27,
+    0x0E28, 0x0E29, 0x0E2A, 0x0E2B, 0x0E2C, 0x0E2D, 0x0E2E, 0x0E2F, 0x0E30, 0x0E31, 0x0E32, 0x0E33,
+    0x0E34, 0x0E35, 0x0E36, 0x0E37, 0x0E38, 0x0E39, 0x0E3A, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0x0E3F,
+    0x0E40, 0x0E41, 0x0E42, 0x0E43, 0x0E44, 0x0E45, 0x0E46, 0x0E47, 0x0E48, 0x0E49, 0x0E4A, 0x0E4B,
+    0x0E4C, 0x0E4D, 0x0E4E, 0x0E4F, 0x0E50, 0x0E51, 0x0E52, 0x0E53, 0x0E54, 0x0E55, 0x0E56, 0x0E57,
+    0x0E58, 0x0E59, 0x0E5A, 0x0E5B, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+];
+
+const CP1250_DECODE_TABLE: [u16; 128] = [
+    0x20AC, 0xFFFF, 0x201A, 0xFFFF, 0x201E, 0x2026, 0x2020, 0x2021, 0xFFFF, 0x2030, 0x0160, 0x2039,
+    0x015A, 0x0164, 0x017D, 0x0179, 0xFFFF, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0xFFFF, 0x2122, 0x0161, 0x203A, 0x015B, 0x0165, 0x017E, 0x017A, 0x00A0, 0x02C7, 0x02D8, 0x0141,
+    0x00A4, 0x0104, 0x00A6, 0x00A7, 0x00A8, 0x00A9, 0x015E, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x017B,
+    0x00B0, 0x00B1, 0x02DB, 0x0142, 0x00B4, 0x00B5, 0x00B6, 0x00B7, 0x00B8, 0x0105, 0x015F, 0x00BB,
+    0x013D, 0x02DD, 0x013E, 0x017C, 0x0154, 0x00C1, 0x00C2, 0x0102, 0x00C4, 0x0139, 0x0106, 0x00C7,
+    0x010C, 0x00C9, 0x0118, 0x00CB, 0x011A, 0x00CD, 0x00CE, 0x010E, 0x0110, 0x0143, 0x0147, 0x00D3,
+    0x00D4, 0x0150, 0x00D6, 0x00D7, 0x0158, 0x016E, 0x00DA, 0x0170, 0x00DC, 0x00DD, 0x0162, 0x00DF,
+    0x0155, 0x00E1, 0x00E2, 0x0103, 0x00E4, 0x013A, 0x0107, 0x00E7, 0x010D, 0x00E9, 0x0119, 0x00EB,
+    0x011B, 0x00ED, 0x00EE, 0x010F, 0x0111, 0x0144, 0x0148, 0x00F3, 0x00F4, 0x0151, 0x00F6, 0x00F7,
+    0x0159, 0x016F, 0x00FA, 0x0171, 0x00FC, 0x00FD, 0x0163, 0x02D9,
+];
+
+const CP1251_DECODE_TABLE: [u16; 128] = [
+    0x0402, 0x0403, 0x201A, 0x0453, 0x201E, 0x2026, 0x2020, 0x2021, 0x20AC, 0x2030, 0x0409, 0x2039,
+    0x040A, 0x040C, 0x040B, 0x040F, 0x0452, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0xFFFF, 0x2122, 0x0459, 0x203A, 0x045A, 0x045C, 0x045B, 0x045F, 0x00A0, 0x040E, 0x045E, 0x0408,
+    0x00A4, 0x0490, 0x00A6, 0x00A7, 0x0401, 0x00A9, 0x0404, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x0407,
+    0x00B0, 0x00B1, 0x0406, 0x0456, 0x0491, 0x00B5, 0x00B6, 0x00B7, 0x0451, 0x2116, 0x0454, 0x00BB,
+    0x0458, 0x0405, 0x0455, 0x0457, 0x0410, 0x0411, 0x0412, 0x0413, 0x0414, 0x0415, 0x0416, 0x0417,
+    0x0418, 0x0419, 0x041A, 0x041B, 0x041C, 0x041D, 0x041E, 0x041F, 0x0420, 0x0421, 0x0422, 0x0423,
+    0x0424, 0x0425, 0x0426, 0x0427, 0x0428, 0x0429, 0x042A, 0x042B, 0x042C, 0x042D, 0x042E, 0x042F,
+    0x0430, 0x0431, 0x0432, 0x0433, 0x0434, 0x0435, 0x0436, 0x0437, 0x0438, 0x0439, 0x043A, 0x043B,
+    0x043C, 0x043D, 0x043E, 0x043F, 0x0440, 0x0441, 0x0442, 0x0443, 0x0444, 0x0445, 0x0446, 0x0447,
+    0x0448, 0x0449, 0x044A, 0x044B, 0x044C, 0x044D, 0x044E, 0x044F,
+];
+
+const CP860_DECODE_TABLE: [u16; 128] = [
+    0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E3, 0x00E0, 0x00C1, 0x00E7, 0x00EA, 0x00CA, 0x00E8, 0x00CD,
+    0x00D4, 0x00EC, 0x00C3, 0x00C2, 0x00C9, 0x00C0, 0x00C8, 0x00F4, 0x00F5, 0x00F2, 0x00DA, 0x00F9,
+    0x00CC, 0x00D5, 0x00DC, 0x00A2, 0x00A3, 0x00D9, 0x20A7, 0x00D3, 0x00E1, 0x00ED, 0x00F3, 0x00FA,
+    0x00F1, 0x00D1, 0x00AA, 0x00BA, 0x00BF, 0x00D2, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00BB,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556, 0x2555, 0x2563, 0x2551, 0x2557,
+    0x255D, 0x255C, 0x255B, 0x2510, 0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F,
+    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567, 0x2568, 0x2564, 0x2565, 0x2559,
+    0x2558, 0x2552, 0x2553, 0x256B, 0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
+    0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4, 0x03A6, 0x0398, 0x03A9, 0x03B4,
+    0x221E, 0x03C6, 0x03B5, 0x2229, 0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248,
+    0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0,
+];
+const CP862_DECODE_TABLE: [u16; 128] = [
+    0x05D0, 0x05D1, 0x05D2, 0x05D3, 0x05D4, 0x05D5, 0x05D6, 0x05D7, 0x05D8, 0x05D9, 0x05DA, 0x05DB,
+    0x05DC, 0x05DD, 0x05DE, 0x05DF, 0x05E0, 0x05E1, 0x05E2, 0x05E3, 0x05E4, 0x05E5, 0x05E6, 0x05E7,
+    0x05E8, 0x05E9, 0x05EA, 0x00A2, 0x00A3, 0x00A5, 0x20A7, 0x0192, 0x00E1, 0x00ED, 0x00F3, 0x00FA,
+    0x00F1, 0x00D1, 0x00AA, 0x00BA, 0x00BF, 0x2310, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00BB,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556, 0x2555, 0x2563, 0x2551, 0x2557,
+    0x255D, 0x255C, 0x255B, 0x2510, 0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F,
+    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567, 0x2568, 0x2564, 0x2565, 0x2559,
+    0x2558, 0x2552, 0x2553, 0x256B, 0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
+    0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4, 0x03A6, 0x0398, 0x03A9, 0x03B4,
+    0x221E, 0x03C6, 0x03B5, 0x2229, 0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248,
+    0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0,
+];
+const CP863_DECODE_TABLE: [u16; 128] = [
+    0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00C2, 0x00E0, 0x00B6, 0x00E7, 0x00EA, 0x00EB, 0x00E8, 0x00EF,
+    0x00EE, 0x2017, 0x00C0, 0x00A7, 0x00C9, 0x00C8, 0x00CA, 0x00F4, 0x00CB, 0x00CF, 0x00FB, 0x00F9,
+    0x00A4, 0x00D4, 0x00DC, 0x00A2, 0x00A3, 0x00D9, 0x00DB, 0x0192, 0x00A6, 0x00B4, 0x00F3, 0x00FA,
+    0x00A8, 0x00B8, 0x00B3, 0x00AF, 0x00CE, 0x2310, 0x00AC, 0x00BD, 0x00BC, 0x00BE, 0x00AB, 0x00BB,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556, 0x2555, 0x2563, 0x2551, 0x2557,
+    0x255D, 0x255C, 0x255B, 0x2510, 0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F,
+    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567, 0x2568, 0x2564, 0x2565, 0x2559,
+    0x2558, 0x2552, 0x2553, 0x256B, 0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
+    0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4, 0x03A6, 0x0398, 0x03A9, 0x03B4,
+    0x221E, 0x03C6, 0x03B5, 0x2229, 0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248,
+    0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0,
+];
+const CP1253_DECODE_TABLE: [u16; 128] = [
+    0x20AC, 0xFFFF, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0xFFFF, 0x2030, 0xFFFF, 0x2039,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0xFFFF, 0x2122, 0xFFFF, 0x203A, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0x00A0, 0x0385, 0x0386, 0x00A3,
+    0x00A4, 0x00A5, 0x00A6, 0x00A7, 0x00A8, 0x00A9, 0xFFFF, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x2015,
+    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x0384, 0x00B5, 0x00B6, 0x00B7, 0x0388, 0x0389, 0x038A, 0x00BB,
+    0x038C, 0x00BD, 0x038E, 0x038F, 0x0390, 0x0391, 0x0392, 0x0393, 0x0394, 0x0395, 0x0396, 0x0397,
+    0x0398, 0x0399, 0x039A, 0x039B, 0x039C, 0x039D, 0x039E, 0x039F, 0x03A0, 0x03A1, 0xFFFF, 0x03A3,
+    0x03A4, 0x03A5, 0x03A6, 0x03A7, 0x03A8, 0x03A9, 0x03AA, 0x03AB, 0x03AC, 0x03AD, 0x03AE, 0x03AF,
+    0x03B0, 0x03B1, 0x03B2, 0x03B3, 0x03B4, 0x03B5, 0x03B6, 0x03B7, 0x03B8, 0x03B9, 0x03BA, 0x03BB,
+    0x03BC, 0x03BD, 0x03BE, 0x03BF, 0x03C0, 0x03C1, 0x03C2, 0x03C3, 0x03C4, 0x03C5, 0x03C6, 0x03C7,
+    0x03C8, 0x03C9, 0x03CA, 0x03CB, 0x03CC, 0x03CD, 0x03CE, 0xFFFF,
+];
+const CP1254_DECODE_TABLE: [u16; 128] = [
+    0x20AC, 0xFFFF, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039,
+    0x0152, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0xFFFF, 0xFFFF, 0x0178, 0x00A0, 0x00A1, 0x00A2, 0x00A3,
+    0x00A4, 0x00A5, 0x00A6, 0x00A7, 0x00A8, 0x00A9, 0x00AA, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00AF,
+    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x00B4, 0x00B5, 0x00B6, 0x00B7, 0x00B8, 0x00B9, 0x00BA, 0x00BB,
+    0x00BC, 0x00BD, 0x00BE, 0x00BF, 0x00C0, 0x00C1, 0x00C2, 0x00C3, 0x00C4, 0x00C5, 0x00C6, 0x00C7,
+    0x00C8, 0x00C9, 0x00CA, 0x00CB, 0x00CC, 0x00CD, 0x00CE, 0x00CF, 0x011E, 0x00D1, 0x00D2, 0x00D3,
+    0x00D4, 0x00D5, 0x00D6, 0x00D7, 0x00D8, 0x00D9, 0x00DA, 0x00DB, 0x00DC, 0x0130, 0x015E, 0x00DF,
+    0x00E0, 0x00E1, 0x00E2, 0x00E3, 0x00E4, 0x00E5, 0x00E6, 0x00E7, 0x00E8, 0x00E9, 0x00EA, 0x00EB,
+    0x00EC, 0x00ED, 0x00EE, 0x00EF, 0x011F, 0x00F1, 0x00F2, 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x00F7,
+    0x00F8, 0x00F9, 0x00FA, 0x00FB, 0x00FC, 0x0131, 0x015F, 0x00FF,
+];
+const CP1255_DECODE_TABLE: [u16; 128] = [
+    0x20AC, 0xFFFF, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0xFFFF, 0x2039,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0x02DC, 0x2122, 0xFFFF, 0x203A, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0x00A0, 0x00A1, 0x00A2, 0x00A3,
+    0x20AA, 0x00A5, 0x00A6, 0x00A7, 0x00A8, 0x00A9, 0x00D7, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00AF,
+    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x00B4, 0x00B5, 0x00B6, 0x00B7, 0x00B8, 0x00B9, 0x00F7, 0x00BB,
+    0x00BC, 0x00BD, 0x00BE, 0x00BF, 0x05B0, 0x05B1, 0x05B2, 0x05B3, 0x05B4, 0x05B5, 0x05B6, 0x05B7,
+    0x05B8, 0x05B9, 0xFFFF, 0x05BB, 0x05BC, 0x05BD, 0x05BE, 0x05BF, 0x05C0, 0x05C1, 0x05C2, 0x05C3,
+    0x05F0, 0x05F1, 0x05F2, 0x05F3, 0x05F4, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0x05D0, 0x05D1, 0x05D2, 0x05D3, 0x05D4, 0x05D5, 0x05D6, 0x05D7, 0x05D8, 0x05D9, 0x05DA, 0x05DB,
+    0x05DC, 0x05DD, 0x05DE, 0x05DF, 0x05E0, 0x05E1, 0x05E2, 0x05E3, 0x05E4, 0x05E5, 0x05E6, 0x05E7,
+    0x05E8, 0x05E9, 0x05EA, 0xFFFF, 0xFFFF, 0x200E, 0x200F, 0xFFFF,
+];
+const CP1256_DECODE_TABLE: [u16; 128] = [
+    0x20AC, 0x067E, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0679, 0x2039,
+    0x0152, 0x0686, 0x0698, 0x0688, 0x06AF, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0x06A9, 0x2122, 0x0691, 0x203A, 0x0153, 0x200C, 0x200D, 0x06BA, 0x00A0, 0x060C, 0x00A2, 0x00A3,
+    0x00A4, 0x00A5, 0x00A6, 0x00A7, 0x00A8, 0x00A9, 0x06BE, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00AF,
+    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x00B4, 0x00B5, 0x00B6, 0x00B7, 0x00B8, 0x00B9, 0x061B, 0x00BB,
+    0x00BC, 0x00BD, 0x00BE, 0x061F, 0x06C1, 0x0621, 0x0622, 0x0623, 0x0624, 0x0625, 0x0626, 0x0627,
+    0x0628, 0x0629, 0x062A, 0x062B, 0x062C, 0x062D, 0x062E, 0x062F, 0x0630, 0x0631, 0x0632, 0x0633,
+    0x0634, 0x0635, 0x0636, 0x00D7, 0x0637, 0x0638, 0x0639, 0x063A, 0x0640, 0x0641, 0x0642, 0x0643,
+    0x00E0, 0x0644, 0x00E2, 0x0645, 0x0646, 0x0647, 0x0648, 0x00E7, 0x00E8, 0x00E9, 0x00EA, 0x00EB,
+    0x0649, 0x064A, 0x00EE, 0x00EF, 0x064B, 0x064C, 0x064D, 0x064E, 0x00F4, 0x064F, 0x0650, 0x00F7,
+    0x0651, 0x00F9, 0x0652, 0x00FB, 0x00FC, 0x200E, 0x200F, 0x06D2,
+];
+const CP1257_DECODE_TABLE: [u16; 128] = [
+    0x20AC, 0xFFFF, 0x201A, 0xFFFF, 0x201E, 0x2026, 0x2020, 0x2021, 0xFFFF, 0x2030, 0xFFFF, 0x2039,
+    0xFFFF, 0x00A8, 0x02C7, 0x00B8, 0xFFFF, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0xFFFF, 0x2122, 0xFFFF, 0x203A, 0xFFFF, 0x00AF, 0x02DB, 0xFFFF, 0x00A0, 0xFFFF, 0x00A2, 0x00A3,
+    0x00A4, 0xFFFF, 0x00A6, 0x00A7, 0x00D8, 0x00A9, 0x0156, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00C6,
+    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x00B4, 0x00B5, 0x00B6, 0x00B7, 0x00F8, 0x00B9, 0x0157, 0x00BB,
+    0x00BC, 0x00BD, 0x00BE, 0x00E6, 0x0104, 0x012E, 0x0100, 0x0106, 0x00C4, 0x00C5, 0x0118, 0x0112,
+    0x010C, 0x00C9, 0x0179, 0x0116, 0x0122, 0x0136, 0x012A, 0x013B, 0x0160, 0x0143, 0x0145, 0x00D3,
+    0x014C, 0x00D5, 0x00D6, 0x00D7, 0x0172, 0x0141, 0x015A, 0x016A, 0x00DC, 0x017B, 0x017D, 0x00DF,
+    0x0105, 0x012F, 0x0101, 0x0107, 0x00E4, 0x00E5, 0x0119, 0x0113, 0x010D, 0x00E9, 0x017A, 0x0117,
+    0x0123, 0x0137, 0x012B, 0x013C, 0x0161, 0x0144, 0x0146, 0x00F3, 0x014D, 0x00F5, 0x00F6, 0x00F7,
+    0x0173, 0x0142, 0x015B, 0x016B, 0x00FC, 0x017C, 0x017E, 0x02D9,
+];
+const KOI8_R_DECODE_TABLE: [u16; 128] = [
+    0x2500, 0x2502, 0x250C, 0x2510, 0x2514, 0x2518, 0x251C, 0x2524, 0x252C, 0x2534, 0x253C, 0x2580,
+    0x2584, 0x2588, 0x258C, 0x2590, 0x2591, 0x2592, 0x2593, 0x2320, 0x25A0, 0x2219, 0x221A, 0x2248,
+    0x2264, 0x2265, 0x00A0, 0x2321, 0x00B0, 0x00B2, 0x00B7, 0x00F7, 0x2550, 0x2551, 0x2552, 0x0451,
+    0x2553, 0x2554, 0x2555, 0x2556, 0x2557, 0x2558, 0x2559, 0x255A, 0x255B, 0x255C, 0x255D, 0x255E,
+    0x255F, 0x2560, 0x2561, 0x0401, 0x2562, 0x2563, 0x2564, 0x2565, 0x2566, 0x2567, 0x2568, 0x2569,
+    0x256A, 0x256B, 0x256C, 0x00A9, 0x044E, 0x0430, 0x0431, 0x0446, 0x0434, 0x0435, 0x0444, 0x0433,
+    0x0445, 0x0438, 0x0439, 0x043A, 0x043B, 0x043C, 0x043D, 0x043E, 0x043F, 0x044F, 0x0440, 0x0441,
+    0x0442, 0x0443, 0x0436, 0x0432, 0x044C, 0x044B, 0x0437, 0x0448, 0x044D, 0x0449, 0x0447, 0x044A,
+    0x042E, 0x0410, 0x0411, 0x0426, 0x0414, 0x0415, 0x0424, 0x0413, 0x0425, 0x0418, 0x0419, 0x041A,
+    0x041B, 0x041C, 0x041D, 0x041E, 0x041F, 0x042F, 0x0420, 0x0421, 0x0422, 0x0423, 0x0416, 0x0412,
+    0x042C, 0x042B, 0x0417, 0x0428, 0x042D, 0x0429, 0x0427, 0x042A,
+];
+
+const KOI8_U_DECODE_TABLE: [u16; 128] = [
+    0x2500, 0x2502, 0x250C, 0x2510, 0x2514, 0x2518, 0x251C, 0x2524, 0x252C, 0x2534, 0x253C, 0x2580,
+    0x2584, 0x2588, 0x258C, 0x2590, 0x2591, 0x2592, 0x2593, 0x2320, 0x25A0, 0x2219, 0x221A, 0x2248,
+    0x2264, 0x2265, 0x00A0, 0x2321, 0x00B0, 0x00B2, 0x00B7, 0x00F7, 0x2550, 0x2551, 0x2552, 0x0451,
+    0x0454, 0x2554, 0x0456, 0x0457, 0x2557, 0x2558, 0x2559, 0x255A, 0x255B, 0x0491, 0x255D, 0x255E,
+    0x255F, 0x2560, 0x2561, 0x0401, 0x0404, 0x2563, 0x0406, 0x0407, 0x2566, 0x2567, 0x2568, 0x2569,
+    0x256A, 0x0490, 0x256C, 0x00A9, 0x044E, 0x0430, 0x0431, 0x0446, 0x0434, 0x0435, 0x0444, 0x0433,
+    0x0445, 0x0438, 0x0439, 0x043A, 0x043B, 0x043C, 0x043D, 0x043E, 0x043F, 0x044F, 0x0440, 0x0441,
+    0x0442, 0x0443, 0x0436, 0x0432, 0x044C, 0x044B, 0x0437, 0x0448, 0x044D, 0x0449, 0x0447, 0x044A,
+    0x042E, 0x0410, 0x0411, 0x0426, 0x0414, 0x0415, 0x0424, 0x0413, 0x0425, 0x0418, 0x0419, 0x041A,
+    0x041B, 0x041C, 0x041D, 0x041E, 0x041F, 0x042F, 0x0420, 0x0421, 0x0422, 0x0423, 0x0416, 0x0412,
+    0x042C, 0x042B, 0x0417, 0x0428, 0x042D, 0x0429, 0x0427, 0x042A,
+];
+
+const ISO8859_2_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087, 0x0088, 0x0089, 0x008A, 0x008B,
+    0x008C, 0x008D, 0x008E, 0x008F, 0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F, 0x00A0, 0x0104, 0x02D8, 0x0141,
+    0x00A4, 0x013D, 0x015A, 0x00A7, 0x00A8, 0x0160, 0x015E, 0x0164, 0x0179, 0x00AD, 0x017D, 0x017B,
+    0x00B0, 0x0105, 0x02DB, 0x0142, 0x00B4, 0x013E, 0x015B, 0x02C7, 0x00B8, 0x0161, 0x015F, 0x0165,
+    0x017A, 0x02DD, 0x017E, 0x017C, 0x0154, 0x00C1, 0x00C2, 0x0102, 0x00C4, 0x0139, 0x0106, 0x00C7,
+    0x010C, 0x00C9, 0x0118, 0x00CB, 0x011A, 0x00CD, 0x00CE, 0x010E, 0x0110, 0x0143, 0x0147, 0x00D3,
+    0x00D4, 0x0150, 0x00D6, 0x00D7, 0x0158, 0x016E, 0x00DA, 0x0170, 0x00DC, 0x00DD, 0x0162, 0x00DF,
+    0x0155, 0x00E1, 0x00E2, 0x0103, 0x00E4, 0x013A, 0x0107, 0x00E7, 0x010D, 0x00E9, 0x0119, 0x00EB,
+    0x011B, 0x00ED, 0x00EE, 0x010F, 0x0111, 0x0144, 0x0148, 0x00F3, 0x00F4, 0x0151, 0x00F6, 0x00F7,
+    0x0159, 0x016F, 0x00FA, 0x0171, 0x00FC, 0x00FD, 0x0163, 0x02D9,
+];
+
+const ISO8859_3_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087, 0x0088, 0x0089, 0x008A, 0x008B,
+    0x008C, 0x008D, 0x008E, 0x008F, 0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F, 0x00A0, 0x0126, 0x02D8, 0x00A3,
+    0x00A4, 0xFFFF, 0x0124, 0x00A7, 0x00A8, 0x0130, 0x015E, 0x011E, 0x0134, 0x00AD, 0xFFFF, 0x017B,
+    0x00B0, 0x0127, 0x00B2, 0x00B3, 0x00B4, 0x00B5, 0x0125, 0x00B7, 0x00B8, 0x0131, 0x015F, 0x011F,
+    0x0135, 0x00BD, 0xFFFF, 0x017C, 0x00C0, 0x00C1, 0x00C2, 0xFFFF, 0x00C4, 0x010A, 0x0108, 0x00C7,
+    0x00C8, 0x00C9, 0x00CA, 0x00CB, 0x00CC, 0x00CD, 0x00CE, 0x00CF, 0xFFFF, 0x00D1, 0x00D2, 0x00D3,
+    0x00D4, 0x0120, 0x00D6, 0x00D7, 0x011C, 0x00D9, 0x00DA, 0x00DB, 0x00DC, 0x016C, 0x015C, 0x00DF,
+    0x00E0, 0x00E1, 0x00E2, 0xFFFF, 0x00E4, 0x010B, 0x0109, 0x00E7, 0x00E8, 0x00E9, 0x00EA, 0x00EB,
+    0x00EC, 0x00ED, 0x00EE, 0x00EF, 0xFFFF, 0x00F1, 0x00F2, 0x00F3, 0x00F4, 0x0121, 0x00F6, 0x00F7,
+    0x011D, 0x00F9, 0x00FA, 0x00FB, 0x00FC, 0x016D, 0x015D, 0x02D9,
+];
+const ISO8859_4_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087, 0x0088, 0x0089, 0x008A, 0x008B,
+    0x008C, 0x008D, 0x008E, 0x008F, 0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F, 0x00A0, 0x0104, 0x0138, 0x0156,
+    0x00A4, 0x0128, 0x013B, 0x00A7, 0x00A8, 0x0160, 0x0112, 0x0122, 0x0166, 0x00AD, 0x017D, 0x00AF,
+    0x00B0, 0x0105, 0x02DB, 0x0157, 0x00B4, 0x0129, 0x013C, 0x02C7, 0x00B8, 0x0161, 0x0113, 0x0123,
+    0x0167, 0x014A, 0x017E, 0x014B, 0x0100, 0x00C1, 0x00C2, 0x00C3, 0x00C4, 0x00C5, 0x00C6, 0x012E,
+    0x010C, 0x00C9, 0x0118, 0x00CB, 0x0116, 0x00CD, 0x00CE, 0x012A, 0x0110, 0x0145, 0x014C, 0x0136,
+    0x00D4, 0x00D5, 0x00D6, 0x00D7, 0x00D8, 0x0172, 0x00DA, 0x00DB, 0x00DC, 0x0168, 0x016A, 0x00DF,
+    0x0101, 0x00E1, 0x00E2, 0x00E3, 0x00E4, 0x00E5, 0x00E6, 0x012F, 0x010D, 0x00E9, 0x0119, 0x00EB,
+    0x0117, 0x00ED, 0x00EE, 0x012B, 0x0111, 0x0146, 0x014D, 0x0137, 0x00F4, 0x00F5, 0x00F6, 0x00F7,
+    0x00F8, 0x0173, 0x00FA, 0x00FB, 0x00FC, 0x0169, 0x016B, 0x02D9,
+];
+const ISO8859_5_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087, 0x0088, 0x0089, 0x008A, 0x008B,
+    0x008C, 0x008D, 0x008E, 0x008F, 0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F, 0x00A0, 0x0401, 0x0402, 0x0403,
+    0x0404, 0x0405, 0x0406, 0x0407, 0x0408, 0x0409, 0x040A, 0x040B, 0x040C, 0x00AD, 0x040E, 0x040F,
+    0x0410, 0x0411, 0x0412, 0x0413, 0x0414, 0x0415, 0x0416, 0x0417, 0x0418, 0x0419, 0x041A, 0x041B,
+    0x041C, 0x041D, 0x041E, 0x041F, 0x0420, 0x0421, 0x0422, 0x0423, 0x0424, 0x0425, 0x0426, 0x0427,
+    0x0428, 0x0429, 0x042A, 0x042B, 0x042C, 0x042D, 0x042E, 0x042F, 0x0430, 0x0431, 0x0432, 0x0433,
+    0x0434, 0x0435, 0x0436, 0x0437, 0x0438, 0x0439, 0x043A, 0x043B, 0x043C, 0x043D, 0x043E, 0x043F,
+    0x0440, 0x0441, 0x0442, 0x0443, 0x0444, 0x0445, 0x0446, 0x0447, 0x0448, 0x0449, 0x044A, 0x044B,
+    0x044C, 0x044D, 0x044E, 0x044F, 0x2116, 0x0451, 0x0452, 0x0453, 0x0454, 0x0455, 0x0456, 0x0457,
+    0x0458, 0x0459, 0x045A, 0x045B, 0x045C, 0x00A7, 0x045E, 0x045F,
+];
+
+const ISO8859_6_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087, 0x0088, 0x0089, 0x008A, 0x008B,
+    0x008C, 0x008D, 0x008E, 0x008F, 0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F, 0x00A0, 0xFFFF, 0xFFFF, 0xFFFF,
+    0x00A4, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0x060C, 0x00AD, 0xFFFF, 0xFFFF,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0x061B,
+    0xFFFF, 0xFFFF, 0xFFFF, 0x061F, 0xFFFF, 0x0621, 0x0622, 0x0623, 0x0624, 0x0625, 0x0626, 0x0627,
+    0x0628, 0x0629, 0x062A, 0x062B, 0x062C, 0x062D, 0x062E, 0x062F, 0x0630, 0x0631, 0x0632, 0x0633,
+    0x0634, 0x0635, 0x0636, 0x0637, 0x0638, 0x0639, 0x063A, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0x0640, 0x0641, 0x0642, 0x0643, 0x0644, 0x0645, 0x0646, 0x0647, 0x0648, 0x0649, 0x064A, 0x064B,
+    0x064C, 0x064D, 0x064E, 0x064F, 0x0650, 0x0651, 0x0652, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+];
+const ISO8859_7_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087, 0x0088, 0x0089, 0x008A, 0x008B,
+    0x008C, 0x008D, 0x008E, 0x008F, 0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F, 0x00A0, 0x2018, 0x2019, 0x00A3,
+    0x20AC, 0x20AF, 0x00A6, 0x00A7, 0x00A8, 0x00A9, 0x037A, 0x00AB, 0x00AC, 0x00AD, 0xFFFF, 0x2015,
+    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x0384, 0x0385, 0x0386, 0x00B7, 0x0388, 0x0389, 0x038A, 0x00BB,
+    0x038C, 0x00BD, 0x038E, 0x038F, 0x0390, 0x0391, 0x0392, 0x0393, 0x0394, 0x0395, 0x0396, 0x0397,
+    0x0398, 0x0399, 0x039A, 0x039B, 0x039C, 0x039D, 0x039E, 0x039F, 0x03A0, 0x03A1, 0xFFFF, 0x03A3,
+    0x03A4, 0x03A5, 0x03A6, 0x03A7, 0x03A8, 0x03A9, 0x03AA, 0x03AB, 0x03AC, 0x03AD, 0x03AE, 0x03AF,
+    0x03B0, 0x03B1, 0x03B2, 0x03B3, 0x03B4, 0x03B5, 0x03B6, 0x03B7, 0x03B8, 0x03B9, 0x03BA, 0x03BB,
+    0x03BC, 0x03BD, 0x03BE, 0x03BF, 0x03C0, 0x03C1, 0x03C2, 0x03C3, 0x03C4, 0x03C5, 0x03C6, 0x03C7,
+    0x03C8, 0x03C9, 0x03CA, 0x03CB, 0x03CC, 0x03CD, 0x03CE, 0xFFFF,
+];
+
+const ISO8859_8_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087, 0x0088, 0x0089, 0x008A, 0x008B,
+    0x008C, 0x008D, 0x008E, 0x008F, 0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F, 0x00A0, 0xFFFF, 0x00A2, 0x00A3,
+    0x00A4, 0x00A5, 0x00A6, 0x00A7, 0x00A8, 0x00A9, 0x00D7, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00AF,
+    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x00B4, 0x00B5, 0x00B6, 0x00B7, 0x00B8, 0x00B9, 0x00F7, 0x00BB,
+    0x00BC, 0x00BD, 0x00BE, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+    0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0x2017,
+    0x05D0, 0x05D1, 0x05D2, 0x05D3, 0x05D4, 0x05D5, 0x05D6, 0x05D7, 0x05D8, 0x05D9, 0x05DA, 0x05DB,
+    0x05DC, 0x05DD, 0x05DE, 0x05DF, 0x05E0, 0x05E1, 0x05E2, 0x05E3, 0x05E4, 0x05E5, 0x05E6, 0x05E7,
+    0x05E8, 0x05E9, 0x05EA, 0xFFFF, 0xFFFF, 0x200E, 0x200F, 0xFFFF,
+];
+const ISO8859_10_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087, 0x0088, 0x0089, 0x008A, 0x008B,
+    0x008C, 0x008D, 0x008E, 0x008F, 0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F, 0x00A0, 0x0104, 0x0112, 0x0122,
+    0x012A, 0x0128, 0x0136, 0x00A7, 0x013B, 0x0110, 0x0160, 0x0166, 0x017D, 0x00AD, 0x016A, 0x014A,
+    0x00B0, 0x0105, 0x0113, 0x0123, 0x012B, 0x0129, 0x0137, 0x00B7, 0x013C, 0x0111, 0x0161, 0x0167,
+    0x017E, 0x2015, 0x016B, 0x014B, 0x0100, 0x00C1, 0x00C2, 0x00C3, 0x00C4, 0x00C5, 0x00C6, 0x012E,
+    0x010C, 0x00C9, 0x0118, 0x00CB, 0x0116, 0x00CD, 0x00CE, 0x00CF, 0x00D0, 0x0145, 0x014C, 0x00D3,
+    0x00D4, 0x00D5, 0x00D6, 0x0168, 0x00D8, 0x0172, 0x00DA, 0x00DB, 0x00DC, 0x00DD, 0x00DE, 0x00DF,
+    0x0101, 0x00E1, 0x00E2, 0x00E3, 0x00E4, 0x00E5, 0x00E6, 0x012F, 0x010D, 0x00E9, 0x0119, 0x00EB,
+    0x0117, 0x00ED, 0x00EE, 0x00EF, 0x00F0, 0x0146, 0x014D, 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x0169,
+    0x00F8, 0x0173, 0x00FA, 0x00FB, 0x00FC, 0x00FD, 0x00FE, 0x0138,
+];
+const ISO8859_15_DECODE_TABLE: [u16; 128] = [
+    0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087, 0x0088, 0x0089, 0x008A, 0x008B,
+    0x008C, 0x008D, 0x008E, 0x008F, 0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+    0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F, 0x00A0, 0x00A1, 0x00A2, 0x00A3,
+    0x20AC, 0x00A5, 0x0160, 0x00A7, 0x0161, 0x00A9, 0x00AA, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00AF,
+    0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x017D, 0x00B5, 0x00B6, 0x00B7, 0x017E, 0x00B9, 0x00BA, 0x00BB,
+    0x0152, 0x0153, 0x0178, 0x00BF, 0x00C0, 0x00C1, 0x00C2, 0x00C3, 0x00C4, 0x00C5, 0x00C6, 0x00C7,
+    0x00C8, 0x00C9, 0x00CA, 0x00CB, 0x00CC, 0x00CD, 0x00CE, 0x00CF, 0x00D0, 0x00D1, 0x00D2, 0x00D3,
+    0x00D4, 0x00D5, 0x00D6, 0x00D7, 0x00D8, 0x00D9, 0x00DA, 0x00DB, 0x00DC, 0x00DD, 0x00DE, 0x00DF,
+    0x00E0, 0x00E1, 0x00E2, 0x00E3, 0x00E4, 0x00E5, 0x00E6, 0x00E7, 0x00E8, 0x00E9, 0x00EA, 0x00EB,
+    0x00EC, 0x00ED, 0x00EE, 0x00EF, 0x00F0, 0x00F1, 0x00F2, 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x00F7,
+    0x00F8, 0x00F9, 0x00FA, 0x00FB, 0x00FC, 0x00FD, 0x00FE, 0x00FF,
+];
+
+const MAC_ROMAN_DECODE_TABLE: [u16; 128] = [
+    0x00C4, 0x00C5, 0x00C7, 0x00C9, 0x00D1, 0x00D6, 0x00DC, 0x00E1, 0x00E0, 0x00E2, 0x00E4, 0x00E3,
+    0x00E5, 0x00E7, 0x00E9, 0x00E8, 0x00EA, 0x00EB, 0x00ED, 0x00EC, 0x00EE, 0x00EF, 0x00F1, 0x00F3,
+    0x00F2, 0x00F4, 0x00F6, 0x00F5, 0x00FA, 0x00F9, 0x00FB, 0x00FC, 0x2020, 0x00B0, 0x00A2, 0x00A3,
+    0x00A7, 0x2022, 0x00B6, 0x00DF, 0x00AE, 0x00A9, 0x2122, 0x00B4, 0x00A8, 0x2260, 0x00C6, 0x00D8,
+    0x221E, 0x00B1, 0x2264, 0x2265, 0x00A5, 0x00B5, 0x2202, 0x2211, 0x220F, 0x03C0, 0x222B, 0x00AA,
+    0x00BA, 0x03A9, 0x00E6, 0x00F8, 0x00BF, 0x00A1, 0x00AC, 0x221A, 0x0192, 0x2248, 0x2206, 0x00AB,
+    0x00BB, 0x2026, 0x00A0, 0x00C0, 0x00C3, 0x00D5, 0x0152, 0x0153, 0x2013, 0x2014, 0x201C, 0x201D,
+    0x2018, 0x2019, 0x00F7, 0x25CA, 0x00FF, 0x0178, 0x2044, 0x20AC, 0x2039, 0x203A, 0xFB01, 0xFB02,
+    0x2021, 0x00B7, 0x201A, 0x201E, 0x2030, 0x00C2, 0x00CA, 0x00C1, 0x00CB, 0x00C8, 0x00CD, 0x00CE,
+    0x00CF, 0x00CC, 0x00D3, 0x00D4, 0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9, 0x0131, 0x02C6, 0x02DC,
+    0x00AF, 0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD, 0x02DB, 0x02C7,
+];
+
+fn cp1252_decode_byte(byte: u8) -> Option<u32> {
+    if byte <= 0x7F || byte >= 0xA0 {
+        return Some(byte as u32);
+    }
+    let idx = (byte - 0x80) as usize;
+    let code = CP1252_DECODE_TABLE[idx];
+    if code == 0xFFFF {
+        None
+    } else {
+        Some(code as u32)
+    }
+}
+
+fn decode_cp1252_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u8>, DecodeFailure> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for (idx, &byte) in bytes.iter().enumerate() {
+        if let Some(code) = cp1252_decode_byte(byte) {
+            push_wtf8_codepoint(&mut out, code);
+            continue;
+        }
+        match errors {
+            "ignore" => {}
+            "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+            "backslashreplace" => push_backslash_bytes_vec(&mut out, &[byte]),
+            "surrogateescape" => push_wtf8_codepoint(&mut out, 0xDC00 + byte as u32),
+            "strict" | "surrogatepass" => {
+                return Err(DecodeFailure::Byte {
+                    pos: idx,
+                    byte,
+                    message: "character maps to <undefined>",
+                });
+            }
+            other => {
+                return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn decode_charmap_with_errors(
+    bytes: &[u8],
+    errors: &str,
+    table: &[u16; 128],
+) -> Result<Vec<u8>, DecodeFailure> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for (idx, &byte) in bytes.iter().enumerate() {
+        if byte <= 0x7F {
+            out.push(byte);
+            continue;
+        }
+        let code = table[(byte - 0x80) as usize];
+        if code != 0xFFFF {
+            push_wtf8_codepoint(&mut out, code as u32);
+            continue;
+        }
+        match errors {
+            "ignore" => {}
+            "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+            "backslashreplace" => push_backslash_bytes_vec(&mut out, &[byte]),
+            "surrogateescape" => push_wtf8_codepoint(&mut out, 0xDC00 + byte as u32),
+            "strict" | "surrogatepass" => {
+                return Err(DecodeFailure::Byte {
+                    pos: idx,
+                    byte,
+                    message: "character maps to <undefined>",
+                });
+            }
+            other => {
+                return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn decode_utf8_bytes_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u8>, DecodeFailure> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut idx = 0usize;
+    let allow_surrogates = errors == "surrogatepass";
+    while idx < bytes.len() {
+        let first = bytes[idx];
+        if first < 0x80 {
+            out.push(first);
+            idx += 1;
+            continue;
+        }
+        if first < 0xC0 {
+            decode_utf8_invalid_byte(errors, &mut out, idx, first)?;
+            idx += 1;
+            continue;
+        }
+        let (needed, min_code) = if first < 0xE0 {
+            (1usize, 0x80u32)
+        } else if first < 0xF0 {
+            (2usize, 0x800u32)
+        } else if first < 0xF8 {
+            (3usize, 0x10000u32)
+        } else {
+            decode_utf8_invalid_byte(errors, &mut out, idx, first)?;
+            idx += 1;
+            continue;
+        };
+        if idx + needed >= bytes.len() {
+            decode_utf8_invalid_byte(errors, &mut out, idx, first)?;
+            idx += 1;
+            continue;
+        }
+        let mut code: u32 = (first & (0x7F >> needed)) as u32;
+        let mut ok = true;
+        for off in 1..=needed {
+            let byte = bytes[idx + off];
+            if (byte & 0xC0) != 0x80 {
+                ok = false;
+                break;
+            }
+            code = (code << 6) | (byte & 0x3F) as u32;
+        }
+        if !ok || code < min_code || code > 0x10FFFF {
+            decode_utf8_invalid_byte(errors, &mut out, idx, first)?;
+            idx += 1;
+            continue;
+        }
+        if is_surrogate(code) && !allow_surrogates {
+            decode_utf8_invalid_byte(errors, &mut out, idx, first)?;
+            idx += 1;
+            continue;
+        }
+        push_wtf8_codepoint(&mut out, code);
+        idx += needed + 1;
+    }
+    Ok(out)
+}
+
+fn decode_utf8_invalid_byte(
+    errors: &str,
+    out: &mut Vec<u8>,
+    pos: usize,
+    byte: u8,
+) -> Result<(), DecodeFailure> {
+    match errors {
+        "ignore" => Ok(()),
+        "replace" => {
+            push_wtf8_codepoint(out, 0xFFFD);
+            Ok(())
+        }
+        "backslashreplace" => {
+            push_backslash_bytes_vec(out, &[byte]);
+            Ok(())
+        }
+        "surrogateescape" => {
+            push_wtf8_codepoint(out, 0xDC00 + byte as u32);
+            Ok(())
+        }
+        "strict" | "surrogatepass" => Err(DecodeFailure::Byte {
+            pos,
+            byte,
+            message: "invalid start byte",
+        }),
+        other => Err(DecodeFailure::UnknownErrorHandler(other.to_string())),
+    }
+}
+
+fn hex_value(byte: u8) -> Option<u32> {
+    match byte {
+        b'0'..=b'9' => Some((byte - b'0') as u32),
+        b'a'..=b'f' => Some((byte - b'a' + 10) as u32),
+        b'A'..=b'F' => Some((byte - b'A' + 10) as u32),
+        _ => None,
+    }
+}
+
+fn parse_hex_prefix(bytes: &[u8], max: usize) -> (u32, usize) {
+    let mut value = 0u32;
+    let mut count = 0usize;
+    for &byte in bytes.iter().take(max) {
+        let Some(digit) = hex_value(byte) else {
+            break;
+        };
+        value = (value << 4) | digit;
+        count += 1;
+    }
+    (value, count)
+}
+
+fn parse_octal_prefix(bytes: &[u8], max: usize) -> (u32, usize) {
+    let mut value = 0u32;
+    let mut count = 0usize;
+    for &byte in bytes.iter().take(max) {
+        if !(b'0'..=b'7').contains(&byte) {
+            break;
+        }
+        value = (value << 3) | (byte - b'0') as u32;
+        count += 1;
+    }
+    (value, count)
+}
+
+fn handle_unicode_escape_failure(
+    errors: &str,
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    failure: DecodeFailure,
+) -> Result<usize, DecodeFailure> {
+    match errors {
+        "ignore" => Ok(end + 1),
+        "replace" => {
+            push_wtf8_codepoint(out, 0xFFFD);
+            Ok(end + 1)
+        }
+        "backslashreplace" => {
+            if start <= end && end < bytes.len() {
+                push_backslash_bytes_vec(out, &bytes[start..=end]);
+            }
+            Ok(end + 1)
+        }
+        "strict" | "surrogatepass" | "surrogateescape" => Err(failure),
+        other => Err(DecodeFailure::UnknownErrorHandler(other.to_string())),
+    }
+}
+
+fn decode_unicode_escape_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u8>, DecodeFailure> {
+    const TRUNC_X: &str = "truncated \\xXX escape";
+    const TRUNC_U: &str = "truncated \\uXXXX escape";
+    const TRUNC_U8: &str = "truncated \\UXXXXXXXX escape";
+    const MALFORMED_N: &str = "malformed \\N character escape";
+    const UNKNOWN_NAME: &str = "unknown Unicode character name";
+    const ILLEGAL_UNICODE: &str = "illegal Unicode character";
+    const TRAILING_SLASH: &str = "\\ at end of string";
+
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        let byte = bytes[idx];
+        if byte != b'\\' {
+            push_wtf8_codepoint(&mut out, byte as u32);
+            idx += 1;
+            continue;
+        }
+        if idx + 1 >= bytes.len() {
+            let failure = DecodeFailure::Byte {
+                pos: idx,
+                byte,
+                message: TRAILING_SLASH,
+            };
+            idx = handle_unicode_escape_failure(errors, &mut out, bytes, idx, idx, failure)?;
+            continue;
+        }
+        let esc = bytes[idx + 1];
+        match esc {
+            b'\\' => {
+                push_wtf8_codepoint(&mut out, b'\\' as u32);
+                idx += 2;
+            }
+            b'\'' => {
+                push_wtf8_codepoint(&mut out, b'\'' as u32);
+                idx += 2;
+            }
+            b'"' => {
+                push_wtf8_codepoint(&mut out, b'"' as u32);
+                idx += 2;
+            }
+            b'a' => {
+                push_wtf8_codepoint(&mut out, 0x07);
+                idx += 2;
+            }
+            b'b' => {
+                push_wtf8_codepoint(&mut out, 0x08);
+                idx += 2;
+            }
+            b't' => {
+                push_wtf8_codepoint(&mut out, 0x09);
+                idx += 2;
+            }
+            b'n' => {
+                push_wtf8_codepoint(&mut out, 0x0A);
+                idx += 2;
+            }
+            b'v' => {
+                push_wtf8_codepoint(&mut out, 0x0B);
+                idx += 2;
+            }
+            b'f' => {
+                push_wtf8_codepoint(&mut out, 0x0C);
+                idx += 2;
+            }
+            b'r' => {
+                push_wtf8_codepoint(&mut out, 0x0D);
+                idx += 2;
+            }
+            b'\n' => {
+                idx += 2;
+            }
+            b'x' => {
+                let (value, count) = parse_hex_prefix(&bytes[idx + 2..], 2);
+                if count < 2 {
+                    let end = idx + 1 + count;
+                    let failure = DecodeFailure::Range {
+                        start: idx,
+                        end,
+                        message: TRUNC_X,
+                    };
+                    idx =
+                        handle_unicode_escape_failure(errors, &mut out, bytes, idx, end, failure)?;
+                    continue;
+                }
+                push_wtf8_codepoint(&mut out, value);
+                idx += 4;
+            }
+            b'u' => {
+                let (value, count) = parse_hex_prefix(&bytes[idx + 2..], 4);
+                if count < 4 {
+                    let end = idx + 1 + count;
+                    let failure = DecodeFailure::Range {
+                        start: idx,
+                        end,
+                        message: TRUNC_U,
+                    };
+                    idx =
+                        handle_unicode_escape_failure(errors, &mut out, bytes, idx, end, failure)?;
+                    continue;
+                }
+                push_wtf8_codepoint(&mut out, value);
+                idx += 6;
+            }
+            b'U' => {
+                let (value, count) = parse_hex_prefix(&bytes[idx + 2..], 8);
+                if count < 8 {
+                    let end = idx + 1 + count;
+                    let failure = DecodeFailure::Range {
+                        start: idx,
+                        end,
+                        message: TRUNC_U8,
+                    };
+                    idx =
+                        handle_unicode_escape_failure(errors, &mut out, bytes, idx, end, failure)?;
+                    continue;
+                }
+                if value > 0x10FFFF {
+                    let end = idx + 9;
+                    let failure = DecodeFailure::Range {
+                        start: idx,
+                        end,
+                        message: ILLEGAL_UNICODE,
+                    };
+                    idx =
+                        handle_unicode_escape_failure(errors, &mut out, bytes, idx, end, failure)?;
+                    continue;
+                }
+                push_wtf8_codepoint(&mut out, value);
+                idx += 10;
+            }
+            b'N' => {
+                if idx + 2 >= bytes.len() || bytes[idx + 2] != b'{' {
+                    let end = usize::min(idx + 1, bytes.len() - 1);
+                    let failure = DecodeFailure::Range {
+                        start: idx,
+                        end,
+                        message: MALFORMED_N,
+                    };
+                    idx =
+                        handle_unicode_escape_failure(errors, &mut out, bytes, idx, end, failure)?;
+                    continue;
+                }
+                let close = bytes[idx + 3..]
+                    .iter()
+                    .position(|&ch| ch == b'}')
+                    .map(|offset| idx + 3 + offset);
+                let Some(close_idx) = close else {
+                    let end = bytes.len() - 1;
+                    let failure = DecodeFailure::Range {
+                        start: idx,
+                        end,
+                        message: MALFORMED_N,
+                    };
+                    idx =
+                        handle_unicode_escape_failure(errors, &mut out, bytes, idx, end, failure)?;
+                    continue;
+                };
+                let name_bytes = &bytes[idx + 3..close_idx];
+                let name = std::str::from_utf8(name_bytes).unwrap_or("");
+                #[cfg(feature = "stdlib_unicode_names")]
+                let resolved = unicode_names2::character(name);
+                #[cfg(not(feature = "stdlib_unicode_names"))]
+                let resolved: Option<char> = None;
+                if let Some(ch) = resolved {
+                    push_wtf8_codepoint(&mut out, ch as u32);
+                    idx = close_idx + 1;
+                } else {
+                    let failure = DecodeFailure::Range {
+                        start: idx,
+                        end: close_idx,
+                        message: UNKNOWN_NAME,
+                    };
+                    idx = handle_unicode_escape_failure(
+                        errors, &mut out, bytes, idx, close_idx, failure,
+                    )?;
+                }
+            }
+            b'0'..=b'7' => {
+                let (value, count) = parse_octal_prefix(&bytes[idx + 1..], 3);
+                push_wtf8_codepoint(&mut out, value);
+                idx += 1 + count;
+            }
+            _ => {
+                push_wtf8_codepoint(&mut out, b'\\' as u32);
+                push_wtf8_codepoint(&mut out, esc as u32);
+                idx += 2;
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn utf16_decode_config(bytes: &[u8], kind: EncodingKind) -> (Endian, String, usize) {
+    match kind {
+        EncodingKind::Utf16 => {
+            if bytes.len() >= 2 {
+                if bytes[0] == 0xFF && bytes[1] == 0xFE {
+                    return (Endian::Little, "utf-16-le".to_string(), 2);
+                }
+                if bytes[0] == 0xFE && bytes[1] == 0xFF {
+                    return (Endian::Big, "utf-16-be".to_string(), 2);
+                }
+            }
+            let endian = native_endian();
+            let label = match endian {
+                Endian::Little => "utf-16-le".to_string(),
+                Endian::Big => "utf-16-be".to_string(),
+            };
+            (endian, label, 0)
+        }
+        EncodingKind::Utf16LE => (Endian::Little, "utf-16-le".to_string(), 0),
+        EncodingKind::Utf16BE => (Endian::Big, "utf-16-be".to_string(), 0),
+        _ => (native_endian(), "utf-16-le".to_string(), 0),
+    }
+}
+
+fn decode_utf16_with_errors(
+    bytes: &[u8],
+    errors: &str,
+    endian: Endian,
+    offset: usize,
+) -> Result<Vec<u8>, DecodeFailure> {
+    let data = if offset > 0 { &bytes[offset..] } else { bytes };
+    let mut out = Vec::new();
+    let mut idx = 0usize;
+    while idx + 1 < data.len() {
+        let unit = read_u16(data, idx, endian);
+        if (0xD800..=0xDBFF).contains(&unit) {
+            if idx + 3 >= data.len() {
+                match errors {
+                    "surrogatepass" | "surrogateescape" => {
+                        push_wtf8_codepoint(&mut out, unit as u32);
+                    }
+                    "ignore" => {}
+                    "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+                    "backslashreplace" => {
+                        push_backslash_bytes_vec(&mut out, &data[idx..]);
+                    }
+                    "strict" => {
+                        return Err(DecodeFailure::Range {
+                            start: offset + idx,
+                            end: offset + data.len() - 1,
+                            message: "unexpected end of data",
+                        });
+                    }
+                    other => {
+                        return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
+                    }
+                }
+                // Avoid double-applying trailing bytes in the post-loop remainder handler.
+                idx = data.len();
+                break;
+            }
+            let next = read_u16(data, idx + 2, endian);
+            if (0xDC00..=0xDFFF).contains(&next) {
+                let high = (unit as u32) - 0xD800;
+                let low = (next as u32) - 0xDC00;
+                let code = 0x10000 + ((high << 10) | low);
+                push_wtf8_codepoint(&mut out, code);
+                idx += 4;
+                continue;
+            }
+            match errors {
+                "surrogatepass" | "surrogateescape" => {
+                    push_wtf8_codepoint(&mut out, unit as u32);
+                }
+                "ignore" => {}
+                "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+                "backslashreplace" => {
+                    push_backslash_bytes_vec(&mut out, &data[idx..idx + 2]);
+                }
+                "strict" => {
+                    return Err(DecodeFailure::Range {
+                        start: offset + idx,
+                        end: offset + idx + 1,
+                        message: "illegal UTF-16 surrogate",
+                    });
+                }
+                other => {
+                    return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
+                }
+            }
+            idx += 2;
+            continue;
+        }
+        if (0xDC00..=0xDFFF).contains(&unit) {
+            match errors {
+                "surrogatepass" | "surrogateescape" => {
+                    push_wtf8_codepoint(&mut out, unit as u32);
+                }
+                "ignore" => {}
+                "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+                "backslashreplace" => {
+                    push_backslash_bytes_vec(&mut out, &data[idx..idx + 2]);
+                }
+                "strict" => {
+                    return Err(DecodeFailure::Range {
+                        start: offset + idx,
+                        end: offset + idx + 1,
+                        message: "illegal encoding",
+                    });
+                }
+                other => {
+                    return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
+                }
+            }
+            idx += 2;
+            continue;
+        }
+        push_wtf8_codepoint(&mut out, unit as u32);
+        idx += 2;
+    }
+    if idx < data.len() {
+        match errors {
+            "surrogatepass" | "surrogateescape" => {
+                push_wtf8_codepoint(&mut out, data[idx] as u32);
+            }
+            "ignore" => {}
+            "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+            "backslashreplace" => {
+                push_backslash_bytes_vec(&mut out, &data[idx..]);
+            }
+            "strict" => {
+                let pos = offset + data.len() - 1;
+                let byte = data[data.len() - 1];
+                return Err(DecodeFailure::Byte {
+                    pos,
+                    byte,
+                    message: "truncated data",
+                });
+            }
+            other => {
+                return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn utf32_decode_config(bytes: &[u8], kind: EncodingKind) -> (Endian, String, usize) {
+    match kind {
+        EncodingKind::Utf32 => {
+            if bytes.len() >= 4 {
+                if bytes[0] == 0xFF && bytes[1] == 0xFE && bytes[2] == 0x00 && bytes[3] == 0x00 {
+                    return (Endian::Little, "utf-32-le".to_string(), 4);
+                }
+                if bytes[0] == 0x00 && bytes[1] == 0x00 && bytes[2] == 0xFE && bytes[3] == 0xFF {
+                    return (Endian::Big, "utf-32-be".to_string(), 4);
+                }
+            }
+            let endian = native_endian();
+            let label = match endian {
+                Endian::Little => "utf-32-le".to_string(),
+                Endian::Big => "utf-32-be".to_string(),
+            };
+            (endian, label, 0)
+        }
+        EncodingKind::Utf32LE => (Endian::Little, "utf-32-le".to_string(), 0),
+        EncodingKind::Utf32BE => (Endian::Big, "utf-32-be".to_string(), 0),
+        _ => (native_endian(), "utf-32-le".to_string(), 0),
+    }
+}
+
+fn decode_utf32_with_errors(
+    bytes: &[u8],
+    errors: &str,
+    endian: Endian,
+    offset: usize,
+) -> Result<Vec<u8>, DecodeFailure> {
+    let data = if offset > 0 { &bytes[offset..] } else { bytes };
+    let mut out = Vec::new();
+    let mut idx = 0usize;
+    while idx + 3 < data.len() {
+        let code = read_u32(data, idx, endian);
+        if is_surrogate(code) {
+            match errors {
+                "surrogatepass" | "surrogateescape" => {
+                    push_wtf8_codepoint(&mut out, code);
+                }
+                "ignore" => {}
+                "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+                "backslashreplace" => {
+                    push_backslash_bytes_vec(&mut out, &data[idx..idx + 4]);
+                }
+                "strict" => {
+                    return Err(DecodeFailure::Range {
+                        start: offset + idx,
+                        end: offset + idx + 3,
+                        message: "code point in surrogate code point range(0xd800, 0xe000)",
+                    });
+                }
+                other => {
+                    return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
+                }
+            }
+            idx += 4;
+            continue;
+        }
+        if code > 0x10FFFF {
+            match errors {
+                "ignore" => {}
+                "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+                "backslashreplace" => {
+                    push_backslash_bytes_vec(&mut out, &data[idx..idx + 4]);
+                }
+                "strict" | "surrogatepass" | "surrogateescape" => {
+                    return Err(DecodeFailure::Range {
+                        start: offset + idx,
+                        end: offset + idx + 3,
+                        message: "code point not in range(0x110000)",
+                    });
+                }
+                other => {
+                    return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
+                }
+            }
+            idx += 4;
+            continue;
+        }
+        push_wtf8_codepoint(&mut out, code);
+        idx += 4;
+    }
+    if idx < data.len() {
+        match errors {
+            "surrogatepass" | "surrogateescape" => {
+                for &byte in &data[idx..] {
+                    push_wtf8_codepoint(&mut out, 0xDC00 + byte as u32);
+                }
+            }
+            "ignore" => {}
+            "replace" => push_wtf8_codepoint(&mut out, 0xFFFD),
+            "backslashreplace" => {
+                push_backslash_bytes_vec(&mut out, &data[idx..]);
+            }
+            "strict" => {
+                return Err(DecodeFailure::Range {
+                    start: offset + idx,
+                    end: offset + data.len() - 1,
+                    message: "truncated data",
+                });
+            }
+            other => {
+                return Err(DecodeFailure::UnknownErrorHandler(other.to_string()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn decode_bytes_with_errors(
+    bytes: &[u8],
+    kind: EncodingKind,
+    errors: &str,
+) -> Result<(Vec<u8>, String), (DecodeFailure, String)> {
+    match kind {
+        EncodingKind::Utf8 => match decode_utf8_bytes_with_errors(bytes, errors) {
+            Ok(text) => Ok((text, "utf-8".to_string())),
+            Err(err) => Err((err, "utf-8".to_string())),
+        },
+        EncodingKind::Utf8Sig => {
+            let data =
+                if bytes.len() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF {
+                    &bytes[3..]
+                } else {
+                    bytes
+                };
+            match decode_utf8_bytes_with_errors(data, errors) {
+                Ok(text) => Ok((text, "utf-8".to_string())),
+                Err(err) => Err((err, "utf-8".to_string())),
+            }
+        }
+        EncodingKind::Cp1252 => match decode_cp1252_with_errors(bytes, errors) {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp437 => match decode_charmap_with_errors(bytes, errors, &CP437_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp850 => match decode_charmap_with_errors(bytes, errors, &CP850_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp860 => match decode_charmap_with_errors(bytes, errors, &CP860_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp862 => match decode_charmap_with_errors(bytes, errors, &CP862_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp863 => match decode_charmap_with_errors(bytes, errors, &CP863_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp865 => match decode_charmap_with_errors(bytes, errors, &CP865_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp866 => match decode_charmap_with_errors(bytes, errors, &CP866_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp874 => match decode_charmap_with_errors(bytes, errors, &CP874_DECODE_TABLE)
+        {
+            Ok(text) => Ok((text, "charmap".to_string())),
+            Err(err) => Err((err, "charmap".to_string())),
+        },
+        EncodingKind::Cp1250 => {
+            match decode_charmap_with_errors(bytes, errors, &CP1250_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Cp1251 => {
+            match decode_charmap_with_errors(bytes, errors, &CP1251_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Cp1253 => {
+            match decode_charmap_with_errors(bytes, errors, &CP1253_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Cp1254 => {
+            match decode_charmap_with_errors(bytes, errors, &CP1254_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Cp1255 => {
+            match decode_charmap_with_errors(bytes, errors, &CP1255_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Cp1256 => {
+            match decode_charmap_with_errors(bytes, errors, &CP1256_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Cp1257 => {
+            match decode_charmap_with_errors(bytes, errors, &CP1257_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Koi8R => {
+            match decode_charmap_with_errors(bytes, errors, &KOI8_R_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Koi8U => {
+            match decode_charmap_with_errors(bytes, errors, &KOI8_U_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_2 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_2_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_3 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_3_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_4 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_4_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_5 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_5_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_6 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_6_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_7 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_7_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_8 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_8_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_10 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_10_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Iso8859_15 => {
+            match decode_charmap_with_errors(bytes, errors, &ISO8859_15_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::MacRoman => {
+            match decode_charmap_with_errors(bytes, errors, &MAC_ROMAN_DECODE_TABLE) {
+                Ok(text) => Ok((text, "charmap".to_string())),
+                Err(err) => Err((err, "charmap".to_string())),
+            }
+        }
+        EncodingKind::Ascii => match decode_ascii_with_errors(bytes, errors) {
+            Ok(text) => Ok((text, "ascii".to_string())),
+            Err(err) => Err((err, "ascii".to_string())),
+        },
+        EncodingKind::Latin1 => {
+            let mut out = Vec::with_capacity(bytes.len());
+            for &byte in bytes {
+                push_wtf8_codepoint(&mut out, byte as u32);
+            }
+            Ok((out, "latin-1".to_string()))
+        }
+        EncodingKind::UnicodeEscape => match decode_unicode_escape_with_errors(bytes, errors) {
+            Ok(text) => Ok((text, "unicodeescape".to_string())),
+            Err(err) => Err((err, "unicodeescape".to_string())),
+        },
+        EncodingKind::Utf16 | EncodingKind::Utf16LE | EncodingKind::Utf16BE => {
+            let (endian, label, offset) = utf16_decode_config(bytes, kind);
+            match decode_utf16_with_errors(bytes, errors, endian, offset) {
+                Ok(text) => Ok((text, label)),
+                Err(err) => Err((err, label)),
+            }
+        }
+        EncodingKind::Utf32 | EncodingKind::Utf32LE | EncodingKind::Utf32BE => {
+            let (endian, label, offset) = utf32_decode_config(bytes, kind);
+            match decode_utf32_with_errors(bytes, errors, endian, offset) {
+                Ok(text) => Ok((text, label)),
+                Err(err) => Err((err, label)),
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum DecodeTextError {
+    UnknownEncoding(String),
+    UnknownErrorHandler(String),
+    Failure(DecodeFailure, String),
+}
+
+pub(crate) fn decode_bytes_text(
+    encoding: &str,
+    errors: &str,
+    bytes: &[u8],
+) -> Result<(Vec<u8>, String), DecodeTextError> {
+    let Some(kind) = normalize_encoding(encoding) else {
+        return Err(DecodeTextError::UnknownEncoding(encoding.to_string()));
+    };
+    let errors_known = matches!(
+        errors,
+        "strict" | "ignore" | "replace" | "backslashreplace" | "surrogateescape" | "surrogatepass"
+    );
+    let result = if errors_known {
+        decode_bytes_with_errors(bytes, kind, errors)
+    } else {
+        match decode_bytes_with_errors(bytes, kind, "strict") {
+            Ok((text, label)) => return Ok((text, label)),
+            Err((_failure, _label)) => {
+                return Err(DecodeTextError::UnknownErrorHandler(errors.to_string()));
+            }
+        }
+    };
+    match result {
+        Ok((text, label)) => Ok((text, label)),
+        Err((failure, label)) => Err(DecodeTextError::Failure(failure, label)),
+    }
+}
 
 pub(crate) fn parse_codec_arg(
     _py: &PyToken<'_>,
@@ -7455,7 +30179,7 @@ fn format_int_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, Fo
     Ok(apply_alignment(&prefix, &digits, spec, '>'))
 }
 
-pub(crate) fn format_float_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, FormatError> {
+fn format_float_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, FormatError> {
     let val = if let Some(f) = obj.as_float() {
         f
     } else if let Some(i) = obj.as_int() {
@@ -8368,14 +31092,14 @@ pub(crate) fn type_name(_py: &PyToken<'_>, obj: MoltObject) -> Cow<'static, str>
     Cow::Borrowed("object")
 }
 
-pub(crate) enum BinaryDunderOutcome {
+enum BinaryDunderOutcome {
     Value(u64),
     NotImplemented,
     Missing,
     Error,
 }
 
-pub(crate) unsafe fn call_dunder_raw(
+unsafe fn call_dunder_raw(
     _py: &PyToken<'_>,
     raw_bits: u64,
     owner_ptr: *mut u8,
@@ -8406,7 +31130,7 @@ pub(crate) unsafe fn call_dunder_raw(
     }
 }
 
-pub(crate) unsafe fn call_binary_dunder(
+unsafe fn call_binary_dunder(
     _py: &PyToken<'_>,
     lhs_bits: u64,
     rhs_bits: u64,
@@ -8472,7 +31196,7 @@ pub(crate) unsafe fn call_binary_dunder(
     }
 }
 
-pub(crate) unsafe fn call_inplace_dunder(
+unsafe fn call_inplace_dunder(
     _py: &PyToken<'_>,
     lhs_bits: u64,
     rhs_bits: u64,
@@ -8822,7 +31546,7 @@ fn init_hash_secret() -> HashSecret {
     }
 }
 
-pub(crate) fn fatal_hash_seed(value: &str) -> ! {
+fn fatal_hash_seed(value: &str) -> ! {
     eprintln!(
         "Fatal Python error: PYTHONHASHSEED must be \"random\" or an integer in range [0; {PY_HASHSEED_MAX}]"
     );
@@ -9644,7 +32368,7 @@ fn hash_frozenset(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     hash as i64
 }
 
-pub(crate) fn hash_pointer(ptr: u64) -> i64 {
+fn hash_pointer(ptr: u64) -> i64 {
     let hash = (ptr >> 4) as i64;
     fix_hash(hash)
 }
@@ -9673,7 +32397,7 @@ fn is_unhashable_type(type_id: u32) -> bool {
     )
 }
 
-pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
+fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
     let obj = obj_from_bits(bits);
     if let Some(i) = obj.as_int() {
         return hash_int(i);
@@ -10088,7 +32812,7 @@ pub(crate) fn dict_find_entry(
 /// SIMD byte equality: returns true if `a[..len] == b[..len]`.
 /// Precondition: both pointers are valid for `len` bytes.
 #[inline(always)]
-pub(crate) unsafe fn simd_bytes_eq(a: *const u8, b: *const u8, len: usize) -> bool {
+unsafe fn simd_bytes_eq(a: *const u8, b: *const u8, len: usize) -> bool {
     unsafe {
         // Tiny strings (<=8 bytes): direct comparison, no SIMD overhead.
         if len <= 8 {
@@ -10604,7 +33328,7 @@ pub(crate) fn set_find_entry_with_hash(
     }
 }
 
-pub(crate) fn concat_bytes_like(_py: &PyToken<'_>, left: &[u8], right: &[u8], type_id: u32) -> Option<u64> {
+fn concat_bytes_like(_py: &PyToken<'_>, left: &[u8], right: &[u8], type_id: u32) -> Option<u64> {
     let total = left.len().checked_add(right.len())?;
     if type_id == TYPE_ID_BYTEARRAY {
         let mut out = Vec::with_capacity(total);
@@ -10628,7 +33352,7 @@ pub(crate) fn concat_bytes_like(_py: &PyToken<'_>, left: &[u8], right: &[u8], ty
     Some(MoltObject::from_ptr(ptr).bits())
 }
 
-pub(crate) fn fill_repeated_bytes(dst: &mut [u8], pattern: &[u8]) {
+fn fill_repeated_bytes(dst: &mut [u8], pattern: &[u8]) {
     if pattern.is_empty() {
         return;
     }
