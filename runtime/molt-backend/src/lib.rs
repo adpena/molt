@@ -577,10 +577,18 @@ fn block_has_terminator(builder: &FunctionBuilder, block: Block) -> bool {
 
 #[cfg(feature = "native-backend")]
 fn sync_block_filled(builder: &FunctionBuilder, is_block_filled: &mut bool) {
-    if let Some(block) = builder.current_block()
-        && block_has_terminator(builder, block)
-    {
-        *is_block_filled = true;
+    if let Some(block) = builder.current_block() {
+        if block_has_terminator(builder, block) {
+            *is_block_filled = true;
+        } else {
+            // The current block is open (no terminator) — clear the flag so
+            // subsequent ops are not incorrectly skipped.  This fixes cases
+            // where a control-flow op (e.g. check_exception) switched to a
+            // fresh fallthrough block and cleared the flag via
+            // switch_to_block_tracking, but a stale `true` value from a
+            // previous iteration leaked through.
+            *is_block_filled = false;
+        }
     }
 }
 
