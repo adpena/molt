@@ -4,8 +4,6 @@
 //! already available as `#[no_mangle]` symbols.
 
 use crate::*;
-use molt_runtime_core::RuntimeVtable;
-use std::sync::atomic::Ordering;
 
 // ---------------------------------------------------------------------------
 // Class system helpers for itertools class setup
@@ -165,15 +163,54 @@ pub extern "C" fn molt_itertools_object_class_bits(ptr: *mut u8) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// RuntimeVtable — re-use the existing serial bridge vtable.
-//
-// The itertools crate fetches this via __molt_itertools_get_vtable() but the
-// vtable contents are identical to the serial bridge.
+// Additional C API exports for functions the itertools crate needs.
+// These symbols are resolved by the linker at link time.
 // ---------------------------------------------------------------------------
 
-/// Re-export the existing serial bridge vtable for itertools.
+/// Object type ID — exposed for the itertools crate.
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_itertools_get_vtable() -> *const RuntimeVtable {
-    // Delegate to the serial vtable since it has all the same function pointers.
-    __molt_serial_get_vtable()
+pub extern "C" fn molt_object_type_id(ptr: *mut u8) -> u32 {
+    unsafe { object_type_id(ptr) }
+}
+
+/// Seq vec pointer — exposed for the itertools crate.
+#[allow(improper_ctypes_definitions)]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
+    unsafe { seq_vec_ptr(ptr) }
+}
+
+/// index_i64_from_obj — exposed for the itertools crate.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_index_i64_from_obj(
+    obj_bits: u64,
+    err_ptr: *const u8,
+    err_len: usize,
+) -> i64 {
+    crate::with_gil_entry!(_py, {
+        let err = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
+        builtins::numbers::index_i64_from_obj(_py, obj_bits, err)
+    })
+}
+
+/// intern_static_name — exposed for the itertools crate.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
+        let ptr = alloc_string(_py, key);
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+/// raise_not_iterable — exposed for the itertools crate.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_raise_not_iterable(bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        raise_not_iterable::<u64>(_py, bits)
+    })
 }

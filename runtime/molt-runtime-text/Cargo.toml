@@ -1,0 +1,16 @@
+[package]
+name = "molt-runtime-text"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Text/encoding intrinsics for the Molt runtime (unicodedata, html)"
+
+[features]
+stdlib_unicode_names = ["dep:unicode_names2"]
+
+[dependencies]
+# Core runtime types used by the text implementations
+molt-runtime-core = { path = "../molt-runtime-core" }
+molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
+unicode_names2 = { version = "1.3", optional = true }
+memchr = "2.8"
