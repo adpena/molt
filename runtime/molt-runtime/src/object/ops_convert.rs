@@ -8,6 +8,7 @@ use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
 
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_str_from_obj(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(val_bits);

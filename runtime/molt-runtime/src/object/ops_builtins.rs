@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use super::ops::{decode_slice_bound, slice_error};
 use super::ops_arith::binary_type_error;
 
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_code_slots_init(count: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if runtime_state(_py).code_slots.get().is_some() {
