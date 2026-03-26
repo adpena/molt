@@ -2959,9 +2959,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
     def _record_func_default_specs(self, func_symbol: str, args: ast.arguments) -> None:
         if args.vararg or args.kwarg:
-            # Clear any stale entry from a prior @typing.overload stub that
-            # recorded a narrower signature for the same symbol.
-            self.func_default_specs.pop(func_symbol, None)
+            # Mark as having vararg/kwarg so the direct-call path knows to
+            # fall back to CALL_BIND for proper varargs packing.
+            self.func_default_specs[func_symbol] = {"has_vararg": True}
             return
         params = self._function_param_names(args)
         default_specs = self._default_specs_from_args(args)
@@ -5680,6 +5680,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             func_name = self.func_symbol_names.get(func_symbol)
             if func_name is not None:
                 info = self._lookup_func_defaults(None, func_name)
+        if info is not None and info.get("has_vararg"):
+            # Functions with *args / **kwargs cannot be resolved at compile
+            # time via the direct path — fall back to CALL_BIND.
+            return None, func_obj
         if info is None:
             return args, func_obj
         total_params = info.get("params")
@@ -16119,6 +16123,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             imported_binding = self.imported_names.get(func_id)
             imported_from = imported_binding
             target_info = self.locals.get(func_id) or self.globals.get(func_id)
+            if func_id == "chain":
+                import sys; print(f"DEBUG target_info for chain: {target_info} hint={getattr(target_info, 'type_hint', None)}", file=sys.stderr)
             is_local = func_id in self.locals or func_id in self.boxed_locals
             if self.is_async() and func_id in self.async_locals:
                 loaded = self._load_local_value(func_id)
@@ -17751,6 +17757,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if target_info and str(target_info.type_hint).startswith(
                 ("GenFunc:", "GenClosureFunc:")
             ):
+                import sys; print(f"DEBUG GenFunc call: func_id={func_id} needs_bind={needs_bind} hint={target_info.type_hint}", file=sys.stderr)
                 target_value = target_info
                 if needs_bind:
                     if (
