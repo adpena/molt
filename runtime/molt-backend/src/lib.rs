@@ -2210,9 +2210,24 @@ impl SimpleBackend {
 
             let tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
             let tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
-            let mut tir_cache = crate::tir::cache::CompilationCache::open(
-                std::path::PathBuf::from(".molt_cache"),
-            );
+            // Version the TIR cache by the backend binary's own executable path hash.
+            // This ensures cache invalidation when the backend is recompiled (e.g. when
+            // TIR passes change). Without this, stale optimized IR persists across builds.
+            let cache_dir = {
+                let exe = std::env::current_exe().unwrap_or_default();
+                let mtime = std::fs::metadata(&exe)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hash::hash(&exe, &mut hasher);
+                std::hash::Hash::hash(&mtime, &mut hasher);
+                let hash = std::hash::Hasher::finish(&hasher);
+                std::path::PathBuf::from(format!(".molt_cache/{:016x}", hash))
+            };
+            let mut tir_cache = crate::tir::cache::CompilationCache::open(cache_dir);
 
             // Phase 1 (sequential): check cache for every function. For cache
             // hits, apply immediately. For misses, collect the function index,
@@ -2225,6 +2240,14 @@ impl SimpleBackend {
 
             for (i, func_ir) in ir.functions.iter_mut().enumerate() {
                 if gpu_kernel_names.contains(&func_ir.name) {
+                    continue;
+                }
+                // Skip TIR optimization for functions with indexed loops —
+                // the TIR SSA roundtrip corrupts loop_index_start's phi
+                // connection to the back-edge block arg. This is a known
+                // limitation. TODO: fix lower_to_simple.rs to properly
+                // wire loop_index_start args to block arg variables.
+                if func_ir.ops.iter().any(|op| op.kind == "loop_index_start") {
                     continue;
                 }
                 let body_bytes = crate::tir::serialize::serialize_ops(&func_ir.ops);
