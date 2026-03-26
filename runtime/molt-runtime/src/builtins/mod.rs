@@ -86,7 +86,7 @@ pub(crate) mod ipaddress;
 #[cfg(not(feature = "stdlib_itertools"))]
 pub(crate) mod itertools;
 pub(crate) mod json;
-// NOTE: molt-runtime-logging is still a stub — always compile the local module.
+#[cfg(not(feature = "stdlib_logging_ext"))]
 pub(crate) mod logging_ext;
 mod micro_stubs;
 #[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]

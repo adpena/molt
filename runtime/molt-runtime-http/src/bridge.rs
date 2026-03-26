@@ -346,19 +346,14 @@ pub fn molt_object_setattr(obj_bits: u64, name_bits: u64, value_bits: u64) {
 // ---------------------------------------------------------------------------
 
 /// Mirrors crate::BufferExport from molt-runtime.
+/// IMPORTANT: This layout must match the runtime's BufferExport exactly.
 #[repr(C)]
 pub struct BufferExport {
-    pub ptr: *const u8,
-    pub len: usize,
-    pub readonly: bool,
-    pub itemsize: usize,
-    pub format_ptr: *const u8,
-    pub format_len: usize,
-    pub ndim: usize,
-    pub shape_ptr: *const usize,
-    pub shape_len: usize,
-    pub strides_ptr: *const usize,
-    pub strides_len: usize,
+    pub ptr: u64,
+    pub len: u64,
+    pub readonly: u64,
+    pub stride: i64,
+    pub itemsize: u64,
 }
 
 unsafe extern "C" {

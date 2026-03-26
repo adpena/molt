@@ -239,7 +239,7 @@ pub extern "C" fn __molt_http_molt_list_insert(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_molt_dict_new(initial_capacity: usize) -> u64 {
-    crate::molt_dict_new(initial_capacity)
+    crate::molt_dict_new(initial_capacity as u64)
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +303,8 @@ pub extern "C" fn __molt_http_call_class_init_with_args(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let args = unsafe { std::slice::from_raw_parts(args_ptr, args_len) };
-        unsafe { call_class_init_with_args(_py, class_bits, args) }
+        let class_ptr = obj_from_bits(class_bits).as_ptr().unwrap_or(std::ptr::null_mut());
+        unsafe { call_class_init_with_args(_py, class_ptr, args) }
     })
 }
 
