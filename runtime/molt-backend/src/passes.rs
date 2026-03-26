@@ -838,13 +838,26 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
 
         // Check arguments of this op.
         if let Some(ref args) = op.args {
-            for arg in args {
+            for (arg_idx, arg) in args.iter().enumerate() {
                 let root = match alias_to_alloc.get(arg).cloned() {
                     Some(r) => r,
                     None => continue,
                 };
                 if escaped.contains(&root) {
                     continue; // already known to escape
+                }
+
+                // For `index` ops, only the container (args[0]) is a safe
+                // use.  The key (args[1]) may escape — e.g. when the
+                // container is a type, `molt_index` passes the key to
+                // `__class_getitem__` which stores it inside a GenericAlias.
+                if kind == "index" {
+                    if arg_idx == 0 {
+                        continue; // container read is safe
+                    }
+                    // key argument: treat as escaping
+                    escaped.insert(root);
+                    continue;
                 }
 
                 if safe_use_kinds.contains(kind) {

@@ -4047,9 +4047,6 @@ impl SimpleBackend {
                 }
                 "index" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    if func_ir.name == "molt_main" || func_ir.name.contains("module") {
-                        eprintln!("[DEBUG-BACKEND] index op: args={:?} in func={}", args, func_ir.name);
-                    }
                     // Stack-tuple fast path: resolve element at compile time.
                     let stack_resolved = stack_tuples.get(&args[0]).and_then(|elems| {
                         Self::resolve_const_int(ops, op_idx, &args[1]).and_then(|ci| {

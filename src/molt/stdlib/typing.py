@@ -4,7 +4,11 @@ This module tracks CPython's runtime-facing typing behavior for common helpers,
 while keeping implementation small, explicit, and deterministic.
 """
 
+print("[TYPING-FIRST] before future import")
+
 from __future__ import annotations
+
+print("[TYPING-TOP] typing module loading")
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -596,6 +600,7 @@ Tuple = _SpecialGenericAlias(tuple, "Tuple")
 Set = _SpecialGenericAlias(set, "Set")
 FrozenSet = _SpecialGenericAlias(frozenset, "FrozenSet")
 
+print("[TYPING-DBG] before _TypeVarLike class")
 
 class _TypeVarLike(_TypingBase):
     __slots__ = (
@@ -732,6 +737,7 @@ class _ParamSpecKwargs(_TypingBase):
 
     __str__ = __repr__
 
+print("[TYPING-DBG] before TypeVar def")
 
 def TypeVar(
     name: str,
