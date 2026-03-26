@@ -2,23 +2,7 @@
 
 from __future__ import annotations
 
-# Bootstrap intrinsic lookup — avoid importing _intrinsics (not compiled).
-# The runtime injects _molt_intrinsic_lookup into every module's globals.
-def _load_intrinsic(name):
-    """Load an intrinsic by name, returning None if unavailable."""
-    _lookup = globals().get("_molt_intrinsic_lookup")
-    if _lookup is not None:
-        result = _lookup(name)
-        if result is not None:
-            return result
-    # Fallback: check builtins
-    import builtins as _bi
-    _helper = getattr(_bi, "_molt_intrinsic_lookup", None)
-    if _helper is not None:
-        result = _helper(name)
-        if result is not None:
-            return result
-    return None
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 def cast(_tp, value):  # type: ignore[override]
@@ -29,7 +13,10 @@ def cast(_tp, value):  # type: ignore[override]
 _existing_modules = globals().get("modules")
 if _existing_modules is None:
     # Try the new intrinsic first; fall back to a plain dict.
-    _modules_intrinsic = _load_intrinsic("molt_sys_modules")
+    try:
+        _modules_intrinsic = _require_intrinsic("molt_sys_modules")
+    except RuntimeError:
+        _modules_intrinsic = None
     if callable(_modules_intrinsic):
         _new_modules = _modules_intrinsic()
         if isinstance(_new_modules, dict):
@@ -40,12 +27,6 @@ if _existing_modules is None:
         modules = {}
 else:
     modules = _existing_modules
-# NOTE: _stdlib_intrinsics is defined in molt.stdlib.__init__, not here.
-# The _intrinsics module will be seeded into sys.modules when stdlib.__init__
-# runs or when _intrinsics is first imported.  Attempting to reference
-# _stdlib_intrinsics here would raise NameError.
-
-
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
@@ -74,10 +55,10 @@ def _safe_intrinsic(name: str, default: object = None) -> Callable[..., object]:
     targets including WASM where the registry may be populated lazily.
     """
     try:
-        fn = _load_intrinsic(name)
+        fn = _require_intrinsic(name)
         if callable(fn):
             return fn  # type: ignore[return-value]
-    except Exception:
+    except RuntimeError:
         pass
     if default is not None:
         return default  # type: ignore[return-value]
@@ -246,9 +227,9 @@ _MOLT_SYS_AUDIT_GET_HOOKS = _safe_intrinsic("molt_sys_audit_get_hooks", lambda: 
 _MOLT_SYS_EXIT = _safe_intrinsic("molt_sys_exit")
 _MOLT_SYS_DISPLAYHOOK_WRITE = _safe_intrinsic("molt_sys_displayhook_write")
 _MOLT_SYS_EXCEPTHOOK_WRITE = _safe_intrinsic("molt_sys_excepthook_write")
-_MOLT_SYS_ARGV_NEW = _load_intrinsic("molt_sys_argv")
-_MOLT_SYS_MODULES_NEW = _load_intrinsic("molt_sys_modules")
-_MOLT_SYS_PATH_NEW = _load_intrinsic("molt_sys_path")
+_MOLT_SYS_ARGV_NEW = _safe_intrinsic("molt_sys_argv")
+_MOLT_SYS_MODULES_NEW = _safe_intrinsic("molt_sys_modules")
+_MOLT_SYS_PATH_NEW = _safe_intrinsic("molt_sys_path")
 
 # Use the safe intrinsic resolved above — _safe_intrinsic never raises,
 # so this works on both native and WASM without needing a direct builtins
@@ -801,7 +782,7 @@ _molt_bootstrap_stdlib_root = _bootstrap_str_or_none(
 def _resolve_stdio_handle(intrinsic: object, name: str) -> object:
     resolved = intrinsic
     if isinstance(resolved, str):
-        resolved = _load_intrinsic(resolved)
+        resolved = _safe_intrinsic(resolved)
     if not callable(resolved):
         raise RuntimeError(f"sys {name} intrinsic unavailable")
     handle = resolved()

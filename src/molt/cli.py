@@ -777,6 +777,7 @@ class _BackendCacheSetup:
     function_cache_key: str | None
     cache_path: Path | None
     function_cache_path: Path | None
+    stdlib_object_path: Path | None
     cache_candidates: tuple[tuple[str, Path], ...]
     cache_hit: bool
     cache_hit_tier: str | None
@@ -980,6 +981,7 @@ class _PreparedBackendSetup:
     function_cache_key: str | None
     cache_path: Path | None
     function_cache_path: Path | None
+    stdlib_object_path: Path | None
     cache_candidates: list[tuple[str, Path]]
 
 
@@ -1026,6 +1028,7 @@ class _PreparedBackendRuntimeContext:
     function_cache_key: str | None
     cache_path: Path | None
     function_cache_path: Path | None
+    stdlib_object_path: Path | None
 
 
 @dataclass(frozen=True)
@@ -9003,6 +9006,7 @@ def _materialize_cached_backend_artifact(
     tier: str,
     source_key: str,
     cache_path: Path | None,
+    module_cache_key: str | None = None,
     warnings: list[str],
     state_path: Path | None = None,
     state: dict[str, Any] | None = None,
@@ -9021,6 +9025,8 @@ def _materialize_cached_backend_artifact(
         stat=output_stat,
     ):
         return True
+    sync_tier = tier
+    sync_source_key = source_key
     try:
         _atomic_link_or_copy_file(candidate, output_artifact)
         if (
@@ -9031,12 +9037,18 @@ def _materialize_cached_backend_artifact(
         ):
             with contextlib.suppress(OSError):
                 _atomic_link_or_copy_file(candidate, cache_path)
+                if module_cache_key:
+                    # Once the function hit seeds the canonical module cache
+                    # path, future daemon sync checks should treat output.o as
+                    # module-synced rather than function-only.
+                    sync_tier = "module"
+                    sync_source_key = module_cache_key
         try:
             state_path.parent.mkdir(parents=True, exist_ok=True)
             _write_artifact_sync_state(
                 state_path,
-                source_key=source_key,
-                tier=tier,
+                source_key=sync_source_key,
+                tier=sync_tier,
                 artifact=output_artifact,
             )
         except OSError:
@@ -9079,6 +9091,7 @@ def _try_cached_backend_candidates(
             tier=tier,
             source_key=cache_key if tier == "module" else (function_cache_key or cache_key or ""),
             cache_path=cache_path,
+            module_cache_key=cache_key,
             warnings=warnings,
             state_path=state_path,
             state=state,
@@ -9859,6 +9872,23 @@ def _link_fingerprint_path(
         subdir="link_fingerprints",
         stem_suffix=f"{profile}.{target}",
         extension="fingerprint",
+    )
+
+
+def _native_stdlib_obj_path(
+    project_root: Path,
+    output_artifact: Path,
+    *,
+    profile: BuildProfile,
+    target_triple: str | None,
+) -> Path:
+    target = (target_triple or "native").replace(os.sep, "_").replace(":", "_")
+    return _artifact_state_path(
+        project_root,
+        output_artifact,
+        subdir="stdlib_objects",
+        stem_suffix=f"{profile}.{target}",
+        extension="o",
     )
 
 
@@ -12265,6 +12295,19 @@ def _build_cache_info(
     return cache_info
 
 
+def _native_stdlib_object_split_enabled(*, target: str, emit_mode: str) -> bool:
+    return target == "native" and emit_mode != "obj"
+
+
+def _stdlib_object_cache_path(
+    cache_path: Path | None,
+    cache_key: str | None,
+) -> Path | None:
+    if cache_path is None or not cache_key:
+        return None
+    return cache_path.parent / f"{cache_key}.stdlib.o"
+
+
 def _attach_build_metadata(
     data: MutableMapping[str, Any],
     *,
@@ -12585,6 +12628,7 @@ def _build_native_link_command(
     target_triple: str | None,
     sysroot_path: Path | None,
     profile: str,
+    stdlib_obj_path: Path | None = None,
 ) -> tuple[list[str], str | None, str | None]:
     cc = os.environ.get("CC", "clang")
     link_cmd = shlex.split(cc)
@@ -12631,11 +12675,13 @@ def _build_native_link_command(
         deployment_target = _detect_macos_deployment_target(arch)
         if deployment_target:
             link_cmd.append(f"-mmacosx-version-min={deployment_target}")
-    # Include cached stdlib .o if it exists (incremental compilation)
-    _stdlib_obj_path = os.environ.get("MOLT_STDLIB_OBJ")
     _link_inputs = [str(stub_path), str(output_obj)]
-    if _stdlib_obj_path and Path(_stdlib_obj_path).exists():
-        _link_inputs.append(_stdlib_obj_path)
+    if stdlib_obj_path is None:
+        _stdlib_obj_path = os.environ.get("MOLT_STDLIB_OBJ")
+        if _stdlib_obj_path:
+            stdlib_obj_path = Path(_stdlib_obj_path)
+    if stdlib_obj_path is not None and stdlib_obj_path.exists():
+        _link_inputs.append(str(stdlib_obj_path))
     # Use -force_load on macOS to ensure ALL objects from the static archive
     # are included, resolving circular references between molt-runtime and
     # molt-runtime-serial (e.g. serial bridge FFI symbols).
@@ -14133,6 +14179,7 @@ def _prepare_backend_setup(
         function_cache_key=cache_setup.function_cache_key,
         cache_path=cache_setup.cache_path,
         function_cache_path=cache_setup.function_cache_path,
+        stdlib_object_path=cache_setup.stdlib_object_path,
         cache_candidates=list(cache_setup.cache_candidates),
     ), None
 
@@ -14189,6 +14236,7 @@ def _prepare_backend_runtime_context(
         function_cache_key=prepared_backend_setup.function_cache_key,
         cache_path=prepared_backend_setup.cache_path,
         function_cache_path=prepared_backend_setup.function_cache_path,
+        stdlib_object_path=prepared_backend_setup.stdlib_object_path,
     )
 
 
@@ -14568,17 +14616,14 @@ def _execute_backend_compile(
         if not backend_compiled:
             if diagnostics_enabled and "backend_subprocess_compile" not in phase_starts:
                 phase_starts["backend_subprocess_compile"] = time.perf_counter()
-            # ── Incremental compilation: cache stdlib .o ──
-            # For native builds, set MOLT_STDLIB_OBJ so the backend caches
-            # stdlib compilation separately.  Second builds skip stdlib entirely.
             _is_transpile = is_rust_transpile or is_luau_transpile
             if not is_wasm and not _is_transpile and backend_env is None:
                 backend_env = os.environ.copy()
-            # NOTE: stdlib obj caching disabled — the user/stdlib partition
-            # creates cross-object undefined symbols that ld cannot resolve
-            # from separate .o files.  All functions compile into output.o.
-            # TODO: fix partitioning to account for cross-module references
-            # before re-enabling (see molt_isolate_import dispatch table).
+            stdlib_obj_path = cache_setup.stdlib_object_path
+            if not is_wasm and not _is_transpile and stdlib_obj_path is not None:
+                stdlib_obj_path.parent.mkdir(parents=True, exist_ok=True)
+                if backend_env is not None:
+                    backend_env.setdefault("MOLT_STDLIB_OBJ", str(stdlib_obj_path))
             cmd = [str(backend_bin)]
             if is_luau_transpile:
                 cmd.extend(["--target", "luau"])
@@ -15270,6 +15315,7 @@ def _run_backend_pipeline(
         phase_starts=prepared_build_preamble.phase_starts,
         link_timeout=prepared_build_config.link_timeout,
         warnings=prepared_build_preamble.warnings,
+        stdlib_obj_path=prepared_backend_setup.cache_setup.stdlib_object_path,
     )
     if prepared_native_link_error is not None:
         return prepared_native_link_error
@@ -15574,8 +15620,16 @@ def _prepare_native_link(
     phase_starts: dict[str, float],
     link_timeout: float | None,
     warnings: list[str],
+    stdlib_obj_path: Path | None = None,
 ) -> tuple[_PreparedNativeLink | None, dict[str, Any] | None]:
     output_obj = output_artifact
+    if stdlib_obj_path is None:
+        stdlib_obj_path = _native_stdlib_obj_path(
+            project_root,
+            output_obj,
+            profile=profile,
+            target_triple=target_triple,
+        )
     main_c_content = _render_native_main_stub(
         trusted=trusted,
         capabilities_list=capabilities_list,
@@ -15603,6 +15657,7 @@ def _prepare_native_link(
             target_triple=target_triple,
             sysroot_path=sysroot_path,
             profile=profile,
+            stdlib_obj_path=stdlib_obj_path,
         )
     except RuntimeError as exc:
         return None, _fail(str(exc), json_output, command="build")
@@ -15621,7 +15676,12 @@ def _prepare_native_link(
     stored_link_fingerprint = _read_runtime_fingerprint(link_fingerprint_path)
     link_fingerprint = _link_fingerprint(
         project_root=project_root,
-        inputs=[stub_path, output_obj, resolved_runtime_lib],
+        inputs=[
+            stub_path,
+            output_obj,
+            resolved_runtime_lib,
+            *([stdlib_obj_path] if stdlib_obj_path.exists() else []),
+        ],
         link_cmd=link_cmd,
         stored_fingerprint=stored_link_fingerprint,
     )
@@ -16315,6 +16375,10 @@ def _prepare_backend_cache_setup(
     output_artifact: Path,
     warnings: list[str],
 ) -> _BackendCacheSetup:
+    split_stdlib_object = _native_stdlib_object_split_enabled(
+        target=target,
+        emit_mode=emit_mode,
+    )
     if not cache_enabled:
         return _BackendCacheSetup(
             cache_enabled=False,
@@ -16322,6 +16386,7 @@ def _prepare_backend_cache_setup(
             function_cache_key=None,
             cache_path=None,
             function_cache_path=None,
+            stdlib_object_path=None,
             cache_candidates=(),
             cache_hit=False,
             cache_hit_tier=None,
@@ -16331,6 +16396,7 @@ def _prepare_backend_cache_setup(
         f"runtime_cargo={runtime_cargo_profile}",
         f"backend_cargo={backend_cargo_profile}",
         f"emit={emit_mode}",
+        f"stdlib_split={int(split_stdlib_object)}",
         f"codegen_env={_backend_codegen_env_digest(is_wasm=is_wasm)}",
     ]
     if linked:
@@ -16362,6 +16428,7 @@ def _prepare_backend_cache_setup(
             function_cache_key=function_cache_key,
             cache_path=None,
             function_cache_path=None,
+            stdlib_object_path=None,
             cache_candidates=(),
             cache_hit=False,
             cache_hit_tier=None,
@@ -16371,6 +16438,9 @@ def _prepare_backend_cache_setup(
     function_cache_path = None
     if function_cache_key and function_cache_key != cache_key:
         function_cache_path = cache_root / f"{function_cache_key}.{ext}"
+    stdlib_object_path = None
+    if split_stdlib_object:
+        stdlib_object_path = _stdlib_object_cache_path(cache_path, cache_key)
     cache_candidates: list[tuple[str, Path]] = []
     if cache_path is not None:
         cache_candidates.append(("module", cache_path))
@@ -16392,6 +16462,7 @@ def _prepare_backend_cache_setup(
         function_cache_key=function_cache_key,
         cache_path=cache_path,
         function_cache_path=function_cache_path,
+        stdlib_object_path=stdlib_object_path,
         cache_candidates=tuple(cache_candidates),
         cache_hit=cache_hit,
         cache_hit_tier=cache_hit_tier,

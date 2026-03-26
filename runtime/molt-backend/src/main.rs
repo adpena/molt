@@ -75,6 +75,17 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+#[cfg(feature = "native-backend")]
+fn is_user_owned_symbol(name: &str, entry_module: &str) -> bool {
+    let entry_init = format!("molt_init_{entry_module}");
+    name == "molt_main"
+        || name.starts_with(&format!("{entry_module}__"))
+        || name == entry_init
+        || name == "molt_init___main__"
+        || name == "molt_isolate_import"
+        || name == "molt_isolate_bootstrap"
+}
+
 #[derive(Debug)]
 struct DaemonHealthResponse {
     protocol_version: u32,
@@ -1190,19 +1201,11 @@ fn main() -> io::Result<()> {
 
             if let Some(ref stdlib_path) = stdlib_obj_path {
                 let stdlib_path = std::path::Path::new(stdlib_path);
-                let is_user_func = |name: &str| -> bool {
-                    name.starts_with(&format!("{entry_module}__"))
-                        || name == "molt_main"
-                        || name.starts_with(&format!("molt_init_{entry_module}"))
-                        || name == "molt_init___main__"
-                        || name == "molt_isolate_import"
-                        || name == "molt_isolate_bootstrap"
-                        || name.starts_with("molt_init_")
-                };
                 if stdlib_path.exists() {
                     // Cached stdlib exists — compile only user functions
                     let total = ir.functions.len();
-                    ir.functions.retain(|f| is_user_func(&f.name));
+                    ir.functions
+                        .retain(|f| is_user_owned_symbol(&f.name, &entry_module));
                     let kept = ir.functions.len();
                     eprintln!(
                         "MOLT_BACKEND: incremental — compiling {kept} user functions (cached {} stdlib in {})",
@@ -1213,7 +1216,7 @@ fn main() -> io::Result<()> {
                     // First build — compile stdlib separately, cache it
                     let _total = ir.functions.len();
                     let user_funcs: Vec<_> = ir.functions.iter()
-                        .filter(|f| is_user_func(&f.name))
+                        .filter(|f| is_user_owned_symbol(&f.name, &entry_module))
                         .map(|f| f.name.clone())
                         .collect();
                     let user_func_set: std::collections::BTreeSet<_> = user_funcs.iter().cloned().collect();
@@ -1454,7 +1457,8 @@ fn main() -> io::Result<()> {
 mod tests {
     use super::{
         DaemonCache, DaemonJobRequest, DaemonRequest, DaemonResponse, compile_single_job,
-        daemon_response_payload, read_daemon_request_bytes, write_cached_output,
+        daemon_response_payload, is_user_owned_symbol, read_daemon_request_bytes,
+        write_cached_output,
     };
     use std::io::Cursor;
     use std::sync::Arc;
@@ -1619,5 +1623,19 @@ mod tests {
         assert!(!result.needs_ir);
         assert!(output.exists());
         let _ = std::fs::remove_file(output);
+    }
+
+    #[test]
+    fn user_owned_symbol_whitelist_keeps_only_entry_roots() {
+        assert!(is_user_owned_symbol("molt_main", "app"));
+        assert!(is_user_owned_symbol("app__module", "app"));
+        assert!(is_user_owned_symbol("molt_init_app", "app"));
+        assert!(is_user_owned_symbol("molt_init___main__", "app"));
+        assert!(is_user_owned_symbol("molt_isolate_import", "app"));
+        assert!(is_user_owned_symbol("molt_isolate_bootstrap", "app"));
+
+        assert!(!is_user_owned_symbol("molt_init_sys", "app"));
+        assert!(!is_user_owned_symbol("molt_init_json", "app"));
+        assert!(!is_user_owned_symbol("molt_init_app_helper", "app"));
     }
 }

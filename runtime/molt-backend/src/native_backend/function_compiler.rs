@@ -187,6 +187,20 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
     //
     // Fix: for every (loop_start..loop_end) range, extend last_use of all
     // variables referenced in that range to at least the loop_end index.
+    //
+    // Nested loops: ranges are collected as a flat list — an inner loop
+    // (start_i, end_i) is always positionally contained within its outer
+    // loop (start_o, end_o).  Variables used inside the inner loop appear
+    // at positions within *both* ranges, so the max() logic naturally
+    // extends their last_use to the outermost enclosing loop_end.  This is
+    // conservative (inner-only variables survive until the outer loop_end)
+    // but safe — premature free is the only correctness hazard here.
+    //
+    // While loops, break, continue: while loops emit loop_start/loop_end
+    // (no loop_index_start), so they are covered.  loop_break/loop_continue
+    // ops sit inside the range; variables they reference are extended.
+    // At loop_break, drain_cleanup_tracked sees last_use > op_idx and
+    // keeps variables alive; they propagate to after_block for later cleanup.
     {
         let mut loop_stack_post: Vec<usize> = Vec::new(); // stack of loop start indices
         let mut loop_ranges: Vec<(usize, usize)> = Vec::new();
@@ -4047,6 +4061,9 @@ impl SimpleBackend {
                 }
                 "index" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    if func_ir.name == "molt_main" || func_ir.name.contains("module") {
+                        eprintln!("[DEBUG-BACKEND] index op: args={:?} in func={}", args, func_ir.name);
+                    }
                     // Stack-tuple fast path: resolve element at compile time.
                     let stack_resolved = stack_tuples.get(&args[0]).and_then(|elems| {
                         Self::resolve_const_int(ops, op_idx, &args[1]).and_then(|ci| {

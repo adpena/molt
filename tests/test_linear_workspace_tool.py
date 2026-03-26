@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import pytest
 
@@ -80,6 +81,28 @@ def test_viewer_uses_lru_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     linear_workspace._viewer()
     assert calls["count"] == 1
     linear_workspace._viewer.cache_clear()
+
+
+def test_api_key_reads_repo_local_env_when_process_env_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    local_env = tmp_path / "local.env"
+    local_env.write_text("LINEAR_API_KEY=repo-local-token\n", encoding="utf-8")
+    monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+    monkeypatch.setattr(linear_workspace, "_local_env_path", lambda: local_env)
+
+    assert linear_workspace._api_key() == "repo-local-token"
+
+
+def test_api_key_prefers_process_env_over_repo_local_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    local_env = tmp_path / "local.env"
+    local_env.write_text("LINEAR_API_KEY=repo-local-token\n", encoding="utf-8")
+    monkeypatch.setenv("LINEAR_API_KEY", "process-token")
+    monkeypatch.setattr(linear_workspace, "_local_env_path", lambda: local_env)
+
+    assert linear_workspace._api_key() == "process-token"
 
 
 def test_cmd_update_issue_builds_expected_payload(

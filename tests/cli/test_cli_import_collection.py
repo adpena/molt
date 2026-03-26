@@ -426,6 +426,139 @@ def test_link_fingerprint_changes_when_link_command_changes(tmp_path: Path) -> N
     assert first["hash"] != second["hash"]
 
 
+def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_obj = tmp_path / "output.o"
+    output_obj.write_bytes(b"\x7fELFobject")
+    runtime_lib = tmp_path / "libmolt_runtime.a"
+    runtime_lib.write_bytes(b"archive")
+    output_binary = tmp_path / "app"
+    stdlib_obj = tmp_path / "stdlib.o"
+    stdlib_obj.write_bytes(b"stdlib")
+    captured_inputs: list[Path] = []
+    artifacts_root = tmp_path / "artifacts"
+    artifacts_root.mkdir()
+
+    def fake_link_fingerprint(
+        *,
+        project_root: Path,
+        inputs: list[Path],
+        link_cmd: list[str],
+        stored_fingerprint: dict[str, object] | None = None,
+    ) -> dict[str, str]:
+        del project_root, link_cmd, stored_fingerprint
+        captured_inputs[:] = inputs
+        return {"hash": "fingerprint", "rustc": None, "inputs_digest": None}
+
+    monkeypatch.setattr(cli, "_link_fingerprint", fake_link_fingerprint)
+    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
+    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
+
+    prepared, error = cli._prepare_native_link(
+        output_artifact=output_obj,
+        trusted=False,
+        capabilities_list=None,
+        artifacts_root=artifacts_root,
+        json_output=False,
+        output_binary=output_binary,
+        runtime_lib=runtime_lib,
+        molt_root=tmp_path,
+        runtime_cargo_profile="dev-fast",
+        target_triple=None,
+        sysroot_path=None,
+        profile="dev",
+        project_root=tmp_path,
+        diagnostics_enabled=False,
+        phase_starts={},
+        link_timeout=None,
+        warnings=[],
+        stdlib_obj_path=stdlib_obj,
+    )
+
+    assert error is None
+    assert prepared is not None
+    assert captured_inputs == [
+        tmp_path / "artifacts" / "main_stub.c",
+        output_obj,
+        runtime_lib,
+        stdlib_obj,
+    ]
+
+
+def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_obj = tmp_path / "output.o"
+    output_obj.write_bytes(b"\x7fELFobject")
+    runtime_lib = tmp_path / "libmolt_runtime.a"
+    runtime_lib.write_bytes(b"archive")
+    output_binary = tmp_path / "app"
+    stdlib_obj = tmp_path / "stdlib.o"
+    stdlib_obj.write_bytes(b"stdlib-v1")
+    artifacts_root = tmp_path / "artifacts"
+    artifacts_root.mkdir()
+
+    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
+    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        cli,
+        "_run_native_link_command",
+        lambda **kwargs: subprocess.CompletedProcess(
+            kwargs["link_cmd"], 0, "", ""
+        ),
+    )
+
+    first, first_error = cli._prepare_native_link(
+        output_artifact=output_obj,
+        trusted=False,
+        capabilities_list=None,
+        artifacts_root=artifacts_root,
+        json_output=False,
+        output_binary=output_binary,
+        runtime_lib=runtime_lib,
+        molt_root=tmp_path,
+        runtime_cargo_profile="dev-fast",
+        target_triple=None,
+        sysroot_path=None,
+        profile="dev",
+        project_root=tmp_path,
+        diagnostics_enabled=False,
+        phase_starts={},
+        link_timeout=None,
+        warnings=[],
+        stdlib_obj_path=stdlib_obj,
+    )
+    assert first_error is None
+    assert first is not None
+
+    stdlib_obj.write_bytes(b"stdlib-v2")
+
+    second, second_error = cli._prepare_native_link(
+        output_artifact=output_obj,
+        trusted=False,
+        capabilities_list=None,
+        artifacts_root=artifacts_root,
+        json_output=False,
+        output_binary=output_binary,
+        runtime_lib=runtime_lib,
+        molt_root=tmp_path,
+        runtime_cargo_profile="dev-fast",
+        target_triple=None,
+        sysroot_path=None,
+        profile="dev",
+        project_root=tmp_path,
+        diagnostics_enabled=False,
+        phase_starts={},
+        link_timeout=None,
+        warnings=[],
+        stdlib_obj_path=stdlib_obj,
+    )
+    assert second_error is None
+    assert second is not None
+    assert first.link_fingerprint["hash"] != second.link_fingerprint["hash"]
+
+
 def test_cache_payloads_for_ir_share_sorted_function_order() -> None:
     ir = {
         "functions": [
@@ -3850,6 +3983,68 @@ def test_build_skips_daemon_preflight_when_socket_exists(
     assert compile_calls == 1
 
 
+def test_build_native_backend_sets_stdlib_object_env_from_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    entry = project / "main.py"
+    entry.write_text("print('ok')\n")
+
+    build_state_root = tmp_path / "build-state"
+    cache_root = tmp_path / "cache"
+    backend_bin = tmp_path / "fake-backend"
+    backend_bin.write_text("")
+    expected_stdlib_obj = cache_root / "stdlib-object.o"
+
+    monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
+    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_resolve_frontend_parallel_module_workers", lambda: 0)
+    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        cli,
+        "_stdlib_object_cache_path",
+        lambda cache_path, cache_key: expected_stdlib_obj,
+    )
+
+    original_run = cli.subprocess.run
+    seen_backend_env: dict[str, str] | None = None
+
+    def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        nonlocal seen_backend_env
+        if cmd and str(cmd[0]) == str(backend_bin):
+            env = kwargs.get("env")
+            assert isinstance(env, dict)
+            seen_backend_env = env
+            output = Path(cmd[cmd.index("--output") + 1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"OBJ")
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        return original_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    rc = cli.build(
+        str(entry),
+        emit="obj",
+        output=str(tmp_path / "out.o"),
+        profile="dev",
+        deterministic=False,
+        json_output=False,
+    )
+
+    assert rc == 0
+    assert seen_backend_env is not None
+    assert seen_backend_env["MOLT_STDLIB_OBJ"] == str(expected_stdlib_obj)
+
+
 def test_read_module_source_uses_utf8_fast_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4965,6 +5160,7 @@ def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_h
             function_cache_key=None,
             cache_path=tmp_path / "module-cache.o",
             function_cache_path=None,
+            stdlib_object_path=None,
             cache_candidates=(("module", tmp_path / "module-cache.o"),),
             cache_hit=True,
             cache_hit_tier="module",
@@ -5027,6 +5223,7 @@ def test_prepare_backend_setup_keeps_runtime_lib_ready_check_for_native_cache_mi
             function_cache_key=None,
             cache_path=tmp_path / "module-cache.o",
             function_cache_path=None,
+            stdlib_object_path=None,
             cache_candidates=(("module", tmp_path / "module-cache.o"),),
             cache_hit=False,
             cache_hit_tier=None,
@@ -5419,6 +5616,86 @@ def test_run_uses_build_profile_flag_for_nested_build(
         ]
     ]
     assert run_cmds
+
+
+def test_native_backend_compile_routes_stdlib_object_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    output_artifact = project_root / "build" / "main.o"
+    backend_bin = tmp_path / "backend-bin"
+    artifacts_root = tmp_path / "artifacts"
+    stdlib_object_path = project_root / "build" / "main.stdlib.o"
+    captured_envs: list[dict[str, str] | None] = []
+
+    def fake_subprocess_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        env = cast(dict[str, str] | None, kwargs.get("env"))
+        captured_envs.append(env)
+        assert env is not None
+        assert "MOLT_STDLIB_OBJ" in env
+        output_path = Path(cmd[cmd.index("--output") + 1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"object")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+
+    result, error = cli._execute_backend_compile(
+        cache=False,
+        cache_path=None,
+        function_cache_path=None,
+        artifacts_root=artifacts_root,
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=False,
+        diagnostics_enabled=False,
+        phase_starts={},
+        daemon_ready=False,
+        daemon_socket=None,
+        project_root=project_root,
+        output_artifact=output_artifact,
+        cache_key=None,
+        function_cache_key=None,
+        cache_setup=cli._BackendCacheSetup(
+            cache_enabled=False,
+            cache_key=None,
+            function_cache_key=None,
+            cache_path=None,
+            function_cache_path=None,
+            stdlib_object_path=stdlib_object_path,
+            cache_candidates=(),
+            cache_hit=False,
+            cache_hit_tier=None,
+        ),
+        target_triple=None,
+        backend_daemon_config_digest=None,
+        ir={"functions": []},
+        json_output=False,
+        warnings=[],
+        verbose=False,
+        backend_bin=backend_bin,
+        backend_env=None,
+        backend_timeout=None,
+        molt_root=project_root,
+        backend_cargo_profile="dev-fast",
+        _ensure_backend_ir_bytes=lambda: b"{}",
+        _get_backend_ir_fmt=lambda: "json",
+        cache_hit=False,
+        backend_daemon_cached=None,
+        backend_daemon_cache_tier=None,
+        backend_daemon_health=None,
+    )
+
+    assert error is None
+    assert result is not None
+    assert captured_envs and captured_envs[0] is not None
+    stdlib_obj = captured_envs[0]["MOLT_STDLIB_OBJ"]
+    assert stdlib_obj == str(stdlib_object_path)
+    assert stdlib_obj != str(output_artifact)
 
 
 def test_compare_uses_build_profile_flag_for_nested_build(
@@ -6672,6 +6949,40 @@ def test_materialize_cached_backend_artifact_promotes_module_cache_from_function
     assert warnings == []
     assert output_artifact.read_bytes() == b"artifact"
     assert cache_path.read_bytes() == b"artifact"
+
+
+def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced(
+    tmp_path: Path,
+) -> None:
+    candidate = tmp_path / "cache" / "function.o"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"artifact")
+    output_artifact = tmp_path / "dist" / "output.o"
+    cache_path = tmp_path / "cache" / "module.o"
+    warnings: list[str] = []
+
+    ok, cache_hit_tier = cli._try_cached_backend_candidates(
+        project_root=tmp_path,
+        cache_candidates=[("function", candidate)],
+        output_artifact=output_artifact,
+        is_wasm=False,
+        cache_key="module-key",
+        function_cache_key="function-key",
+        cache_path=cache_path,
+        warnings=warnings,
+    )
+
+    assert ok is True
+    assert cache_hit_tier == "function"
+    assert warnings == []
+    skip_module, skip_function = cli._backend_daemon_skip_output_sync_flags(
+        tmp_path,
+        output_artifact,
+        cache_key="module-key",
+        function_cache_key="function-key",
+    )
+    assert skip_module is True
+    assert skip_function is False
 
 
 def test_materialize_cached_backend_artifact_skips_recopy_when_synced(

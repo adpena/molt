@@ -310,7 +310,7 @@ def test_shutdown_batch_compile_server_uses_force_close_path(monkeypatch) -> Non
     assert module._BATCH_COMPILE_SERVER_CLIENT_PID == 0
 
 
-def test_batch_compile_server_ping_failure_force_closes_and_cools_down(
+def test_batch_compile_server_ping_failure_requires_repeated_failures_before_cooldown(
     monkeypatch,
 ) -> None:
     module = _load_diff_module()
@@ -345,7 +345,62 @@ def test_batch_compile_server_ping_failure_force_closes_and_cools_down(
     )
     assert client_retry is None
     assert retry_error is not None
-    assert "temporarily disabled" in retry_error
+    assert "ping timeout" in retry_error
+
+    client_cooldown, cooldown_error = module._batch_compile_server_client(
+        {},
+        request_timeout=0.1,
+    )
+    assert client_cooldown is None
+    assert cooldown_error is not None
+    assert "temporarily disabled" in cooldown_error
+
+
+def test_run_batch_compile_build_success_resets_failure_budget(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_diff_module()
+    resets = {"count": 0}
+
+    class _Client:
+        def request(self, op: str, *, params=None, timeout: float) -> dict[str, object]:
+            assert op == "build"
+            return {
+                "id": 1,
+                "ok": True,
+                "returncode": 0,
+                "stdout": "ok",
+                "stderr": "",
+            }
+
+    def _fake_client_factory(_env, *, request_timeout: float):
+        return _Client(), None
+
+    def _fake_reset_disabled() -> None:
+        resets["count"] += 1
+
+    monkeypatch.setattr(module, "_batch_compile_server_client", _fake_client_factory)
+    monkeypatch.setattr(
+        module, "_batch_compile_server_reset_disabled", _fake_reset_disabled
+    )
+
+    rc, stdout, stderr, error = module._run_batch_compile_build(
+        env={"MOLT_CODEC": "msgpack"},
+        file_path="tests/differential/basic/arith.py",
+        output_root=tmp_path,
+        output_binary=tmp_path / "arith_molt",
+        build_profile="dev",
+        no_cache=False,
+        rebuild=False,
+        request_timeout=8.0,
+        strict_mode=False,
+    )
+
+    assert error is None
+    assert rc == 0
+    assert stdout == "ok"
+    assert stderr == ""
+    assert resets["count"] == 1
 
 
 def test_run_batch_compile_build_strict_mode_retries_once_on_start_error(
@@ -399,7 +454,7 @@ def test_run_batch_compile_build_strict_mode_retries_once_on_start_error(
     assert stdout == "ok"
     assert stderr == ""
     assert attempts["count"] == 2
-    assert resets["count"] == 1
+    assert resets["count"] == 2
 
 
 def test_run_batch_compile_build_error_path_force_closes_server(

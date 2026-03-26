@@ -28,6 +28,7 @@ _BATCH_COMPILE_SERVER_CLIENT: "_BatchCompileServerClient | None" = None
 _BATCH_COMPILE_SERVER_CLIENT_PID = 0
 _BATCH_COMPILE_SERVER_DISABLED_UNTIL = 0.0
 _BATCH_COMPILE_SERVER_DISABLE_REASON = ""
+_BATCH_COMPILE_SERVER_FAILURE_COUNT = 0
 
 try:
     import fcntl  # type: ignore
@@ -1146,11 +1147,26 @@ def _batch_compile_server_disable_cooldown_sec() -> float:
     return max(0.0, raw)
 
 
+def _batch_compile_server_disable_after_failures() -> int:
+    return max(
+        1,
+        _parse_int_env(
+            "MOLT_DIFF_BATCH_COMPILE_SERVER_DISABLE_AFTER_FAILURES",
+            2,
+        ),
+    )
+
+
 def _batch_compile_server_mark_disabled(reason: str) -> None:
     global _BATCH_COMPILE_SERVER_DISABLED_UNTIL
     global _BATCH_COMPILE_SERVER_DISABLE_REASON
+    global _BATCH_COMPILE_SERVER_FAILURE_COUNT
+    _BATCH_COMPILE_SERVER_FAILURE_COUNT += 1
     cooldown = _batch_compile_server_disable_cooldown_sec()
     _BATCH_COMPILE_SERVER_DISABLE_REASON = reason.strip()
+    if _BATCH_COMPILE_SERVER_FAILURE_COUNT < _batch_compile_server_disable_after_failures():
+        _BATCH_COMPILE_SERVER_DISABLED_UNTIL = 0.0
+        return
     if cooldown <= 0:
         _BATCH_COMPILE_SERVER_DISABLED_UNTIL = 0.0
     else:
@@ -1160,14 +1176,17 @@ def _batch_compile_server_mark_disabled(reason: str) -> None:
 def _batch_compile_server_reset_disabled() -> None:
     global _BATCH_COMPILE_SERVER_DISABLED_UNTIL
     global _BATCH_COMPILE_SERVER_DISABLE_REASON
+    global _BATCH_COMPILE_SERVER_FAILURE_COUNT
     _BATCH_COMPILE_SERVER_DISABLED_UNTIL = 0.0
     _BATCH_COMPILE_SERVER_DISABLE_REASON = ""
+    _BATCH_COMPILE_SERVER_FAILURE_COUNT = 0
 
 
 def _batch_compile_server_disabled_message() -> str | None:
     remaining = _BATCH_COMPILE_SERVER_DISABLED_UNTIL - time.monotonic()
     if remaining <= 0:
-        _batch_compile_server_reset_disabled()
+        if _BATCH_COMPILE_SERVER_DISABLED_UNTIL > 0:
+            _batch_compile_server_reset_disabled()
         return None
     if _BATCH_COMPILE_SERVER_DISABLE_REASON:
         return (
@@ -2177,6 +2196,7 @@ def _batch_compile_server_client(
                 client.close(force=True)
         _batch_compile_server_mark_disabled(str(exc))
         return None, str(exc)
+    _batch_compile_server_reset_disabled()
     _BATCH_COMPILE_SERVER_CLIENT = client
     _BATCH_COMPILE_SERVER_CLIENT_PID = pid
     atexit.register(_shutdown_batch_compile_server)
@@ -2254,6 +2274,7 @@ def _run_batch_compile_build(
                 err_text = f"{err_text}\n{error}"
             else:
                 err_text = error
+        _batch_compile_server_reset_disabled()
         return returncode, out_text, err_text, None
     return 0, "", "", last_error
 

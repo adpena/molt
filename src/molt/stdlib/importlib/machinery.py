@@ -82,11 +82,9 @@ SOURCE_SUFFIXES = [".py"]
 BYTECODE_SUFFIXES = [".pyc"]
 DEBUG_BYTECODE_SUFFIXES = [".pyc"]
 OPTIMIZED_BYTECODE_SUFFIXES = [".pyc"]
-try:
-    import sys as _sys
-    _platform = _sys.platform
-except Exception:
-    _platform = ""
+import sys as _sys
+
+_platform = _sys.platform
 
 if _platform == "win32":
     EXTENSION_SUFFIXES: list[str] = [".pyd", ".dll"]
