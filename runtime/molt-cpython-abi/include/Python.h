@@ -1,19 +1,23 @@
 /*
- * Python.h — Molt CPython ABI compatibility header.
+ * Python.h — Molt CPython ABI compatibility header (SECONDARY).
  *
- * Provides the minimal subset of CPython 3.12 types and macros needed to
- * compile native Python extension modules (.so / .pyd) against the Molt
- * runtime instead of CPython.
+ * WARNING: This is NOT the canonical Molt Python.h header. Most users should
+ * use the top-level header instead:
  *
- * Extensions compiled against this header link against:
+ *   cc -I include myext.c          (uses include/Python.h -> include/molt/Python.h)
+ *
+ * This header exists ONLY for extensions that link against the standalone
+ * libmolt_cpython_abi shared library. It uses extern declarations and a
+ * traditional CPython struct layout (ob_refcnt, ob_type) that is NOT
+ * compatible with the main include/molt/Python.h header.
+ *
+ * If you are unsure which to use, use the top-level one:
+ *   cc -O2 -shared -fPIC -I include myext.c -o _myext.so
+ *
+ * Extensions compiled against THIS header link against:
  *   libmolt_cpython_abi.dylib  (macOS)
  *   libmolt_cpython_abi.so     (Linux)
  *   molt_cpython_abi.dll       (Windows)
- *
- * Compilation:
- *   cc -O2 -shared -fPIC -I<path>/include \
- *      myext.c -o _myext.cpython-312-darwin.so \
- *      -L<cargo-target>/release -lmolt_cpython_abi
  *
  * ABI note: struct layouts match CPython 3.12 x86-64 / aarch64.
  */
