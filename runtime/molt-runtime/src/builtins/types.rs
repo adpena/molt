@@ -620,11 +620,11 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let class_obj = obj_from_bits(class_bits);
         let Some(class_ptr) = class_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+            return MoltObject::none().bits();
         };
         unsafe {
             if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                return MoltObject::none().bits();
             }
         }
         let mut bases_vec = Vec::new();
@@ -764,11 +764,11 @@ pub extern "C" fn molt_class_apply_set_name(class_bits: u64) -> u64 {
         );
         let class_obj = obj_from_bits(class_bits);
         let Some(class_ptr) = class_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+            return MoltObject::none().bits();
         };
         unsafe {
             if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                return MoltObject::none().bits();
             }
             if !apply_class_slots_layout(_py, class_ptr) {
                 return MoltObject::none().bits();
@@ -826,11 +826,11 @@ pub extern "C" fn molt_class_layout_version(class_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let class_obj = obj_from_bits(class_bits);
         let Some(class_ptr) = class_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+            return MoltObject::none().bits();
         };
         unsafe {
             if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                return MoltObject::none().bits();
             }
             MoltObject::from_int(class_layout_version_bits(class_ptr) as i64).bits()
         }
@@ -842,11 +842,11 @@ pub extern "C" fn molt_class_set_layout_version(class_bits: u64, version_bits: u
     crate::with_gil_entry!(_py, {
         let class_obj = obj_from_bits(class_bits);
         let Some(class_ptr) = class_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+            return MoltObject::none().bits();
         };
         unsafe {
             if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                return MoltObject::none().bits();
             }
             let version = match to_i64(obj_from_bits(version_bits)) {
                 Some(val) if val >= 0 => val as u64,
@@ -1751,10 +1751,10 @@ pub unsafe extern "C" fn molt_object_set_class(obj_ptr: *mut u8, class_bits: u64
             if class_bits != 0 {
                 let class_obj = obj_from_bits(class_bits);
                 let Some(class_ptr) = class_obj.as_ptr() else {
-                    return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                    return MoltObject::none().bits();
                 };
                 if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                    return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                    return MoltObject::none().bits();
                 }
             }
             let skip_class_ref = ((*header).flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0;

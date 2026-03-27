@@ -451,10 +451,10 @@ pub(crate) unsafe fn dataclass_set_class_raw(
         if class_bits != 0 {
             let class_obj = obj_from_bits(class_bits);
             let Some(class_ptr) = class_obj.as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                return MoltObject::none().bits();
             };
             if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                return MoltObject::none().bits();
             }
         }
         let desc_ptr = dataclass_desc_ptr(ptr);

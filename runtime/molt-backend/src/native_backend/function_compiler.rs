@@ -600,6 +600,20 @@ impl SimpleBackend {
             builder.def_var(var, ptr_val);
         }
 
+        // Initialize ALL variables to None (0x7ffb...) in the entry block.
+        // This ensures that exception handler state blocks (which join
+        // all check_exception sites) have valid NaN-boxed None values
+        // instead of 0 (raw float) for undefined variables. Without this,
+        // runtime functions receive 0 which doesn't match any NaN-box tag,
+        // causing null pointer dereferences.
+        {
+            let none_val = builder.ins().iconst(types::I64, box_none());
+            for (name, var) in &vars {
+                if param_name_set.contains(name.as_str()) { continue; }
+                builder.def_var(*var, none_val);
+            }
+        }
+
         builder.seal_block(entry_block);
         sealed_blocks.insert(entry_block);
 
@@ -622,7 +636,10 @@ impl SimpleBackend {
                 continue;
             }
             let op = ops[op_idx].clone();
-            sync_block_filled(&builder, &mut is_block_filled);
+            // Don't use sync_block_filled — it sets is_block_filled=true for EVERY
+            // block with a terminator, including legitimate fallthrough blocks.
+            // Instead, only detect filled blocks when switching to them (in
+            // switch_to_block_tracking).
             if is_block_filled {
                 if op.kind == "if"
                     && let Some(&end_if_idx) = if_to_end_if.get(&op_idx)
@@ -640,13 +657,20 @@ impl SimpleBackend {
                     }
                     continue;
                 }
-                match op.kind.as_str() {
-                    "label" | "state_label" | "else" | "end_if" | "loop_start"
-                    | "loop_index_start" | "loop_index_next" | "loop_continue"
-                    | "loop_end" | "loop_break" | "loop_break_if_true"
-                    | "loop_break_if_false" => {}
-                    _ => continue,
+                // When is_block_filled is true, the current block has a terminator.
+                // Instead of skipping ops (which leaves variables undefined and
+                // breaks field access, exception stack, etc.), create a fresh
+                // dead block so ops can execute harmlessly for SSA variable defs.
+                // This replaces the whitelist approach that caused f.b = f.a bugs.
+                if builder.current_block().is_none()
+                    || block_has_terminator(&builder, builder.current_block().unwrap())
+                {
+                    let dead = builder.create_block();
+                    builder.switch_to_block(dead);
+                    builder.seal_block(dead);
                 }
+                is_block_filled = false;
+                // Fall through to the normal match — ops execute into the dead block
             }
             if !is_block_filled
                 && let Some(stride) = trace_stride
