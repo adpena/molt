@@ -74,10 +74,19 @@ def _resolve_import_name(name: str, globals_obj, level: int) -> str:
 
 def _is_placeholder_module(mod: object) -> bool:
     module_dict = getattr(mod, "__dict__", None)
-    return (
-        isinstance(module_dict, dict)
-        and len(module_dict) == 1
-        and "__name__" in module_dict
+    if not isinstance(module_dict, dict):
+        return False
+    if len(module_dict) == 1 and "__name__" in module_dict:
+        return True
+    if not module_dict or any(not key.startswith("_") for key in module_dict):
+        return False
+    return any(
+        key in module_dict
+        for key in (
+            "_molt_intrinsic_lookup",
+            "_molt_intrinsics",
+            "_molt_runtime",
+        )
     )
 
 
@@ -188,14 +197,7 @@ def _intrinsic_import(name, globals=None, locals=None, fromlist=(), level=0):
     return modules.get(top, mod)
 
 
-_molt_import_impl = None
-_molt_importer = _sys.modules.get("_molt_importer")
-if _molt_importer is not None:
-    _molt_import_impl = getattr(_molt_importer, "_molt_import", None)
-if _molt_import_impl is None:
-    __import__ = _intrinsic_import
-else:
-    __import__ = _molt_import_impl
+__import__ = _intrinsic_import
 
 if False:  # TYPE_CHECKING
     from typing import Callable, Optional  # noqa: F401
