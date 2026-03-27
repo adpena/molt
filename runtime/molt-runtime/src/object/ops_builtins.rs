@@ -3653,7 +3653,6 @@ pub extern "C" fn molt_print_builtin(
             }
 
             let mut resolved_file_bits = file_bits;
-            let mut sys_found = false;
             let mut file_from_sys = false;
             if obj_from_bits(resolved_file_bits).is_none() {
                 let sys_name_bits =
@@ -3661,7 +3660,6 @@ pub extern "C" fn molt_print_builtin(
                 if !obj_from_bits(sys_name_bits).is_none() {
                     let sys_bits = molt_module_cache_get(sys_name_bits);
                     if !obj_from_bits(sys_bits).is_none() {
-                        sys_found = true;
                         let stdout_name_bits = intern_static_name(
                             _py,
                             &runtime_state(_py).interned.stdout_name,
