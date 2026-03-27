@@ -2173,32 +2173,28 @@ impl SimpleBackend {
             eprintln!("[molt] WARNING: MOLT_BACKEND=llvm requested but llvm feature is not compiled in; falling back to Cranelift");
         }
         apply_profile_order(&mut ir);
-        for func_ir in &mut ir.functions {
-            rewrite_stateful_loops(func_ir);
-        }
-        for func_ir in &mut ir.functions {
-            elide_dead_struct_allocs(func_ir);
-        }
-        for func_ir in &mut ir.functions {
-            escape_analysis(func_ir);
-        }
-        for func_ir in &mut ir.functions {
-            if std::env::var("MOLT_DISABLE_RC_COALESCING").as_deref() != Ok("1") {
-                rc_coalescing(func_ir);
-            }
-        }
-        for func_ir in &mut ir.functions {
-            fold_constants(&mut func_ir.ops);
-            fold_constants_cross_block(&mut func_ir.ops);
-        }
-        for func_ir in &mut ir.functions {
-            elide_safe_exception_checks(func_ir);
-        }
-        for func_ir in &mut ir.functions {
-            hoist_loop_invariants(func_ir);
-        }
-        for func_ir in &mut ir.functions {
-            propagate_loop_fast_int(func_ir);
+        // ── Pre-TIR IR passes (parallel) ────────────────────────
+        // Each pass operates on a single FunctionIR with no shared
+        // mutable state, so all 8 passes can run in parallel across
+        // functions using rayon.  Fusing them into one par_iter_mut
+        // avoids 8× thread-pool dispatch overhead and improves cache
+        // locality (each function stays hot while all passes run).
+        {
+            use rayon::prelude::*;
+            let disable_rc = std::env::var("MOLT_DISABLE_RC_COALESCING").as_deref() == Ok("1");
+            ir.functions.par_iter_mut().for_each(|func_ir| {
+                rewrite_stateful_loops(func_ir);
+                elide_dead_struct_allocs(func_ir);
+                escape_analysis(func_ir);
+                if !disable_rc {
+                    rc_coalescing(func_ir);
+                }
+                fold_constants(&mut func_ir.ops);
+                fold_constants_cross_block(&mut func_ir.ops);
+                elide_safe_exception_checks(func_ir);
+                hoist_loop_invariants(func_ir);
+                propagate_loop_fast_int(func_ir);
+            });
         }
         // ── GPU kernel detection ──
         // Functions containing GPU intrinsic ops (gpu_thread_id, gpu_block_id,
