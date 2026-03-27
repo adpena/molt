@@ -11950,23 +11950,23 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
 ];
 
 pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
+    // Primary: use the compiled match table. This works on all targets
+    // (native + WASM) and is immune to linker dead-stripping, which
+    // removes #[no_mangle] symbols that dlsym would need.
+    if let Some(addr) = resolve_symbol_match(symbol) {
+        return Some(addr);
+    }
+    // Fallback: dlsym for symbols added at runtime (e.g. C extensions).
     #[cfg(not(target_arch = "wasm32"))]
     {
-        // Use dlsym to find #[unsafe(no_mangle)] symbols at runtime.
-        // This avoids a 2388-arm match statement that prevents dead stripping.
         use std::ffi::CString;
         let c_name = CString::new(symbol).ok()?;
         let ptr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c_name.as_ptr()) };
-        if ptr.is_null() {
-            None
-        } else {
-            Some(ptr as usize as u64)
+        if !ptr.is_null() {
+            return Some(ptr as usize as u64);
         }
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        resolve_symbol_match(symbol)
-    }
+    None
 }
 
 #[cfg(target_arch = "wasm32")]
