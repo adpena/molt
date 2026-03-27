@@ -404,6 +404,7 @@ impl SimpleBackend {
         let mut block_tracked_obj: BTreeMap<Block, Vec<String>> = BTreeMap::new();
         let mut block_tracked_ptr: BTreeMap<Block, Vec<String>> = BTreeMap::new();
         let mut already_decrefed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut already_decrefed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         // Global dedup set: tracks which variable names have already been
         // dec_ref'd by any cleanup site. Prevents double-free when tracked
         // values are cloned to multiple blocks by if/check_exception/br_if.
@@ -597,6 +598,17 @@ impl SimpleBackend {
             let call = builder.ins().call(fn_ref, &[]);
             let ptr_val = builder.inst_results(call)[0];
             builder.def_var(var, ptr_val);
+        }
+
+        // Initialize ALL variables to None in the entry block so that
+        // exception handler state blocks (joining multiple check_exception
+        // sites) have valid phi values for all variables.
+        {
+            let none_val = builder.ins().iconst(types::I64, box_none());
+            for (name, var) in &vars {
+                if param_name_set.contains(name.as_str()) { continue; }
+                builder.def_var(*var, none_val);
+            }
         }
 
         builder.seal_block(entry_block);
