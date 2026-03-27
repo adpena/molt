@@ -33,7 +33,7 @@ pub(crate) use crate::object::ops_encoding::{
 
 use crate::object::layout::{range_start_bits, range_step_bits, range_stop_bits};
 use crate::object::ops_bytes::{
-    BytesCtorKind, bytes_ascii_space, bytes_hex_from_bits, bytes_item_to_u8,
+    BytesCtorKind, bytes_ascii_space, bytes_item_to_u8,
     collect_bytearray_assign_bytes,
 };
 use crate::state::runtime_state::PythonVersionInfo;

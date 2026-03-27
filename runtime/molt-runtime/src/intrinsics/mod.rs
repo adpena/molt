@@ -1,4 +1,5 @@
 pub(crate) mod capabilities;
+#[allow(dead_code)]
 mod generated;
 pub(crate) mod registry;
 

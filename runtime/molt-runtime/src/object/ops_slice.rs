@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use num_traits::{Signed, Zero};
 use num_bigint::BigInt;
 use molt_obj_model::MoltObject;
-use super::ops::{SliceError, decode_slice_bound, slice_error};
+use super::ops::{decode_slice_bound, slice_error};
 
 
 
