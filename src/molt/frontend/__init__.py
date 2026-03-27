@@ -8362,7 +8362,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
             return
-        guard_map = self._emit_hoisted_loop_guards(node.body)
+        guard_map = {} if self.current_func_name == "molt_main" else self._emit_hoisted_loop_guards(node.body)
 
         def emit_loop_body() -> None:
             iter_obj = self._emit_iter_new(iterable)
@@ -10123,7 +10123,37 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="CONST_STR", args=[index_name], result=key2))
             self.emit(MoltOp(kind="MODULE_SET_ATTR", args=[self.module_var, key2, idx], result=MoltValue("none")))
 
+    @staticmethod
+    def _try_extract_const_str(node: ast.expr) -> str | None:
+        """Recursively extract a constant string from an AST node.
+
+        Handles plain string constants and chained Add operations
+        over string constants (e.g. ``"a" + "b" + "c"``).
+        """
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if (
+            isinstance(node, ast.BinOp)
+            and isinstance(node.op, ast.Add)
+        ):
+            left = SimpleTIRGenerator._try_extract_const_str(node.left)
+            if left is None:
+                return None
+            right = SimpleTIRGenerator._try_extract_const_str(node.right)
+            if right is None:
+                return None
+            return left + right
+        return None
+
     def visit_BinOp(self, node: ast.BinOp) -> Any:
+        # Constant-fold string concatenation: "a" + "b" -> "ab"
+        # Handles chained adds like "a" + "b" + "c" recursively.
+        if isinstance(node.op, ast.Add):
+            folded_str = self._try_extract_const_str(node)
+            if folded_str is not None:
+                res = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[folded_str], result=res))
+                return res
         left = self.visit(node.left)
         if left is None:
             raise NotImplementedError("Unsupported binary operator left operand")
@@ -18220,6 +18250,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if func_id == "len":
                 if node.keywords:
                     raise NotImplementedError("len does not support keywords")
+                # Constant-fold len() on string/bytes literals and
+                # list/tuple literals with all-constant elements.
+                raw_arg = node.args[0]
+                if isinstance(raw_arg, ast.Constant) and isinstance(
+                    raw_arg.value, (str, bytes)
+                ):
+                    folded_len = len(raw_arg.value)
+                    res = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="CONST", args=[folded_len], result=res))
+                    return res
+                if isinstance(raw_arg, (ast.List, ast.Tuple)) and all(
+                    isinstance(e, ast.Constant) for e in raw_arg.elts
+                ):
+                    folded_len = len(raw_arg.elts)
+                    res = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="CONST", args=[folded_len], result=res))
+                    return res
                 arg = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="LEN", args=[arg], result=res))
@@ -18475,6 +18522,253 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(MoltOp(kind="INDEX", args=[res_cell, zero], result=res))
+                return res
+            if func_id in {"any", "all"}:
+                # Inline any(genexpr)/all(genexpr) as a short-circuiting loop.
+                is_any = func_id == "any"
+                if (
+                    len(node.args) == 1
+                    and not node.keywords
+                    and isinstance(node.args[0], ast.GeneratorExp)
+                ):
+                    genexpr = node.args[0]
+                    if (
+                        len(genexpr.generators) == 1
+                        and not genexpr.generators[0].is_async
+                        and isinstance(genexpr.generators[0].target, ast.Name)
+                    ):
+                        comp = genexpr.generators[0]
+                        target_name = comp.target.id  # type: ignore[union-attr]
+                        iterable_val = self.visit(comp.iter)
+                        iter_obj = self._emit_iter_new(iterable_val)
+                        # Initial result: False for any(), True for all()
+                        res = MoltValue(self.next_var(), type_hint="bool")
+                        self.emit(
+                            MoltOp(
+                                kind="CONST_BOOL",
+                                args=[not is_any],
+                                result=res,
+                            )
+                        )
+                        zero = MoltValue(self.next_var(), type_hint="int")
+                        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+                        one = MoltValue(self.next_var(), type_hint="int")
+                        self.emit(MoltOp(kind="CONST", args=[1], result=one))
+                        # Wrap result in a mutable cell so the loop body can
+                        # update it and the value is visible after the loop.
+                        res_cell = MoltValue(self.next_var(), type_hint="list")
+                        self.emit(MoltOp(kind="LIST_NEW", args=[res], result=res_cell))
+                        # Save/restore boxed cell for scoping.
+                        cell = self._load_boxed_cell(target_name)
+                        saved_cell_val: MoltValue | None = None
+                        if cell is not None:
+                            _save_idx = MoltValue(self.next_var(), type_hint="int")
+                            self.emit(MoltOp(kind="CONST", args=[0], result=_save_idx))
+                            saved_cell_val = MoltValue(self.next_var(), type_hint="Any")
+                            self.emit(
+                                MoltOp(
+                                    kind="INDEX",
+                                    args=[cell, _save_idx],
+                                    result=saved_cell_val,
+                                )
+                            )
+                        self.emit(
+                            MoltOp(kind="LOOP_START", args=[], result=MoltValue("none"))
+                        )
+                        pair = self._emit_iter_next_checked(iter_obj)
+                        done = MoltValue(self.next_var(), type_hint="bool")
+                        self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
+                        self.emit(
+                            MoltOp(
+                                kind="LOOP_BREAK_IF_TRUE",
+                                args=[done],
+                                result=MoltValue("none"),
+                            )
+                        )
+                        iter_elem_hint = (
+                            self._iterable_element_hint(iterable_val) or "Any"
+                        )
+                        item = MoltValue(self.next_var(), type_hint=iter_elem_hint)
+                        self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
+                        # Bind loop variable.
+                        old_local = self.locals.get(target_name)
+                        self.locals[target_name] = item
+                        if cell is not None:
+                            _box_idx = MoltValue(self.next_var(), type_hint="int")
+                            self.emit(
+                                MoltOp(kind="CONST", args=[0], result=_box_idx)
+                            )
+                            self.emit(
+                                MoltOp(
+                                    kind="STORE_INDEX",
+                                    args=[cell, _box_idx, item],
+                                    result=MoltValue("none"),
+                                )
+                            )
+                        # Evaluate optional filter conditions.
+                        for if_node in comp.ifs:
+                            cond_val = self.visit(if_node)
+                            not_cond = MoltValue(self.next_var(), type_hint="bool")
+                            self.emit(
+                                MoltOp(kind="NOT", args=[cond_val], result=not_cond)
+                            )
+                            self.emit(
+                                MoltOp(
+                                    kind="IF",
+                                    args=[not_cond],
+                                    result=MoltValue("none"),
+                                )
+                            )
+                            self.emit(
+                                MoltOp(
+                                    kind="LOOP_CONTINUE",
+                                    args=[],
+                                    result=MoltValue("none"),
+                                )
+                            )
+                            self.emit(
+                                MoltOp(
+                                    kind="END_IF",
+                                    args=[],
+                                    result=MoltValue("none"),
+                                )
+                            )
+                        # Evaluate the element expression.
+                        elt_val = self.visit(genexpr.elt)
+                        # Test truthiness via NOT+NOT (coerces to bool).
+                        neg = MoltValue(self.next_var(), type_hint="bool")
+                        self.emit(MoltOp(kind="NOT", args=[elt_val], result=neg))
+                        truth = MoltValue(self.next_var(), type_hint="bool")
+                        self.emit(MoltOp(kind="NOT", args=[neg], result=truth))
+                        if is_any:
+                            # any: if element is truthy, set True and break.
+                            self.emit(
+                                MoltOp(
+                                    kind="IF",
+                                    args=[truth],
+                                    result=MoltValue("none"),
+                                )
+                            )
+                            true_val = MoltValue(self.next_var(), type_hint="bool")
+                            self.emit(
+                                MoltOp(
+                                    kind="CONST_BOOL",
+                                    args=[True],
+                                    result=true_val,
+                                )
+                            )
+                            self.emit(
+                                MoltOp(
+                                    kind="STORE_INDEX",
+                                    args=[res_cell, zero, true_val],
+                                    result=MoltValue("none"),
+                                )
+                            )
+                            self.emit(
+                                MoltOp(
+                                    kind="LOOP_BREAK",
+                                    args=[],
+                                    result=MoltValue("none"),
+                                )
+                            )
+                            self.emit(
+                                MoltOp(
+                                    kind="END_IF",
+                                    args=[],
+                                    result=MoltValue("none"),
+                                )
+                            )
+                        else:
+                            # all: if element is falsy, set False and break.
+                            self.emit(
+                                MoltOp(
+                                    kind="IF", args=[neg], result=MoltValue("none")
+                                )
+                            )
+                            false_val = MoltValue(self.next_var(), type_hint="bool")
+                            self.emit(
+                                MoltOp(
+                                    kind="CONST_BOOL",
+                                    args=[False],
+                                    result=false_val,
+                                )
+                            )
+                            self.emit(
+                                MoltOp(
+                                    kind="STORE_INDEX",
+                                    args=[res_cell, zero, false_val],
+                                    result=MoltValue("none"),
+                                )
+                            )
+                            self.emit(
+                                MoltOp(
+                                    kind="LOOP_BREAK",
+                                    args=[],
+                                    result=MoltValue("none"),
+                                )
+                            )
+                            self.emit(
+                                MoltOp(
+                                    kind="END_IF",
+                                    args=[],
+                                    result=MoltValue("none"),
+                                )
+                            )
+                        # Restore previous binding.
+                        if old_local is not None:
+                            self.locals[target_name] = old_local
+                        else:
+                            self.locals.pop(target_name, None)
+                        self.emit(
+                            MoltOp(
+                                kind="LOOP_CONTINUE",
+                                args=[],
+                                result=MoltValue("none"),
+                            )
+                        )
+                        self.emit(
+                            MoltOp(
+                                kind="LOOP_END", args=[], result=MoltValue("none")
+                            )
+                        )
+                        # Restore boxed cell after the loop.
+                        if cell is not None and saved_cell_val is not None:
+                            _post_idx = MoltValue(self.next_var(), type_hint="int")
+                            self.emit(
+                                MoltOp(kind="CONST", args=[0], result=_post_idx)
+                            )
+                            self.emit(
+                                MoltOp(
+                                    kind="STORE_INDEX",
+                                    args=[cell, _post_idx, saved_cell_val],
+                                    result=MoltValue("none"),
+                                )
+                            )
+                        # Read result from the cell.
+                        final_res = MoltValue(self.next_var(), type_hint="bool")
+                        self.emit(
+                            MoltOp(
+                                kind="INDEX",
+                                args=[res_cell, zero],
+                                result=final_res,
+                            )
+                        )
+                        return final_res
+                # Fallback: call the builtin normally.
+                callee = self._emit_builtin_function(func_id)
+                res = MoltValue(self.next_var(), type_hint="bool")
+                if needs_bind:
+                    callargs = self._emit_call_args_builder(node)
+                    self.emit(
+                        MoltOp(
+                            kind="CALL_BIND", args=[callee, callargs], result=res
+                        )
+                    )
+                else:
+                    args = self._emit_call_args(node.args)
+                    self.emit(
+                        MoltOp(kind="CALL_FUNC", args=[callee] + args, result=res)
+                    )
                 return res
             if func_id == "sum":
                 if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
@@ -32616,7 +32910,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             # to prevent Cranelift 0.130 constant-folding miscompilation.
             _folded_to_bigint = False
             if (
-                canonical_op.kind in {"ADD", "SUB", "MUL"}
+                canonical_op.kind in {"ADD", "SUB", "MUL", "POW"}
                 and len(canonical_op.args) == 2
             ):
                 lhs, rhs = canonical_op.args
@@ -32628,8 +32922,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             folded = lhs_const + rhs_const
                         elif canonical_op.kind == "SUB":
                             folded = lhs_const - rhs_const
-                        else:
+                        elif canonical_op.kind == "MUL":
                             folded = lhs_const * rhs_const
+                        else:
+                            # POW – only fold for small non-negative exponents
+                            # to avoid float results and unbounded computation.
+                            if 0 <= rhs_const <= 64:
+                                folded = lhs_const ** rhs_const
+                            else:
+                                folded = None
+                        if folded is None:
+                            # Skip folding (e.g. negative exponent)
+                            out.append(canonical_op)
+                            continue
                         if not (_INLINE_INT_MIN <= folded <= _INLINE_INT_MAX):
                             canonical_op = MoltOp(
                                 kind="CONST_BIGINT",
@@ -32637,6 +32942,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 result=canonical_op.result,
                             )
                             _folded_to_bigint = True
+                        elif canonical_op.kind == "POW":
+                            # Replace POW with CONST when the result
+                            # fits in inline int range.
+                            canonical_op = MoltOp(
+                                kind="CONST",
+                                args=[folded],
+                                result=canonical_op.result,
+                            )
                         const_int_values[result_name] = folded
                         state_dirty = True
 
