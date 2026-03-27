@@ -600,17 +600,6 @@ impl SimpleBackend {
             builder.def_var(var, ptr_val);
         }
 
-        // Initialize ALL variables to None in the entry block so that
-        // exception handler state blocks (joining multiple check_exception
-        // sites) have valid phi values for all variables.
-        {
-            let none_val = builder.ins().iconst(types::I64, box_none());
-            for (name, var) in &vars {
-                if param_name_set.contains(name.as_str()) { continue; }
-                builder.def_var(*var, none_val);
-            }
-        }
-
         builder.seal_block(entry_block);
         sealed_blocks.insert(entry_block);
 
