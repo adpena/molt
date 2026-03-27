@@ -10080,20 +10080,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             MoltOp(kind="LOOP_BREAK_IF_FALSE", args=[cond], result=MoltValue("none"))
         )
         self._store_local_value(index_name, idx)
+        # For module-level code, also sync to the module namespace so
+        # that module_get_attr reads inside the loop body see the current
+        # counter value (not the initial value from before the loop).
+        if self.current_func_name == "molt_main" and self.module_var is not None:
+            key = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[index_name], result=key))
+            self.emit(MoltOp(kind="MODULE_SET_ATTR", args=[self.module_var, key, idx], result=MoltValue("none")))
         self._visit_loop_body(body, guard_map)
         next_idx = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="ADD", args=[idx, one], result=next_idx))
         self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
-        # Sync the incremented counter back to the local/module namespace
-        # so that reads inside the next iteration see the current value.
-        self._store_local_value(index_name, next_idx)
         self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-        # Write the final index value back to the local so that post-loop reads
-        # (e.g. ``print(i)``) see the correct value even when the variable is
-        # stored through a boxed cell / indirection that the loop phi update
-        # does not automatically propagate to.
         self._store_local_value(index_name, idx)
+        if self.current_func_name == "molt_main" and self.module_var is not None:
+            key2 = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[index_name], result=key2))
+            self.emit(MoltOp(kind="MODULE_SET_ATTR", args=[self.module_var, key2, idx], result=MoltValue("none")))
 
     def visit_BinOp(self, node: ast.BinOp) -> Any:
         left = self.visit(node.left)
