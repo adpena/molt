@@ -392,9 +392,9 @@ _SYS_FLAGS_SEQUENCE_FIELDS = (
     "safe_path",
     "int_max_str_digits",
 )
-_SYS_FLAGS_SEQUENCE_INDEX = {
-    name: int(index) for index, name in enumerate(_SYS_FLAGS_SEQUENCE_FIELDS)
-}
+_SYS_FLAGS_SEQUENCE_INDEX = {}
+for _i__SYS_FLAGS_SEQUENCE_INDEX in range(len(_SYS_FLAGS_SEQUENCE_FIELDS)):
+    _SYS_FLAGS_SEQUENCE_INDEX[_SYS_FLAGS_SEQUENCE_FIELDS[_i__SYS_FLAGS_SEQUENCE_INDEX]] = _i__SYS_FLAGS_SEQUENCE_INDEX
 _SYS_FLAGS_GIL = 1
 
 
@@ -439,7 +439,9 @@ class flags(tuple):
 # --- version_info structured tuple ---
 
 _VERSION_INFO_FIELDS = ("major", "minor", "micro", "releaselevel", "serial")
-_VERSION_INFO_INDEX = {name: int(i) for i, name in enumerate(_VERSION_INFO_FIELDS)}
+_VERSION_INFO_INDEX = {}
+for _idx__VERSION_INFO_INDEX in range(len(_VERSION_INFO_FIELDS)):
+    _VERSION_INFO_INDEX[_VERSION_INFO_FIELDS[_idx__VERSION_INFO_INDEX]] = _idx__VERSION_INFO_INDEX
 
 
 class version_info(tuple):
@@ -480,7 +482,9 @@ _FLOAT_INFO_FIELDS = (
     "radix",
     "rounds",
 )
-_FLOAT_INFO_INDEX = {name: int(i) for i, name in enumerate(_FLOAT_INFO_FIELDS)}
+_FLOAT_INFO_INDEX = {}
+for _idx__FLOAT_INFO_INDEX in range(len(_FLOAT_INFO_FIELDS)):
+    _FLOAT_INFO_INDEX[_FLOAT_INFO_FIELDS[_idx__FLOAT_INFO_INDEX]] = _idx__FLOAT_INFO_INDEX
 
 
 class float_info(tuple):
@@ -511,7 +515,9 @@ _INT_INFO_FIELDS = (
     "default_max_str_digits",
     "str_digits_check_threshold",
 )
-_INT_INFO_INDEX = {name: int(i) for i, name in enumerate(_INT_INFO_FIELDS)}
+_INT_INFO_INDEX = {}
+for _idx__INT_INFO_INDEX in range(len(_INT_INFO_FIELDS)):
+    _INT_INFO_INDEX[_INT_INFO_FIELDS[_idx__INT_INFO_INDEX]] = _idx__INT_INFO_INDEX
 
 
 class int_info(tuple):
@@ -547,7 +553,9 @@ _HASH_INFO_FIELDS = (
     "seed_bits",
     "cutoff",
 )
-_HASH_INFO_INDEX = {name: int(i) for i, name in enumerate(_HASH_INFO_FIELDS)}
+_HASH_INFO_INDEX = {}
+for _idx__HASH_INFO_INDEX in range(len(_HASH_INFO_FIELDS)):
+    _HASH_INFO_INDEX[_HASH_INFO_FIELDS[_idx__HASH_INFO_INDEX]] = _idx__HASH_INFO_INDEX
 
 
 class hash_info(tuple):
@@ -577,7 +585,9 @@ _THREAD_INFO_FIELDS = (
     "lock",
     "version",
 )
-_THREAD_INFO_INDEX = {name: int(i) for i, name in enumerate(_THREAD_INFO_FIELDS)}
+_THREAD_INFO_INDEX = {}
+for _idx__THREAD_INFO_INDEX in range(len(_THREAD_INFO_FIELDS)):
+    _THREAD_INFO_INDEX[_THREAD_INFO_FIELDS[_idx__THREAD_INFO_INDEX]] = _idx__THREAD_INFO_INDEX
 
 
 class thread_info(tuple):
