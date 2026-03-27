@@ -2689,9 +2689,10 @@ unsafe fn bind_builtin_call(
 
         // Diagnostic: log what function failed to bind
         if std::env::var("MOLT_DEBUG_BIND").is_ok() {
+            let func_name = crate::type_name(_py, molt_obj_model::MoltObject::from_bits(func_bits));
             eprintln!(
-                "[bind] missing required arguments: missing={}",
-                missing,
+                "[bind] missing required arguments: func={} pos_given={} missing={}",
+                func_name, args.pos.len(), missing,
             );
         }
         raise_exception::<_>(_py, "TypeError", "missing required arguments")
