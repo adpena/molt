@@ -7487,6 +7487,10 @@ pub(super) unsafe fn eq_bool_from_bits(_py: &PyToken<'_>, lhs_bits: u64, rhs_bit
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
+    // Tolerate None container from undefined SSA paths on exception handler branches.
+    if obj_from_bits(container_bits).is_none() {
+        return MoltObject::from_bool(false).bits();
+    }
     crate::with_gil_entry!(_py, {
         let container = obj_from_bits(container_bits);
         let item = obj_from_bits(item_bits);
