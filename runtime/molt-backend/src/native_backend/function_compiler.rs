@@ -444,7 +444,7 @@ impl SimpleBackend {
             exception_label_ids: _exception_label_ids,
             const_int_map: _const_int_map,
         } = preanalyze_function_ir(&func_ir, return_alias_summaries);
-        let (rc_skip_inc, rc_skip_dec) =
+        let (rc_skip_inc, mut rc_skip_dec) =
             crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use);
 
         if has_ret {
@@ -963,6 +963,9 @@ impl SimpleBackend {
                         .load(types::I64, MemFlags::trusted(), out_ptr, 0);
 
                     def_var_named(&mut builder, &vars, out_name, boxed);
+                    // String constants must not be dec_ref'd — they are
+                    // effectively immortal (backing data is in __const).
+                    rc_skip_dec.insert(out_name.to_string());
                 }
                 "const_bytes" => {
                     let bytes = op.bytes.as_ref().expect("Bytes not found");
