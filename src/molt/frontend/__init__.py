@@ -22890,7 +22890,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self._store_local_value(break_name, break_init)
             if not self.is_async():
                 self._box_local(break_name)
-        counted = None if break_name is not None else self._match_counted_while(node)
+        counted = None if break_name is not None or self.current_func_name == "molt_main" else self._match_counted_while(node)
         if counted is not None and not self.is_async():
             index_name, bound, body = counted
             acc_name = self._match_counted_while_sum(index_name, body)
@@ -22961,7 +22961,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
-            self._visit_loop_body(node.body, None, loop_break_flag=break_name)
+            self.control_flow_depth += 1
+            try:
+                self._visit_loop_body(node.body, None, loop_break_flag=break_name)
+            finally:
+                self.control_flow_depth -= 1
             self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
 
