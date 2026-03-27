@@ -298,7 +298,7 @@ codegen-units = 1
 [profile.release.package.molt-runtime-core]
 opt-level = 3
 
-[profile.release.package.molt-obj-model]
+[profile.release.package.molt-lang-obj-model]
 opt-level = 3
 
 [profile.release.package.molt-runtime-collections]
