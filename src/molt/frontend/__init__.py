@@ -7329,6 +7329,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if self.current_func_name != "molt_main" and name in self.global_decls:
             self._emit_module_attr_set_runtime(name, value)
             return
+        # Module-level stores inside loops must sync to the module dict
+        # so that module_get_attr reads see the updated value on each iteration.
+        if (
+            self.current_func_name == "molt_main"
+            and self.control_flow_depth > 0
+            and hasattr(self, "module_obj")
+            and self.module_obj is not None
+            and not name.startswith("__molt_")
+            and name in self.scope_assigned
+        ):
+            self._emit_module_attr_set_on(self.module_obj, name, value)
         if name in self.nonlocal_decls and name not in self.free_vars:
             raise NotImplementedError("nonlocal binding not found")
         if name in self.free_vars or name in self.nonlocal_decls:
