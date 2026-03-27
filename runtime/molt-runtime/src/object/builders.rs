@@ -86,11 +86,11 @@ pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
         if class_bits != 0 {
             let class_obj = obj_from_bits(class_bits);
             let Some(class_ptr) = class_obj.as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                return MoltObject::none().bits();
             };
             unsafe {
                 if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                    return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                    return MoltObject::none().bits();
                 }
                 if let Some(inst_bits) = alloc_dataclass_for_class_ptr(_py, class_ptr, class_bits) {
                     return inst_bits;
@@ -119,11 +119,11 @@ pub extern "C" fn molt_alloc_class_trusted(size_bits: u64, class_bits: u64) -> u
         if class_bits != 0 {
             let class_obj = obj_from_bits(class_bits);
             let Some(class_ptr) = class_obj.as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                return MoltObject::none().bits();
             };
             unsafe {
                 if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                    return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                    return MoltObject::none().bits();
                 }
                 if let Some(inst_bits) = alloc_dataclass_for_class_ptr(_py, class_ptr, class_bits) {
                     return inst_bits;
@@ -152,11 +152,11 @@ pub extern "C" fn molt_alloc_class_static(size_bits: u64, class_bits: u64) -> u6
         if class_bits != 0 {
             let class_obj = obj_from_bits(class_bits);
             let Some(class_ptr) = class_obj.as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                return MoltObject::none().bits();
             };
             unsafe {
                 if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                    return raise_exception::<_>(_py, "TypeError", "class must be a type object");
+                    return MoltObject::none().bits();
                 }
                 if let Some(inst_bits) = alloc_dataclass_for_class_ptr(_py, class_ptr, class_bits) {
                     return inst_bits;
