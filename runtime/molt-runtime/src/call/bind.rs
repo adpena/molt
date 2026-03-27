@@ -2687,6 +2687,13 @@ unsafe fn bind_builtin_call(
             }
         }
 
+        // Diagnostic: log what function failed to bind
+        if std::env::var("MOLT_DEBUG_BIND").is_ok() {
+            eprintln!(
+                "[bind] missing required arguments: missing={}",
+                missing,
+            );
+        }
         raise_exception::<_>(_py, "TypeError", "missing required arguments")
     }
 }
