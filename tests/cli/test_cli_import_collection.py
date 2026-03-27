@@ -182,6 +182,224 @@ def test_generated_importer_can_import_builtins_when_not_preseeded(
     assert import_calls == ["builtins"]
 
 
+def test_generated_importer_bootstraps_importlib_support_modules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    util_mod = types.ModuleType("importlib.util")
+    machinery_mod = types.ModuleType("importlib.machinery")
+    loaded = types.ModuleType("demo_math")
+    bootstrap_calls: list[str] = []
+    import_calls: list[tuple[str, object, object]] = []
+
+    def fake_module_import(name: str):
+        bootstrap_calls.append(name)
+        if name == "importlib.util":
+            sys.modules[name] = util_mod
+            return util_mod
+        if name == "importlib.machinery":
+            sys.modules[name] = machinery_mod
+            return machinery_mod
+        raise AssertionError(f"unexpected support import: {name}")
+
+    def fake_import_module(name: str, util: object, machinery: object):
+        import_calls.append((name, util, machinery))
+        return loaded
+
+    monkeypatch.delitem(sys.modules, "importlib.util", raising=False)
+    monkeypatch.delitem(sys.modules, "importlib.machinery", raising=False)
+    importer = _load_generated_importer(
+        tmp_path,
+        monkeypatch,
+        module_names=["demo_math"],
+        intrinsics={
+            "molt_module_import": fake_module_import,
+            "molt_importlib_import_module": fake_import_module,
+        },
+    )
+
+    result = importer._molt_import("demo_math")
+
+    assert result is loaded
+    assert bootstrap_calls == ["importlib.util", "importlib.machinery"]
+    assert import_calls == [("demo_math", util_mod, machinery_mod)]
+
+
+def test_augment_support_modules_adds_importer_runtime_dependencies(
+    tmp_path: Path,
+) -> None:
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("value = 1\n")
+    module_graph = {"demo": entry_path}
+    module_reasons: dict[str, set[str]] = {}
+
+    cli._augment_support_modules(
+        module_graph=module_graph,
+        module_reasons=module_reasons,
+        roots=[tmp_path],
+        stdlib_root=cli._stdlib_root_path(),
+        stdlib_allowlist=set(),
+        explicit_imports=set(),
+        resolver_cache=cli._ModuleResolutionCache(),
+        artifacts_root=tmp_path,
+        stub_parents=set(),
+        entry_module="demo",
+        needs_generated_importer=True,
+        needs_runtime_import_support=True,
+        diagnostics_enabled=True,
+    )
+
+    assert "importlib.util" in module_graph
+    assert "importlib.machinery" in module_graph
+    assert "import_support" in module_reasons["importlib.util"]
+    assert "import_support" in module_reasons["importlib.machinery"]
+
+
+def test_augment_support_modules_skips_importlib_support_for_static_only_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("value = 1\n")
+    module_graph = {"demo": entry_path}
+    module_reasons: dict[str, set[str]] = {}
+    extend_calls: list[dict[str, object]] = []
+
+    def fake_extend_module_graph_with_closure(*args: object, **kwargs: object) -> None:
+        extend_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        cli,
+        "_extend_module_graph_with_closure",
+        fake_extend_module_graph_with_closure,
+    )
+
+    cli._augment_support_modules(
+        module_graph=module_graph,
+        module_reasons=module_reasons,
+        roots=[tmp_path],
+        stdlib_root=cli._stdlib_root_path(),
+        stdlib_allowlist=set(),
+        explicit_imports=set(),
+        resolver_cache=cli._ModuleResolutionCache(),
+        artifacts_root=tmp_path,
+        stub_parents=set(),
+        entry_module="demo",
+        needs_generated_importer=False,
+        needs_runtime_import_support=False,
+        diagnostics_enabled=False,
+    )
+
+    assert extend_calls == []
+    assert "importlib.util" not in module_graph
+    assert "importlib.machinery" not in module_graph
+
+
+def test_prepare_entry_module_graph_marks_static_entry_as_importer_free(
+    tmp_path: Path,
+) -> None:
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("import math\nvalue = math.sqrt(4)\n")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path],
+        stdlib_root=cli._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons={},
+        json_output=False,
+        target="native",
+    )
+
+    assert error is None
+    assert prepared is not None
+    assert not prepared.needs_generated_importer
+    assert not prepared.needs_runtime_import_support
+
+
+def test_prepare_entry_module_graph_marks_dynamic_import_entry_as_runtime_supported(
+    tmp_path: Path,
+) -> None:
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text(
+        "import importlib as loader\n"
+        "value = loader.import_module('json')\n"
+    )
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path],
+        stdlib_root=cli._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons={},
+        json_output=False,
+        target="native",
+    )
+
+    assert error is None
+    assert prepared is not None
+    assert not prepared.needs_generated_importer
+    assert prepared.needs_runtime_import_support
+
+
+def test_prepare_entry_module_graph_marks_generated_importer_references_explicitly(
+    tmp_path: Path,
+) -> None:
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("import _molt_importer\n")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path],
+        stdlib_root=cli._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons={},
+        json_output=False,
+        target="native",
+    )
+
+    assert error is None
+    assert prepared is not None
+    assert prepared.needs_generated_importer
+    assert prepared.needs_runtime_import_support
+
+
+def test_prepare_entry_module_graph_marks_getattr_runtime_import_entry_as_supported(
+    tmp_path: Path,
+) -> None:
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text(
+        "import importlib\n"
+        "loader = getattr(importlib, 'import_module')\n"
+        "value = loader('json')\n"
+    )
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path],
+        stdlib_root=cli._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons={},
+        json_output=False,
+        target="native",
+    )
+
+    assert error is None
+    assert prepared is not None
+    assert prepared.needs_runtime_import_support
+
+
 def test_write_namespace_module_avoids_rewriting_identical_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5277,8 +5495,9 @@ def test_emit_build_diagnostics_full_prints_extended_hotspots(
 def test_module_name_from_path_outside_module_roots_uses_stem(tmp_path: Path) -> None:
     script = tmp_path / "outside_script.py"
     script.write_text("print('ok')\n")
-    stdlib_root = cli._stdlib_root_path()
-    roots = [ROOT.resolve(), (ROOT / "src").resolve()]
+    roots_root = tmp_path / "module_roots"
+    stdlib_root = roots_root / "stdlib"
+    roots = [roots_root / "project", roots_root / "src"]
     assert cli._module_name_from_path(script, roots, stdlib_root) == "outside_script"
 
 
@@ -5937,6 +6156,17 @@ def test_run_uses_build_profile_flag_for_nested_build(
     )
     entry = project / "main.py"
     entry.write_text("print('ok')\n")
+    output_binary = tmp_path / "bin" / "main_molt"
+    output_binary.parent.mkdir(parents=True)
+    output_binary.write_text("")
+    payload = cli._json_payload(
+        "build",
+        "ok",
+        data={
+            "output": str(output_binary),
+            "consumer_output": str(output_binary),
+        },
+    )
 
     build_cmds: list[list[str]] = []
     run_cmds: list[list[str]] = []
@@ -5946,7 +6176,7 @@ def test_run_uses_build_profile_flag_for_nested_build(
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
         build_cmds.append(list(cmd))
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
     def fake_run_command(cmd: list[str], **kwargs: object) -> int:
         del kwargs
@@ -5973,12 +6203,680 @@ def test_run_uses_build_profile_flag_for_nested_build(
             "-m",
             "molt.cli",
             "build",
+            "--json",
             "--build-profile",
             "dev",
             str(entry),
         ]
     ]
     assert run_cmds
+
+
+def test_run_script_uses_build_resolved_entry_for_package_override_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    pkg_dir = project / "pkg"
+    pkg_dir.mkdir(parents=True)
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    entry = pkg_dir / "__main__.py"
+    entry.write_text('__package__ = "pkg"\nprint("ok")\n')
+    output_binary = tmp_path / "bin" / "pkg_molt"
+    output_binary.parent.mkdir(parents=True)
+    output_binary.write_text("")
+    payload = cli._json_payload(
+        "build",
+        "ok",
+        data={
+            "output": str(output_binary),
+            "consumer_output": str(output_binary),
+        },
+    )
+
+    run_cmds: list[list[str]] = []
+
+    def fake_subprocess_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    def fake_run_command(cmd: list[str], **kwargs: object) -> int:
+        del kwargs
+        run_cmds.append(list(cmd))
+        return 0
+
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_command", fake_run_command)
+
+    rc = cli.run_script(
+        str(entry),
+        None,
+        [],
+        json_output=False,
+    )
+
+    assert rc == 0
+    assert run_cmds
+    assert Path(run_cmds[0][0]).name == "pkg_molt"
+
+
+def test_run_script_uses_build_json_output_for_binary_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    entry = project / "demo.py"
+    entry.write_text("print('ok')\n")
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    consumer_output = tmp_path / "dist" / "custom_binary"
+    consumer_output.parent.mkdir(parents=True)
+    consumer_output.write_text("")
+    payload = cli._json_payload(
+        "build",
+        "ok",
+        data={
+            "output": str(consumer_output),
+            "consumer_output": str(consumer_output),
+        },
+    )
+    build_cmds: list[list[str]] = []
+    run_cmds: list[list[str]] = []
+
+    def fake_subprocess_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        build_cmds.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    def fake_run_command(cmd: list[str], **kwargs: object) -> int:
+        del kwargs
+        run_cmds.append(list(cmd))
+        return 0
+
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_command", fake_run_command)
+
+    rc = cli.run_script(
+        str(entry),
+        None,
+        [],
+        json_output=False,
+    )
+
+    assert rc == 0
+    assert build_cmds == [
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            "--json",
+            str(entry),
+        ]
+    ]
+    assert run_cmds == [[str(consumer_output)]]
+
+
+def test_run_script_replays_build_messages_and_warnings_in_non_json_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    entry = project / "demo.py"
+    entry.write_text("print('ok')\n")
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    consumer_output = tmp_path / "dist" / "custom_binary"
+    consumer_output.parent.mkdir(parents=True)
+    consumer_output.write_text("")
+    payload = cli._json_payload(
+        "build",
+        "ok",
+        data={
+            "output": str(consumer_output),
+            "consumer_output": str(consumer_output),
+            "messages": [f"Successfully built {consumer_output}"],
+            "compile_diagnostics": {"total_sec": 0.125, "module_count": 1},
+        },
+        warnings=["cache reused"],
+    )
+
+    def fake_subprocess_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_command", lambda cmd, **kwargs: 0)
+
+    rc = cli.run_script(
+        str(entry),
+        None,
+        [],
+        json_output=False,
+    )
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert f"Successfully built {consumer_output}" in captured.err
+    assert "Warning: cache reused" in captured.err
+    assert "Build diagnostics:" in captured.err
+
+
+def test_run_script_surfaces_nested_build_error_detail_in_non_json_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    entry = project / "demo.py"
+    entry.write_text("print('ok')\n")
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    payload = cli._json_payload(
+        "build",
+        "error",
+        data={
+            "stderr": "ld: unresolved symbol",
+            "stdout": "backend retry log",
+        },
+        errors=["Linking failed"],
+    )
+
+    def fake_subprocess_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(cmd, 1, json.dumps(payload), "")
+
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+
+    rc = cli.run_script(
+        str(entry),
+        None,
+        [],
+        json_output=False,
+    )
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "Linking failed" in captured.err
+    assert "ld: unresolved symbol" in captured.err
+    assert "backend retry log" in captured.err
+
+
+def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    pythonpath_root = tmp_path / "pythonpath"
+    pkg_dir = pythonpath_root / "demo"
+    pkg_dir.mkdir(parents=True)
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    (pkg_dir / "__main__.py").write_text("print('ok')\n")
+    artifact = out_dir / "demo.luau"
+    artifact.write_text("-- compiled\n")
+    payload = cli._json_payload(
+        "build",
+        "ok",
+        data={
+            "output": str(artifact),
+            "consumer_output": str(artifact),
+            "artifacts": {"luau": str(artifact)},
+        },
+    )
+
+    seen_cmds: list[list[str]] = []
+
+    def fake_subprocess_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        seen_cmds.append(list(cmd))
+        if cmd[:4] == [sys.executable, "-m", "molt.cli", "build"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setenv("PYTHONPATH", str(pythonpath_root))
+
+    rc = cli._run_script_cross(
+        "luau",
+        None,
+        "demo",
+        [],
+        build_args=["--respect-pythonpath", "--out-dir", str(out_dir)],
+        json_output=False,
+    )
+
+    assert rc == 0
+    assert seen_cmds[0] == [
+        sys.executable,
+        "-m",
+        "molt.cli",
+        "build",
+        "--json",
+        "--respect-pythonpath",
+        "--out-dir",
+        str(out_dir),
+        "--module",
+        "demo",
+    ]
+    assert seen_cmds[1] == ["/usr/bin/lune", "run", str(artifact), "--"]
+
+
+def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    entry = project / "demo.py"
+    entry.write_text("print('ok')\n")
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    output_wasm = out_dir / "output.wasm"
+    linked_wasm = out_dir / "output_linked.wasm"
+    linked_wasm.write_text("")
+    payload = cli._json_payload(
+        "build",
+        "ok",
+        data={
+            "output": str(output_wasm),
+            "consumer_output": str(linked_wasm),
+            "linked_output": str(linked_wasm),
+            "artifacts": {
+                "wasm": str(output_wasm),
+                "linked_wasm": str(linked_wasm),
+            },
+        },
+    )
+    seen_cmds: list[list[str]] = []
+
+    def fake_subprocess_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        seen_cmds.append(list(cmd))
+        if cmd[:4] == [sys.executable, "-m", "molt.cli", "build"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    rc = cli._run_script_cross(
+        "wasm",
+        str(entry),
+        None,
+        [],
+        build_args=["--out-dir", str(out_dir)],
+        json_output=False,
+    )
+
+    assert rc == 0
+    assert seen_cmds[0] == [
+        sys.executable,
+        "-m",
+        "molt.cli",
+        "build",
+        "--json",
+        "--out-dir",
+        str(out_dir),
+        str(entry),
+    ]
+    assert seen_cmds[1] == ["/usr/bin/wasmtime", "run", str(linked_wasm), "--"]
+
+
+def test_deploy_roblox_respects_pythonpath_for_module_artifact_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    pythonpath_root = tmp_path / "pythonpath"
+    pkg_dir = pythonpath_root / "demo"
+    pkg_dir.mkdir(parents=True)
+    roblox_dir = tmp_path / "roblox"
+    roblox_dir.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    (pkg_dir / "__main__.py").write_text("print('ok')\n")
+    artifact = out_dir / "demo.luau"
+    artifact.write_text("-- compiled\n")
+    payload = cli._json_payload(
+        "build",
+        "ok",
+        data={
+            "output": str(artifact),
+            "consumer_output": str(artifact),
+            "artifacts": {"luau": str(artifact)},
+        },
+    )
+
+    seen_cmds: list[list[str]] = []
+
+    def fake_subprocess_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        del kwargs
+        seen_cmds.append(list(cmd))
+        if cmd[:4] == [sys.executable, "-m", "molt.cli", "build"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps(payload).encode(), b""
+            )
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setenv("PYTHONPATH", str(pythonpath_root))
+
+    rc = cli._deploy(
+        "roblox",
+        None,
+        "demo",
+        None,
+        None,
+        str(out_dir),
+        str(roblox_dir),
+        "",
+        False,
+        ["--respect-pythonpath"],
+        False,
+        False,
+    )
+
+    assert rc == 0
+    assert seen_cmds == [
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            "--json",
+            "--respect-pythonpath",
+            "--target",
+            "luau",
+            "--out-dir",
+            str(out_dir),
+            "--module",
+            "demo",
+        ]
+    ]
+    assert (roblox_dir / "demo.luau").read_text() == "-- compiled\n"
+
+
+def test_deploy_roblox_honors_build_json_output_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    roblox_dir = tmp_path / "roblox"
+    roblox_dir.mkdir()
+    entry = project / "demo.py"
+    entry.write_text("print('ok')\n")
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    consumer_output = tmp_path / "build" / "nested" / "custom.luau"
+    consumer_output.parent.mkdir(parents=True)
+    consumer_output.write_text("-- custom compiled\n")
+    payload = cli._json_payload(
+        "build",
+        "ok",
+        data={
+            "output": str(consumer_output),
+            "consumer_output": str(consumer_output),
+            "artifacts": {"luau": str(consumer_output)},
+        },
+    )
+    seen_cmds: list[list[str]] = []
+
+    def fake_subprocess_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        del kwargs
+        seen_cmds.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload).encode(), b"")
+
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+
+    rc = cli._deploy(
+        "roblox",
+        str(entry),
+        None,
+        None,
+        str(consumer_output),
+        None,
+        str(roblox_dir),
+        "",
+        False,
+        [],
+        False,
+        False,
+    )
+
+    assert rc == 0
+    assert seen_cmds == [
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            "--json",
+            "--target",
+            "luau",
+            "--output",
+            str(consumer_output),
+            str(entry),
+        ]
+    ]
+    assert (roblox_dir / consumer_output.name).read_text() == "-- custom compiled\n"
+
+
+def test_deploy_cloudflare_uses_build_json_bundle_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    entry = project / "demo.py"
+    entry.write_text("print('ok')\n")
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+    bundle_root = tmp_path / "dist" / "worker"
+    bundle_root.mkdir(parents=True)
+    wrangler_config = bundle_root / "wrangler.toml"
+    wrangler_config.write_text('name = "demo"\n')
+    payload = cli._json_payload(
+        "build",
+        "ok",
+        data={
+            "output": str(bundle_root / "app.wasm"),
+            "consumer_output": str(bundle_root / "app.wasm"),
+            "bundle_root": str(bundle_root),
+            "artifacts": {"wrangler_config": str(wrangler_config)},
+        },
+    )
+    seen_calls: list[tuple[list[str], Path | None]] = []
+
+    def fake_subprocess_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        seen_calls.append((list(cmd), kwargs.get("cwd")))
+        if cmd[:4] == [sys.executable, "-m", "molt.cli", "build"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    rc = cli._deploy(
+        "cloudflare",
+        str(entry),
+        None,
+        None,
+        None,
+        None,
+        None,
+        "",
+        False,
+        [],
+        False,
+        False,
+    )
+
+    assert rc == 0
+    assert seen_calls[0][0] == [
+        sys.executable,
+        "-m",
+        "molt.cli",
+        "build",
+        "--json",
+        "--target",
+        "wasm",
+        "--profile",
+        "cloudflare",
+        "--split-runtime",
+        str(entry),
+    ]
+    assert seen_calls[1] == (
+        ["/usr/bin/wrangler", "deploy", "--config", str(wrangler_config)],
+        bundle_root,
+    )
+
+
+def test_run_script_reports_run_command_on_resolution_failure_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+
+    rc = cli.run_script(
+        None,
+        "missing_module",
+        [],
+        json_output=True,
+    )
+
+    assert rc == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "run"
+    assert payload["errors"] == ["Entry module not found: missing_module"]
+
+
+def test_run_script_cross_reports_run_command_on_resolution_failure_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+
+    rc = cli._run_script_cross(
+        "luau",
+        None,
+        "missing_module",
+        [],
+        json_output=True,
+    )
+
+    assert rc == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "run"
+    assert payload["errors"] == ["Entry module not found: missing_module"]
+
+
+def test_deploy_reports_deploy_command_on_resolution_failure_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+    )
+
+    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+
+    rc = cli._deploy(
+        "roblox",
+        None,
+        "missing_module",
+        None,
+        None,
+        None,
+        None,
+        "",
+        False,
+        [],
+        True,
+        False,
+    )
+
+    assert rc == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "deploy"
+    assert payload["errors"] == ["Entry module not found: missing_module"]
 
 
 def test_native_backend_compile_routes_stdlib_object_env(

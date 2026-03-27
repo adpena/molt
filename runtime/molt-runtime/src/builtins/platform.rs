@@ -5929,15 +5929,13 @@ fn importlib_module_is_intrinsic_shell(
     if !importlib_module_public_surface_empty(_py, module_name, module_bits)? {
         return Ok(false);
     }
-    Ok(
-        importlib_module_has_key(
-            _py,
-            module_bits,
-            &INTRINSIC_LOOKUP_NAME,
-            b"_molt_intrinsic_lookup",
-        )? || importlib_module_has_key(_py, module_bits, &INTRINSICS_NAME, b"_molt_intrinsics")?
-            || importlib_module_has_key(_py, module_bits, &RUNTIME_NAME, b"_molt_runtime")?,
-    )
+    Ok(importlib_module_has_key(
+        _py,
+        module_bits,
+        &INTRINSIC_LOOKUP_NAME,
+        b"_molt_intrinsic_lookup",
+    )? || importlib_module_has_key(_py, module_bits, &INTRINSICS_NAME, b"_molt_intrinsics")?
+        || importlib_module_has_key(_py, module_bits, &RUNTIME_NAME, b"_molt_runtime")?)
 }
 
 fn importlib_module_is_empty_placeholder(

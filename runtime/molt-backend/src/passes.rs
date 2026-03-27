@@ -1568,6 +1568,153 @@ mod tests {
         assert_eq!(func.ops.len(), 1);
         assert_eq!(func.ops[0].kind, "ret_void");
     }
+
+    #[test]
+    fn protected_runtime_entrypoint_detection_is_explicit() {
+        assert!(is_protected_runtime_entrypoint("molt_main"));
+        assert!(is_protected_runtime_entrypoint("_start"));
+        assert!(is_protected_runtime_entrypoint("molt_isolate_import"));
+        assert!(is_protected_runtime_entrypoint("molt_isolate_bootstrap"));
+        assert!(!is_protected_runtime_entrypoint("molt_init_math"));
+        assert!(!is_protected_runtime_entrypoint("user_entry"));
+    }
+
+    #[test]
+    fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
+        let mut ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "entry".to_string(),
+                    params: vec![],
+                    ops: vec![make_op("ret_void")],
+                    param_types: None,
+                },
+                FunctionIR {
+                    name: "molt_isolate_import".to_string(),
+                    params: vec!["p0".to_string()],
+                    ops: vec![
+                        OpIR {
+                            kind: "call".to_string(),
+                            s_value: Some("molt_init_math".to_string()),
+                            out: Some("v0".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret".to_string(),
+                            args: Some(vec!["v0".to_string()]),
+                            ..OpIR::default()
+                        },
+                    ],
+                    param_types: None,
+                },
+                FunctionIR {
+                    name: "molt_init_math".to_string(),
+                    params: vec![],
+                    ops: vec![make_op("ret_void")],
+                    param_types: None,
+                },
+            ],
+            profile: None,
+        };
+
+        eliminate_dead_functions(&mut ir);
+
+        let retained: BTreeSet<&str> = ir.functions.iter().map(|func| func.name.as_str()).collect();
+        assert!(retained.contains("molt_isolate_import"));
+        assert!(retained.contains("molt_init_math"));
+        let dispatch = ir
+            .functions
+            .iter()
+            .find(|func| func.name == "molt_isolate_import")
+            .expect("runtime dispatch entrypoint must remain");
+        assert!(
+            dispatch
+                .ops
+                .iter()
+                .any(|op| op.s_value.as_deref() == Some("molt_init_math")),
+            "runtime dispatch body must keep its transitive module-init references",
+        );
+    }
+
+    #[test]
+    fn split_large_function_preserves_protected_runtime_import_entrypoint() {
+        let func = FunctionIR {
+            name: "molt_isolate_import".to_string(),
+            params: vec!["p0".to_string()],
+            param_types: None,
+            ops: vec![
+                make_const_int("v0", 1),
+                make_const_int("v1", 2),
+                make_arith("add", &["p0", "v0"], "v2"),
+                make_arith("add", &["v2", "v1"], "v3"),
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["v3".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        };
+
+        let result = split_large_function(func, 2);
+
+        let original = result.expect_err("protected import entrypoint must not split");
+        assert_eq!(original.name, "molt_isolate_import");
+        assert_eq!(original.params, vec!["p0".to_string()]);
+        assert_eq!(original.ops.len(), 5);
+    }
+
+    #[test]
+    fn split_large_function_preserves_protected_runtime_bootstrap_entrypoint() {
+        let func = FunctionIR {
+            name: "molt_isolate_bootstrap".to_string(),
+            params: vec![],
+            param_types: None,
+            ops: vec![
+                make_op("const_none"),
+                make_op("const_none"),
+                make_op("const_none"),
+                make_op("const_none"),
+                make_op("ret_void"),
+            ],
+        };
+
+        let result = split_large_function(func, 2);
+
+        let original = result.expect_err("protected bootstrap entrypoint must not split");
+        assert_eq!(original.name, "molt_isolate_bootstrap");
+        assert!(original.params.is_empty());
+        assert_eq!(original.ops.len(), 5);
+    }
+
+    #[test]
+    fn split_large_function_still_splits_regular_large_functions() {
+        let func = FunctionIR {
+            name: "user_large".to_string(),
+            params: vec!["p0".to_string()],
+            param_types: None,
+            ops: vec![
+                make_const_int("v0", 1),
+                make_const_int("v1", 2),
+                make_arith("add", &["p0", "v0"], "v2"),
+                make_arith("add", &["v2", "v1"], "v3"),
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["v3".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        };
+
+        let (stub, chunks) = split_large_function(func, 2).expect("expected split");
+
+        assert_eq!(stub.name, "user_large");
+        assert!(!chunks.is_empty());
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.name.starts_with("__molt_chunk_user_large_"))
+        );
+    }
 }
 
 /// Identify pairs of `inc_ref`/`dec_ref` ops that cancel within a basic block.
@@ -1961,78 +2108,6 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
         return;
     }
 
-    // ── Stub molt_isolate_import / molt_isolate_bootstrap ──
-    //
-    // These functions must exist as linker symbols (the runtime references
-    // them via extern "C"), but their bodies dispatch to every module init
-    // function, preventing dead-function elimination from stripping unused
-    // stdlib modules.  Replace their bodies with trivial stubs:
-    //   molt_isolate_import  → const_none + ret  (return None)
-    //   molt_isolate_bootstrap → ret_void
-    //
-    // For programs that actually use isolates, the full bodies are
-    // preserved by reachability from molt_main (which calls them).
-    // When they are NOT reachable from molt_main (the common case for
-    // simple programs), their bodies are inert stubs.
-    {
-        // Check if molt_isolate_import / molt_isolate_bootstrap are
-        // transitively reachable from molt_main.  The previous check only
-        // looked at molt_main's direct ops, missing cases where the module
-        // body (called from molt_main) invokes the isolate functions.
-        let main_calls_isolate = {
-            // Quick BFS from molt_main to see if any reachable function
-            // references molt_isolate_*.
-            let func_map: BTreeMap<&str, &crate::FunctionIR> =
-                ir.functions.iter().map(|f| (f.name.as_str(), f)).collect();
-            let mut visited: BTreeSet<&str> = BTreeSet::new();
-            let mut queue: std::collections::VecDeque<&str> = std::collections::VecDeque::new();
-            if func_map.contains_key("molt_main") {
-                visited.insert("molt_main");
-                queue.push_back("molt_main");
-            }
-            let mut found = false;
-            'bfs: while let Some(current) = queue.pop_front() {
-                if let Some(func) = func_map.get(current) {
-                    for op in &func.ops {
-                        if let Some(s) = op.s_value.as_deref() {
-                            if s.starts_with("molt_isolate_") {
-                                found = true;
-                                break 'bfs;
-                            }
-                            if func_map.contains_key(s) && visited.insert(s) {
-                                queue.push_back(s);
-                            }
-                        }
-                    }
-                }
-            }
-            found
-        };
-        if !main_calls_isolate {
-            for func in &mut ir.functions {
-                if func.name == "molt_isolate_import" {
-                    func.ops.clear();
-                    func.ops.push(OpIR {
-                        kind: "const_none".to_string(),
-                        out: Some("v0".to_string()),
-                        ..OpIR::default()
-                    });
-                    func.ops.push(OpIR {
-                        kind: "ret".to_string(),
-                        args: Some(vec!["v0".to_string()]),
-                        ..OpIR::default()
-                    });
-                } else if func.name == "molt_isolate_bootstrap" {
-                    func.ops.clear();
-                    func.ops.push(OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
-                    });
-                }
-            }
-        }
-    }
-
     // Build the call graph: function name -> set of referenced function names.
     // Use owned Strings so that `ir.functions` is not borrowed when we call retain().
     let defined: BTreeSet<String> = ir.functions.iter().map(|f| f.name.clone()).collect();
@@ -2122,19 +2197,16 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
     // static CALL ops in the IR (emitted by the frontend's _emit_module_load)
     // so the BFS discovers them naturally.
     //
-    // molt_isolate_* functions MUST be kept because the runtime library
-    // references them as extern "C" symbols.  However, to enable effective
-    // tree shaking, we stub out molt_isolate_import's body to just return
-    // None — the actual module dispatch is handled by the frontend's lazy
-    // init pattern, not by this runtime hook for simple programs.
+    // molt_isolate_* functions MUST be kept with their full bodies because
+    // the runtime references them as extern "C" symbols for dynamic imports
+    // and isolate startup. Stubbing them based on local reachability breaks
+    // Python-level import paths (`__import__`, importlib helpers, intrinsic
+    // module loads) that route through the runtime rather than direct IR edges.
+    // Binary size should be controlled by the module graph itself, not by
+    // mutating the semantics of runtime entrypoints during DFE.
     for func in &ir.functions {
-        let name = &func.name;
-        let keep = name == "molt_main"
-            || name == "_start"
-            // Must exist for the runtime linker; body is stubbed below.
-            || name.starts_with("molt_isolate_");
-        if keep {
-            seed(name.clone(), &mut reachable, &mut queue);
+        if is_protected_runtime_entrypoint(&func.name) {
+            seed(func.name.clone(), &mut reachable, &mut queue);
         }
     }
 
@@ -2160,6 +2232,16 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
             );
         }
     }
+}
+
+fn is_protected_runtime_entrypoint(name: &str) -> bool {
+    const RUNTIME_ENTRYPOINTS: &[&str] = &["molt_main", "_start"];
+    const RUNTIME_ENTRYPOINT_PREFIXES: &[&str] = &["molt_isolate_"];
+
+    RUNTIME_ENTRYPOINTS.contains(&name)
+        || RUNTIME_ENTRYPOINT_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
 }
 
 // ---------------------------------------------------------------------------
@@ -2191,6 +2273,10 @@ pub fn split_large_function(
     func: FunctionIR,
     max_ops: usize,
 ) -> Result<(FunctionIR, Vec<FunctionIR>), FunctionIR> {
+    if is_protected_runtime_entrypoint(&func.name) {
+        return Err(func);
+    }
+
     if func.ops.len() <= max_ops {
         return Err(func);
     }
