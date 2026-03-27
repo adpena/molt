@@ -10,21 +10,31 @@ class _MoltLoader:
     def exec_module(self, module) -> None:
         _ensure_intrinsics()
         module_name = _coerce_module_name(module, self)
-        imported = _MOLT_MODULE_IMPORT(module_name)
-        imported_dict = getattr(imported, "__dict__", None)
-        if isinstance(imported, dict):
-            module.__dict__.update(imported)
-            return
-        if isinstance(imported_dict, dict):
-            module.__dict__.update(imported_dict)
-            return
-        raise TypeError(
-            f"import returned non-module payload: {type(imported).__name__}"
-        )
+        previous = _drop_stale_sys_module(module_name, module)
+        try:
+            imported = _MOLT_MODULE_IMPORT(module_name)
+            imported_dict = getattr(imported, "__dict__", None)
+            if isinstance(imported, dict):
+                module.__dict__.update(imported)
+                return
+            if isinstance(imported_dict, dict):
+                module.__dict__.update(imported_dict)
+                return
+            raise TypeError(
+                f"import returned non-module payload: {type(imported).__name__}"
+            )
+        except BaseException:
+            _restore_sys_module(module_name, previous)
+            raise
 
     def load_module(self, fullname: str):
         _ensure_intrinsics()
-        return _MOLT_MODULE_IMPORT(fullname)
+        previous = _drop_stale_sys_module(fullname)
+        try:
+            return _MOLT_MODULE_IMPORT(fullname)
+        except BaseException:
+            _restore_sys_module(fullname, previous)
+            raise
 
     def __repr__(self) -> str:
         return "<_MoltLoader>"
@@ -96,6 +106,26 @@ else:
 
 def all_suffixes() -> list[str]:
     return SOURCE_SUFFIXES + BYTECODE_SUFFIXES + EXTENSION_SUFFIXES
+
+
+def _drop_stale_sys_module(module_name: str, module=None):
+    modules = getattr(_sys, "modules", None)
+    if not isinstance(modules, dict):
+        return None
+    existing = modules.get(module_name)
+    if existing is None or existing is module:
+        return None
+    del modules[module_name]
+    return existing
+
+
+def _restore_sys_module(module_name: str, previous) -> None:
+    if previous is None:
+        return
+    modules = getattr(_sys, "modules", None)
+    if not isinstance(modules, dict) or module_name in modules:
+        return
+    modules[module_name] = previous
 
 
 class _FileLoader:

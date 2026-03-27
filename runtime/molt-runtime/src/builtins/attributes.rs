@@ -1824,11 +1824,12 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     // descriptor protocol.  f.__get__(instance, owner) returns
                     // a bound method binding f to instance, or f itself when
                     // instance is None.
-                    let func_bits = crate::builtins::methods::builtin_func_bits(
+                    let func_bits = crate::builtins::methods::builtin_func_bits_with_default(
                         _py,
                         &runtime_state(_py).method_cache.function_descriptor_get,
                         fn_addr!(molt_function_descriptor_get),
                         3, // (self, instance, owner)
+                        crate::constants::FUNC_DEFAULT_NONE,
                     );
                     let self_bits = MoltObject::from_ptr(obj_ptr).bits();
                     return Some(molt_bound_method_new(func_bits, self_bits));
@@ -4938,8 +4939,10 @@ pub unsafe extern "C" fn molt_del_attr_object(
 
 /// Implements the descriptor protocol `__get__` for function objects.
 ///
-/// CPython semantics: `func.__get__(instance, owner)` returns a bound method
-/// when `instance` is not `None`, or the function itself otherwise.
+/// CPython semantics: `func.__get__(instance, owner=None)` returns a bound
+/// method when `instance` is not `None`, or the function itself otherwise.
+/// The `owner` argument is accepted but unused (CPython ignores it for
+/// regular functions and builtins).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_function_descriptor_get(
     self_bits: u64,

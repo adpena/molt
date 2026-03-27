@@ -263,7 +263,7 @@ def _fail(
 
 def _write_importer_module(module_names: list[str], output_dir: Path) -> Path:
     filtered_names = [name for name in module_names if name]
-    known_modules = sorted(filtered_names)
+    known_modules = sorted({*filtered_names, "builtins"})
     top_level_by_module = {
         name: name.split(".", 1)[0] for name in known_modules if "." in name
     }
