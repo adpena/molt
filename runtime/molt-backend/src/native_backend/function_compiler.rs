@@ -9655,22 +9655,34 @@ impl SimpleBackend {
                             continue;
                         }
 
-                        // Structured loop: explicit block parameter for counter.
+                        // Structured loop: NO explicit block params for the
+                        // counter.  Cranelift's Variable SSA handles the phi.
+                        //
+                        // Why not explicit params?  When loop_index_next does
+                        // def_var(counter_var, new_val), and the loop header
+                        // also has def_var(counter_var, block_param), Cranelift's
+                        // seal_all_blocks adds a DUPLICATE implicit param for
+                        // counter_var alongside the explicit one.  This breaks
+                        // remove_constant_phis (assertion: 30 args vs 29 params).
+                        //
+                        // The correct Cranelift pattern for loops:
+                        // 1. def_var(V, initial) BEFORE the jump to loop header
+                        // 2. In the loop header, use_var(V) → SSA phi
+                        // 3. On the back-edge, def_var(V, incremented) then jump
+                        // Cranelift creates the phi param automatically.
                         let loop_block = builder.create_block();
                         let body_block = builder.create_block();
                         let after_block = builder.create_block();
-                        let idx_param = builder.append_block_param(loop_block, types::I64);
                         let start = phi_value.unwrap_or_else(|| {
                             *var_get(&mut builder, &vars, &args[0])
                                 .expect("Loop index start not found")
                         });
+                        // Step 1: define counter Variable with initial value
+                        def_var_named(&mut builder, &vars, out_name.clone(), start);
                         ensure_block_in_layout(&mut builder, loop_block);
                         reachable_blocks.insert(loop_block);
-                        jump_block(&mut builder, loop_block, &[start]);
+                        jump_block(&mut builder, loop_block, &[]);
                         switch_to_block_tracking(&mut builder, loop_block, &mut is_block_filled);
-                        if reachable_blocks.contains(&loop_block) {
-                            def_var_named(&mut builder, &vars, out_name.clone(), idx_param);
-                        }
                         loop_stack.push(LoopFrame {
                             loop_block,
                             body_block,
@@ -9903,17 +9915,7 @@ impl SimpleBackend {
                         let frame = loop_stack.last_mut().unwrap();
                         frame.next_index = Some(*next_idx);
                         let Some(out_name) = op.out else { continue; };
-                        // Skip def_var when out_name matches the loop counter
-                        // Variable.  Redefining it here would cause Cranelift
-                        // to add a duplicate implicit SSA param for the same
-                        // Variable that's already the explicit block param,
-                        // breaking nested loop codegen.  The counter update
-                        // is carried by the explicit arg in loop_continue.
-                        // (No downstream op references this output before
-                        // loop_continue in structured TIR.)
-                        if frame.index_name.as_deref() != Some(out_name.as_str()) {
-                            def_var_named(&mut builder, &vars, out_name, *next_idx);
-                        }
+                        def_var_named(&mut builder, &vars, out_name, *next_idx);
                     }
                 }
                 "loop_continue" => {
@@ -9950,15 +9952,14 @@ impl SimpleBackend {
                         }
                     }
                     reachable_blocks.insert(frame.loop_block);
+                    // Step 3: def_var the counter with incremented value,
+                    // then jump with no explicit args.  SSA carries the phi.
                     if let Some(next_idx) = frame.next_index.take() {
-                        jump_block(&mut builder, frame.loop_block, &[next_idx]);
-                    } else if let Some(name) = frame.index_name.as_ref() {
-                        let current_idx =
-                            var_get(&mut builder, &vars, name).expect("Loop index not found");
-                        jump_block(&mut builder, frame.loop_block, &[*current_idx]);
-                    } else {
-                        jump_block(&mut builder, frame.loop_block, &[]);
+                        if let Some(name) = frame.index_name.as_ref() {
+                            def_var_named(&mut builder, &vars, name, next_idx);
+                        }
                     }
+                    jump_block(&mut builder, frame.loop_block, &[]);
                     is_block_filled = true;
                     }
                 }
@@ -9973,14 +9974,11 @@ impl SimpleBackend {
                         ensure_block_in_layout(&mut builder, frame.loop_block);
                         reachable_blocks.insert(frame.loop_block);
                         if let Some(next_idx) = frame.next_index.take() {
-                            jump_block(&mut builder, frame.loop_block, &[next_idx]);
-                        } else if let Some(name) = frame.index_name.as_ref() {
-                            let current_idx =
-                                var_get(&mut builder, &vars, name).expect("Loop index not found");
-                            jump_block(&mut builder, frame.loop_block, &[*current_idx]);
-                        } else {
-                            jump_block(&mut builder, frame.loop_block, &[]);
+                            if let Some(name) = frame.index_name.as_ref() {
+                                def_var_named(&mut builder, &vars, name, next_idx);
+                            }
                         }
+                        jump_block(&mut builder, frame.loop_block, &[]);
                     }
                     if builder.func.layout.is_block_inserted(frame.loop_block) {
                         builder.seal_block(frame.loop_block);
@@ -11248,13 +11246,49 @@ impl SimpleBackend {
             }
         }
 
-        // Ensure every block has at least one instruction. Unused blocks
-        // (e.g. loop body/after blocks that are unreachable) cause
-        // Cranelift's alias_analysis to crash with unwrap on empty block.
-        for block in builder.func.layout.blocks().collect::<Vec<_>>() {
-            if builder.func.layout.block_insts(block).next().is_none() {
-                builder.switch_to_block(block);
-                builder.ins().trap(cranelift_codegen::ir::TrapCode::user(0).unwrap());
+        // Eliminate unreachable blocks BEFORE sealing.  Cranelift's SSA
+        // builder can create alias cycles (v1 -> v2 -> v1) when use_var is
+        // called in blocks that form unreachable loops.  These cycles cause
+        // remove_constant_phis to assert (mismatched formals/actuals) and
+        // alias_analysis to crash on empty blocks.  DFS from the entry block
+        // and remove any blocks not visited — the canonical fix endorsed by
+        // Cranelift maintainers (bytecodealliance/wasmtime#5022).
+        {
+            let entry = builder.func.layout.entry_block().unwrap();
+            let mut visited = BTreeSet::new();
+            let mut stack = vec![entry];
+            while let Some(block) = stack.pop() {
+                if !visited.insert(block) {
+                    continue;
+                }
+                // Collect successors from the terminator instruction
+                if let Some(last_inst) = builder.func.layout.last_inst(block) {
+                    // Branch destinations
+                    for dest in builder.func.dfg.insts[last_inst]
+                        .branch_destination(
+                            &builder.func.dfg.jump_tables,
+                            &builder.func.dfg.exception_tables,
+                        )
+                    {
+                        stack.push(dest.block(&builder.func.dfg.value_lists));
+                    }
+                }
+            }
+            // Remove blocks not reachable from entry
+            let all_blocks: Vec<_> = builder.func.layout.blocks().collect();
+            for block in all_blocks {
+                if !visited.contains(&block) {
+                    // Switch to the block and insert a trap so it has a
+                    // terminator (required for removal in some paths), then
+                    // Cranelift's finalize() will remove it as unreachable.
+                    // We must NOT call switch_to_block on a filled block.
+                    if builder.func.layout.block_insts(block).next().is_none() {
+                        builder.switch_to_block(block);
+                        builder.ins().trap(
+                            cranelift_codegen::ir::TrapCode::user(0).unwrap(),
+                        );
+                    }
+                }
             }
         }
         builder.seal_all_blocks();
