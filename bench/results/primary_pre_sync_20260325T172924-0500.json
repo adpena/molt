@@ -1,0 +1,177 @@
+{
+  "timestamp": "2026-03-25T17:29:24-0500",
+  "summaries": {
+    "bench": {
+      "total": 8,
+      "passed": 1,
+      "failed": 0,
+      "errors": 1,
+      "skipped": 0,
+      "timeouts": 6
+    }
+  },
+  "regressions": [
+    {
+      "name": "bench_fib.py",
+      "type": "performance",
+      "detail": "+113% slower (1.4603s -> 3.1081s)"
+    },
+    {
+      "name": "bench_sum.py",
+      "type": "status",
+      "detail": "was passing, now error"
+    }
+  ],
+  "results": {
+    "bench": {
+      "bench_calls.py": {
+        "name": "bench_calls.py",
+        "suite": "bench",
+        "status": "timeout",
+        "cpython_time_s": 0.07472,
+        "molt_time_s": 60.003948,
+        "error_msg": "Molt timed out"
+      },
+      "bench_dict.py": {
+        "name": "bench_dict.py",
+        "suite": "bench",
+        "status": "timeout",
+        "cpython_time_s": 0.164492,
+        "molt_time_s": 60.004797,
+        "error_msg": "Molt timed out"
+      },
+      "bench_fib.py": {
+        "name": "bench_fib.py",
+        "suite": "bench",
+        "status": "pass",
+        "cpython_time_s": 0.065316,
+        "molt_time_s": 3.108112,
+        "molt_speedup": 0.02,
+        "output_match": true
+      },
+      "bench_float.py": {
+        "name": "bench_float.py",
+        "suite": "bench",
+        "status": "timeout",
+        "cpython_time_s": 0.093177,
+        "molt_time_s": 60.004437,
+        "error_msg": "Molt timed out"
+      },
+      "bench_list.py": {
+        "name": "bench_list.py",
+        "suite": "bench",
+        "status": "timeout",
+        "cpython_time_s": 0.156263,
+        "molt_time_s": 60.005351,
+        "error_msg": "Molt timed out"
+      },
+      "bench_string.py": {
+        "name": "bench_string.py",
+        "suite": "bench",
+        "status": "timeout",
+        "cpython_time_s": 0.029265,
+        "molt_time_s": 60.004356,
+        "error_msg": "Molt timed out"
+      },
+      "bench_sum.py": {
+        "name": "bench_sum.py",
+        "suite": "bench",
+        "status": "error",
+        "cpython_time_s": 0.703343,
+        "molt_time_s": 6.750095,
+        "output_match": false,
+        "error_msg": "Molt exited 252"
+      },
+      "bench_while.py": {
+        "name": "bench_while.py",
+        "suite": "bench",
+        "status": "timeout",
+        "cpython_time_s": 0.385281,
+        "molt_time_s": 60.006833,
+        "error_msg": "Molt timed out"
+      }
+    }
+  },
+  "benchmarks": {
+    "bench_calls.py": {
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": 60.00394791699364,
+      "cpython_time_s": 0.07472000000416301,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": null,
+      "status": "timeout"
+    },
+    "bench_dict.py": {
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": 60.004796875000466,
+      "cpython_time_s": 0.1644924580177758,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": null,
+      "status": "timeout"
+    },
+    "bench_fib.py": {
+      "molt_ok": true,
+      "build_ok": true,
+      "molt_time_s": 3.1081116249843035,
+      "cpython_time_s": 0.06531574999098666,
+      "molt_speedup": 0.02,
+      "molt_cpython_ratio": 0.02,
+      "output_match": true,
+      "status": "pass"
+    },
+    "bench_float.py": {
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": 60.00443658401491,
+      "cpython_time_s": 0.09317695902427658,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": null,
+      "status": "timeout"
+    },
+    "bench_list.py": {
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": 60.005350624996936,
+      "cpython_time_s": 0.15626266700564884,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": null,
+      "status": "timeout"
+    },
+    "bench_string.py": {
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": 60.00435579099576,
+      "cpython_time_s": 0.029265000019222498,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": null,
+      "status": "timeout"
+    },
+    "bench_sum.py": {
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": 6.750095082999906,
+      "cpython_time_s": 0.7033433339965995,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": false,
+      "status": "error"
+    },
+    "bench_while.py": {
+      "molt_ok": false,
+      "build_ok": true,
+      "molt_time_s": 60.00683274999028,
+      "cpython_time_s": 0.3852807499933988,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "output_match": null,
+      "status": "timeout"
+    }
+  }
+}
