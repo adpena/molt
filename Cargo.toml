@@ -248,7 +248,7 @@ opt-level = 2
 lto = "thin"
 codegen-units = 16
 strip = "symbols"
-panic = "abort"
+panic = "unwind"
 
 # Size-optimized release profile for micro stdlib builds.
 # Uses opt-level "z" (minimize binary size) with full LTO.
@@ -257,7 +257,7 @@ inherits = "release"
 opt-level = "z"
 lto = "thin"
 codegen-units = 4
-panic = "abort"
+panic = "unwind"
 strip = true
 
 # WASM-optimized release profile: full LTO with single codegen unit for
@@ -268,7 +268,7 @@ inherits = "release"
 opt-level = "z"  # minimize binary size for Cloudflare Workers 3MB limit
 lto = "thin"
 codegen-units = 4
-panic = "abort"
+panic = "unwind"
 strip = true
 
 [profile.dev-release]
