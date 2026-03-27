@@ -241,7 +241,13 @@ _MOLT_SYS_EXCEPTHOOK_WRITE = _safe_intrinsic("molt_sys_excepthook_write", None)
 _MOLT_SYS_ARGV_NEW = _safe_intrinsic("molt_sys_argv", None)
 _MOLT_SYS_MODULES_NEW = _safe_intrinsic("molt_sys_modules", None)
 _MOLT_SYS_PATH_NEW = _safe_intrinsic("molt_sys_path", None)
-_MOLT_OS_WRITE = _safe_intrinsic("molt_os_write", None)
+_MOLT_OS_WRITE_RESOLVED = False
+try:
+    _MOLT_OS_WRITE_FN = _require_intrinsic("molt_os_write")
+    if callable(_MOLT_OS_WRITE_FN):
+        _MOLT_OS_WRITE_RESOLVED = True
+except (RuntimeError, TypeError):
+    _MOLT_OS_WRITE_FN = None
 
 # Use the safe intrinsic resolved above — _safe_intrinsic never raises,
 # so this works on both native and WASM without needing a direct builtins
@@ -844,9 +850,8 @@ if stdout is None or stderr is None or stdin is None:
             if not text:
                 return 0
             data = text.encode(self.encoding, self.errors)
-            os_write = _MOLT_OS_WRITE
-            if callable(os_write):
-                os_write(self._fd, data)
+            if _MOLT_OS_WRITE_RESOLVED and _MOLT_OS_WRITE_FN is not None:
+                _MOLT_OS_WRITE_FN(self._fd, data)
             return len(text)
         def read(self, n: int = -1) -> str:
             return ""
