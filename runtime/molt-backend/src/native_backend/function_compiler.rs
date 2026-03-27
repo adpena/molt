@@ -9639,6 +9639,9 @@ impl SimpleBackend {
                             // phi variable.  The back-edge flows through
                             // store_var/load_var on the state label block, so
                             // SSA resolution handles the counter update.
+                            // Do NOT increment loop_depth — we are not creating
+                            // a real loop block, so nested loops should not see
+                            // elevated depth (which triggers preheader creation).
                             def_var_named(&mut builder, &vars, out_name.clone(), phi_value.unwrap());
                             let dummy = builder.create_block();
                             loop_stack.push(LoopFrame {
@@ -9648,7 +9651,7 @@ impl SimpleBackend {
                                 index_name: Some(out_name),
                                 next_index: None,
                             });
-                            loop_depth += 1;
+                            // Note: loop_depth NOT incremented for linearized loops
                             continue;
                         }
 
@@ -11248,19 +11251,13 @@ impl SimpleBackend {
             }
         }
 
-        if std::env::var("MOLT_DUMP_CLIF_PRE").ok().map_or(false, |f| f == "1" || func_ir.name.contains(&f)) {
-            eprintln!("CLIF-PRE {}:\n{}", func_ir.name, builder.func.display());
-        }
-        builder.seal_all_blocks();
-        if std::env::var("MOLT_DUMP_CLIF_SEALED").ok().map_or(false, |f| f == "1" || func_ir.name.contains(&f)) {
-            eprintln!("CLIF-SEALED {}:\n{}", func_ir.name, builder.func.display());
-        }
+        eprintln!("  finalizing {}", func_ir.name);
         let finalize_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            builder.seal_all_blocks();
             builder.finalize();
         }));
         if let Err(payload) = finalize_result {
             eprintln!("Backend panic while finalizing function {}", func_ir.name);
-            eprintln!("CLIF-PANIC {}:\n{}", func_ir.name, self.ctx.func.display());
             std::panic::resume_unwind(payload);
         }
 
