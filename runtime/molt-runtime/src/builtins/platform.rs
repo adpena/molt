@@ -5907,6 +5907,42 @@ fn importlib_module_public_surface_empty(
     Ok(true)
 }
 
+fn importlib_module_has_key(
+    _py: &PyToken<'_>,
+    module_bits: u64,
+    name_slot: &AtomicU64,
+    name: &'static [u8],
+) -> Result<bool, u64> {
+    let Some(dict_ptr) = importlib_module_dict_ptr(module_bits) else {
+        return Ok(false);
+    };
+    let key_bits = intern_static_name(_py, name_slot, name);
+    Ok(importlib_dict_get_string_key_bits(_py, dict_ptr, key_bits)?.is_some())
+}
+
+fn importlib_module_is_intrinsic_shell(
+    _py: &PyToken<'_>,
+    module_name: &str,
+    module_bits: u64,
+) -> Result<bool, u64> {
+    static INTRINSIC_LOOKUP_NAME: AtomicU64 = AtomicU64::new(0);
+    static INTRINSICS_NAME: AtomicU64 = AtomicU64::new(0);
+    static RUNTIME_NAME: AtomicU64 = AtomicU64::new(0);
+
+    if !importlib_module_public_surface_empty(_py, module_name, module_bits)? {
+        return Ok(false);
+    }
+    Ok(
+        importlib_module_has_key(
+            _py,
+            module_bits,
+            &INTRINSIC_LOOKUP_NAME,
+            b"_molt_intrinsic_lookup",
+        )? || importlib_module_has_key(_py, module_bits, &INTRINSICS_NAME, b"_molt_intrinsics")?
+            || importlib_module_has_key(_py, module_bits, &RUNTIME_NAME, b"_molt_runtime")?,
+    )
+}
+
 fn importlib_module_is_empty_placeholder(
     _py: &PyToken<'_>,
     module_name: &str,
@@ -5956,6 +5992,9 @@ fn importlib_module_should_retry_empty(
     module_name: &str,
     module_bits: u64,
 ) -> Result<bool, u64> {
+    if importlib_module_is_intrinsic_shell(_py, module_name, module_bits)? {
+        return Ok(true);
+    }
     if !IMPORTLIB_EMPTY_MODULE_RETRY_PREFIXES
         .iter()
         .any(|prefix| module_name.starts_with(prefix))
