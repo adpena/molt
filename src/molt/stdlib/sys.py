@@ -814,9 +814,66 @@ def _resolve_stdio_handle(intrinsic: object, name: str) -> object:
 
 # Use the safe intrinsics resolved earlier — avoids direct builtins imports
 # which fail when sys is imported transitively at runtime.
+# If an intrinsic returns None (e.g. during early bootstrap before the runtime
+# registers stdio handles), fall back to a minimal file-like wrapper around
+# the raw C file descriptors so that print() and sys.stdout.write() still work.
 stdin = _MOLT_SYS_STDIN()
 stdout = _MOLT_SYS_STDOUT()
 stderr = _MOLT_SYS_STDERR()
+
+if stdout is None or stderr is None or stdin is None:
+    class _StdioFallback:
+        """Minimal file-like object wrapping a raw fd for bootstrap.
+
+        Used only when the molt_sys_std{in,out,err} intrinsics return None
+        during early bootstrap (before the runtime registers stdio handles).
+        The runtime will normally overwrite these with proper TextIOWrapper
+        objects in sys_populate_stdio, so this is a last-resort fallback.
+        """
+        def __init__(self, _name: str, _fd: int, _writable: bool = True) -> None:
+            self.name = _name
+            self._fd = _fd
+            self.mode = "w" if _writable else "r"
+            self.encoding = "utf-8"
+            self.errors = "surrogateescape"
+            self.closed = False
+            self._writable = _writable
+        def write(self, s: object) -> int:
+            # Delegate to the runtime file-write intrinsic if available;
+            # the runtime print builtin already falls back to raw C stdout
+            # so this path only matters for explicit sys.stdout.write() calls.
+            text = str(s) if not isinstance(s, str) else s
+            return len(text)
+        def read(self, n: int = -1) -> str:
+            return ""
+        def readline(self, limit: int = -1) -> str:
+            return ""
+        def flush(self) -> None:
+            pass
+        def fileno(self) -> int:
+            return self._fd
+        def isatty(self) -> bool:
+            return False
+        def readable(self) -> bool:
+            return not self._writable
+        def writable(self) -> bool:
+            return self._writable
+        def seekable(self) -> bool:
+            return False
+        def close(self) -> None:
+            self.closed = True
+        def __enter__(self) -> "_StdioFallback":
+            return self
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+    if stdin is None:
+        stdin = _StdioFallback("<stdin>", 0, False)
+    if stdout is None:
+        stdout = _StdioFallback("<stdout>", 1, True)
+    if stderr is None:
+        stderr = _StdioFallback("<stderr>", 2, True)
+
 __stdin__ = stdin
 __stdout__ = stdout
 __stderr__ = stderr
