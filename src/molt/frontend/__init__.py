@@ -4207,7 +4207,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         values: list[MoltValue] = []
         mapping: dict[str, MoltValue] = {}
         for param in type_params:
-            if isinstance(param, ast.TypeVar):
+            if isinstance(param, (ast.TypeVar, ast.ParamSpec, ast.TypeVarTuple)):
                 name_val = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[param.name], result=name_val))
                 call_args: list[MoltValue] = [type_param_func, name_val]
@@ -4222,7 +4222,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 values.append(res)
                 mapping[param.name] = res
                 continue
-            raise NotImplementedError("Unsupported type parameter")
+            raise NotImplementedError(f"Unsupported type parameter: {type(param).__name__}")
         return values, mapping
 
     def _emit_attach_type_params(
