@@ -20180,12 +20180,24 @@ def _detect_macos_deployment_target(arch: str | None = None) -> str | None:
     # Stable per-arch baselines when no environment override is present.
     if arch in ("x86_64", "amd64"):
         return "10.13"
-    # arm64, aarch64, and any unknown arch: use the current system version
-    # to avoid linker warnings about object files built for a newer macOS.
-    import platform
-    ver = platform.mac_ver()[0]
+    # arm64, aarch64, and any unknown arch: use the SDK version reported
+    # by xcrun, which matches what Rust/C dependencies were compiled
+    # against.  Using platform.mac_ver() (OS version) can be lower than
+    # the SDK, causing hundreds of linker version-mismatch warnings.
+    try:
+        sdk_ver = subprocess.check_output(
+            ["xcrun", "--show-sdk-version"],
+            text=True,
+            timeout=5,
+        ).strip()
+        if sdk_ver:
+            return sdk_ver
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+    # Fallback to OS version if xcrun unavailable
+    import platform as _platform
+    ver = _platform.mac_ver()[0]
     if ver:
-        # Use major.minor (e.g., "15.0" from "15.0.1")
         parts = ver.split(".")
         return ".".join(parts[:2]) if len(parts) >= 2 else ver
     return "11.0"
