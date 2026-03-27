@@ -400,6 +400,10 @@ impl SimpleBackend {
         let mut loop_depth: i32 = 0;
         let mut block_tracked_obj: BTreeMap<Block, Vec<String>> = BTreeMap::new();
         let mut block_tracked_ptr: BTreeMap<Block, Vec<String>> = BTreeMap::new();
+        // Global dedup set: tracks which variable names have already been
+        // dec_ref'd by any cleanup site. Prevents double-free when tracked
+        // values are cloned to multiple blocks by if/check_exception/br_if.
+        let mut already_decrefed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
