@@ -19,7 +19,10 @@ resolver = "2"
 opt-level = 3
 lto = "thin"
 codegen-units = 4
-panic = "abort"
+# panic = "unwind" is required for the backend's catch_unwind retry
+# mechanism (handles Cranelift optimizer panics gracefully).
+# panic = "abort" broke this entirely — catch_unwind was a no-op.
+panic = "unwind"
 strip = "symbols"
 debug = 1
 

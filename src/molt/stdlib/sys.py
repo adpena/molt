@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
+try:
+    from _intrinsics import require_intrinsic as _require_intrinsic
+except (ImportError, TypeError, RuntimeError):
+    # _intrinsics may not be available during early bootstrap or WASM builds.
+    def _require_intrinsic(name):  # type: ignore[misc]
+        raise RuntimeError(f"intrinsic {name!r} not available (bootstrap)")
 
 
 def cast(_tp, value):  # type: ignore[override]
@@ -48,17 +53,23 @@ def _noop(*_args: object, **_kwargs: object) -> None:
     return None
 
 
-def _safe_intrinsic(name: str, default: object = None) -> Callable[..., object]:
+def _safe_intrinsic(
+    name: str,
+    default: object = None,
+    _ri: object = _require_intrinsic,
+) -> Callable[..., object]:
     """Resolve an intrinsic, returning *default* (or _noop) on failure.
 
     This NEVER raises during import, making bootstrap infallible on all
     targets including WASM where the registry may be populated lazily.
+    The _ri default captures the resolver at definition time, avoiding
+    a module-global lookup that can fail in AOT-compiled stdlib modules.
     """
     try:
-        fn = _require_intrinsic(name)
+        fn = _ri(name)
         if callable(fn):
             return fn  # type: ignore[return-value]
-    except RuntimeError:
+    except (RuntimeError, TypeError):
         pass
     if default is not None:
         return default  # type: ignore[return-value]
