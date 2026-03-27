@@ -962,10 +962,11 @@ impl SimpleBackend {
                         .ins()
                         .load(types::I64, MemFlags::trusted(), out_ptr, 0);
 
+                    let out_name_clone = out_name.clone();
                     def_var_named(&mut builder, &vars, out_name, boxed);
                     // String constants must not be dec_ref'd — they are
                     // effectively immortal (backing data is in __const).
-                    rc_skip_dec.insert(out_name.to_string());
+                    rc_skip_dec.insert(out_name_clone);
                 }
                 "const_bytes" => {
                     let bytes = op.bytes.as_ref().expect("Bytes not found");
