@@ -4053,6 +4053,7 @@ def _collect_func_defaults(tree: ast.AST) -> dict[str, dict[str, Any]]:
         if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         if stmt.args.vararg or stmt.args.kwarg:
+            defaults[stmt.name] = {"has_vararg": True}
             continue
         params = [
             arg.arg
