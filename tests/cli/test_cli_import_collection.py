@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import builtins as py_builtins
 import contextlib
 import io
 import importlib.util
@@ -153,6 +154,32 @@ def test_generated_importer_recovers_known_placeholder_modules(
     assert result is loaded
     assert sys.modules[module_name] is loaded
     assert import_calls == [module_name]
+
+
+def test_generated_importer_can_import_builtins_when_not_preseeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import_calls: list[str] = []
+
+    def fake_import_module(name: str, _util, _machinery):
+        import_calls.append(name)
+        return py_builtins
+
+    monkeypatch.delitem(sys.modules, "builtins", raising=False)
+    importer = _load_generated_importer(
+        tmp_path,
+        monkeypatch,
+        module_names=["demo_math"],
+        intrinsics={
+            "molt_module_import": lambda name: py_builtins,
+            "molt_importlib_import_module": fake_import_module,
+        },
+    )
+
+    result = importer._molt_import("builtins")
+
+    assert result is py_builtins
+    assert import_calls == ["builtins"]
 
 
 def test_write_namespace_module_avoids_rewriting_identical_content(
