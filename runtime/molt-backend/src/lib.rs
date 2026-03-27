@@ -2276,10 +2276,14 @@ impl SimpleBackend {
                 // connection to the back-edge block arg. This is a known
                 // limitation. TODO: fix lower_to_simple.rs to properly
                 // wire loop_index_start args to block arg variables.
+                // Skip TIR for functions with ops whose operand connections
+                // are broken by the TIR SSA roundtrip: loops (phi), fields
+                // (guarded_field), and exception stack (paired enter/exit).
                 if func_ir.ops.iter().any(|op| matches!(op.kind.as_str(),
                     "loop_start" | "loop_index_start" |
                     "guarded_field_set" | "guarded_field_get" |
-                    "guarded_field_set_init"
+                    "guarded_field_set_init" |
+                    "exception_stack_enter" | "exception_stack_exit"
                 )) {
                     continue;
                 }

@@ -5393,15 +5393,17 @@ pub extern "C" fn molt_exception_stack_enter() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_stack_exit(prev_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        // The prev_bits value comes from exception_stack_enter and should
+        // be a NaN-boxed non-negative int.  However, when the exception
+        // handler is reached through SSA paths where the variable was
+        // never defined (e.g., check_exception brif to an exception label
+        // that joins multiple paths), the value may be None (the default
+        // Cranelift Variable value for undefined paths).  In that case,
+        // reset to 0 rather than raising a TypeError that prevents stdlib
+        // module init from completing.
         let prev = match to_i64(obj_from_bits(prev_bits)) {
             Some(val) if val >= 0 => val as usize,
-            _ => {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "exception baseline must be a non-negative int",
-                );
-            }
+            _ => 0,
         };
         exception_stack_baseline_set(prev);
         MoltObject::none().bits()
@@ -5418,15 +5420,11 @@ pub extern "C" fn molt_exception_stack_depth() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_stack_set_depth(depth_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        // Same as exception_stack_exit: SSA paths through exception
+        // handlers may pass None for undefined variables. Default to 0.
         let depth = match to_i64(obj_from_bits(depth_bits)) {
             Some(val) if val >= 0 => val as usize,
-            _ => {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "exception depth must be a non-negative int",
-                );
-            }
+            _ => 0,
         };
         exception_stack_set_depth(_py, depth);
         MoltObject::none().bits()
