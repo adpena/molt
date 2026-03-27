@@ -11740,7 +11740,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_re_match_group",
         symbol: "molt_re_match_group",
-        arity: 3,
+        arity: 4,
     },
     IntrinsicSpec {
         name: "molt_re_match_groups",
