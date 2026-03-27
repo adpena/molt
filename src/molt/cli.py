@@ -8705,6 +8705,17 @@ def _backend_daemon_spawn_probe_timeout(startup_timeout: float | None) -> float:
     return min(startup_timeout, 0.25)
 
 
+def _backend_daemon_log_tail(log_path: Path, *, max_lines: int = 30) -> str | None:
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    if not lines:
+        return None
+    tail = lines[-max_lines:]
+    return "\n".join(tail).strip() or None
+
+
 def _backend_daemon_socket_dir(project_root: Path) -> Path:
     # Unix sockets can fail on some external/shared volumes (e.g. exFAT).
     # Keep sockets on a local socket-capable path by default.
@@ -9374,7 +9385,8 @@ def _backend_daemon_compile_request_bytes(
     for key in ("MOLT_TIR_OPT", "MOLT_DISABLE_DEAD_FUNC_ELIM", "MOLT_BACKEND_BATCH_SIZE",
                 "MOLT_MAX_FUNCTION_OPS", "MOLT_DISABLE_RC_COALESCING", "TIR_DUMP", "TIR_OPT_STATS",
                 "MOLT_DUMP_CLIF", "MOLT_DUMP_CLIF_ON_ERROR", "MOLT_DUMP_IR",
-                "MOLT_DEBUG_BIND", "MOLT_TIR_SKIP"):
+                "MOLT_DEBUG_BIND", "MOLT_TIR_SKIP", "MOLT_BACKEND",
+                "MOLT_LLVM_DUMP_IR", "MOLT_BACKEND_TIMING"):
         val = os.environ.get(key)
         if val is not None:
             env_passthrough[key] = val
@@ -9472,9 +9484,17 @@ def _start_backend_daemon(
     project_root: Path,
     startup_timeout: float | None,
     json_output: bool,
+    warnings: list[str],
 ) -> bool:
+    def _report_daemon_issue(message: str) -> None:
+        if json_output:
+            warnings.append(message)
+        else:
+            print(message, file=sys.stderr)
+
     startup_wait = startup_timeout if startup_timeout is not None else None
     pid_path = _backend_daemon_pid_path(project_root, cargo_profile)
+    log_path = _backend_daemon_log_path(project_root, cargo_profile)
     existing_pid = _read_backend_daemon_pid(pid_path)
     if existing_pid is not None:
         if _pid_alive(existing_pid):
@@ -9500,14 +9520,24 @@ def _start_backend_daemon(
                     )
                     if ready:
                         return True
-                    if not json_output:
-                        print(
-                            "Backend daemon is running but did not become ready "
-                            "within the startup probe window; skipping restart.",
-                            file=sys.stderr,
-                        )
-                    return False
-                _terminate_backend_daemon_pid(existing_pid, grace=1.0)
+                    message = (
+                        "Backend daemon was running but did not become ready "
+                        f"within {startup_wait or 0.0:.2f}s; restarting."
+                    )
+                    log_tail = _backend_daemon_log_tail(log_path)
+                    if log_tail:
+                        message = f"{message}\nLast daemon log lines:\n{log_tail}"
+                    _report_daemon_issue(message)
+                    _terminate_backend_daemon_pid(existing_pid, grace=1.0)
+                    _remove_backend_daemon_pid(pid_path)
+                    try:
+                        if socket_path.exists():
+                            socket_path.unlink()
+                    except OSError:
+                        pass
+                    existing_pid = None
+                else:
+                    _terminate_backend_daemon_pid(existing_pid, grace=1.0)
         if existing_pid is not None:
             _remove_backend_daemon_pid(pid_path)
     try:
@@ -9519,10 +9549,17 @@ def _start_backend_daemon(
             )
             if ready:
                 return True
+            message = (
+                f"Backend daemon socket {socket_path} existed but did not answer "
+                f"readiness probes within {startup_wait or 0.0:.2f}s; removing stale socket."
+            )
+            log_tail = _backend_daemon_log_tail(log_path)
+            if log_tail:
+                message = f"{message}\nLast daemon log lines:\n{log_tail}"
+            _report_daemon_issue(message)
             socket_path.unlink()
     except OSError:
         pass
-    log_path = _backend_daemon_log_path(project_root, cargo_profile)
     daemon_pid: int | None = None
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -9549,11 +9586,15 @@ def _start_backend_daemon(
     )
     if ready:
         return True
-    if not json_output:
-        print(
-            "Backend daemon is warming in background; using one-shot compile for this build.",
-            file=sys.stderr,
-        )
+    probe_window = _backend_daemon_spawn_probe_timeout(startup_wait)
+    message = (
+        "Backend daemon did not become ready after spawn within "
+        f"{probe_window:.2f}s; falling back to one-shot compile for this build."
+    )
+    log_tail = _backend_daemon_log_tail(log_path)
+    if log_tail:
+        message = f"{message}\nLast daemon log lines:\n{log_tail}"
+    _report_daemon_issue(message)
     return False
 
 
@@ -14393,30 +14434,15 @@ def _prepare_backend_dispatch(
         )
         startup_timeout = _backend_daemon_start_timeout()
         with _build_lock(molt_root, f"backend-daemon.{backend_cargo_profile}"):
-            pid_path = _backend_daemon_pid_path(molt_root, backend_cargo_profile)
-            existing_pid = _read_backend_daemon_pid(pid_path)
-            if (
-                existing_pid is not None
-                and _pid_alive(existing_pid)
-                and _backend_daemon_binary_is_newer(backend_bin, pid_path)
-            ):
-                _terminate_backend_daemon_pid(existing_pid, grace=1.0)
-                _remove_backend_daemon_pid(pid_path)
-                try:
-                    if daemon_socket.exists():
-                        daemon_socket.unlink()
-                except OSError:
-                    pass
-            daemon_ready = daemon_socket.exists()
-            if not daemon_ready:
-                daemon_ready = _start_backend_daemon(
-                    backend_bin,
-                    daemon_socket,
-                    cargo_profile=backend_cargo_profile,
-                    project_root=molt_root,
-                    startup_timeout=startup_timeout,
-                    json_output=json_output,
-                )
+            daemon_ready = _start_backend_daemon(
+                backend_bin,
+                daemon_socket,
+                cargo_profile=backend_cargo_profile,
+                project_root=molt_root,
+                startup_timeout=startup_timeout,
+                json_output=json_output,
+                warnings=warnings,
+            )
     return _PreparedBackendDispatch(
         backend_env=backend_env,
         reloc_requested=reloc_requested,
@@ -14593,6 +14619,7 @@ def _execute_backend_compile(
                         project_root=molt_root,
                         startup_timeout=restart_timeout,
                         json_output=json_output,
+                        warnings=warnings,
                     )
                 if daemon_ready:
                     daemon_compile = _compile_with_backend_daemon(
@@ -14625,12 +14652,7 @@ def _execute_backend_compile(
                     daemon_health = daemon_compile.health
                     if daemon_health is not None:
                         backend_daemon_health = daemon_health
-            if (
-                not backend_compiled
-                and verbose
-                and not json_output
-                and daemon_error
-            ):
+            if not backend_compiled and not json_output and daemon_error:
                 print(
                     "Backend daemon compile failed; falling back to one-shot mode: "
                     f"{daemon_error}",
