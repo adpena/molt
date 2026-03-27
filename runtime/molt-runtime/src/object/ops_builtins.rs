@@ -774,6 +774,135 @@ pub extern "C" fn molt_call_func_dispatch(
                     }
                 }
             }
+
+            // --- Step 5b: __kwdefaults__ fallback for keyword-only params ---
+            // For `def f(x, *, key=None)` called as `f(1)`:
+            //   arity=2, eff_nargs=1, __defaults__=(), __kwdefaults__={"key": None}
+            //   __molt_kwonly_names__=("key",)
+            // The kwonly params occupy the LAST slots in the compiled arity.
+            // We fill positional defaults from __defaults__ and kwonly defaults
+            // from __kwdefaults__ by name lookup.
+            unsafe {
+                // Get __molt_kwonly_names__ tuple
+                let kwonly_bits = function_attr_bits(
+                    _py,
+                    func_ptr,
+                    intern_static_name(
+                        _py,
+                        &runtime_state(_py).interned.molt_kwonly_names,
+                        b"__molt_kwonly_names__",
+                    ),
+                );
+                if let Some(kw_bits) = kwonly_bits {
+                    if !obj_from_bits(kw_bits).is_none() {
+                        if let Some(kw_ptr) = obj_from_bits(kw_bits).as_ptr() {
+                            if object_type_id(kw_ptr) == TYPE_ID_TUPLE {
+                                let kwonly_names = seq_vec_ref(kw_ptr);
+                                let n_kwonly = kwonly_names.len();
+                                if n_kwonly > 0 {
+                                    // Get __kwdefaults__ dict
+                                    let kwdef_bits = function_attr_bits(
+                                        _py,
+                                        func_ptr,
+                                        intern_static_name(
+                                            _py,
+                                            &runtime_state(_py).interned.kwdefaults_name,
+                                            b"__kwdefaults__",
+                                        ),
+                                    );
+                                    if let Some(kd_bits) = kwdef_bits {
+                                        if !obj_from_bits(kd_bits).is_none() {
+                                            if let Some(kd_ptr) = obj_from_bits(kd_bits).as_ptr() {
+                                                if object_type_id(kd_ptr) == TYPE_ID_DICT {
+                                                    // n_positional = arity - n_kwonly
+                                                    let n_positional = func_arity - n_kwonly;
+                                                    let pos_missing = n_positional.saturating_sub(eff_nargs);
+
+                                                    // Get __defaults__ for positional defaults
+                                                    let pos_defaults = function_attr_bits(
+                                                        _py,
+                                                        func_ptr,
+                                                        intern_static_name(
+                                                            _py,
+                                                            &runtime_state(_py).interned.defaults_name,
+                                                            b"__defaults__",
+                                                        ),
+                                                    );
+                                                    let mut pos_def_vec: &[u64] = &[];
+                                                    let pos_def_owned;
+                                                    if let Some(pd_bits) = pos_defaults {
+                                                        if !obj_from_bits(pd_bits).is_none() {
+                                                            if let Some(pd_ptr) = obj_from_bits(pd_bits).as_ptr() {
+                                                                if object_type_id(pd_ptr) == TYPE_ID_TUPLE {
+                                                                    pos_def_owned = seq_vec_ref(pd_ptr).clone();
+                                                                    pos_def_vec = &pos_def_owned;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Check positional defaults cover pos_missing
+                                                    if pos_missing <= pos_def_vec.len() {
+                                                        // Try to fill all kwonly from __kwdefaults__
+                                                        let mut kw_vals: Vec<u64> = Vec::with_capacity(n_kwonly);
+                                                        let mut all_found = true;
+                                                        for i in 0..n_kwonly {
+                                                            if let Some(val) = dict_get_in_place(_py, kd_ptr, kwonly_names[i]) {
+                                                                kw_vals.push(val);
+                                                            } else {
+                                                                all_found = false;
+                                                                break;
+                                                            }
+                                                        }
+                                                        if all_found {
+                                                            let total = func_arity;
+                                                            if total <= 18 {
+                                                                // Copy provided positional args
+                                                                padded_buf[..eff_nargs].copy_from_slice(effective_args);
+                                                                // Fill missing positional defaults
+                                                                if pos_missing > 0 {
+                                                                    let start = pos_def_vec.len() - pos_missing;
+                                                                    for i in 0..pos_missing {
+                                                                        padded_buf[eff_nargs + i] = pos_def_vec[start + i];
+                                                                    }
+                                                                }
+                                                                // Fill kwonly defaults
+                                                                for i in 0..n_kwonly {
+                                                                    padded_buf[n_positional + i] = kw_vals[i];
+                                                                }
+                                                                return molt_call_func_direct(
+                                                                    _py,
+                                                                    fn_ptr_val,
+                                                                    &padded_buf[..total],
+                                                                    code_id,
+                                                                    func_bits,
+                                                                );
+                                                            } else {
+                                                                let mut padded = Vec::with_capacity(total);
+                                                                padded.extend_from_slice(effective_args);
+                                                                if pos_missing > 0 {
+                                                                    let start = pos_def_vec.len() - pos_missing;
+                                                                    for i in start..pos_def_vec.len() {
+                                                                        padded.push(pos_def_vec[i]);
+                                                                    }
+                                                                }
+                                                                padded.extend_from_slice(&kw_vals);
+                                                                return molt_call_func_direct(
+                                                                    _py, fn_ptr_val, &padded, code_id, func_bits,
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Arity mismatch we can't handle inline — fallback.
@@ -3551,7 +3680,10 @@ pub extern "C" fn molt_print_builtin(
             let elems = seq_vec_ref(args_ptr);
             let do_flush = is_truthy(_py, obj_from_bits(flush_bits));
 
-            if obj_from_bits(resolved_file_bits).is_none() && !sys_found {
+            // Fall back to raw C stdio when the resolved file is None —
+            // this handles both "sys not imported" AND "sys.stdout is None"
+            // (e.g., during sys.py bootstrap before intrinsics register stdout).
+            if obj_from_bits(resolved_file_bits).is_none() {
                 let encoding = "utf-8";
                 let errors = "surrogateescape";
                 let mut stdout = std::io::stdout();
