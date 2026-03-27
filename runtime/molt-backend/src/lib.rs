@@ -1467,6 +1467,38 @@ pub(crate) fn propagate_tracked_to_branches(
 }
 
 #[cfg(feature = "native-backend")]
+
+#[cfg(feature = "native-backend")]
+fn drain_cleanup_tracked_dedup(
+    names: &mut Vec<String>,
+    last_use: &BTreeMap<String, usize>,
+    op_idx: usize,
+    skip: Option<&str>,
+    mut already_decrefed: Option<&mut BTreeSet<String>>,
+) -> Vec<String> {
+    let mut cleanup = Vec::new();
+    names.retain(|name| {
+        if skip == Some(name.as_str()) {
+            return true;
+        }
+        if let Some(ref set) = already_decrefed {
+            if set.contains(name.as_str()) {
+                return false;
+            }
+        }
+        let last = last_use.get(name).copied().unwrap_or(usize::MAX);
+        if last <= op_idx {
+            if let Some(ref mut set) = already_decrefed {
+                set.insert(name.clone());
+            }
+            cleanup.push(name.clone());
+            return false;
+        }
+        true
+    });
+    cleanup
+}
+
 fn drain_cleanup_entry_tracked(
     names: &mut Vec<String>,
     entry_vars: &mut BTreeMap<String, Value>,

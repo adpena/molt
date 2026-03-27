@@ -16,6 +16,7 @@ struct FunctionPreanalysis {
     state_ids: Vec<i64>,
     resume_states: BTreeSet<i64>,
     function_exception_label_id: Option<i64>,
+    exception_label_ids: BTreeSet<i64>,
     /// Pre-built map from variable name -> constant integer value for O(1) lookups.
     /// Only the first definition of each name is stored (SSA correctness).
     const_int_map: BTreeMap<String, i64>,
@@ -275,6 +276,7 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
         state_ids,
         resume_states,
         function_exception_label_id,
+        exception_label_ids,
         const_int_map,
     }
 }
@@ -334,6 +336,7 @@ impl SimpleBackend {
             state_ids,
             resume_states,
             function_exception_label_id,
+            exception_label_ids,
             const_int_map: _const_int_map,
         } = preanalyze_function_ir(&func_ir);
         let (rc_skip_inc, rc_skip_dec) = crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use);
@@ -400,6 +403,7 @@ impl SimpleBackend {
         let mut loop_depth: i32 = 0;
         let mut block_tracked_obj: BTreeMap<Block, Vec<String>> = BTreeMap::new();
         let mut block_tracked_ptr: BTreeMap<Block, Vec<String>> = BTreeMap::new();
+        let mut already_decrefed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         // Global dedup set: tracks which variable names have already been
         // dec_ref'd by any cleanup site. Prevents double-free when tracked
         // values are cloned to multiple blocks by if/check_exception/br_if.
@@ -6999,11 +7003,11 @@ impl SimpleBackend {
                     let mut origin_obj_live =
                         block_tracked_obj.remove(&origin_block).unwrap_or_default();
                     let origin_obj_cleanup =
-                        drain_cleanup_tracked(&mut origin_obj_live, &last_use, op_idx, None);
+                        drain_cleanup_tracked_dedup(&mut origin_obj_live, &last_use, op_idx, None, Some(&mut already_decrefed));
                     let mut origin_ptr_live =
                         block_tracked_ptr.remove(&origin_block).unwrap_or_default();
                     let origin_ptr_cleanup =
-                        drain_cleanup_tracked(&mut origin_ptr_live, &last_use, op_idx, None);
+                        drain_cleanup_tracked_dedup(&mut origin_ptr_live, &last_use, op_idx, None, Some(&mut already_decrefed));
                     if std::env::var("MOLT_DEBUG_CALL_CLEANUP").as_deref() == Ok("1")
                         && std::env::var("MOLT_DEBUG_FUNC_FILTER")
                             .ok()
@@ -8807,7 +8811,7 @@ impl SimpleBackend {
                     let mut scrubbed_names: std::collections::HashSet<String> = std::collections::HashSet::new();
                     if !carry_obj.is_empty() {
                         let cleanup =
-                            drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+                            drain_cleanup_tracked_dedup(&mut carry_obj, &last_use, op_idx, None, Some(&mut already_decrefed));
                         for name in cleanup {
                             let val = entry_vars.get(&name).copied()
                                 .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
@@ -8819,7 +8823,7 @@ impl SimpleBackend {
                     }
                     if !carry_ptr.is_empty() {
                         let cleanup =
-                            drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+                            drain_cleanup_tracked_dedup(&mut carry_ptr, &last_use, op_idx, None, Some(&mut already_decrefed));
                         for name in cleanup {
                             let val = entry_vars.get(&name).copied()
                                 .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
@@ -9003,7 +9007,7 @@ impl SimpleBackend {
                         .expect("if requires an active block");
                     let mut carry_obj = block_tracked_obj.remove(&origin_block).unwrap_or_default();
                     let cleanup_obj =
-                        drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+                        drain_cleanup_tracked_dedup(&mut carry_obj, &last_use, op_idx, None, Some(&mut already_decrefed));
                     for name in cleanup_obj {
                         let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
                             panic!(
@@ -9015,7 +9019,7 @@ impl SimpleBackend {
                     }
                     let mut carry_ptr = block_tracked_ptr.remove(&origin_block).unwrap_or_default();
                     let cleanup_ptr =
-                        drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+                        drain_cleanup_tracked_dedup(&mut carry_ptr, &last_use, op_idx, None, Some(&mut already_decrefed));
                     for name in cleanup_ptr {
                         let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
                             panic!(
@@ -9181,7 +9185,7 @@ impl SimpleBackend {
                             let mut carry_obj =
                                 block_tracked_obj.remove(&block).unwrap_or_default();
                             let cleanup =
-                                drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+                                drain_cleanup_tracked_dedup(&mut carry_obj, &last_use, op_idx, None, Some(&mut already_decrefed));
                             for name in cleanup {
                                 let val =
                                     var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
@@ -9202,7 +9206,7 @@ impl SimpleBackend {
                             let mut carry_ptr =
                                 block_tracked_ptr.remove(&block).unwrap_or_default();
                             let cleanup =
-                                drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+                                drain_cleanup_tracked_dedup(&mut carry_ptr, &last_use, op_idx, None, Some(&mut already_decrefed));
                             for name in cleanup {
                                 let val =
                                     var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
@@ -9285,7 +9289,7 @@ impl SimpleBackend {
                                 let mut carry_obj =
                                     block_tracked_obj.remove(&block).unwrap_or_default();
                                 let cleanup =
-                                    drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+                                    drain_cleanup_tracked_dedup(&mut carry_obj, &last_use, op_idx, None, Some(&mut already_decrefed));
                                 for name in cleanup {
                                     let val =
                                         var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
@@ -9306,7 +9310,7 @@ impl SimpleBackend {
                                 let mut carry_ptr =
                                     block_tracked_ptr.remove(&block).unwrap_or_default();
                                 let cleanup =
-                                    drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+                                    drain_cleanup_tracked_dedup(&mut carry_ptr, &last_use, op_idx, None, Some(&mut already_decrefed));
                                 for name in cleanup {
                                     let val =
                                         var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
@@ -9360,7 +9364,7 @@ impl SimpleBackend {
                                 let mut carry_obj =
                                     block_tracked_obj.remove(&block).unwrap_or_default();
                                 let cleanup =
-                                    drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+                                    drain_cleanup_tracked_dedup(&mut carry_obj, &last_use, op_idx, None, Some(&mut already_decrefed));
                                 for name in cleanup {
                                     let val =
                                         var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
@@ -9381,7 +9385,7 @@ impl SimpleBackend {
                                 let mut carry_ptr =
                                     block_tracked_ptr.remove(&block).unwrap_or_default();
                                 let cleanup =
-                                    drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+                                    drain_cleanup_tracked_dedup(&mut carry_ptr, &last_use, op_idx, None, Some(&mut already_decrefed));
                                 for name in cleanup {
                                     let val =
                                         var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
@@ -9438,7 +9442,7 @@ impl SimpleBackend {
                                 let mut carry_obj =
                                     block_tracked_obj.remove(&block).unwrap_or_default();
                                 let cleanup =
-                                    drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+                                    drain_cleanup_tracked_dedup(&mut carry_obj, &last_use, op_idx, None, Some(&mut already_decrefed));
                                 for name in cleanup {
                                     let val =
                                         var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
@@ -9459,7 +9463,7 @@ impl SimpleBackend {
                                 let mut carry_ptr =
                                     block_tracked_ptr.remove(&block).unwrap_or_default();
                                 let cleanup =
-                                    drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+                                    drain_cleanup_tracked_dedup(&mut carry_ptr, &last_use, op_idx, None, Some(&mut already_decrefed));
                                 for name in cleanup {
                                     let val =
                                         var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
@@ -9722,9 +9726,9 @@ impl SimpleBackend {
                         .current_block()
                         .expect("loop_break_if_true requires an active block");
                     let mut carry_obj_lb = block_tracked_obj.remove(&current_block).unwrap_or_default();
-                    let tracked_obj_snapshot = drain_cleanup_tracked(&mut carry_obj_lb, &last_use, op_idx, None);
+                    let tracked_obj_snapshot = drain_cleanup_tracked_dedup(&mut carry_obj_lb, &last_use, op_idx, None, Some(&mut already_decrefed));
                     let mut carry_ptr_lb = block_tracked_ptr.remove(&current_block).unwrap_or_default();
-                    let tracked_ptr_snapshot = drain_cleanup_tracked(&mut carry_ptr_lb, &last_use, op_idx, None);
+                    let tracked_ptr_snapshot = drain_cleanup_tracked_dedup(&mut carry_ptr_lb, &last_use, op_idx, None, Some(&mut already_decrefed));
                     // Fast path: extract bool payload directly for NaN-boxed
                     // booleans from fast_int comparisons (mirrors loop_break_if_false).
                     let prev_is_fast_bool = op_idx > 0 && {
@@ -9798,9 +9802,9 @@ impl SimpleBackend {
                         .current_block()
                         .expect("loop_break_if_false requires an active block");
                     let mut carry_obj_lb = block_tracked_obj.remove(&current_block).unwrap_or_default();
-                    let tracked_obj_snapshot = drain_cleanup_tracked(&mut carry_obj_lb, &last_use, op_idx, None);
+                    let tracked_obj_snapshot = drain_cleanup_tracked_dedup(&mut carry_obj_lb, &last_use, op_idx, None, Some(&mut already_decrefed));
                     let mut carry_ptr_lb = block_tracked_ptr.remove(&current_block).unwrap_or_default();
-                    let tracked_ptr_snapshot = drain_cleanup_tracked(&mut carry_ptr_lb, &last_use, op_idx, None);
+                    let tracked_ptr_snapshot = drain_cleanup_tracked_dedup(&mut carry_ptr_lb, &last_use, op_idx, None, Some(&mut already_decrefed));
                     // Fast path: when the condition is a NaN-boxed bool from a
                     // fast_int comparison (lt/le/gt/ge/eq/ne), extract the bool
                     // payload directly instead of calling molt_is_truthy.  This
@@ -10794,6 +10798,7 @@ impl SimpleBackend {
                             // Function return: fully drain per-block tracked values.
                             if let Some(names) = block_tracked_obj.remove(&block) {
                                 for name in names {
+                                    if already_decrefed.contains(&name) { continue; }
                                     let val =
                                         var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
                                             panic!(
@@ -10802,10 +10807,12 @@ impl SimpleBackend {
                                             )
                                         });
                                     builder.ins().call(local_dec_ref_obj, &[*val]);
+                                    already_decrefed.insert(name);
                                 }
                             }
                             if let Some(names) = block_tracked_ptr.remove(&block) {
                                 for name in names {
+                                    if already_decrefed.contains(&name) { continue; }
                                     let val =
                                         var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
                                             panic!(
@@ -10814,15 +10821,18 @@ impl SimpleBackend {
                                             )
                                         });
                                     builder.ins().call(local_dec_ref_obj, &[*val]);
+                                    already_decrefed.insert(name);
                                 }
                             }
                         }
                         for name in &tracked_vars {
+                            if already_decrefed.contains(name) { continue; }
                             if let Some(val) = var_get(&mut builder, &vars, name) {
                                 builder.ins().call(local_dec_ref_obj, &[*val]);
                             }
                         }
                         for name in &tracked_obj_vars {
+                            if already_decrefed.contains(name) { continue; }
                             if let Some(val) = var_get(&mut builder, &vars, name) {
                                 builder.ins().call(local_dec_ref_obj, &[*val]);
                             }
@@ -10843,24 +10853,22 @@ impl SimpleBackend {
                         // Function return: fully drain per-block tracked values (except return).
                         if let Some(names) = block_tracked_obj.remove(&block) {
                             for name in names {
-                                if name == *var_name {
-                                    continue;
-                                }
+                                if name == *var_name || already_decrefed.contains(&name) { continue; }
                                 let val = entry_vars.get(&name).copied()
                                     .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
                                 let Some(val) = val else { continue; };
                                 builder.ins().call(local_dec_ref_obj, &[val]);
+                                already_decrefed.insert(name);
                             }
                         }
                         if let Some(names) = block_tracked_ptr.remove(&block) {
                             for name in names {
-                                if name == *var_name {
-                                    continue;
-                                }
+                                if name == *var_name || already_decrefed.contains(&name) { continue; }
                                 let val = entry_vars.get(&name).copied()
                                     .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
                                 let Some(val) = val else { continue; };
                                 builder.ins().call(local_dec_ref_obj, &[val]);
+                                already_decrefed.insert(name);
                             }
                         }
                     }
@@ -10869,6 +10877,7 @@ impl SimpleBackend {
                     tracked_vars_set.remove(var_name);
                     tracked_obj_vars_set.remove(var_name);
                     for name in &tracked_vars {
+                        if already_decrefed.contains(name) { continue; }
                         let val = entry_vars.get(name).copied()
                             .or_else(|| var_get(&mut builder, &vars, name).map(|v| *v));
                         if let Some(val) = val {
@@ -10876,6 +10885,7 @@ impl SimpleBackend {
                         }
                     }
                     for name in &tracked_obj_vars {
+                        if already_decrefed.contains(name) { continue; }
                         let val = entry_vars.get(name).copied()
                             .or_else(|| var_get(&mut builder, &vars, name).map(|v| *v));
                         if let Some(val) = val {
@@ -10943,7 +10953,7 @@ impl SimpleBackend {
                     if let Some(block) = builder.current_block() {
                         let mut carry_obj = block_tracked_obj.remove(&block).unwrap_or_default();
                         let cleanup =
-                            drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+                            drain_cleanup_tracked_dedup(&mut carry_obj, &last_use, op_idx, None, Some(&mut already_decrefed));
                         for name in cleanup {
                             // Use entry_vars (definition-time Value) for dec_ref,
                             // not var_get (current SSA Value). If the variable was
@@ -10962,7 +10972,7 @@ impl SimpleBackend {
 
                         let mut carry_ptr = block_tracked_ptr.remove(&block).unwrap_or_default();
                         let cleanup =
-                            drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+                            drain_cleanup_tracked_dedup(&mut carry_ptr, &last_use, op_idx, None, Some(&mut already_decrefed));
                         for name in cleanup {
                             let val = entry_vars.get(&name).copied()
                                 .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
@@ -11004,7 +11014,7 @@ impl SimpleBackend {
                     // br_if terminates the current block and can transfer control to either
                     // successor. Carry all live tracked values into both.
                     let mut carry_obj = block_tracked_obj.remove(&origin_block).unwrap_or_default();
-                    let cleanup = drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+                    let cleanup = drain_cleanup_tracked_dedup(&mut carry_obj, &last_use, op_idx, None, Some(&mut already_decrefed));
                     for name in cleanup {
                         let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
                             panic!(
@@ -11025,7 +11035,7 @@ impl SimpleBackend {
                         );
                     }
                     let mut carry_ptr = block_tracked_ptr.remove(&origin_block).unwrap_or_default();
-                    let cleanup = drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+                    let cleanup = drain_cleanup_tracked_dedup(&mut carry_ptr, &last_use, op_idx, None, Some(&mut already_decrefed));
                     for name in cleanup {
                         let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
                             panic!(
