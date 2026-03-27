@@ -707,6 +707,9 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_iter_checked(iter_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        if obj_from_bits(iter_bits).is_none() {
+            return MoltObject::none().bits();
+        }
         let res = molt_iter(iter_bits);
         if obj_from_bits(res).is_none() {
             if exception_pending(_py) {
