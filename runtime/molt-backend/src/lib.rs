@@ -2247,7 +2247,11 @@ impl SimpleBackend {
                 // connection to the back-edge block arg. This is a known
                 // limitation. TODO: fix lower_to_simple.rs to properly
                 // wire loop_index_start args to block arg variables.
-                if func_ir.ops.iter().any(|op| matches!(op.kind.as_str(), "loop_start" | "loop_index_start")) {
+                if func_ir.ops.iter().any(|op| matches!(op.kind.as_str(),
+                    "loop_start" | "loop_index_start" |
+                    "guarded_field_set" | "guarded_field_get" |
+                    "guarded_field_set_init"
+                )) {
                     continue;
                 }
                 let body_bytes = crate::tir::serialize::serialize_ops(&func_ir.ops);
