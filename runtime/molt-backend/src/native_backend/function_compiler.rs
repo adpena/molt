@@ -11251,14 +11251,79 @@ impl SimpleBackend {
             }
         }
 
-        eprintln!("  finalizing {}", func_ir.name);
-        let finalize_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Take a snapshot of the IR BEFORE finalize+compile so we can retry
+        // at opt_level=none if Cranelift's optimizer panics (e.g. in
+        // remove_constant_phis or alias_analysis).
+        static OPT_LEVEL_NONE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let skip_resilience = *OPT_LEVEL_NONE.get_or_init(|| {
+            crate::env_setting("MOLT_BACKEND_OPT_LEVEL")
+                .as_deref() == Some("none")
+        });
+        // Snapshot must be taken BEFORE finalize() which may mutate the IR.
+        let func_snapshot = if skip_resilience {
+            None
+        } else {
+            Some(builder.func.clone())
+        };
+
+        let finalize_panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             builder.seal_all_blocks();
             builder.finalize();
         }));
-        if let Err(payload) = finalize_result {
-            eprintln!("Backend panic while finalizing function {}", func_ir.name);
-            std::panic::resume_unwind(payload);
+        if let Err(payload) = finalize_panic {
+            // finalize() panicked (e.g. remove_constant_phis assertion).
+            // Use the snapshot to retry at opt_level=none via the same
+            // retry path as define_function panics.
+            if let Some(snapshot) = func_snapshot {
+                eprintln!(
+                    "WARNING: Cranelift finalize panic in function `{}`; \
+                     retrying at opt_level=none",
+                    func_ir.name
+                );
+                let retry_id = self.module.declare_function(
+                    &func_ir.name, Linkage::Export,
+                    &snapshot.signature,
+                ).expect("declare failed on finalize retry");
+                match Self::retry_define_at_opt_none(
+                    &mut self.module,
+                    retry_id,
+                    snapshot,
+                    &func_ir.name,
+                ) {
+                    Ok(()) => {
+                        self.defined_func_names.insert(func_ir.name.clone());
+                        eprintln!(
+                            "  -> {} compiled successfully at opt_level=none",
+                            func_ir.name
+                        );
+                    }
+                    Err(retry_err) => {
+                        eprintln!(
+                            "  -> retry also failed for {}: {}",
+                            func_ir.name, retry_err
+                        );
+                        // Emit trap stub as last resort
+                        if let Some(cranelift_module::FuncOrDataId::Func(fid)) =
+                            self.module.get_name(&func_ir.name)
+                        {
+                            let sig = self.module.declarations()
+                                .get_function_decl(fid).signature.clone();
+                            let _ = Self::emit_trap_stub(
+                                &mut self.module, fid, &sig, &func_ir.name,
+                            );
+                            self.defined_func_names.insert(func_ir.name.clone());
+                            eprintln!(
+                                "  -> emitting trap stub for {} (function too large for Cranelift)",
+                                func_ir.name
+                            );
+                        }
+                    }
+                }
+                self.module.clear_context(&mut self.ctx);
+                return;
+            } else {
+                std::panic::resume_unwind(payload);
+            }
         }
 
         if let Some(config) = should_dump_ir()
@@ -11285,9 +11350,6 @@ impl SimpleBackend {
                         "WARNING: signature mismatch for `{}`; emitting trap stub",
                         func_ir.name
                     );
-                    // The function was already forward-declared with a different
-                    // signature.  Look up the existing declaration and emit a
-                    // trap stub so the linker finds a definition.
                     if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) =
                         self.module.get_name(&func_ir.name)
                     {
@@ -11308,8 +11370,6 @@ impl SimpleBackend {
                                 func_ir.name, stub_err
                             );
                         } else {
-                            // Mark as defined so the post-compilation trap
-                            // stub loop does not attempt a duplicate stub.
                             self.defined_func_names.insert(func_ir.name.clone());
                         }
                     }
@@ -11318,25 +11378,6 @@ impl SimpleBackend {
                 }
                 panic!("declare_function failed for {}: {}", func_ir.name, e);
             }
-        };
-        // When opt_level=none there are no optimization passes that can
-        // panic, so we skip the expensive clone + catch_unwind path.  This
-        // saves a full IR deep-copy per function (~10-20% of dev compile time
-        // for large modules).
-        static OPT_LEVEL_NONE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let skip_resilience = *OPT_LEVEL_NONE.get_or_init(|| {
-            crate::env_setting("MOLT_BACKEND_OPT_LEVEL")
-                .as_deref() == Some("none")
-        });
-        let func_snapshot = if skip_resilience {
-            None
-        } else {
-            // Clone the function *before* handing it to the optimizer — if an
-            // optimization pass panics (e.g. Cranelift remove_constant_phis
-            // assertion at cranelift-codegen 0.128) the in-place IR may be
-            // partially mutated and unusable.  The clone lets us retry with a
-            // lower optimization level on the pristine IR.
-            Some(self.ctx.func.clone())
         };
         let define_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.module
