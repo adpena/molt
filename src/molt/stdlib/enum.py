@@ -131,7 +131,28 @@ class EnumType(type):
         except Exception:
             return False
 
-    def __call__(cls, value: Any):
+    def __call__(cls, value: Any, names=None, *, module=None, qualname=None, type=None, start=1, boundary=None):
+        # Functional API: IntEnum("Color", "RED GREEN BLUE")
+        if names is not None:
+            if isinstance(names, str):
+                names = names.replace(",", " ").split()
+            if isinstance(names, (list, tuple)) and names and not isinstance(names[0], tuple):
+                names = [(n, i + start) for i, n in enumerate(names)]
+            namespace = {}
+            for member_name, member_value in names:
+                namespace[member_name] = member_value
+            bases = (cls,) if cls is not Enum else ()
+            if cls is Enum:
+                bases = ()
+            else:
+                bases = (cls,)
+            new_cls = cls.__class__.__new__(cls.__class__, value, bases, namespace)
+            if module is not None:
+                new_cls.__module__ = module
+            if qualname is not None:
+                new_cls.__qualname__ = qualname
+            return new_cls
+        # Member lookup
         if isinstance(value, cls):
             return value
         if value in cls._value2member_map_:

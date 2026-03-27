@@ -14937,13 +14937,15 @@ impl SimpleBackend {
             builder.ins().return_(&[]);
         }
 
-        let zero_pred_blocks = find_zero_pred_blocks(builder.func);
-        if !zero_pred_blocks.is_empty() {
-            eprintln!(
-                "Backend CFG issue in {}: zero-predecessor blocks {:?}",
-                func_ir.name, zero_pred_blocks
-            );
-            if std::env::var_os("MOLT_DUMP_CLIF_ON_CFG_ERROR").is_some() {
+        // Zero-predecessor blocks are harmless dead code that Cranelift
+        // skips during compilation.  Only log them when debugging.
+        if std::env::var_os("MOLT_DUMP_CLIF_ON_CFG_ERROR").is_some() {
+            let zero_pred_blocks = find_zero_pred_blocks(builder.func);
+            if !zero_pred_blocks.is_empty() {
+                eprintln!(
+                    "Backend CFG issue in {}: zero-predecessor blocks {:?}",
+                    func_ir.name, zero_pred_blocks
+                );
                 eprintln!("CLIF {}:\n{}", func_ir.name, builder.func.display());
             }
         }
