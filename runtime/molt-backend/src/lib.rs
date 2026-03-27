@@ -1664,6 +1664,18 @@ pub struct SimpleBackend {
     /// emit trap stubs for declared-but-undefined `__ov` variants after
     /// all functions are compiled.
     defined_func_names: std::collections::BTreeSet<String>,
+    /// Deferred Cranelift function definitions for parallel compilation.
+    /// Instead of compiling each function immediately in `define_function`,
+    /// we collect the finalized IR here and compile them all in parallel
+    /// via `flush_deferred_defines()`.
+    deferred_defines: Vec<DeferredDefine>,
+}
+
+#[cfg(feature = "native-backend")]
+pub(crate) struct DeferredDefine {
+    pub(crate) func_id: cranelift_module::FuncId,
+    pub(crate) func: cranelift_codegen::ir::Function,
+    pub(crate) name: String,
 }
 
 #[cfg(feature = "native-backend")]
@@ -1708,6 +1720,37 @@ impl Default for SimpleBackend {
 
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
+    fn cloned_shared_flags(
+        flags: &settings::Flags,
+        opt_level_override: Option<&str>,
+    ) -> Result<settings::Flags, String> {
+        let mut builder = settings::builder();
+        for value in flags.iter() {
+            let configured = if value.name == "opt_level" {
+                opt_level_override
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| value.value_string())
+            } else {
+                value.value_string()
+            };
+            builder
+                .set(value.name, &configured)
+                .map_err(|err| format!("shared flag {}={configured:?}: {err}", value.name))?;
+        }
+        Ok(settings::Flags::new(builder))
+    }
+
+    fn rebuild_owned_isa(
+        target_isa: &dyn isa::TargetIsa,
+        opt_level_override: Option<&str>,
+    ) -> Result<isa::OwnedTargetIsa, String> {
+        let isa_builder = isa::Builder::from_target_isa(target_isa);
+        let shared_flags = Self::cloned_shared_flags(target_isa.flags(), opt_level_override)?;
+        isa_builder
+            .finish(shared_flags)
+            .map_err(|err| format!("TargetIsa finish: {err}"))
+    }
+
     pub fn new() -> Self {
         Self::new_with_target(None)
     }
@@ -1915,6 +1958,7 @@ impl SimpleBackend {
             next_data_id: 0,
             declared_func_arities: BTreeMap::new(),
             defined_func_names: std::collections::BTreeSet::new(),
+            deferred_defines: Vec::new(),
         }
     }
 
@@ -1932,42 +1976,7 @@ impl SimpleBackend {
     ) -> Result<(), String> {
         use cranelift_codegen::control::ControlPlane;
 
-        // Build a fallback ISA with opt_level=none — identical flags to the
-        // primary ISA except the optimization level.
-        let mut fb = settings::builder();
-        fb.set("opt_level", "none").unwrap();
-        fb.set("is_pic", "true").unwrap();
-        // Carry forward the same safety-critical settings used by
-        // new_with_target so the emitted code is ABI-compatible.
-        fb.set("use_colocated_libcalls", "true").unwrap();
-        fb.set("enable_alias_analysis", "true").unwrap();
-        let targeting_aarch64 = cfg!(target_arch = "aarch64");
-        fb.set(
-            "preserve_frame_pointers",
-            if cfg!(debug_assertions) || targeting_aarch64 {
-                "true"
-            } else {
-                "false"
-            },
-        )
-        .unwrap();
-        fb.set("enable_heap_access_spectre_mitigation", "false")
-            .unwrap();
-        fb.set("enable_table_access_spectre_mitigation", "false")
-            .unwrap();
-        fb.set(
-            "probestack_strategy",
-            if targeting_aarch64 {
-                "outline"
-            } else {
-                "inline"
-            },
-        )
-        .unwrap();
-        let fallback_isa = native_isa_builder_with_options(true)
-            .map_err(|e| format!("ISA builder: {e}"))?
-            .finish(settings::Flags::new(fb))
-            .map_err(|e| format!("ISA finish: {e}"))?;
+        let fallback_isa = Self::rebuild_owned_isa(module.isa(), Some("none"))?;
 
         let mut retry_ctx = Context::for_function(func);
         let mut ctrl = ControlPlane::default();
@@ -1993,6 +2002,178 @@ impl SimpleBackend {
             .define_function_bytes(func_id, alignment, &code, &relocs)
             .map_err(|e| format!("define_function_bytes for {func_name}: {e}"))?;
         Ok(())
+    }
+
+    /// Compile all deferred function definitions in parallel using rayon,
+    /// then define the resulting bytes sequentially via `define_function_bytes`.
+    /// Functions that panic during optimized compilation are retried at
+    /// `opt_level=none`; if that also fails, a trap stub is emitted.
+    fn flush_deferred_defines(&mut self) {
+        use cranelift_codegen::control::ControlPlane;
+
+        let deferred: Vec<DeferredDefine> = std::mem::take(&mut self.deferred_defines);
+        if deferred.is_empty() {
+            return;
+        }
+
+        // Compile all functions in parallel. Each worker gets its own
+        // Context + ControlPlane but shares one rebuilt OwnedTargetIsa.
+        struct CompiledFunc {
+            func_id: cranelift_module::FuncId,
+            name: String,
+            alignment: u64,
+            code: Vec<u8>,
+            relocs: Vec<cranelift_module::ModuleReloc>,
+        }
+        enum CompileResult {
+            Ok(CompiledFunc),
+            /// Optimizing compilation panicked or errored -- carry the function
+            /// IR for a sequential retry at opt_level=none.
+            NeedsRetry {
+                func_id: cranelift_module::FuncId,
+                func: cranelift_codegen::ir::Function,
+                name: String,
+            },
+        }
+
+        let compile_isa = Self::rebuild_owned_isa(self.module.isa(), None)
+            .unwrap_or_else(|err| panic!("failed to rebuild TargetIsa for deferred flush: {err}"));
+
+        let results: Vec<CompileResult> = {
+            // Wrap ISA in a Send-safe newtype for rayon::scope + catch_unwind.
+            // Arc<dyn TargetIsa> contains a raw pointer that isn't Send, but
+            // Cranelift's ISA is immutable and safe to share across threads.
+            struct SendIsa(std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>);
+            unsafe impl Send for SendIsa {}
+            unsafe impl Sync for SendIsa {}
+            let mut results: Vec<CompileResult> = Vec::with_capacity(deferred.len());
+            rayon::scope(|s| {
+                let (tx, rx) = std::sync::mpsc::channel::<(usize, CompileResult)>();
+                for (idx, item) in deferred.into_iter().enumerate() {
+                    let tx = tx.clone();
+                    let isa = SendIsa(compile_isa.clone());
+                    s.spawn(move |_| {
+                        let isa = isa.0;
+                        let mut ctx = Context::for_function(item.func);
+                        let mut ctrl = ControlPlane::default();
+                        let result = std::panic::catch_unwind(
+                            std::panic::AssertUnwindSafe(|| {
+                                ctx.compile(&*isa, &mut ctrl)
+                                    .map(|_| ())
+                                    .map_err(|e| format!("{e:?}"))
+                            }),
+                        );
+                        match result {
+                            Ok(Ok(())) => {
+                                let compiled = ctx.compiled_code().unwrap();
+                                let alignment = compiled.buffer.alignment as u64;
+                                let code = compiled.buffer.data().to_vec();
+                                let relocs: Vec<cranelift_module::ModuleReloc> =
+                                    compiled.buffer.relocs().iter().map(|r| {
+                                        cranelift_module::ModuleReloc::from_mach_reloc(
+                                            r, &ctx.func, item.func_id,
+                                        )
+                                    }).collect();
+                                let _ = tx.send((idx, CompileResult::Ok(CompiledFunc {
+                                    func_id: item.func_id,
+                                    name: item.name,
+                                    alignment,
+                                    code,
+                                    relocs,
+                                })));
+                            }
+                            Ok(Err(err)) => {
+                                eprintln!(
+                                    "WARNING: Cranelift compilation error in `{}`; will retry: {err}",
+                                    item.name
+                                );
+                                let _ = tx.send((idx, CompileResult::NeedsRetry {
+                                    func_id: item.func_id,
+                                    func: ctx.func,
+                                    name: item.name,
+                                }));
+                            }
+                            Err(_panic) => {
+                                eprintln!(
+                                    "WARNING: Cranelift optimizer panic in `{}`; will retry at opt_level=none",
+                                    item.name
+                                );
+                                let _ = tx.send((idx, CompileResult::NeedsRetry {
+                                    func_id: item.func_id,
+                                    func: ctx.func,
+                                    name: item.name,
+                                }));
+                            }
+                        }
+                    });
+                }
+                drop(tx);
+                // Collect and sort by original index to maintain deterministic order.
+                let mut indexed: Vec<(usize, CompileResult)> = rx.into_iter().collect();
+                indexed.sort_by_key(|(idx, _)| *idx);
+                results = indexed.into_iter().map(|(_, r)| r).collect();
+            });
+            results
+        };
+
+        // Sequential phase: define compiled functions and handle retries.
+        for result in results {
+            match result {
+                CompileResult::Ok(cf) => {
+                    if let Err(e) = self.module.define_function_bytes(
+                        cf.func_id, cf.alignment, &cf.code, &cf.relocs,
+                    ) {
+                        eprintln!(
+                            "ERROR: define_function_bytes failed for {}: {e}",
+                            cf.name
+                        );
+                    } else {
+                        self.defined_func_names.insert(cf.name);
+                    }
+                }
+                CompileResult::NeedsRetry { func_id, func, name } => {
+                    match Self::retry_define_at_opt_none(
+                        &mut self.module, func_id, func, &name,
+                    ) {
+                        Ok(()) => {
+                            self.defined_func_names.insert(name.clone());
+                            eprintln!(
+                                "  -> {} compiled successfully at opt_level=none",
+                                name
+                            );
+                        }
+                        Err(retry_err) => {
+                            eprintln!(
+                                "  -> retry also failed for {}: {}",
+                                name, retry_err
+                            );
+                            let sig = self.module
+                                .declarations()
+                                .get_function_decl(func_id)
+                                .signature
+                                .clone();
+                            eprintln!(
+                                "  -> emitting trap stub for {} (function too large for Cranelift)",
+                                name
+                            );
+                            match Self::emit_trap_stub(
+                                &mut self.module, func_id, &sig, &name,
+                            ) {
+                                Ok(()) => {
+                                    self.defined_func_names.insert(name);
+                                }
+                                Err(stub_err) => {
+                                    eprintln!(
+                                        "  -> trap stub also failed for {}: {}",
+                                        name, stub_err
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Emit a minimal function body that immediately traps.  Used as a
@@ -2023,27 +2204,7 @@ impl SimpleBackend {
         builder.ins().trap(TrapCode::user(1).unwrap());
         builder.finalize();
 
-        // Build a minimal ISA for compilation
-        let mut fb = settings::builder();
-        fb.set("opt_level", "none").unwrap();
-        fb.set("is_pic", "true").unwrap();
-        fb.set("use_colocated_libcalls", "true").unwrap();
-        fb.set("enable_alias_analysis", "true").unwrap();
-        let targeting_aarch64 = cfg!(target_arch = "aarch64");
-        fb.set(
-            "preserve_frame_pointers",
-            if cfg!(debug_assertions) || targeting_aarch64 { "true" } else { "false" },
-        ).unwrap();
-        fb.set("enable_heap_access_spectre_mitigation", "false").unwrap();
-        fb.set("enable_table_access_spectre_mitigation", "false").unwrap();
-        fb.set(
-            "probestack_strategy",
-            if targeting_aarch64 { "outline" } else { "inline" },
-        ).unwrap();
-        let fallback_isa = native_isa_builder_with_options(true)
-            .map_err(|e| format!("ISA builder: {e}"))?
-            .finish(settings::Flags::new(fb))
-            .map_err(|e| format!("ISA finish: {e}"))?;
+        let fallback_isa = Self::rebuild_owned_isa(module.isa(), Some("none"))?;
 
         let mut ctx = Context::for_function(func);
         let mut ctrl = ControlPlane::default();
@@ -2655,6 +2816,24 @@ impl SimpleBackend {
         }
         if failed > 0 {
             eprintln!("MOLT_BACKEND: {failed} functions failed, {compiled} succeeded");
+        }
+        // ── Parallel Cranelift compilation ────────────────────────
+        // All functions were IR-built sequentially above (declarations
+        // and Cranelift IR construction are not thread-safe), but actual
+        // machine-code compilation (register allocation, instruction
+        // selection, encoding) is deferred.  Flush them now in parallel.
+        {
+            let deferred_count = self.deferred_defines.len();
+            if deferred_count > 0 {
+                let flush_start = std::time::Instant::now();
+                self.flush_deferred_defines();
+                if timing {
+                    let flush_elapsed = flush_start.elapsed();
+                    eprintln!(
+                        "MOLT_BACKEND_TIMING: parallel Cranelift flush ({deferred_count} functions) took {flush_elapsed:.2?}"
+                    );
+                }
+            }
         }
         // ── Post-compilation: define trap stubs for declared-but-undefined
         // functions.  This covers `__ov{N}` variants created when a function

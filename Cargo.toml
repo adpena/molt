@@ -283,3 +283,17 @@ debug = 1
 # phis in nested loops.  The patches convert assertions to bailouts.
 [patch.crates-io]
 cranelift-codegen = { path = "vendor/cranelift-codegen-0.130.0" }
+
+# Optimize runtime crates for SIZE — statically linked into output binaries.
+[profile.release.package.molt-runtime]
+opt-level = "z"
+codegen-units = 1
+
+[profile.release.package.molt-runtime-core]
+opt-level = "z"
+
+[profile.release.package.molt-obj-model]
+opt-level = "z"
+
+[profile.release.package.molt-runtime-collections]
+opt-level = "z"
