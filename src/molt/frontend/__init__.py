@@ -22446,15 +22446,31 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if node.orelse:
                 if not self.is_async():
                     assigned = self._collect_assigned_names(node.orelse)
-                    for name in sorted(assigned):
-                        self._box_local(name)
+                    if self.current_func_name == "molt_main":
+                        module_backed = {n for n in assigned if not n.startswith("__molt_")}
+                        if module_backed:
+                            self.module_global_mutations.update(module_backed)
+                        for name in sorted(assigned - module_backed):
+                            self._box_local(name)
+                    else:
+                        for name in sorted(assigned):
+                            self._box_local(name)
                 self._visit_block(node.orelse)
             return None
         if not self.is_async():
             assigned = self._collect_assigned_names(node.body + node.orelse)
             assigned |= self._collect_namedexpr_names(node.test)
-            for name in sorted(assigned):
-                self._box_local(name)
+            if self.current_func_name == "molt_main":
+                # Module-scope if-branch bindings use the module dict as their
+                # mutable store instead of synthesising boxed-local cells.
+                module_backed = {n for n in assigned if not n.startswith("__molt_")}
+                if module_backed:
+                    self.module_global_mutations.update(module_backed)
+                for name in sorted(assigned - module_backed):
+                    self._box_local(name)
+            else:
+                for name in sorted(assigned):
+                    self._box_local(name)
         cond = self.visit(node.test)
         self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
         self.control_flow_depth += 1
@@ -22466,7 +22482,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         finally:
             self.control_flow_depth -= 1
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        # Evict module_global_mutations names from the globals cache so
+        # Evict module_global_mutations names from the locals/globals cache so
         # subsequent loads go through MODULE_GET_ATTR instead of reusing a
         # value that was only assigned in one branch.
         if self.current_func_name == "molt_main" and not self.is_async():
@@ -22474,6 +22490,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             for name in assigned:
                 if name in self.module_global_mutations:
                     self.globals.pop(name, None)
+                    self.locals.pop(name, None)
         return None
 
     def visit_With(self, node: ast.With) -> None:

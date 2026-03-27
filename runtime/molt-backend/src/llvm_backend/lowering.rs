@@ -2969,9 +2969,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     }
                     // Use inkwell's PhiValue to inspect incoming blocks.
                     use inkwell::values::AsValueRef;
-                    let phi: PhiValue<'ctx> = unsafe {
-                        PhiValue::new(i.as_value_ref())
-                    };
+                    let phi: PhiValue<'ctx> = unsafe { PhiValue::new(i.as_value_ref()) };
                     let incoming_count = phi.count_incoming();
                     let mut covered: HashSet<BasicBlock<'ctx>> = HashSet::new();
                     for idx in 0..incoming_count {
@@ -3138,11 +3136,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 "LLVM lowering warning: ValueId %{} not found — inserting undef i64",
                 id.0
             );
-            self.backend
-                .context
-                .i64_type()
-                .get_undef()
-                .into()
+            self.backend.context.i64_type().get_undef().into()
         }
     }
 

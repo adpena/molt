@@ -89,6 +89,29 @@ PLATFORM_EXCLUDED_SUBMODULES = (
 ENTRY_OVERRIDE_ENV = "MOLT_ENTRY_MODULE"
 ENTRY_OVERRIDE_SPAWN = "multiprocessing.spawn"
 IMPORTER_MODULE_NAME = "_molt_importer"
+_RUNTIME_IMPORT_PROTOCOL_MARKERS = (
+    "__import__",
+    "import_module",
+    "find_spec",
+)
+_RUNTIME_IMPORT_PROTOCOL_TARGETS = frozenset(
+    {
+        "__import__",
+        "builtins.__import__",
+        "importlib.import_module",
+        "importlib.util.find_spec",
+    }
+)
+_RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES = frozenset(
+    {
+        "builtins",
+        "importlib",
+        "importlib.util",
+        "importlib.machinery",
+        "importlib.abc",
+        IMPORTER_MODULE_NAME,
+    }
+)
 JSON_SCHEMA_VERSION = "1.0"
 REMOTE_REGISTRY_SCHEMES = {"http", "https"}
 _ARTIFACT_SYNC_STATE_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]] = {}
@@ -261,6 +284,270 @@ def _fail(
     return code
 
 
+def _coerce_process_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def _coerce_json_path(value: Any) -> Path | None:
+    if not isinstance(value, str) or not value:
+        return None
+    return Path(value)
+
+
+def _extract_json_errors(payload: Mapping[str, Any] | None) -> list[str]:
+    if payload is None:
+        return []
+    raw_errors = payload.get("errors")
+    if not isinstance(raw_errors, list):
+        return []
+    errors: list[str] = []
+    for item in raw_errors:
+        if isinstance(item, str) and item:
+            errors.append(item)
+    return errors
+
+
+def _extract_json_warnings(payload: Mapping[str, Any] | None) -> list[str]:
+    if payload is None:
+        return []
+    raw_warnings = payload.get("warnings")
+    if not isinstance(raw_warnings, list):
+        return []
+    warnings: list[str] = []
+    for item in raw_warnings:
+        if isinstance(item, str) and item:
+            warnings.append(item)
+    return warnings
+
+
+def _wrapper_build_payload_data(payload: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if payload is None:
+        return {}
+    raw_data = payload.get("data")
+    if not isinstance(raw_data, dict):
+        return {}
+    return raw_data
+
+
+def _extract_payload_text_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item:
+            items.append(item)
+    return items
+
+
+def _emit_wrapper_build_success_signals(payload: Mapping[str, Any]) -> None:
+    data = _wrapper_build_payload_data(payload)
+    stdout = data.get("stdout")
+    if isinstance(stdout, str) and stdout:
+        print(stdout, end="")
+    stderr = data.get("stderr")
+    if isinstance(stderr, str) and stderr:
+        print(stderr, end="", file=sys.stderr)
+    for warning in _extract_json_warnings(payload):
+        label = warning if warning.startswith("Warning:") else f"Warning: {warning}"
+        print(label, file=sys.stderr)
+    for message in _extract_payload_text_list(data.get("messages")):
+        print(message, file=sys.stderr)
+    diagnostics = data.get("compile_diagnostics")
+    if isinstance(diagnostics, dict):
+        _emit_build_diagnostics(
+            diagnostics=diagnostics,
+            diagnostics_path=None,
+            json_output=False,
+        )
+
+
+def _parse_wrapper_build_contract_payload(
+    payload: Any,
+    *,
+    json_output: bool,
+    command: str,
+) -> tuple[_WrapperBuildContract | None, int | None]:
+    if not isinstance(payload, dict):
+        return None, _fail(
+            "Build JSON payload must be an object.",
+            json_output,
+            command=command,
+        )
+    if payload.get("status") != "ok":
+        errors = _extract_json_errors(payload)
+        message = "\n".join(errors) if errors else "Build did not succeed."
+        return None, _fail(message, json_output, command=command)
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None, _fail(
+            "Build JSON payload missing data.",
+            json_output,
+            command=command,
+        )
+    output = _coerce_json_path(data.get("output"))
+    if output is None:
+        return None, _fail(
+            "Build output missing in JSON payload.",
+            json_output,
+            command=command,
+        )
+    consumer_output = _coerce_json_path(data.get("consumer_output")) or output
+    bundle_root = _coerce_json_path(data.get("bundle_root"))
+    raw_artifacts = data.get("artifacts")
+    artifacts: dict[str, Path] = {}
+    if raw_artifacts is not None:
+        if not isinstance(raw_artifacts, dict):
+            return None, _fail(
+                "Build artifacts must be a JSON object.",
+                json_output,
+                command=command,
+            )
+        for key, value in raw_artifacts.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                return None, _fail(
+                    "Build artifacts must map string keys to string paths.",
+                    json_output,
+                    command=command,
+                )
+            artifacts[key] = Path(value)
+    return (
+        _WrapperBuildContract(
+            output=output,
+            consumer_output=consumer_output,
+            bundle_root=bundle_root,
+            artifacts=artifacts,
+        ),
+        None,
+    )
+
+
+def _emit_wrapper_build_failure(
+    *,
+    command: str,
+    json_output: bool,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+) -> int:
+    nested_payload: dict[str, Any] | None = None
+    if stdout.strip():
+        try:
+            decoded = json.loads(stdout)
+        except json.JSONDecodeError:
+            decoded = None
+        if isinstance(decoded, dict):
+            nested_payload = decoded
+    errors = _extract_json_errors(nested_payload) or ["build failed"]
+    nested_data = _wrapper_build_payload_data(nested_payload)
+    if json_output:
+        data: dict[str, Any] = {"returncode": returncode}
+        if stdout:
+            data["build_stdout"] = stdout
+        if stderr:
+            data["build_stderr"] = stderr
+        _emit_json(
+            _json_payload(command, "error", data=data, errors=errors),
+            json_output=True,
+        )
+        return returncode
+    detail_parts: list[str] = []
+    detail = "\n".join(errors).strip()
+    if detail:
+        detail_parts.append(detail)
+    nested_stderr = nested_data.get("stderr")
+    if isinstance(nested_stderr, str) and nested_stderr.strip():
+        detail_parts.append(nested_stderr.strip())
+    nested_stdout = nested_data.get("stdout")
+    if isinstance(nested_stdout, str) and nested_stdout.strip():
+        detail_parts.append(nested_stdout.strip())
+    if stderr.strip():
+        detail_parts.append(stderr.strip())
+    if nested_payload is None and stdout.strip():
+        detail_parts.append(stdout.strip())
+    detail = "\n".join(part for part in detail_parts if part).strip()
+    if not detail:
+        detail = "Build failed"
+    return _fail(detail, json_output=False, code=returncode, command=command)
+
+
+def _build_args_has_json_flag(args: Sequence[str]) -> bool:
+    return any(arg == "--json" for arg in args)
+
+
+def _run_wrapper_build(
+    *,
+    file_path: str | None,
+    module: str | None,
+    build_args: Sequence[str],
+    env: Mapping[str, str],
+    project_root: Path,
+    json_output: bool,
+    command: str,
+    verbose: bool,
+) -> tuple[_WrapperBuildContract | None, float, int | None]:
+    build_cmd = [sys.executable, "-m", "molt.cli", "build"]
+    if not _build_args_has_json_flag(build_args):
+        build_cmd.append("--json")
+    build_cmd.extend(build_args)
+    if module:
+        build_cmd.extend(["--module", module])
+    else:
+        assert file_path is not None
+        build_cmd.append(file_path)
+    if verbose and not json_output:
+        print(f"Build command: {shlex.join(build_cmd)}", file=sys.stderr)
+    start = time.monotonic()
+    build_res = subprocess.run(
+        build_cmd,
+        env=dict(env),
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+    duration = time.monotonic() - start
+    stdout = _coerce_process_text(build_res.stdout)
+    stderr = _coerce_process_text(build_res.stderr)
+    if build_res.returncode != 0:
+        return (
+            None,
+            duration,
+            _emit_wrapper_build_failure(
+                command=command,
+                json_output=json_output,
+                returncode=build_res.returncode,
+                stdout=stdout,
+                stderr=stderr,
+            ),
+        )
+    try:
+        payload = json.loads(stdout.strip() or "{}")
+    except json.JSONDecodeError:
+        return (
+            None,
+            duration,
+            _fail(
+                "Failed to parse build JSON output.",
+                json_output,
+                command=command,
+            ),
+        )
+    contract, contract_error = _parse_wrapper_build_contract_payload(
+        payload,
+        json_output=json_output,
+        command=command,
+    )
+    if contract_error is not None:
+        return None, duration, contract_error
+    assert contract is not None
+    if not json_output:
+        _emit_wrapper_build_success_signals(payload)
+    return contract, duration, None
+
+
 def _write_importer_module(module_names: list[str], output_dir: Path) -> Path:
     filtered_names = [name for name in module_names if name]
     known_modules = sorted({*filtered_names, "builtins"})
@@ -280,6 +567,7 @@ def _write_importer_module(module_names: list[str], output_dir: Path) -> Path:
             "",
             f"_KNOWN_MODULES = frozenset({known_modules!r})",
             f"_TOP_LEVEL_BY_MODULE = {top_level_by_module!r}",
+            "_MODULE_IMPORT = _require_intrinsic('molt_module_import', globals())",
             "_IMPORT_MODULE = _require_intrinsic(",
             "    'molt_importlib_import_module', globals()",
             ")",
@@ -300,6 +588,8 @@ def _write_importer_module(module_names: list[str], output_dir: Path) -> Path:
             "",
             "def _runtime_import_support(module_name: str):",
             '    mod = _sys.modules.get(module_name)',
+            "    if mod is None:",
+            "        mod = _MODULE_IMPORT(module_name)",
             "    if mod is not None:",
             "        return mod",
             '    raise RuntimeError(f\"runtime support module unavailable: {module_name}\")',
@@ -852,6 +1142,12 @@ class _ModuleGraphAugmentation:
 
 
 @dataclass(frozen=True)
+class _RuntimeImportSupportPolicy:
+    needs_generated_importer: bool
+    needs_runtime_import_support: bool
+
+
+@dataclass(frozen=True)
 class _PreparedEntryModuleGraph:
     stdlib_allowlist: set[str]
     roots: list[Path]
@@ -860,6 +1156,8 @@ class _PreparedEntryModuleGraph:
     explicit_imports: set[str]
     stub_parents: set[str]
     spawn_enabled: bool
+    needs_generated_importer: bool
+    needs_runtime_import_support: bool
 
 
 @dataclass(frozen=True)
@@ -1050,10 +1348,20 @@ class _PreparedBackendIR:
 @dataclass(frozen=True)
 class _PreparedNonNativeResult:
     primary_output: Path
+    consumer_output: Path
+    bundle_root: Path | None
     linked_output_path: Path | None
     success_messages: list[str]
     extra_fields: dict[str, Any]
     artifacts: dict[str, str] | None
+
+
+@dataclass(frozen=True)
+class _WrapperBuildContract:
+    output: Path
+    consumer_output: Path
+    bundle_root: Path | None
+    artifacts: dict[str, Path]
 
 
 @dataclass(frozen=True)
@@ -1413,9 +1721,9 @@ def _validate_extension_manifest(
         "platform_tag",
         "module",
     )
-    for field in required_fields:
-        if field not in manifest:
-            errors.append(f"Missing manifest field: {field}")
+    for field_name in required_fields:
+        if field_name not in manifest:
+            errors.append(f"Missing manifest field: {field_name}")
 
     manifest_abi = manifest.get("molt_c_api_version")
     if not isinstance(manifest_abi, str):
@@ -2488,6 +2796,9 @@ class _ModuleResolutionCache:
     source_error_cache: dict[Path, Exception] = field(default_factory=dict)
     ast_cache: dict[tuple[Path, str], ast.AST] = field(default_factory=dict)
     ast_error_cache: dict[tuple[Path, str], SyntaxError] = field(default_factory=dict)
+    runtime_import_protocol_cache: dict[tuple[Path, str | None, bool], bool] = field(
+        default_factory=dict
+    )
     module_name_cache: dict[tuple[Path, tuple[Path, ...], Path, Path | None], str] = (
         field(default_factory=dict)
     )
@@ -2715,6 +3026,26 @@ class _ModuleResolutionCache:
         self.import_scan_cache[cache_key] = cached_imports
         return cached_imports
 
+    def uses_runtime_import_protocol(
+        self,
+        path: Path,
+        tree: ast.AST,
+        *,
+        module_name: str | None = None,
+        is_package: bool = False,
+    ) -> bool:
+        cache_key = (self.resolved_path(path), module_name, is_package)
+        cached = self.runtime_import_protocol_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        cached = _tree_uses_runtime_import_protocol(
+            tree,
+            module_name=module_name,
+            is_package=is_package,
+        )
+        self.runtime_import_protocol_cache[cache_key] = cached
+        return cached
+
 
 def _resolve_entry_module(
     module_name: str, roots: list[Path]
@@ -2741,6 +3072,7 @@ def _resolve_build_entry(
     stdlib_root: Path,
     respect_pythonpath: bool,
     json_output: bool,
+    command: str = "build",
     lib_paths: list[str] | None = None,
 ) -> tuple[_ResolvedBuildEntry | None, dict[str, Any] | None]:
     module_roots = _resolve_module_roots(
@@ -2755,7 +3087,7 @@ def _resolve_build_entry(
         source_path = Path(file_path).resolve()
         if not source_path.exists():
             return None, _fail(
-                f"File not found: {source_path}", json_output, command="build"
+                f"File not found: {source_path}", json_output, command=command
             )
         module_roots.append(source_path.parent)
         module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
@@ -2765,7 +3097,7 @@ def _resolve_build_entry(
             return None, _fail(
                 f"Entry module not found: {module}",
                 json_output,
-                command="build",
+                command=command,
             )
         entry_module, source_path = resolved
         module_roots.append(source_path.parent.resolve())
@@ -2774,7 +3106,7 @@ def _resolve_build_entry(
         entry_module = _module_name_from_path(source_path, module_roots, stdlib_root)
     if source_path is None or entry_module is None:
         return None, _fail(
-            "Failed to resolve entry module.", json_output, command="build"
+            "Failed to resolve entry module.", json_output, command=command
         )
     try:
         entry_source = _read_module_source(source_path)
@@ -2782,13 +3114,13 @@ def _resolve_build_entry(
         return None, _fail(
             f"Syntax error in {source_path}: {exc}",
             json_output,
-            command="build",
+            command=command,
         )
     except OSError as exc:
         return None, _fail(
             f"Failed to read entry module {source_path}: {exc}",
             json_output,
-            command="build",
+            command=command,
         )
     try:
         entry_tree = ast.parse(entry_source, filename=str(source_path))
@@ -2796,7 +3128,7 @@ def _resolve_build_entry(
         return None, _fail(
             f"Syntax error in {source_path}: {exc}",
             json_output,
-            command="build",
+            command=command,
         )
     (
         entry_pkg_override_set,
@@ -3290,6 +3622,63 @@ def _build_args_respect_pythonpath(args: list[str]) -> bool:
     if any(arg == "--no-respect-pythonpath" for arg in args):
         return False
     return any(arg == "--respect-pythonpath" for arg in args)
+
+
+def _build_args_lib_paths(args: Sequence[str]) -> list[str]:
+    lib_paths: list[str] = []
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg == "--lib-path":
+            next_idx = idx + 1
+            if next_idx < len(args):
+                lib_paths.append(args[next_idx])
+                idx = next_idx + 1
+                continue
+        elif arg.startswith("--lib-path="):
+            value = arg.split("=", 1)[1].strip()
+            if value:
+                lib_paths.append(value)
+        idx += 1
+    return lib_paths
+
+
+def _resolve_wrapper_build_entry(
+    *,
+    file_path: str | None,
+    module: str | None,
+    project_root: Path,
+    json_output: bool,
+    command: str,
+    build_args: Sequence[str] = (),
+) -> tuple[_ResolvedBuildEntry | None, dict[str, Any] | None]:
+    config = _load_molt_config(project_root)
+    build_cfg = _resolve_build_config(config)
+    respect_pythonpath = _build_args_respect_pythonpath(list(build_args))
+    if not any(
+        arg in {"--respect-pythonpath", "--no-respect-pythonpath"}
+        for arg in build_args
+    ):
+        respect_pythonpath = _coerce_bool(
+            build_cfg.get("respect_pythonpath") or build_cfg.get("respect-pythonpath"),
+            False,
+        )
+    cfg_lib_paths = build_cfg.get("lib_paths") or build_cfg.get("lib-paths") or []
+    if isinstance(cfg_lib_paths, str):
+        cfg_lib_paths = [cfg_lib_paths]
+    lib_paths = _build_args_lib_paths(build_args) + list(cfg_lib_paths)
+    cwd_root = _find_project_root(Path.cwd())
+    return _resolve_build_entry(
+        file_path=file_path,
+        module=module,
+        project_root=project_root,
+        cwd_root=cwd_root,
+        stdlib_root=_stdlib_root_path(),
+        respect_pythonpath=respect_pythonpath,
+        json_output=json_output,
+        command=command,
+        lib_paths=lib_paths or None,
+    )
 
 
 def _has_namespace_dir(module_name: str, roots: list[Path]) -> bool:
@@ -3841,6 +4230,204 @@ def _collect_imports(
     if needs_typing:
         imports.append("typing")
     return imports
+
+
+def _source_may_use_runtime_import_protocol(source: str) -> bool:
+    return any(marker in source for marker in _RUNTIME_IMPORT_PROTOCOL_MARKERS)
+
+
+def _resolve_runtime_import_expr_name(
+    expr: ast.expr,
+    alias_bindings: Mapping[str, str],
+) -> str | None:
+    if isinstance(expr, ast.Name):
+        return alias_bindings.get(expr.id, expr.id)
+    if (
+        isinstance(expr, ast.Call)
+        and isinstance(expr.func, ast.Name)
+        and expr.func.id == "getattr"
+        and len(expr.args) >= 2
+        and not expr.keywords
+    ):
+        base = _resolve_runtime_import_expr_name(expr.args[0], alias_bindings)
+        attr_node = expr.args[1]
+        if (
+            base is not None
+            and isinstance(attr_node, ast.Constant)
+            and isinstance(attr_node.value, str)
+        ):
+            return f"{base}.{attr_node.value}"
+        return None
+    if isinstance(expr, ast.Attribute):
+        base = _resolve_runtime_import_expr_name(expr.value, alias_bindings)
+        if base is None:
+            return None
+        return f"{base}.{expr.attr}"
+    return None
+
+
+def _runtime_import_alias_bindings(
+    tree: ast.AST,
+    *,
+    module_name: str | None,
+    is_package: bool,
+) -> dict[str, str]:
+    bindings: dict[str, str] = {}
+
+    def _register_binding(local_name: str, qualified_name: str) -> None:
+        if local_name and qualified_name:
+            bindings[local_name] = qualified_name
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local_name = alias.asname or alias.name.split(".", 1)[0]
+                qualified_name = alias.name if alias.asname else local_name
+                _register_binding(local_name, qualified_name)
+            continue
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.level:
+            if module_name is None:
+                continue
+            resolved_module = _resolve_relative_import(
+                module_name,
+                is_package=is_package,
+                level=node.level,
+                module=node.module,
+            )
+        else:
+            resolved_module = node.module
+        if not resolved_module:
+            continue
+        for alias in node.names:
+            if alias.name == "*":
+                continue
+            local_name = alias.asname or alias.name
+            _register_binding(local_name, f"{resolved_module}.{alias.name}")
+
+    for node in ast.walk(tree):
+        value: ast.expr | None = None
+        target_names: list[str] = []
+        if isinstance(node, ast.Assign):
+            value = node.value
+            target_names = [
+                target.id for target in node.targets if isinstance(target, ast.Name)
+            ]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            value = node.value
+            target_names = [node.target.id]
+        if value is None or not target_names:
+            continue
+        resolved_value = _resolve_runtime_import_expr_name(value, bindings)
+        if resolved_value not in _RUNTIME_IMPORT_PROTOCOL_TARGETS:
+            continue
+        for target_name in target_names:
+            _register_binding(target_name, resolved_value)
+    return bindings
+
+
+def _tree_uses_runtime_import_protocol(
+    tree: ast.AST,
+    *,
+    module_name: str | None,
+    is_package: bool,
+) -> bool:
+    alias_bindings = _runtime_import_alias_bindings(
+        tree,
+        module_name=module_name,
+        is_package=is_package,
+    )
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        target = _resolve_runtime_import_expr_name(node.func, alias_bindings)
+        if target in _RUNTIME_IMPORT_PROTOCOL_TARGETS:
+            return True
+    return False
+
+
+def _explicit_imports_reference_generated_importer(
+    explicit_imports: Collection[str],
+) -> bool:
+    return any(
+        name == IMPORTER_MODULE_NAME or name.startswith(f"{IMPORTER_MODULE_NAME}.")
+        for name in explicit_imports
+    )
+
+
+def _module_uses_runtime_import_protocol(
+    *,
+    module_name: str,
+    module_path: Path,
+    module_resolution_cache: "_ModuleResolutionCache",
+    tree: ast.AST | None = None,
+) -> bool:
+    if module_name in _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES:
+        return False
+    is_package = module_path.name == "__init__.py"
+    if tree is None:
+        try:
+            source = module_resolution_cache.read_module_source(module_path)
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            # Keep runtime import support enabled when analysis cannot prove the
+            # graph is fully static.
+            return True
+        if not _source_may_use_runtime_import_protocol(source):
+            return False
+        try:
+            tree = module_resolution_cache.parse_module_ast(
+                module_path,
+                source,
+                filename=str(module_path),
+            )
+        except SyntaxError:
+            return True
+    return module_resolution_cache.uses_runtime_import_protocol(
+        module_path,
+        tree,
+        module_name=module_name,
+        is_package=is_package,
+    )
+
+
+def _module_graph_needs_runtime_import_support(
+    *,
+    module_graph: Mapping[str, Path],
+    module_resolution_cache: "_ModuleResolutionCache",
+    explicit_imports: Collection[str],
+    entry_module: str,
+    entry_path: Path,
+    entry_tree: ast.AST,
+) -> _RuntimeImportSupportPolicy:
+    needs_generated_importer = _explicit_imports_reference_generated_importer(
+        explicit_imports
+    )
+    if needs_generated_importer:
+        return _RuntimeImportSupportPolicy(
+            needs_generated_importer=True,
+            needs_runtime_import_support=True,
+        )
+    for module_name, module_path in sorted(module_graph.items()):
+        tree = (
+            entry_tree
+            if module_name == entry_module and module_path == entry_path
+            else None
+        )
+        if _module_uses_runtime_import_protocol(
+            module_name=module_name,
+            module_path=module_path,
+            module_resolution_cache=module_resolution_cache,
+            tree=tree,
+        ):
+            return _RuntimeImportSupportPolicy(
+                needs_generated_importer=False,
+                needs_runtime_import_support=True,
+            )
+    return _RuntimeImportSupportPolicy(
+        needs_generated_importer=False,
+        needs_runtime_import_support=False,
+    )
 
 
 def _is_stdlib_path(path: Path, stdlib_root: Path) -> bool:
@@ -4814,7 +5401,7 @@ def _ensure_core_stdlib_modules(
 
 
 def _record_module_reason(
-    module_reasons: dict[str, set[str]],
+    module_reasons: MutableMapping[str, set[str]],
     module_name: str,
     reason: str,
 ) -> None:
@@ -4822,13 +5409,53 @@ def _record_module_reason(
 
 
 def _merge_module_graph_with_reason(
-    module_graph: dict[str, Path],
-    additions: dict[str, Path],
-    module_reasons: dict[str, set[str]],
+    module_graph: MutableMapping[str, Path],
+    additions: Mapping[str, Path],
+    module_reasons: MutableMapping[str, set[str]],
     reason: str,
 ) -> None:
     for name, path in additions.items():
         _record_module_reason(module_reasons, name, reason)
+        module_graph.setdefault(name, path)
+
+
+def _extend_module_graph_with_closure(
+    module_graph: MutableMapping[str, Path],
+    *,
+    entry_paths: Sequence[Path],
+    roots: Sequence[Path],
+    module_roots: Sequence[Path],
+    stdlib_root: Path,
+    project_root: Path | None,
+    stdlib_allowlist: set[str],
+    resolver_cache: "_ModuleResolutionCache",
+    diagnostics_enabled: bool,
+    module_reasons: MutableMapping[str, set[str]],
+    reason: str,
+    skip_modules: set[str] | None = None,
+    stub_parents: set[str] | None = None,
+    nested_stdlib_scan_modules: set[str] | None = None,
+) -> None:
+    if not entry_paths:
+        return
+    closure_graph, _ = _discover_module_graph_from_paths(
+        entry_paths,
+        list(roots),
+        list(module_roots),
+        stdlib_root,
+        project_root,
+        stdlib_allowlist,
+        skip_modules=skip_modules,
+        stub_parents=stub_parents,
+        nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+        resolver_cache=resolver_cache,
+    )
+    if diagnostics_enabled:
+        for name, path in closure_graph.items():
+            _record_module_reason(module_reasons, name, reason)
+            module_graph.setdefault(name, path)
+        return
+    for name, path in closure_graph.items():
         module_graph.setdefault(name, path)
 
 
@@ -9432,10 +10059,10 @@ def _backend_daemon_health_from_response(
         "cache_hits",
         "cache_misses",
     }
-    for field in int_fields:
-        value = raw.get(field)
+    for field_name in int_fields:
+        value = raw.get(field_name)
         if isinstance(value, int):
-            health[field] = value
+            health[field_name] = value
     return health or None
 
 
@@ -12515,7 +13142,10 @@ def _build_native_link_success_data(
         profile=profile,
         native_arch_perf_enabled=native_arch_perf_enabled,
     )
+    data["consumer_output"] = str(output_binary)
+    data["messages"] = [f"Successfully built {output_binary}"]
     data["artifacts"] = {
+        "binary": str(output_binary),
         "object": str(output_obj),
         "stub": str(stub_path),
         "runtime": str(runtime_lib),
@@ -13082,6 +13712,8 @@ def _emit_native_link_result(
 def _emit_non_native_build_result(
     *,
     output: Path,
+    consumer_output: Path | None,
+    bundle_root: Path | None,
     cache: bool,
     cache_hit: bool,
     cache_key: str | None,
@@ -13145,6 +13777,12 @@ def _emit_non_native_build_result(
             profile=profile,
             native_arch_perf_enabled=native_arch_perf_enabled,
         )
+        if consumer_output is not None:
+            data["consumer_output"] = str(consumer_output)
+        if bundle_root is not None:
+            data["bundle_root"] = str(bundle_root)
+        if success_messages:
+            data["messages"] = list(success_messages)
         if artifacts is not None:
             data["artifacts"] = dict(artifacts)
         if extra_fields is not None:
@@ -13416,6 +14054,8 @@ def _augment_support_modules(
     artifacts_root: Path,
     stub_parents: Collection[str],
     entry_module: str,
+    needs_generated_importer: bool,
+    needs_runtime_import_support: bool,
     diagnostics_enabled: bool,
 ) -> _SupportModuleAugmentation:
     namespace_parents = _collect_namespace_parents(
@@ -13448,7 +14088,7 @@ def _augment_support_modules(
     for stub in stub_parents:
         if stub != entry_module:
             module_graph.pop(stub, None)
-    if IMPORTER_MODULE_NAME not in module_graph:
+    if needs_generated_importer and IMPORTER_MODULE_NAME not in module_graph:
         importer_names = sorted(
             {
                 name
@@ -13462,22 +14102,35 @@ def _augment_support_modules(
             _record_module_reason(
                 module_reasons, IMPORTER_MODULE_NAME, "importer_generated"
             )
-    if IMPORTER_MODULE_NAME in module_graph:
+    if needs_generated_importer and IMPORTER_MODULE_NAME in module_graph:
         generated_module_source_paths.setdefault(
             IMPORTER_MODULE_NAME, _logical_generated_module_path(IMPORTER_MODULE_NAME)
         )
-    # Skip importlib.machinery for micro profile — it is only needed for
-    # the full import system which micro-profile benchmarks don't use.
-    if os.environ.get("MOLT_STDLIB_PROFILE") != "micro":
-        machinery_path = _resolve_module_path("importlib.machinery", [stdlib_root])
-        if machinery_path is not None:
-            module_graph.setdefault("importlib.machinery", machinery_path)
-            if diagnostics_enabled and "importlib.machinery" in module_graph:
-                _record_module_reason(
-                    module_reasons,
-                    "importlib.machinery",
-                    "machinery_support",
+    if needs_runtime_import_support:
+        # Dynamic import helpers bootstrap through these support modules at
+        # runtime. Discover their transitive closure only for graphs that
+        # actually require runtime import semantics.
+        import_support_paths: list[Path] = []
+        for module_name in ("importlib.util", "importlib.machinery"):
+            module_path = _resolve_module_path(module_name, [stdlib_root])
+            if module_path is None:
+                raise RuntimeError(
+                    f"Missing required stdlib support module: {module_name}"
                 )
+            import_support_paths.append(module_path)
+        _extend_module_graph_with_closure(
+            module_graph,
+            entry_paths=import_support_paths,
+            roots=[stdlib_root],
+            module_roots=[stdlib_root],
+            stdlib_root=stdlib_root,
+            project_root=None,
+            stdlib_allowlist=stdlib_allowlist,
+            resolver_cache=resolver_cache,
+            diagnostics_enabled=diagnostics_enabled,
+            module_reasons=module_reasons,
+            reason="import_support",
+        )
     return _SupportModuleAugmentation(
         namespace_module_names=frozenset(namespace_modules),
         generated_module_source_paths=generated_module_source_paths,
@@ -13515,29 +14168,22 @@ def _augment_module_graph_for_entry_and_runtime(
         for name in core_module_names
         if (path := module_graph.get(name)) is not None
     ]
-    if core_paths:
-        core_graph, _ = _discover_module_graph_from_paths(
-            core_paths,
-            roots,
-            module_roots,
-            stdlib_root,
-            project_root,
-            stdlib_allowlist,
-            skip_modules=stub_skip_modules,
-            stub_parents=stub_parents,
-            nested_stdlib_scan_modules=set(),
-            resolver_cache=module_resolution_cache,
-        )
-        if diagnostics_enabled:
-            _merge_module_graph_with_reason(
-                module_graph,
-                core_graph,
-                module_reasons,
-                "core_closure",
-            )
-        else:
-            for name, path in core_graph.items():
-                module_graph.setdefault(name, path)
+    _extend_module_graph_with_closure(
+        module_graph,
+        entry_paths=core_paths,
+        roots=roots,
+        module_roots=module_roots,
+        stdlib_root=stdlib_root,
+        project_root=project_root,
+        stdlib_allowlist=stdlib_allowlist,
+        resolver_cache=module_resolution_cache,
+        diagnostics_enabled=diagnostics_enabled,
+        module_reasons=module_reasons,
+        reason="core_closure",
+        skip_modules=stub_skip_modules,
+        stub_parents=stub_parents,
+        nested_stdlib_scan_modules=set(),
+    )
     spawn_enabled = False
     spawn_required = target != "wasm" and _requires_spawn_entry_override(
         module_graph, explicit_imports
@@ -13563,27 +14209,21 @@ def _augment_module_graph_for_entry_and_runtime(
                 command="build",
             )
         spawn_enabled = True
-        spawn_graph, _ = _discover_module_graph(
-            spawn_path,
-            roots,
-            module_roots,
-            stdlib_root,
-            project_root,
-            stdlib_allowlist,
+        _extend_module_graph_with_closure(
+            module_graph,
+            entry_paths=[spawn_path],
+            roots=roots,
+            module_roots=module_roots,
+            stdlib_root=stdlib_root,
+            project_root=project_root,
+            stdlib_allowlist=stdlib_allowlist,
+            resolver_cache=module_resolution_cache,
+            diagnostics_enabled=diagnostics_enabled,
+            module_reasons=module_reasons,
+            reason="spawn_closure",
             skip_modules=stub_skip_modules,
             stub_parents=stub_parents,
-            resolver_cache=module_resolution_cache,
         )
-        if diagnostics_enabled:
-            _merge_module_graph_with_reason(
-                module_graph,
-                spawn_graph,
-                module_reasons,
-                "spawn_closure",
-            )
-        else:
-            for name, path in spawn_graph.items():
-                module_graph.setdefault(name, path)
     return _ModuleGraphAugmentation(
         spawn_enabled=spawn_enabled,
         explicit_imports=explicit_imports,
@@ -13672,6 +14312,14 @@ def _prepare_entry_module_graph(
     )
     if augmentation_error is not None:
         return None, augmentation_error
+    runtime_import_support_policy = _module_graph_needs_runtime_import_support(
+        module_graph=module_graph,
+        module_resolution_cache=module_resolution_cache,
+        explicit_imports=augmentation.explicit_imports,
+        entry_module=entry_module,
+        entry_path=source_path,
+        entry_tree=entry_tree,
+    )
     return _PreparedEntryModuleGraph(
         stdlib_allowlist=stdlib_allowlist,
         roots=roots,
@@ -13680,6 +14328,10 @@ def _prepare_entry_module_graph(
         explicit_imports=augmentation.explicit_imports,
         stub_parents=augmentation.stub_parents,
         spawn_enabled=augmentation.spawn_enabled,
+        needs_generated_importer=runtime_import_support_policy.needs_generated_importer,
+        needs_runtime_import_support=(
+            runtime_import_support_policy.needs_runtime_import_support
+        ),
     ), None
 
 
@@ -13695,6 +14347,8 @@ def _prepare_build_module_outputs(
     artifacts_root: Path,
     stub_parents: Collection[str],
     entry_module: str,
+    needs_generated_importer: bool,
+    needs_runtime_import_support: bool,
     diagnostics_enabled: bool,
     target: str,
     trusted: bool,
@@ -13721,6 +14375,8 @@ def _prepare_build_module_outputs(
         artifacts_root=artifacts_root,
         stub_parents=stub_parents,
         entry_module=entry_module,
+        needs_generated_importer=needs_generated_importer,
+        needs_runtime_import_support=needs_runtime_import_support,
         diagnostics_enabled=diagnostics_enabled,
     )
     namespace_module_names = set(support_modules.namespace_module_names)
@@ -15281,7 +15937,8 @@ def _run_backend_pipeline(
     ):
         prepared_non_native_result, prepared_non_native_result_error = (
             _prepare_non_native_build_result(
-                is_rust_transpile=output_layout.is_rust_transpile or output_layout.is_luau_transpile,
+                is_rust_transpile=output_layout.is_rust_transpile,
+                is_luau_transpile=output_layout.is_luau_transpile,
                 is_wasm=output_layout.is_wasm,
                 is_wasm_freestanding=output_layout.is_wasm_freestanding,
                 wasm_opt_level=wasm_opt_level,
@@ -15315,6 +15972,8 @@ def _run_backend_pipeline(
 
         return _emit_non_native_build_result(
             output=prepared_non_native_result.primary_output,
+            consumer_output=prepared_non_native_result.consumer_output,
+            bundle_root=prepared_non_native_result.bundle_root,
             cache=cache,
             cache_hit=cache_hit,
             cache_key=cache_key,
@@ -15434,6 +16093,7 @@ def _run_backend_pipeline(
 def _prepare_non_native_build_result(
     *,
     is_rust_transpile: bool,
+    is_luau_transpile: bool,
     is_wasm: bool,
     is_wasm_freestanding: bool = False,
     wasm_opt_enabled: bool = True,
@@ -15452,14 +16112,28 @@ def _prepare_non_native_build_result(
     if is_rust_transpile:
         return _PreparedNonNativeResult(
             primary_output=output_artifact,
+            consumer_output=output_artifact,
+            bundle_root=None,
             linked_output_path=linked_output_path,
             success_messages=[f"Successfully transpiled {output_artifact}"],
             extra_fields={},
             artifacts={"rust": str(output_artifact)},
         ), None
+    if is_luau_transpile:
+        return _PreparedNonNativeResult(
+            primary_output=output_artifact,
+            consumer_output=output_artifact,
+            bundle_root=None,
+            linked_output_path=linked_output_path,
+            success_messages=[f"Successfully built {output_artifact}"],
+            extra_fields={},
+            artifacts={"luau": str(output_artifact)},
+        ), None
     if is_wasm:
         output_wasm = output_artifact
         resolved_linked_output = linked_output_path
+        bundle_root: Path | None = None
+        artifacts: dict[str, str] = {"wasm": str(output_wasm)}
         _split_runtime = split_runtime or os.environ.get("MOLT_SPLIT_RUNTIME") == "1"
         if linked:
             if not ensure_runtime_wasm_reloc():
@@ -15521,6 +16195,8 @@ def _prepare_non_native_build_result(
                             json_output,
                             command="build",
                         )
+        if resolved_linked_output is not None:
+            artifacts["linked_wasm"] = str(resolved_linked_output)
         # -- Precompile step: produce .cwasm for faster startup -----------
         cwasm_path: Path | None = None
         if precompile:
@@ -15548,10 +16224,13 @@ def _prepare_non_native_build_result(
                 print("wasmtime not found; skipping precompilation", file=sys.stderr)
                 cwasm_path = None
         # -- End precompile step -------------------------------------------
+        if cwasm_path is not None:
+            artifacts["cwasm"] = str(cwasm_path)
 
         primary_output = output_wasm
         if require_linked and resolved_linked_output is not None:
             primary_output = resolved_linked_output
+        consumer_output = resolved_linked_output or primary_output
         success_messages = (
             [f"Successfully built {primary_output}"]
             if require_linked
@@ -15626,6 +16305,16 @@ def _prepare_non_native_build_result(
                     'RUNTIME = "molt_runtime.wasm"\n'
                     'APP = "app.wasm"\n'
                 )
+            bundle_root = split_dir
+            artifacts.update(
+                {
+                    "app_wasm": str(app_wasm),
+                    "runtime_wasm": str(rt_wasm),
+                    "manifest": str(manifest),
+                    "worker_js": str(worker_js),
+                    "wrangler_config": str(wrangler_toml),
+                }
+            )
 
             # Cloudflare Workers isolate memory limit: 128MB.
             # Warn if the combined WASM size exceeds a safe threshold.
@@ -15643,6 +16332,8 @@ def _prepare_non_native_build_result(
 
         return _PreparedNonNativeResult(
             primary_output=primary_output,
+            consumer_output=consumer_output,
+            bundle_root=bundle_root,
             linked_output_path=resolved_linked_output,
             success_messages=success_messages,
             extra_fields={
@@ -15659,10 +16350,12 @@ def _prepare_non_native_build_result(
                     else {}
                 ),
             },
-            artifacts=None,
+            artifacts=artifacts,
         ), None
     return _PreparedNonNativeResult(
         primary_output=output_artifact,
+        consumer_output=output_artifact,
+        bundle_root=None,
         linked_output_path=linked_output_path,
         success_messages=[f"Successfully built {output_artifact}"],
         extra_fields={},
@@ -16122,6 +16815,10 @@ def _prepare_frontend_stage_state(
         artifacts_root=artifacts_root,
         stub_parents=prepared_module_graph.stub_parents,
         entry_module=entry_module,
+        needs_generated_importer=prepared_module_graph.needs_generated_importer,
+        needs_runtime_import_support=(
+            prepared_module_graph.needs_runtime_import_support
+        ),
         diagnostics_enabled=diagnostics_enabled,
         target=target,
         trusted=trusted,
@@ -20434,86 +21131,75 @@ def _run_script_cross(
         if file_path
         else _find_project_root(Path.cwd())
     )
+    build_args = list(build_args or [])
+    resolved_build_entry, resolved_build_entry_error = _resolve_wrapper_build_entry(
+        file_path=file_path,
+        module=module,
+        project_root=project_root,
+        json_output=json_output,
+        command="run",
+        build_args=build_args,
+    )
+    if resolved_build_entry_error is not None:
+        return resolved_build_entry_error
+    assert resolved_build_entry is not None
     molt_root = _find_molt_root(project_root, Path.cwd())
-    env = _base_env(project_root, Path(file_path) if file_path else None, molt_root=molt_root)
+    source_path = resolved_build_entry.source_path
+    env = _base_env(
+        project_root,
+        source_path if file_path else None,
+        molt_root=molt_root,
+    )
     if file_path:
         env.update(_collect_env_overrides(file_path))
+    if trusted:
+        env["MOLT_TRUSTED"] = "1"
+    if capabilities is not None:
+        parsed, _profiles, _source, errors = _parse_capabilities(capabilities)
+        if errors:
+            return _fail(
+                "Invalid capabilities: " + ", ".join(errors),
+                json_output,
+                command="run",
+            )
+        if parsed is not None:
+            env["MOLT_CAPABILITIES"] = ",".join(parsed)
 
-    build_args = list(build_args or [])
+    capabilities_tmp: Path | None = None
     if build_profile is not None and not _build_args_has_profile_flag(build_args):
         build_args.extend(["--build-profile", build_profile])
     if trusted and not _build_args_has_trusted_flag(build_args):
         build_args.append("--trusted")
-
-    build_cmd = [sys.executable, "-m", "molt.cli", "build", *build_args]
-    if module:
-        build_cmd.extend(["--module", module])
-    else:
-        build_cmd.append(file_path)
+    if capabilities is not None and not _build_args_has_capabilities_flag(build_args):
+        cap_arg, capabilities_tmp = _materialize_capabilities_arg(capabilities)
+        build_args.extend(["--capabilities", cap_arg])
 
     if not json_output:
         target_label = "WASM" if target == "wasm" else "Luau"
         print(f"Building for {target_label}...", file=sys.stderr)
-
-    t_start = time.monotonic()
-    build_res = subprocess.run(
-        build_cmd,
-        env=env,
-        cwd=project_root,
-        capture_output=json_output,
-        text=json_output,
-    )
-    t_build = time.monotonic() - t_start
-
-    if build_res.returncode != 0:
-        if json_output:
-            data: dict[str, Any] = {"returncode": build_res.returncode}
-            if build_res.stdout:
-                data["build_stdout"] = build_res.stdout
-            if build_res.stderr:
-                data["build_stderr"] = build_res.stderr
-            payload = _json_payload("run", "error", data=data, errors=["build failed"])
-            _emit_json(payload, json_output=True)
-        return build_res.returncode
-
-    # Resolve the output artifact path
-    source_path = Path(file_path) if file_path else None
-    entry_module_name: str | None = None
-    if module:
-        cwd_root = _find_project_root(Path.cwd())
-        module_roots = _resolve_module_roots(project_root, cwd_root, respect_pythonpath=False)
-        resolved = _resolve_entry_module(module, module_roots)
-        if resolved is not None:
-            entry_module_name, source_path = resolved
-    if source_path is not None and entry_module_name is None:
-        cwd_root = _find_project_root(Path.cwd())
-        module_roots = _resolve_module_roots(project_root, cwd_root, respect_pythonpath=False)
-        module_roots.append(source_path.parent.resolve())
-        module_roots = list(dict.fromkeys(module_roots))
-        entry_module_name = _module_name_from_path(
-            source_path, module_roots, _stdlib_root_path()
+    try:
+        build_contract, t_build, build_error = _run_wrapper_build(
+            file_path=file_path,
+            module=module,
+            build_args=build_args,
+            env=env,
+            project_root=project_root,
+            json_output=json_output,
+            command="run",
+            verbose=verbose,
         )
-
-    if entry_module_name is None or source_path is None:
-        return _fail("Failed to resolve entry module.", json_output, command="run")
-
-    output_base = _output_base_for_entry(entry_module_name, source_path)
-    out_dir = _extract_out_dir_arg(build_args)
-    out_dir_path = _resolve_out_dir(project_root, out_dir)
-    _artifacts_root, bin_root, _output_root = _resolve_output_roots(
-        project_root, out_dir_path, output_base
-    )
+    finally:
+        if capabilities_tmp is not None:
+            try:
+                capabilities_tmp.unlink()
+            except OSError:
+                pass
+    if build_error is not None:
+        return build_error
+    assert build_contract is not None
 
     if target == "wasm":
-        wasm_artifact = _resolve_output_path(
-            _extract_output_arg_str(build_args),
-            _output_root / f"{output_base}.wasm",
-            out_dir=out_dir_path,
-            project_root=project_root,
-        )
-        # Also check for linked wasm
-        linked_path = wasm_artifact.parent / f"{wasm_artifact.stem}_linked.wasm"
-        run_artifact = linked_path if linked_path.exists() else wasm_artifact
+        run_artifact = build_contract.consumer_output
         if not run_artifact.exists():
             return _fail(
                 f"WASM artifact not found: {run_artifact}\n"
@@ -20532,12 +21218,7 @@ def _run_script_cross(
             )
         run_cmd = [wasmtime, "run", str(run_artifact), "--", *script_args]
     elif target == "luau":
-        luau_artifact = _resolve_output_path(
-            _extract_output_arg_str(build_args),
-            _output_root / f"{output_base}.luau",
-            out_dir=out_dir_path,
-            project_root=project_root,
-        )
+        luau_artifact = build_contract.artifacts.get("luau", build_contract.consumer_output)
         if not luau_artifact.exists():
             return _fail(
                 f"Luau artifact not found: {luau_artifact}\n"
@@ -20573,13 +21254,6 @@ def _run_script_cross(
         )
     return run_res.returncode
 
-
-def _extract_output_arg_str(build_args: list[str]) -> str | None:
-    """Extract --output value from build_args as a string (or None)."""
-    raw = _extract_output_arg(build_args)
-    return str(raw) if raw is not None else None
-
-
 def _deploy(
     platform: str,
     file_path: str | None,
@@ -20605,14 +21279,28 @@ def _deploy(
         if file_path
         else _find_project_root(Path.cwd())
     )
+    build_cmd_args = list(build_args)
+    resolved_build_entry, resolved_build_entry_error = _resolve_wrapper_build_entry(
+        file_path=file_path,
+        module=module,
+        project_root=project_root,
+        json_output=json_output,
+        command="deploy",
+        build_args=build_cmd_args,
+    )
+    if resolved_build_entry_error is not None:
+        return resolved_build_entry_error
+    assert resolved_build_entry is not None
     molt_root = _find_molt_root(project_root, Path.cwd())
-    env = _base_env(project_root, Path(file_path) if file_path else None, molt_root=molt_root)
+    env = _base_env(
+        project_root,
+        resolved_build_entry.source_path if file_path else None,
+        molt_root=molt_root,
+    )
     if file_path:
         env.update(_collect_env_overrides(file_path))
 
     # Construct build command
-    build_cmd_args = list(build_args)
-
     if platform == "cloudflare":
         if not any(a.startswith("--target") for a in build_cmd_args):
             build_cmd_args.extend(["--target", "wasm"])
@@ -20632,42 +21320,23 @@ def _deploy(
         build_cmd_args.extend(["--out-dir", out_dir])
     if verbose:
         build_cmd_args.append("--verbose")
-    if json_output:
-        build_cmd_args.append("--json")
-
-    build_cmd = [sys.executable, "-m", "molt.cli", "build", *build_cmd_args]
-    if module:
-        build_cmd.extend(["--module", module])
-    else:
-        build_cmd.append(file_path)
 
     if not json_output:
         platform_label = "Cloudflare Workers" if platform == "cloudflare" else "Roblox"
         print(f"Building for {platform_label}...", file=sys.stderr)
-        if verbose:
-            print(f"Build command: {shlex.join(build_cmd)}", file=sys.stderr)
-
-    build_res = subprocess.run(
-        build_cmd, env=env, cwd=project_root,
-        capture_output=json_output,
+    build_contract, _t_build, build_error = _run_wrapper_build(
+        file_path=file_path,
+        module=module,
+        build_args=build_cmd_args,
+        env=env,
+        project_root=project_root,
+        json_output=json_output,
+        command="deploy",
+        verbose=verbose,
     )
-    if build_res.returncode != 0:
-        detail = f"Build for {platform} failed (exit code {build_res.returncode})."
-        if json_output:
-            stderr_text = (build_res.stderr or b"").decode(errors="replace").strip()
-            if stderr_text:
-                stderr_lines = stderr_text.splitlines()
-                if len(stderr_lines) > 15:
-                    stderr_text = "\n".join(["...(truncated)"] + stderr_lines[-15:])
-                detail += f"\n{stderr_text}"
-        else:
-            detail += "\nRun with --verbose for details."
-        return _fail(
-            detail,
-            json_output,
-            code=build_res.returncode,
-            command="deploy",
-        )
+    if build_error is not None:
+        return build_error
+    assert build_contract is not None
 
     if dry_run:
         if not json_output:
@@ -20684,15 +21353,46 @@ def _deploy(
                 json_output,
                 command="deploy",
             )
-        deploy_cmd_parts = [wrangler, "deploy"]
+        bundle_root = build_contract.bundle_root
+        if bundle_root is None:
+            return _fail(
+                "Build JSON missing bundle_root for Cloudflare deploy.",
+                json_output,
+                command="deploy",
+            )
+        wrangler_config = build_contract.artifacts.get("wrangler_config")
+        if wrangler_config is None:
+            return _fail(
+                "Build JSON missing wrangler_config for Cloudflare deploy.",
+                json_output,
+                command="deploy",
+            )
+        if not bundle_root.is_dir():
+            return _fail(
+                f"Cloudflare bundle root not found: {bundle_root}",
+                json_output,
+                command="deploy",
+            )
+        if not wrangler_config.exists():
+            return _fail(
+                f"Cloudflare wrangler config not found: {wrangler_config}",
+                json_output,
+                command="deploy",
+            )
+        deploy_cmd_parts = [wrangler, "deploy", "--config", str(wrangler_config)]
         if wrangler_args:
             deploy_cmd_parts.extend(shlex.split(wrangler_args))
         if not json_output:
-            print(f"Deploying with wrangler...", file=sys.stderr)
+            print("Deploying with wrangler...", file=sys.stderr)
             if verbose:
                 print(f"Deploy command: {shlex.join(deploy_cmd_parts)}", file=sys.stderr)
-        deploy_res = subprocess.run(deploy_cmd_parts, env=env, cwd=project_root)
-        return deploy_res.returncode
+        return _run_command(
+            deploy_cmd_parts,
+            env=env,
+            cwd=bundle_root,
+            json_output=json_output,
+            label="deploy",
+        )
 
     elif platform == "roblox":
         if roblox_project is None:
@@ -20710,35 +21410,7 @@ def _deploy(
                 json_output,
                 command="deploy",
             )
-        # Find the Luau output
-        source_path = Path(file_path) if file_path else None
-        entry_module_name: str | None = None
-        if module:
-            cwd_root = _find_project_root(Path.cwd())
-            module_roots = _resolve_module_roots(project_root, cwd_root, respect_pythonpath=False)
-            resolved = _resolve_entry_module(module, module_roots)
-            if resolved is not None:
-                entry_module_name, source_path = resolved
-        if source_path is not None and entry_module_name is None:
-            cwd_root = _find_project_root(Path.cwd())
-            module_roots = _resolve_module_roots(project_root, cwd_root, respect_pythonpath=False)
-            module_roots.append(source_path.parent.resolve())
-            module_roots = list(dict.fromkeys(module_roots))
-            entry_module_name = _module_name_from_path(
-                source_path, module_roots, _stdlib_root_path()
-            )
-        if entry_module_name is None or source_path is None:
-            return _fail(
-                "Failed to resolve entry module for Roblox deploy.",
-                json_output,
-                command="deploy",
-            )
-        output_base = _output_base_for_entry(entry_module_name, source_path)
-        out_dir_path = _resolve_out_dir(project_root, out_dir)
-        _artifacts_root, _bin_root, output_root = _resolve_output_roots(
-            project_root, out_dir_path, output_base
-        )
-        luau_artifact = output_root / f"{output_base}.luau"
+        luau_artifact = build_contract.artifacts.get("luau", build_contract.consumer_output)
         if not luau_artifact.exists():
             return _fail(
                 f"Luau artifact not found at {luau_artifact}. "
@@ -20778,29 +21450,25 @@ def run_script(
         if file_path
         else _find_project_root(Path.cwd())
     )
+    build_args = list(build_args or [])
+    resolved_build_entry, resolved_build_entry_error = _resolve_wrapper_build_entry(
+        file_path=file_path,
+        module=module,
+        project_root=project_root,
+        json_output=json_output,
+        command="run",
+        build_args=build_args,
+    )
+    if resolved_build_entry_error is not None:
+        return resolved_build_entry_error
+    assert resolved_build_entry is not None
     molt_root = _find_molt_root(project_root, Path.cwd())
-    source_path: Path | None = None
-    entry_module_name: str | None = None
-    if file_path:
-        source_path = Path(file_path)
-        if not source_path.exists():
-            return _fail(f"File not found: {source_path}", json_output, command="run")
-    elif module:
-        cwd_root = _find_project_root(Path.cwd())
-        module_roots = _resolve_module_roots(
-            project_root,
-            cwd_root,
-            respect_pythonpath=_build_args_respect_pythonpath(build_args or []),
-        )
-        resolved = _resolve_entry_module(module, module_roots)
-        if resolved is None:
-            return _fail(
-                f"Entry module not found: {module}",
-                json_output,
-                command="run",
-            )
-        entry_module_name, source_path = resolved
-    env = _base_env(project_root, source_path, molt_root=molt_root)
+    source_path = resolved_build_entry.source_path
+    env = _base_env(
+        project_root,
+        source_path if file_path else None,
+        molt_root=molt_root,
+    )
     if file_path:
         env.update(_collect_env_overrides(file_path))
     if trusted:
@@ -20816,7 +21484,6 @@ def run_script(
         if parsed is not None:
             env["MOLT_CAPABILITIES"] = ",".join(parsed)
 
-    build_args = list(build_args or [])
     capabilities_tmp: Path | None = None
     if build_profile is not None and not _build_args_has_profile_flag(build_args):
         build_args.extend(["--build-profile", build_profile])
@@ -20825,71 +21492,26 @@ def run_script(
     if capabilities is not None and not _build_args_has_capabilities_flag(build_args):
         cap_arg, capabilities_tmp = _materialize_capabilities_arg(capabilities)
         build_args.extend(["--capabilities", cap_arg])
-    build_cmd = [sys.executable, "-m", "molt.cli", "build", *build_args]
-    if module:
-        build_cmd.extend(["--module", module])
-    else:
-        build_cmd.append(file_path)
     try:
-        if timing:
-            build_res = _run_command_timed(
-                build_cmd,
-                env=env,
-                cwd=project_root,
-                verbose=verbose,
-                capture_output=json_output,
-            )
-            if build_res.returncode != 0:
-                if json_output:
-                    data: dict[str, Any] = {
-                        "returncode": build_res.returncode,
-                        "timing": {"build_s": build_res.duration_s},
-                    }
-                    if build_res.stdout:
-                        data["build_stdout"] = build_res.stdout
-                    if build_res.stderr:
-                        data["build_stderr"] = build_res.stderr
-                    payload = _json_payload(
-                        "run",
-                        "error",
-                        data=data,
-                        errors=["build failed"],
-                    )
-                    _emit_json(payload, json_output=True)
-                return build_res.returncode
-        else:
-            build_res = subprocess.run(
-                build_cmd,
-                env=env,
-                cwd=project_root,
-                capture_output=json_output,
-                text=json_output,
-            )
-            if build_res.returncode != 0:
-                if json_output:
-                    data = {"returncode": build_res.returncode}
-                    if build_res.stdout:
-                        data["build_stdout"] = build_res.stdout
-                    if build_res.stderr:
-                        data["build_stderr"] = build_res.stderr
-                    payload = _json_payload(
-                        "run",
-                        "error",
-                        data=data,
-                        errors=["build failed"],
-                    )
-                    _emit_json(payload, json_output=True)
-                elif build_res.stdout:
-                    print(build_res.stdout, end="")
-                    if build_res.stderr:
-                        print(build_res.stderr, end="", file=sys.stderr)
-                return build_res.returncode
+        build_contract, build_duration_s, build_error = _run_wrapper_build(
+            file_path=file_path,
+            module=module,
+            build_args=build_args,
+            env=env,
+            project_root=project_root,
+            json_output=json_output,
+            command="run",
+            verbose=verbose,
+        )
     finally:
         if capabilities_tmp is not None:
             try:
                 capabilities_tmp.unlink()
             except OSError:
                 pass
+    if build_error is not None:
+        return build_error
+    assert build_contract is not None
     emit_arg = _extract_emit_arg(build_args)
     if emit_arg and emit_arg != "bin":
         return _fail(
@@ -20897,34 +21519,13 @@ def run_script(
             json_output,
             command="run",
         )
-    output_binary = _extract_output_arg(build_args)
-    out_dir = _extract_out_dir_arg(build_args)
-    out_dir_path = _resolve_out_dir(project_root, out_dir)
-    if entry_module_name is None:
-        cwd_root = _find_project_root(Path.cwd())
-        module_roots = _resolve_module_roots(
-            project_root,
-            cwd_root,
-            respect_pythonpath=_build_args_respect_pythonpath(build_args),
+    output_binary = _resolve_binary_output(str(build_contract.consumer_output))
+    if output_binary is None:
+        return _fail(
+            f"Compiled binary not found at {build_contract.consumer_output}.",
+            json_output,
+            command="run",
         )
-        if source_path is not None:
-            module_roots.append(source_path.parent.resolve())
-            module_roots = list(dict.fromkeys(module_roots))
-            entry_module_name = _module_name_from_path(
-                source_path, module_roots, _stdlib_root_path()
-            )
-    if entry_module_name is None or source_path is None:
-        return _fail("Failed to resolve entry module.", json_output, command="run")
-    output_base = _output_base_for_entry(entry_module_name, source_path)
-    _artifacts_root, bin_root, _output_root = _resolve_output_roots(
-        project_root, out_dir_path, output_base
-    )
-    output_binary = _resolve_output_path(
-        str(output_binary) if output_binary is not None else None,
-        bin_root / f"{output_base}_molt",
-        out_dir=out_dir_path,
-        project_root=project_root,
-    )
     if timing:
         run_res = _run_command_timed(
             [str(output_binary), *script_args],
@@ -20933,17 +21534,13 @@ def run_script(
             verbose=verbose,
             capture_output=json_output,
         )
-        if not isinstance(build_res, _TimedResult) or not isinstance(
-            run_res, _TimedResult
-        ):
-            raise RuntimeError("timed run expected")
         if json_output:
             data = {
                 "returncode": run_res.returncode,
                 "timing": {
-                    "build_s": build_res.duration_s,
+                    "build_s": build_duration_s,
                     "run_s": run_res.duration_s,
-                    "total_s": build_res.duration_s + run_res.duration_s,
+                    "total_s": build_duration_s + run_res.duration_s,
                 },
             }
             if run_res.stdout:
@@ -20958,12 +21555,12 @@ def run_script(
             _emit_json(payload, json_output=True)
         else:
             print("Timing (compiled):", file=sys.stderr)
-            print(f"- build: {_format_duration(build_res.duration_s)}", file=sys.stderr)
+            print(f"- build: {_format_duration(build_duration_s)}", file=sys.stderr)
             print(
                 f"- run: {_format_duration(run_res.duration_s)}",
                 file=sys.stderr,
             )
-            total = build_res.duration_s + run_res.duration_s
+            total = build_duration_s + run_res.duration_s
             print(f"- total: {_format_duration(total)}", file=sys.stderr)
         return run_res.returncode
     return _run_command(
@@ -24283,8 +24880,7 @@ def install(
             )
         specs.extend(_read_requirements_txt(req_path))
     else:
-        # Sync mode: gather from pyproject.toml + requirements.txt
-        sync = True
+        # Gather install specs from the local project when no explicit source is provided.
         specs.extend(_read_pyproject_deps(project_root))
         specs.extend(_read_requirements_txt(project_root / "requirements.txt"))
 
