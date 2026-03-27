@@ -11969,7 +11969,6 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
     None
 }
 
-#[cfg(target_arch = "wasm32")]
 fn resolve_symbol_match(symbol: &str) -> Option<u64> {
     // Try per-module resolvers. Each is #[inline(never)] + #[cold]
     // so --gc-sections can strip unreferenced module resolvers.
