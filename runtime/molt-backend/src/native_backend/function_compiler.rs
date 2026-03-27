@@ -9652,41 +9652,29 @@ impl SimpleBackend {
                             continue;
                         }
 
-                        // Structured loop: create a dedicated loop block with a
-                        // block parameter for the counter.
+                        // Structured loop: create a dedicated loop block.
+                        // Use Cranelift's Variable system for the counter phi
+                        // instead of explicit block parameters to avoid
+                        // duplication with SSA-resolved implicit parameters
+                        // (which causes remove_constant_phis assertions in
+                        // nested loops).
                         let loop_block = builder.create_block();
                         let body_block = builder.create_block();
                         let after_block = builder.create_block();
-                        let idx_param = builder.append_block_param(loop_block, types::I64);
                         let start = phi_value.unwrap_or_else(|| {
                             *var_get(&mut builder, &vars, &args[0])
                                 .expect("Loop index start not found")
                         });
-                        // Workaround for Cranelift 0.130 remove_constant_phis
-                        // bug: when inside a nested loop the start value is
-                        // derived from the outer loop's block param.  Routing
-                        // through a pre-header block isolates the entry edge.
-                        if loop_depth > 0 {
-                            let preheader = builder.create_block();
-                            let ph_param = builder.append_block_param(preheader, types::I64);
-                            ensure_block_in_layout(&mut builder, preheader);
-                            reachable_blocks.insert(preheader);
-                            jump_block(&mut builder, preheader, &[start]);
-                            switch_to_block_tracking(&mut builder, preheader, &mut is_block_filled);
-                            builder.seal_block(preheader);
-                            ensure_block_in_layout(&mut builder, loop_block);
-                            reachable_blocks.insert(loop_block);
-                            jump_block(&mut builder, loop_block, &[ph_param]);
-                            switch_to_block_tracking(&mut builder, loop_block, &mut is_block_filled);
-                        } else {
-                            ensure_block_in_layout(&mut builder, loop_block);
-                            reachable_blocks.insert(loop_block);
-                            jump_block(&mut builder, loop_block, &[start]);
-                            switch_to_block_tracking(&mut builder, loop_block, &mut is_block_filled);
-                        }
-                        if reachable_blocks.contains(&loop_block) {
-                            def_var_named(&mut builder, &vars, out_name.clone(), idx_param);
-                        }
+                        // Define the counter Variable with the initial value
+                        // BEFORE jumping to the loop block. Cranelift's SSA
+                        // resolution will create the phi automatically when
+                        // the loop block is sealed (it has two predecessors:
+                        // the entry and the back-edge from loop_continue).
+                        def_var_named(&mut builder, &vars, out_name.clone(), start);
+                        ensure_block_in_layout(&mut builder, loop_block);
+                        reachable_blocks.insert(loop_block);
+                        jump_block(&mut builder, loop_block, &[]);
+                        switch_to_block_tracking(&mut builder, loop_block, &mut is_block_filled);
                         loop_stack.push(LoopFrame {
                             loop_block,
                             body_block,
@@ -9960,15 +9948,19 @@ impl SimpleBackend {
                         }
                     }
                     reachable_blocks.insert(frame.loop_block);
+                    // Define the counter Variable with the incremented value
+                    // before jumping. Cranelift's SSA resolution carries it
+                    // via implicit block parameters (no explicit args needed).
                     if let Some(next_idx) = frame.next_index.take() {
-                        jump_block(&mut builder, frame.loop_block, &[next_idx]);
+                        if let Some(name) = frame.index_name.as_ref() {
+                            def_var_named(&mut builder, &vars, name, next_idx);
+                        }
                     } else if let Some(name) = frame.index_name.as_ref() {
-                        let current_idx =
-                            var_get(&mut builder, &vars, name).expect("Loop index not found");
-                        jump_block(&mut builder, frame.loop_block, &[*current_idx]);
-                    } else {
-                        jump_block(&mut builder, frame.loop_block, &[]);
+                        // No explicit next — counter Variable already has the
+                        // current value, SSA will propagate it.
+                        let _ = var_get(&mut builder, &vars, name);
                     }
+                    jump_block(&mut builder, frame.loop_block, &[]);
                     is_block_filled = true;
                     }
                 }
@@ -9982,15 +9974,13 @@ impl SimpleBackend {
                     if !is_block_filled {
                         ensure_block_in_layout(&mut builder, frame.loop_block);
                         reachable_blocks.insert(frame.loop_block);
+                        // Define counter Variable before jumping (SSA carries it)
                         if let Some(next_idx) = frame.next_index.take() {
-                            jump_block(&mut builder, frame.loop_block, &[next_idx]);
-                        } else if let Some(name) = frame.index_name.as_ref() {
-                            let current_idx =
-                                var_get(&mut builder, &vars, name).expect("Loop index not found");
-                            jump_block(&mut builder, frame.loop_block, &[*current_idx]);
-                        } else {
-                            jump_block(&mut builder, frame.loop_block, &[]);
+                            if let Some(name) = frame.index_name.as_ref() {
+                                def_var_named(&mut builder, &vars, name, next_idx);
+                            }
                         }
+                        jump_block(&mut builder, frame.loop_block, &[]);
                     }
                     if builder.func.layout.is_block_inserted(frame.loop_block) {
                         builder.seal_block(frame.loop_block);
@@ -11258,12 +11248,19 @@ impl SimpleBackend {
             }
         }
 
+        if std::env::var("MOLT_DUMP_CLIF_PRE").ok().map_or(false, |f| f == "1" || func_ir.name.contains(&f)) {
+            eprintln!("CLIF-PRE {}:\n{}", func_ir.name, builder.func.display());
+        }
+        builder.seal_all_blocks();
+        if std::env::var("MOLT_DUMP_CLIF_SEALED").ok().map_or(false, |f| f == "1" || func_ir.name.contains(&f)) {
+            eprintln!("CLIF-SEALED {}:\n{}", func_ir.name, builder.func.display());
+        }
         let finalize_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            builder.seal_all_blocks();
             builder.finalize();
         }));
         if let Err(payload) = finalize_result {
             eprintln!("Backend panic while finalizing function {}", func_ir.name);
+            eprintln!("CLIF-PANIC {}:\n{}", func_ir.name, self.ctx.func.display());
             std::panic::resume_unwind(payload);
         }
 
