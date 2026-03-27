@@ -8312,6 +8312,7 @@ pub(crate) unsafe fn dict_inc_prehashed_string_key_in_place(
                     break;
                 }
                 let entry_idx = entry - 1;
+                if entry_idx * 2 >= order.len() { slot = (slot + 1) & mask; continue; }
                 let entry_key_bits = order[entry_idx * 2];
                 let mut keys_match = entry_key_bits == key_bits;
                 if !keys_match {
@@ -8446,6 +8447,7 @@ unsafe fn dict_inc_with_string_token(
                         break;
                     }
                     let entry_idx = entry - 1;
+                    if entry_idx * 2 >= order.len() { slot = (slot + 1) & mask; continue; }
                     let entry_key_bits = order[entry_idx * 2];
                     let Some(entry_key_ptr) = obj_from_bits(entry_key_bits).as_ptr() else {
                         return dict_inc_with_string_token_fallback(
@@ -8580,6 +8582,7 @@ unsafe fn dict_setdefault_empty_list_with_string_token(
                         break;
                     }
                     let entry_idx = entry - 1;
+                    if entry_idx * 2 >= order.len() { slot = (slot + 1) & mask; continue; }
                     let entry_key_bits = order[entry_idx * 2];
                     let Some(entry_key_ptr) = obj_from_bits(entry_key_bits).as_ptr() else {
                         slot = (slot + 1) & mask;
@@ -10420,6 +10423,10 @@ pub(crate) fn dict_find_entry_fast(
             continue;
         }
         let entry_idx = entry - 1;
+        if entry_idx * 2 >= order.len() {
+            slot = (slot + 1) & mask;
+            continue;
+        }
         let entry_key = order[entry_idx * 2];
         // Fast path: identical bit patterns are always equal.
         if entry_key == key_bits || obj_eq(_py, obj_from_bits(entry_key), obj_from_bits(key_bits)) {
@@ -10451,6 +10458,14 @@ pub(crate) fn dict_find_entry(
             continue;
         }
         let entry_idx = entry - 1;
+        // Safety: corrupted hash tables can have huge entry values from
+        // use-after-free. Bounds-check before indexing to turn a crash
+        // into a graceful "not found".
+        if entry_idx * 2 >= order.len() {
+            // Corrupted entry — skip it like a tombstone.
+            slot = (slot + 1) & mask;
+            continue;
+        }
         let entry_key = order[entry_idx * 2];
         // Fast path: identical bit patterns are always equal.
         if entry_key == key_bits {
@@ -10837,6 +10852,10 @@ pub(crate) fn dict_find_entry_with_hash(
             continue;
         }
         let entry_idx = entry - 1;
+        if entry_idx * 2 >= order.len() {
+            slot = (slot + 1) & mask;
+            continue;
+        }
         let entry_key = order[entry_idx * 2];
         // Fast path: identical bit patterns are always equal.
         if entry_key == key_bits {

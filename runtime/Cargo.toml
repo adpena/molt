@@ -56,4 +56,4 @@ codegen-units = 16
 inherits = "release"
 lto = "thin"
 codegen-units = 4
-strip = "none"
+strip = "symbols"
