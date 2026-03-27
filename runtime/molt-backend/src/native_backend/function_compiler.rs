@@ -9655,29 +9655,22 @@ impl SimpleBackend {
                             continue;
                         }
 
-                        // Structured loop: create a dedicated loop block.
-                        // Use Cranelift's Variable system for the counter phi
-                        // instead of explicit block parameters to avoid
-                        // duplication with SSA-resolved implicit parameters
-                        // (which causes remove_constant_phis assertions in
-                        // nested loops).
+                        // Structured loop: explicit block parameter for counter.
                         let loop_block = builder.create_block();
                         let body_block = builder.create_block();
                         let after_block = builder.create_block();
+                        let idx_param = builder.append_block_param(loop_block, types::I64);
                         let start = phi_value.unwrap_or_else(|| {
                             *var_get(&mut builder, &vars, &args[0])
                                 .expect("Loop index start not found")
                         });
-                        // Define the counter Variable with the initial value
-                        // BEFORE jumping to the loop block. Cranelift's SSA
-                        // resolution will create the phi automatically when
-                        // the loop block is sealed (it has two predecessors:
-                        // the entry and the back-edge from loop_continue).
-                        def_var_named(&mut builder, &vars, out_name.clone(), start);
                         ensure_block_in_layout(&mut builder, loop_block);
                         reachable_blocks.insert(loop_block);
-                        jump_block(&mut builder, loop_block, &[]);
+                        jump_block(&mut builder, loop_block, &[start]);
                         switch_to_block_tracking(&mut builder, loop_block, &mut is_block_filled);
+                        if reachable_blocks.contains(&loop_block) {
+                            def_var_named(&mut builder, &vars, out_name.clone(), idx_param);
+                        }
                         loop_stack.push(LoopFrame {
                             loop_block,
                             body_block,
@@ -9904,17 +9897,23 @@ impl SimpleBackend {
                     let next_idx =
                         var_get(&mut builder, &vars, &args[0]).expect("Loop index next not found");
                     if loop_stack.is_empty() {
-                        // The loop_index_next op appears outside the loop
-                        // boundary — this happens when `continue` inside a
-                        // nested try/except is duplicated into an outer
-                        // exception handler path.  Treat as unreachable.
                         let Some(out_name) = op.out else { continue; };
                         def_var_named(&mut builder, &vars, out_name, *next_idx);
                     } else {
                         let frame = loop_stack.last_mut().unwrap();
                         frame.next_index = Some(*next_idx);
                         let Some(out_name) = op.out else { continue; };
-                        def_var_named(&mut builder, &vars, out_name, *next_idx);
+                        // Skip def_var when out_name matches the loop counter
+                        // Variable.  Redefining it here would cause Cranelift
+                        // to add a duplicate implicit SSA param for the same
+                        // Variable that's already the explicit block param,
+                        // breaking nested loop codegen.  The counter update
+                        // is carried by the explicit arg in loop_continue.
+                        // (No downstream op references this output before
+                        // loop_continue in structured TIR.)
+                        if frame.index_name.as_deref() != Some(out_name.as_str()) {
+                            def_var_named(&mut builder, &vars, out_name, *next_idx);
+                        }
                     }
                 }
                 "loop_continue" => {
@@ -9951,19 +9950,15 @@ impl SimpleBackend {
                         }
                     }
                     reachable_blocks.insert(frame.loop_block);
-                    // Define the counter Variable with the incremented value
-                    // before jumping. Cranelift's SSA resolution carries it
-                    // via implicit block parameters (no explicit args needed).
                     if let Some(next_idx) = frame.next_index.take() {
-                        if let Some(name) = frame.index_name.as_ref() {
-                            def_var_named(&mut builder, &vars, name, next_idx);
-                        }
+                        jump_block(&mut builder, frame.loop_block, &[next_idx]);
                     } else if let Some(name) = frame.index_name.as_ref() {
-                        // No explicit next — counter Variable already has the
-                        // current value, SSA will propagate it.
-                        let _ = var_get(&mut builder, &vars, name);
+                        let current_idx =
+                            var_get(&mut builder, &vars, name).expect("Loop index not found");
+                        jump_block(&mut builder, frame.loop_block, &[*current_idx]);
+                    } else {
+                        jump_block(&mut builder, frame.loop_block, &[]);
                     }
-                    jump_block(&mut builder, frame.loop_block, &[]);
                     is_block_filled = true;
                     }
                 }
@@ -9977,13 +9972,15 @@ impl SimpleBackend {
                     if !is_block_filled {
                         ensure_block_in_layout(&mut builder, frame.loop_block);
                         reachable_blocks.insert(frame.loop_block);
-                        // Define counter Variable before jumping (SSA carries it)
                         if let Some(next_idx) = frame.next_index.take() {
-                            if let Some(name) = frame.index_name.as_ref() {
-                                def_var_named(&mut builder, &vars, name, next_idx);
-                            }
+                            jump_block(&mut builder, frame.loop_block, &[next_idx]);
+                        } else if let Some(name) = frame.index_name.as_ref() {
+                            let current_idx =
+                                var_get(&mut builder, &vars, name).expect("Loop index not found");
+                            jump_block(&mut builder, frame.loop_block, &[*current_idx]);
+                        } else {
+                            jump_block(&mut builder, frame.loop_block, &[]);
                         }
-                        jump_block(&mut builder, frame.loop_block, &[]);
                     }
                     if builder.func.layout.is_block_inserted(frame.loop_block) {
                         builder.seal_block(frame.loop_block);
@@ -11251,80 +11248,17 @@ impl SimpleBackend {
             }
         }
 
-        // Take a snapshot of the IR BEFORE finalize+compile so we can retry
-        // at opt_level=none if Cranelift's optimizer panics (e.g. in
-        // remove_constant_phis or alias_analysis).
-        static OPT_LEVEL_NONE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let skip_resilience = *OPT_LEVEL_NONE.get_or_init(|| {
-            crate::env_setting("MOLT_BACKEND_OPT_LEVEL")
-                .as_deref() == Some("none")
-        });
-        // Snapshot must be taken BEFORE finalize() which may mutate the IR.
-        let func_snapshot = if skip_resilience {
-            None
-        } else {
-            Some(builder.func.clone())
-        };
-
-        let finalize_panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            builder.seal_all_blocks();
-            builder.finalize();
-        }));
-        if let Err(payload) = finalize_panic {
-            // finalize() panicked (e.g. remove_constant_phis assertion).
-            // Use the snapshot to retry at opt_level=none via the same
-            // retry path as define_function panics.
-            if let Some(snapshot) = func_snapshot {
-                eprintln!(
-                    "WARNING: Cranelift finalize panic in function `{}`; \
-                     retrying at opt_level=none",
-                    func_ir.name
-                );
-                let retry_id = self.module.declare_function(
-                    &func_ir.name, Linkage::Export,
-                    &snapshot.signature,
-                ).expect("declare failed on finalize retry");
-                match Self::retry_define_at_opt_none(
-                    &mut self.module,
-                    retry_id,
-                    snapshot,
-                    &func_ir.name,
-                ) {
-                    Ok(()) => {
-                        self.defined_func_names.insert(func_ir.name.clone());
-                        eprintln!(
-                            "  -> {} compiled successfully at opt_level=none",
-                            func_ir.name
-                        );
-                    }
-                    Err(retry_err) => {
-                        eprintln!(
-                            "  -> retry also failed for {}: {}",
-                            func_ir.name, retry_err
-                        );
-                        // Emit trap stub as last resort
-                        if let Some(cranelift_module::FuncOrDataId::Func(fid)) =
-                            self.module.get_name(&func_ir.name)
-                        {
-                            let sig = self.module.declarations()
-                                .get_function_decl(fid).signature.clone();
-                            let _ = Self::emit_trap_stub(
-                                &mut self.module, fid, &sig, &func_ir.name,
-                            );
-                            self.defined_func_names.insert(func_ir.name.clone());
-                            eprintln!(
-                                "  -> emitting trap stub for {} (function too large for Cranelift)",
-                                func_ir.name
-                            );
-                        }
-                    }
-                }
-                self.module.clear_context(&mut self.ctx);
-                return;
-            } else {
-                std::panic::resume_unwind(payload);
+        // Ensure every block has at least one instruction. Unused blocks
+        // (e.g. loop body/after blocks that are unreachable) cause
+        // Cranelift's alias_analysis to crash with unwrap on empty block.
+        for block in builder.func.layout.blocks().collect::<Vec<_>>() {
+            if builder.func.layout.block_insts(block).next().is_none() {
+                builder.switch_to_block(block);
+                builder.ins().trap(cranelift_codegen::ir::TrapCode::user(0).unwrap());
             }
         }
+        builder.seal_all_blocks();
+        builder.finalize();
 
         if let Some(config) = should_dump_ir()
             && dump_ir_matches(&config, &func_ir.name)
@@ -11378,6 +11312,21 @@ impl SimpleBackend {
                 }
                 panic!("declare_function failed for {}: {}", func_ir.name, e);
             }
+        };
+        // Snapshot the finalized IR AFTER seal_all_blocks + finalize so the
+        // IR is complete and valid.  If a Cranelift optimizer pass panics
+        // during define_function, we retry at opt_level=none using this
+        // snapshot.  The snapshot must be post-finalize because pre-finalize
+        // IR has unresolved SSA placeholders that the verifier rejects.
+        static OPT_LEVEL_NONE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let skip_resilience = *OPT_LEVEL_NONE.get_or_init(|| {
+            crate::env_setting("MOLT_BACKEND_OPT_LEVEL")
+                .as_deref() == Some("none")
+        });
+        let func_snapshot = if skip_resilience {
+            None
+        } else {
+            Some(self.ctx.func.clone())
         };
         let define_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.module
