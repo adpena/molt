@@ -10206,7 +10206,6 @@ impl SimpleBackend {
                     }
                 }
                 "load" => {
-                    eprintln!("HIT LOAD HANDLER func={} idx={}", func_ir.name, op_idx);
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let offset_val = op.value.unwrap_or(0);
@@ -11395,145 +11394,22 @@ impl SimpleBackend {
                 panic!("declare_function failed for {}: {}", func_ir.name, e);
             }
         };
-        // Snapshot the finalized IR AFTER seal_all_blocks + finalize so the
-        // IR is complete and valid.  If a Cranelift optimizer pass panics
-        // during define_function, we retry at opt_level=none using this
-        // snapshot.  The snapshot must be post-finalize because pre-finalize
-        // IR has unresolved SSA placeholders that the verifier rejects.
-        static OPT_LEVEL_NONE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let skip_resilience = *OPT_LEVEL_NONE.get_or_init(|| {
-            crate::env_setting("MOLT_BACKEND_OPT_LEVEL")
-                .as_deref() == Some("none")
+        // ── Deferred compilation ──────────────────────────────
+        // Instead of compiling each function immediately, extract the
+        // finalized Cranelift IR and push it onto the deferred list.
+        // All deferred functions are compiled in parallel later via
+        // flush_deferred_defines().  This avoids the sequential
+        // bottleneck of Cranelift's register allocator and optimizer.
+        let built_func = std::mem::replace(
+            &mut self.ctx.func,
+            cranelift_codegen::ir::Function::new(),
+        );
+        self.deferred_defines.push(crate::DeferredDefine {
+            func_id: id,
+            func: built_func,
+            name: func_ir.name.clone(),
         });
-        let func_snapshot = if skip_resilience {
-            None
-        } else {
-            Some(self.ctx.func.clone())
-        };
-        let define_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.module
-                .define_function(id, &mut self.ctx)
-                .map_err(Box::new)
-        }));
-        match define_result {
-            Ok(Ok(())) => {
-                self.defined_func_names.insert(func_ir.name.clone());
-            }
-            Ok(Err(err)) => {
-                let err_text = format!("{err:?}");
-                eprintln!(
-                    "Backend verification failed in {}: {err_text}",
-                    func_ir.name
-                );
-                if let Some(config) = should_dump_ir()
-                    && dump_ir_matches(&config, &func_ir.name)
-                {
-                    dump_ir_ops(&func_ir, &config.mode);
-                }
-                if let Ok(flag) = std::env::var("MOLT_DUMP_CLIF_ON_ERROR") {
-                    let clif = self.ctx.func.display().to_string();
-                    if let Some(inst) = parse_inst_id(&err_text) {
-                        let needle = format!("inst{inst}");
-                        let lines: Vec<&str> = clif.lines().collect();
-                        let mut hit = None;
-                        for (idx, line) in lines.iter().enumerate() {
-                            if line.contains(&needle) {
-                                hit = Some(idx);
-                                break;
-                            }
-                        }
-                        if let Some(center) = hit {
-                            let start = center.saturating_sub(3);
-                            let end = (center + 3).min(lines.len().saturating_sub(1));
-                            eprintln!("CLIF snippet for {} around {}:", func_ir.name, needle);
-                            for (offset, line) in lines[start..=end].iter().enumerate() {
-                                let idx = start + offset;
-                                eprintln!("{:04}: {}", idx + 1, line);
-                            }
-                        } else if flag == "full" {
-                            eprintln!("CLIF {}:\n{}", func_ir.name, clif);
-                        }
-                    } else if flag == "full" {
-                        eprintln!("CLIF {}:\n{}", func_ir.name, clif);
-                    }
-                }
-                panic!("Backend compilation failed");
-            }
-            Err(payload) => {
-                // ── Optimizer panic resilience ──────────────────────────
-                // An optimization pass (typically `remove_constant_phis`)
-                // hit an internal assertion.  Instead of crashing the
-                // entire compilation, retry the function at opt_level=none
-                // which skips the problematic pass.  This is the same
-                // resilience pattern used by LLVM and GCC when an
-                // optimizer pass faults — fall back, warn, keep going.
-                let Some(func_snapshot) = func_snapshot else {
-                    // skip_resilience was true — should not happen at
-                    // opt_level=none, but propagate the panic if it does.
-                    std::panic::resume_unwind(payload);
-                };
-                eprintln!(
-                    "WARNING: Cranelift optimizer panic in function `{}`; \
-                     retrying at opt_level=none",
-                    func_ir.name
-                );
-                if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF")
-                    && (filter == "1" || filter == func_ir.name || func_ir.name.contains(&filter))
-                {
-                    eprintln!("CLIF (pre-opt) {}:\n{}", func_ir.name, func_snapshot.display());
-                }
-                // Build a fallback ISA identical to the primary one but
-                // with opt_level=none to skip the crashing pass.
-                match Self::retry_define_at_opt_none(
-                    &mut self.module,
-                    id,
-                    func_snapshot,
-                    &func_ir.name,
-                ) {
-                    Ok(()) => {
-                        self.defined_func_names.insert(func_ir.name.clone());
-                        eprintln!(
-                            "  -> {} compiled successfully at opt_level=none",
-                            func_ir.name
-                        );
-                    }
-                    Err(retry_err) => {
-                        eprintln!(
-                            "  -> retry also failed for {}: {}",
-                            func_ir.name, retry_err
-                        );
-                        // The retry itself failed — emit a trap stub so
-                        // compilation can continue for the remaining
-                        // functions.  If this function is actually called
-                        // at runtime, the process will abort with a clear
-                        // message instead of silently misbehaving.
-                        eprintln!(
-                            "  -> emitting trap stub for {} (function too large for Cranelift)",
-                            func_ir.name
-                        );
-                        match Self::emit_trap_stub(
-                            &mut self.module,
-                            id,
-                            &self.ctx.func.signature,
-                            &func_ir.name,
-                        ) {
-                            Ok(()) => {
-                                // Mark as defined so the post-compilation
-                                // trap stub loop does not attempt a duplicate.
-                                self.defined_func_names.insert(func_ir.name.clone());
-                            }
-                            Err(stub_err) => {
-                                eprintln!(
-                                    "  -> trap stub also failed for {}: {}",
-                                    func_ir.name, stub_err
-                                );
-                                std::panic::resume_unwind(payload);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        self.defined_func_names.insert(func_ir.name.clone());
         self.module.clear_context(&mut self.ctx);
     }
 }
