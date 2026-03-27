@@ -43,11 +43,8 @@ def test_detect_macos_deployment_target_prefers_standard_env(monkeypatch) -> Non
 @pytest.mark.parametrize(
     ("arch", "expected"),
     [
-        ("arm64", "11.0"),
-        ("aarch64", "11.0"),
         ("x86_64", "10.13"),
         ("amd64", "10.13"),
-        ("mystery", "11.0"),
     ],
 )
 def test_detect_macos_deployment_target_uses_stable_arch_baseline(
@@ -56,3 +53,20 @@ def test_detect_macos_deployment_target_uses_stable_arch_baseline(
     monkeypatch.delenv("MOLT_MACOSX_DEPLOYMENT_TARGET", raising=False)
     monkeypatch.delenv("MACOSX_DEPLOYMENT_TARGET", raising=False)
     assert cli._detect_macos_deployment_target(arch) == expected
+
+
+def test_detect_macos_deployment_target_arm64_uses_system_version(
+    monkeypatch,
+) -> None:
+    """arm64/aarch64/unknown arches use the real system version."""
+    import platform
+
+    monkeypatch.delenv("MOLT_MACOSX_DEPLOYMENT_TARGET", raising=False)
+    monkeypatch.delenv("MACOSX_DEPLOYMENT_TARGET", raising=False)
+    ver = platform.mac_ver()[0]
+    parts = ver.split(".")
+    expected = ".".join(parts[:2]) if len(parts) >= 2 else ver
+    for arch in ("arm64", "aarch64", "mystery"):
+        result = cli._detect_macos_deployment_target(arch)
+        # Should return the real system version, not a hardcoded baseline
+        assert result == expected, f"arch={arch}: got {result}, expected {expected}"
