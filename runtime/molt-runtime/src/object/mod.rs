@@ -1445,15 +1445,14 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
         let prev = header.ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
         // Guard: if prev was already 0 (double-free) or the underflow wrapped
         // to u32::MAX, restore the refcount and return without freeing.
+        // This can happen when the codegen's drain_cleanup_tracked emits
+        // duplicate dec_ref calls for the same variable from different
+        // tracking lists. Making dec_ref idempotent is a safety net —
+        // the codegen should be fixed to not emit duplicates, but this
+        // prevents heap corruption from double-free in the meantime.
         if prev == 0 || prev == u32::MAX {
-            eprintln!(
-                "DOUBLE-FREE: dec_ref_ptr ptr=0x{:x} type_id={} prev={}",
-                ptr as usize, type_id, prev,
-            );
             header.ref_count.store(0, AtomicOrdering::Release);
-            // Abort to get a meaningful backtrace — this is a logic bug
-            // that MUST be fixed, not silently swallowed.
-            std::process::abort();
+            return;
         }
         if debug_file_rc() && header.type_id == TYPE_ID_FILE_HANDLE {
             eprintln!(

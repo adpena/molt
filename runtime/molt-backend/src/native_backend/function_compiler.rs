@@ -8800,14 +8800,31 @@ impl SimpleBackend {
                             eprintln!("check_exception {} op={}", func_ir.name, op_idx,);
                         }
                     }
-                    // TEMPORARILY DISABLED: check_exception cleanup
-                    // The drain_cleanup_tracked here was dec_ref'ing values
-                    // too early, causing use-after-free in stdlib module init
-                    // (the freed module object's dict gets reused by mimalloc,
-                    // and subsequent module_set_attr accesses garbage).
-                    // TODO: fix last_use analysis to correctly extend lifetimes
-                    // for values stored in persistent containers (sys.modules).
-                    let scrubbed_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+                    let mut scrubbed_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+                    if !carry_obj.is_empty() {
+                        let cleanup =
+                            drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
+                        for name in cleanup {
+                            let val = entry_vars.get(&name).copied()
+                                .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                            let Some(val) = val else { continue; };
+                            builder.ins().call(local_dec_ref_obj, &[val]);
+                            entry_vars.remove(&name);
+                            scrubbed_names.insert(name);
+                        }
+                    }
+                    if !carry_ptr.is_empty() {
+                        let cleanup =
+                            drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
+                        for name in cleanup {
+                            let val = entry_vars.get(&name).copied()
+                                .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                            let Some(val) = val else { continue; };
+                            builder.ins().call(local_dec_ref_obj, &[val]);
+                            entry_vars.remove(&name);
+                            scrubbed_names.insert(name);
+                        }
+                    }
                     // Single pass over all exception handler blocks to remove
                     // scrubbed names, instead of one retain per name per block.
                     if !scrubbed_names.is_empty() {
@@ -8888,25 +8905,25 @@ impl SimpleBackend {
                     // and the exception handler. Without this, the exception handler
                     // may access objects that were only passed to the fallthrough,
                     // causing use-after-free when the exception handler dec-refs them.
+                    // Propagate tracked values ONLY to the fallthrough block.
+                    // Previously these were cloned to both fallthrough AND the
+                    // exception handler, causing the same value to accumulate
+                    // in multiple blocks.  When successive check_exception sites
+                    // each picked up and re-propagated the values, the dec_ref
+                    // count multiplied, resulting in double-free (tuple type_id=206
+                    // during stdlib module init).  The exception handler does its
+                    // own cleanup via the exception handling path.
                     if !carry_obj.is_empty() {
                         block_tracked_obj
                             .entry(fallthrough)
                             .or_default()
-                            .extend(carry_obj.clone());
-                        extend_unique_tracked(
-                            block_tracked_obj.entry(target_block).or_default(),
-                            carry_obj,
-                        );
+                            .extend(carry_obj);
                     }
                     if !carry_ptr.is_empty() {
                         block_tracked_ptr
                             .entry(fallthrough)
                             .or_default()
-                            .extend(carry_ptr.clone());
-                        extend_unique_tracked(
-                            block_tracked_ptr.entry(target_block).or_default(),
-                            carry_ptr,
-                        );
+                            .extend(carry_ptr);
                     }
                 }
                 "file_open" => {
