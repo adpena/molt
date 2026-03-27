@@ -2774,11 +2774,16 @@ impl SimpleBackend {
             }
 
             // Verify the module before optimization to catch lowering bugs early.
-            // Non-fatal: complex programs may have phi/domination issues from
-            // unknown-op fallback lowering that LLVM can still compile through.
-            if let Err(msg) = llvm.module.verify() {
-                eprintln!("LLVM module verification warning:\n{}", msg.to_string());
-            }
+            // If verification fails, skip the optimization pipeline and emit at
+            // O0 — this is the graceful-degradation path for complex programs
+            // with phi/domination issues from exception handlers, generators, etc.
+            let verification_ok = match llvm.module.verify() {
+                Ok(()) => true,
+                Err(msg) => {
+                    eprintln!("LLVM module verification warning (skipping O3, emitting O0):\n{}", msg.to_string());
+                    false
+                }
+            };
 
             // Dump LLVM IR to /tmp for debugging when MOLT_LLVM_DUMP_IR=1.
             let dump_ir = env_setting("MOLT_LLVM_DUMP_IR").as_deref() == Some("1");
@@ -2786,11 +2791,19 @@ impl SimpleBackend {
                 let _ = std::fs::write("/tmp/molt_llvm_before_opt.ll", llvm.dump_ir());
             }
 
-            // Run FULL LLVM O3 optimization pipeline.  Entry points are
-            // preserved via dllexport linkage (see LlvmBackend::optimize).
-            // This gives us interprocedural inlining, GlobalDCE, SCCP, GVN,
-            // loop vectorization, SLP vectorization — nothing left on the table.
-            llvm.optimize(MoltOptLevel::Aggressive);
+            // Only run the FULL LLVM O3 optimization pipeline when the module
+            // passes verification.  Malformed IR causes LLVM optimization
+            // passes to crash (assertion failures in phi/dominator analysis).
+            let emit_opt_level = if verification_ok {
+                llvm.optimize(MoltOptLevel::Aggressive);
+                MoltOptLevel::Aggressive
+            } else {
+                // Attempt a minimal O0 pass to at least clean up obviously dead
+                // code — this is much less likely to trigger assertions.
+                // If even O0 fails, we continue with the raw IR.
+                llvm.optimize(MoltOptLevel::None);
+                MoltOptLevel::None
+            };
 
             if dump_ir {
                 let _ = std::fs::write("/tmp/molt_llvm_after_opt.ll", llvm.dump_ir());
@@ -2803,12 +2816,10 @@ impl SimpleBackend {
                 );
             }
 
-            // Emit object at Aggressive opt level — this enables machine-level
-            // optimizations: instruction scheduling, register allocation
-            // heuristics, and target-specific transforms (NEON/SVE on ARM,
-            // AVX on x86) that O0 emission would skip entirely.
+            // Emit object file.  When verification failed, we emit at O0 to
+            // avoid machine-level passes that may also choke on malformed IR.
             let tmp_obj = std::env::temp_dir().join("molt_llvm_output.o");
-            llvm.emit_object(&tmp_obj, MoltOptLevel::Aggressive)
+            llvm.emit_object(&tmp_obj, emit_opt_level)
                 .expect("LLVM object emission failed");
             let bytes = std::fs::read(&tmp_obj).expect("failed to read LLVM object file");
             let _ = std::fs::remove_file(&tmp_obj);

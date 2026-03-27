@@ -3,11 +3,13 @@ from __future__ import annotations
 import ast
 import contextlib
 import io
+import importlib.util
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import types
 from typing import cast
 
 import molt.cli as cli
@@ -17,6 +19,36 @@ from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_generated_importer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    module_names: list[str],
+    intrinsics: dict[str, object],
+):
+    importer_path = cli._write_importer_module(module_names, tmp_path)
+    intrinsics_mod = types.ModuleType("_intrinsics")
+
+    def require_intrinsic(name: str, namespace=None):
+        value = intrinsics.get(name)
+        if value is None:
+            raise RuntimeError(f"intrinsic unavailable: {name}")
+        if namespace is not None:
+            namespace[name] = value
+        return value
+
+    intrinsics_mod.require_intrinsic = require_intrinsic
+    monkeypatch.setitem(sys.modules, "_intrinsics", intrinsics_mod)
+    module_name = "molt_test_generated_importer"
+    monkeypatch.delitem(sys.modules, module_name, raising=False)
+    spec = importlib.util.spec_from_file_location(module_name, importer_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_resolve_module_path_prefers_package_over_module(tmp_path: Path) -> None:
@@ -78,6 +110,49 @@ def test_write_importer_module_avoids_rewriting_identical_content(
     cli._write_importer_module(["pkg.alpha", "solo"], tmp_path)
 
     assert writes == 1
+
+
+def test_generated_importer_recovers_known_placeholder_modules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_name = "demo_math"
+    placeholder = types.ModuleType(module_name)
+    placeholder.__cached__ = "/tmp/demo_math.pyc"
+    placeholder.__file__ = "/tmp/demo_math.py"
+    placeholder.__loader__ = None
+    placeholder.__package__ = ""
+    placeholder.__spec__ = types.SimpleNamespace(loader=None)
+    placeholder._molt_intrinsic_lookup = lambda name: None
+    placeholder._molt_intrinsics = {}
+    placeholder._molt_intrinsics_strict = True
+    placeholder._molt_runtime = True
+    loaded = types.ModuleType(module_name)
+    loaded.sqrt = lambda value: value
+    import_calls: list[str] = []
+
+    def fake_import_module(name: str):
+        import_calls.append(name)
+        sys.modules[name] = loaded
+        return loaded
+
+    monkeypatch.setitem(sys.modules, module_name, placeholder)
+    importer = _load_generated_importer(
+        tmp_path,
+        monkeypatch,
+        module_names=[module_name],
+        intrinsics={
+            "molt_module_import": fake_import_module,
+            "molt_importlib_import_module": lambda name, _util, _machinery: (
+                fake_import_module(name)
+            ),
+        },
+    )
+
+    result = importer._molt_import(module_name)
+
+    assert result is loaded
+    assert sys.modules[module_name] is loaded
+    assert import_calls == [module_name]
 
 
 def test_write_namespace_module_avoids_rewriting_identical_content(

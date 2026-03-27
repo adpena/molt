@@ -17,6 +17,7 @@ def main() -> list[object]:
         globals is builtins.globals,
         __import__ is builtins.__import__,
         __import__("builtins") is builtins,
+        hasattr(__import__("math"), "sqrt"),
         snapshot_semantics(),
     ]
 
