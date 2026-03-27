@@ -2780,7 +2780,10 @@ impl SimpleBackend {
             let verification_ok = match llvm.module.verify() {
                 Ok(()) => true,
                 Err(msg) => {
-                    eprintln!("LLVM module verification warning (skipping O3, emitting O0):\n{}", msg.to_string());
+                    eprintln!(
+                        "LLVM module verification warning (skipping O3, emitting O0):\n{}",
+                        msg.to_string()
+                    );
                     false
                 }
             };

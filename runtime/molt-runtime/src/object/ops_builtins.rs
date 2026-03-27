@@ -816,7 +816,8 @@ pub extern "C" fn molt_call_func_dispatch(
                                                 if object_type_id(kd_ptr) == TYPE_ID_DICT {
                                                     // n_positional = arity - n_kwonly
                                                     let n_positional = func_arity - n_kwonly;
-                                                    let pos_missing = n_positional.saturating_sub(eff_nargs);
+                                                    let pos_missing =
+                                                        n_positional.saturating_sub(eff_nargs);
 
                                                     // Get __defaults__ for positional defaults
                                                     let pos_defaults = function_attr_bits(
@@ -824,7 +825,9 @@ pub extern "C" fn molt_call_func_dispatch(
                                                         func_ptr,
                                                         intern_static_name(
                                                             _py,
-                                                            &runtime_state(_py).interned.defaults_name,
+                                                            &runtime_state(_py)
+                                                                .interned
+                                                                .defaults_name,
                                                             b"__defaults__",
                                                         ),
                                                     );
@@ -832,9 +835,14 @@ pub extern "C" fn molt_call_func_dispatch(
                                                     let pos_def_owned;
                                                     if let Some(pd_bits) = pos_defaults {
                                                         if !obj_from_bits(pd_bits).is_none() {
-                                                            if let Some(pd_ptr) = obj_from_bits(pd_bits).as_ptr() {
-                                                                if object_type_id(pd_ptr) == TYPE_ID_TUPLE {
-                                                                    pos_def_owned = seq_vec_ref(pd_ptr).clone();
+                                                            if let Some(pd_ptr) =
+                                                                obj_from_bits(pd_bits).as_ptr()
+                                                            {
+                                                                if object_type_id(pd_ptr)
+                                                                    == TYPE_ID_TUPLE
+                                                                {
+                                                                    pos_def_owned =
+                                                                        seq_vec_ref(pd_ptr).clone();
                                                                     pos_def_vec = &pos_def_owned;
                                                                 }
                                                             }
@@ -844,10 +852,15 @@ pub extern "C" fn molt_call_func_dispatch(
                                                     // Check positional defaults cover pos_missing
                                                     if pos_missing <= pos_def_vec.len() {
                                                         // Try to fill all kwonly from __kwdefaults__
-                                                        let mut kw_vals: Vec<u64> = Vec::with_capacity(n_kwonly);
+                                                        let mut kw_vals: Vec<u64> =
+                                                            Vec::with_capacity(n_kwonly);
                                                         let mut all_found = true;
                                                         for i in 0..n_kwonly {
-                                                            if let Some(val) = dict_get_in_place(_py, kd_ptr, kwonly_names[i]) {
+                                                            if let Some(val) = dict_get_in_place(
+                                                                _py,
+                                                                kd_ptr,
+                                                                kwonly_names[i],
+                                                            ) {
                                                                 kw_vals.push(val);
                                                             } else {
                                                                 all_found = false;
@@ -858,17 +871,23 @@ pub extern "C" fn molt_call_func_dispatch(
                                                             let total = func_arity;
                                                             if total <= 18 {
                                                                 // Copy provided positional args
-                                                                padded_buf[..eff_nargs].copy_from_slice(effective_args);
+                                                                padded_buf[..eff_nargs]
+                                                                    .copy_from_slice(
+                                                                        effective_args,
+                                                                    );
                                                                 // Fill missing positional defaults
                                                                 if pos_missing > 0 {
-                                                                    let start = pos_def_vec.len() - pos_missing;
+                                                                    let start = pos_def_vec.len()
+                                                                        - pos_missing;
                                                                     for i in 0..pos_missing {
-                                                                        padded_buf[eff_nargs + i] = pos_def_vec[start + i];
+                                                                        padded_buf[eff_nargs + i] =
+                                                                            pos_def_vec[start + i];
                                                                     }
                                                                 }
                                                                 // Fill kwonly defaults
                                                                 for i in 0..n_kwonly {
-                                                                    padded_buf[n_positional + i] = kw_vals[i];
+                                                                    padded_buf[n_positional + i] =
+                                                                        kw_vals[i];
                                                                 }
                                                                 return molt_call_func_direct(
                                                                     _py,
@@ -878,17 +897,24 @@ pub extern "C" fn molt_call_func_dispatch(
                                                                     func_bits,
                                                                 );
                                                             } else {
-                                                                let mut padded = Vec::with_capacity(total);
-                                                                padded.extend_from_slice(effective_args);
+                                                                let mut padded =
+                                                                    Vec::with_capacity(total);
+                                                                padded.extend_from_slice(
+                                                                    effective_args,
+                                                                );
                                                                 if pos_missing > 0 {
-                                                                    let start = pos_def_vec.len() - pos_missing;
-                                                                    for i in start..pos_def_vec.len() {
+                                                                    let start = pos_def_vec.len()
+                                                                        - pos_missing;
+                                                                    for i in
+                                                                        start..pos_def_vec.len()
+                                                                    {
                                                                         padded.push(pos_def_vec[i]);
                                                                     }
                                                                 }
                                                                 padded.extend_from_slice(&kw_vals);
                                                                 return molt_call_func_direct(
-                                                                    _py, fn_ptr_val, &padded, code_id, func_bits,
+                                                                    _py, fn_ptr_val, &padded,
+                                                                    code_id, func_bits,
                                                                 );
                                                             }
                                                         }
