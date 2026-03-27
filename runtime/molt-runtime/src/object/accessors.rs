@@ -662,3 +662,12 @@ pub unsafe extern "C" fn molt_getattr_ic_slow(
         })
     }
 }
+
+/// Runtime helper for field load — called from Cranelift codegen.
+/// Reads a NaN-boxed value at `obj_ptr + offset` and inc-refs it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_object_field_load(obj_ptr: *mut u8, offset: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        unsafe { object_field_get_ptr_raw(_py, obj_ptr, offset as usize) }
+    })
+}

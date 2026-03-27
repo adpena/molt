@@ -10184,11 +10184,16 @@ impl SimpleBackend {
                 "load" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
-                    let offset = op.value.unwrap_or(0) as i32;
+                    let offset_val = op.value.unwrap_or(0);
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
-                    let res = builder
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), obj_ptr, offset);
+                    // Use a runtime call instead of inline load to avoid
+                    // Cranelift optimization issues with offset-based loads.
+                    let offset_arg = builder.ins().iconst(types::I64, offset_val);
+                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids,
+                        "molt_object_field_load", &[types::I64, types::I64], &[types::I64]);
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[obj_ptr, offset_arg]);
+                    let res = builder.inst_results(call)[0];
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
                     let Some(out_name) = op.out else { continue; };
                     def_var_named(&mut builder, &vars, out_name, res);
