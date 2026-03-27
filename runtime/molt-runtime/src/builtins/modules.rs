@@ -4333,6 +4333,9 @@ pub extern "C" fn molt_module_get_name(module_bits: u64, attr_bits: u64) -> u64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_set_attr(module_bits: u64, attr_bits: u64, val_bits: u64) -> u64 {
+    if std::env::var("MOLT_TRACE_SET_ATTR").as_deref() == Ok("1") {
+        eprintln!("module_set_attr: mod=0x{:x} attr=0x{:x} val=0x{:x}", module_bits, attr_bits, val_bits);
+    }
     crate::with_gil_entry!(_py, {
         let trace_attrs = trace_module_attrs();
         let module_obj = obj_from_bits(module_bits);

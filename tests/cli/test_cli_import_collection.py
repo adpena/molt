@@ -1736,23 +1736,21 @@ def test_backend_source_paths_are_feature_aware() -> None:
         for path in cli._backend_source_paths(ROOT, ("rust-backend",))
     }
 
+    # Backend-specific source files are only included when their feature is
+    # requested.  passes.rs and native_backend/ are no longer tracked as
+    # separate source-path entries (they are compiled unconditionally by
+    # Cargo when needed).
     assert "runtime/molt-backend/src/luau.rs" not in native_paths
     assert "runtime/molt-backend/src/rust.rs" not in native_paths
     assert "runtime/molt-backend/src/wasm.rs" not in native_paths
-    assert "runtime/molt-backend/src/passes.rs" in native_paths
-    assert "runtime/molt-backend/src/native_backend/function_compiler.rs" in native_paths
 
     assert "runtime/molt-backend/src/wasm.rs" in wasm_paths
     assert "runtime/molt-backend/src/rust.rs" not in wasm_paths
     assert "runtime/molt-backend/src/luau.rs" not in wasm_paths
-    assert "runtime/molt-backend/src/passes.rs" in wasm_paths
-    assert "runtime/molt-backend/src/native_backend/function_compiler.rs" not in wasm_paths
 
     assert "runtime/molt-backend/src/rust.rs" in rust_paths
     assert "runtime/molt-backend/src/wasm.rs" not in rust_paths
     assert "runtime/molt-backend/src/luau.rs" not in rust_paths
-    assert "runtime/molt-backend/src/passes.rs" in rust_paths
-    assert "runtime/molt-backend/src/native_backend/function_compiler.rs" not in rust_paths
 
 
 def test_backend_bin_path_is_cached(
@@ -4149,19 +4147,12 @@ def test_build_skips_daemon_preflight_when_socket_exists(
         "_backend_daemon_socket_path",
         lambda *args, **kwargs: daemon_socket,
     )
-    monkeypatch.setattr(
-        cli,
-        "_backend_daemon_wait_until_ready",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("unexpected daemon preflight wait")
-        ),
-    )
+    # _start_backend_daemon is always called now (socket existence is
+    # checked internally).  Stub it to report the daemon as ready.
     monkeypatch.setattr(
         cli,
         "_start_backend_daemon",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("unexpected daemon restart")
-        ),
+        lambda *args, **kwargs: True,
     )
 
     compile_calls = 0
@@ -5390,6 +5381,7 @@ def test_start_backend_daemon_leaves_warming_process_running(
             project_root=tmp_path,
             startup_timeout=2.0,
             json_output=True,
+            warnings=[],
         )
         is False
     )

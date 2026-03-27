@@ -278,7 +278,8 @@ def test_ensure_runtime_lib_passes_tk_feature_to_native_build(
     assert seen_cmds
     assert "--features" in seen_cmds[0]
     feature_index = seen_cmds[0].index("--features")
-    assert seen_cmds[0][feature_index + 1] == "molt_tk_native"
+    features_str = seen_cmds[0][feature_index + 1]
+    assert "molt_tk_native" in features_str.split(",")
 
 
 def test_ensure_runtime_lib_does_not_probe_fingerprint_exists(
