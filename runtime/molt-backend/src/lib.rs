@@ -615,6 +615,7 @@ fn block_has_terminator(builder: &FunctionBuilder, block: Block) -> bool {
 }
 
 #[cfg(feature = "native-backend")]
+#[allow(dead_code)]
 fn sync_block_filled(builder: &FunctionBuilder, is_block_filled: &mut bool) {
     if let Some(block) = builder.current_block() {
         if block_has_terminator(builder, block) {
@@ -1279,6 +1280,7 @@ fn brif_block(
 }
 
 #[cfg(feature = "native-backend")]
+#[allow(dead_code)]
 fn parse_inst_id(text: &str) -> Option<usize> {
     let bytes = text.as_bytes();
     let mut i = 0;
