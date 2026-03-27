@@ -10084,6 +10084,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         next_idx = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="ADD", args=[idx, one], result=next_idx))
         self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
+        # Sync the incremented counter back to the local/module namespace
+        # so that reads inside the next iteration see the current value.
+        self._store_local_value(index_name, next_idx)
         self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
         # Write the final index value back to the local so that post-loop reads

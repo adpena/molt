@@ -12750,7 +12750,11 @@ def _build_native_link_command(
     if target_triple:
         if "apple" in target_triple or "darwin" in target_triple:
             link_cmd.append("-Wl,-dead_strip")
-            link_cmd.append("-Wl,-exported_symbol,_main")
+            # Do NOT use -exported_symbol,_main — the runtime uses dlsym()
+            # to resolve intrinsic functions at runtime. Restricting exports
+            # to _main makes all #[no_mangle] symbols invisible to dlsym,
+            # breaking intrinsic resolution (e.g. molt_sys_platform).
+            # -dead_strip already removes unreferenced code.
             link_cmd.extend(["-Wl,-x", "-Wl,-S"])
             if suppress_linker_warnings:
                 link_cmd.append("-Wl,-w")
@@ -12758,18 +12762,17 @@ def _build_native_link_command(
         elif "linux" in target_triple:
             link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
             link_cmd.append("-Wl,--gc-sections")
-            # Strip all symbols from the final binary.
-            link_cmd.append("-Wl,--strip-all")
+            # Use --strip-debug instead of --strip-all: strip-all removes
+            # the dynamic symbol table, breaking dlsym resolution for
+            # runtime intrinsics. strip-debug removes only debug info.
+            link_cmd.append("-Wl,--strip-debug")
             link_cmd.append("-lstdc++")
             link_cmd.append("-lm")
         elif "windows" in target_triple or "msvc" in target_triple:
-            # MSVC linker: /OPT:REF eliminates unreferenced functions/data,
-            # /OPT:ICF folds identical COMDATs — equivalent to --gc-sections.
             link_cmd.extend(["-Wl,/OPT:REF", "-Wl,/OPT:ICF"])
     else:
         if sys.platform == "darwin":
             link_cmd.append("-Wl,-dead_strip")
-            link_cmd.append("-Wl,-exported_symbol,_main")
             link_cmd.extend(["-Wl,-x", "-Wl,-S"])
             if suppress_linker_warnings:
                 link_cmd.append("-Wl,-w")
