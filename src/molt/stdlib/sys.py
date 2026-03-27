@@ -617,6 +617,14 @@ class thread_info(tuple):
         return f"sys.thread_info({items})"
 
 
+_FlagsTuple = flags
+_VersionInfoTuple = version_info
+_FloatInfoTuple = float_info
+_IntInfoTuple = int_info
+_HashInfoTuple = hash_info
+_ThreadInfoTuple = thread_info
+
+
 _platform_val = _MOLT_SYS_PLATFORM()
 platform = _platform_val if isinstance(_platform_val, str) else "wasm32"
 
@@ -662,16 +670,102 @@ def _try_tuple_intrinsic(
 # Cranelift generates incorrect code for functions >200KB of machine code.
 def _init_metadata():
     """Initialize version/platform metadata as module globals."""
+    global _SYS_FLAGS_GIL
     g = globals()
-    g["version"] = "3.12.0 (molt)"
-    _rvi = (3, 12, 0, "final", 0)
+    version_text = _try_str_intrinsic(_MOLT_SYS_VERSION, "3.12.0 (molt)")
+    raw_version_info = _try_tuple_intrinsic(
+        _MOLT_SYS_VERSION_INFO, (3, 12, 0, "final", 0), expected_len=5
+    )
+    _rvi = tuple(raw_version_info)
+    hexversion_value = _try_int_intrinsic(_MOLT_SYS_HEXVERSION, 0x030C00F0)
+    api_version_value = _try_int_intrinsic(_MOLT_SYS_API_VERSION, 0)
+    abiflags_value = _try_str_intrinsic(_MOLT_SYS_ABIFLAGS, "")
+    implementation_value = _ImplementationNamespace(
+        "molt", "molt-312", _rvi, hexversion_value
+    )
+    try:
+        implementation_payload = _MOLT_SYS_IMPLEMENTATION_PAYLOAD()
+    except Exception:
+        implementation_payload = None
+    if implementation_payload is not None:
+        implementation_value = _resolve_implementation(implementation_payload)
+
+    flags_values = (
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        4300,
+    )
+    try:
+        flags_payload = _MOLT_SYS_FLAGS_PAYLOAD()
+    except Exception:
+        flags_payload = None
+    if flags_payload is not None:
+        flags_values, _SYS_FLAGS_GIL = _resolve_flags_payload(flags_payload)
+
+    float_info_values = tuple(
+        _try_tuple_intrinsic(
+            _MOLT_SYS_FLOAT_INFO,
+            (
+                1.7976931348623157e+308,
+                1024,
+                308,
+                2.2250738585072014e-308,
+                -1021,
+                -307,
+                15,
+                53,
+                2.220446049250313e-16,
+                2,
+                1,
+            ),
+            expected_len=len(_FLOAT_INFO_FIELDS),
+        )
+    )
+    int_info_values = tuple(
+        _try_tuple_intrinsic(
+            _MOLT_SYS_INT_INFO,
+            (30, 4, 4300, 640),
+            expected_len=len(_INT_INFO_FIELDS),
+        )
+    )
+    hash_info_values = tuple(
+        _try_tuple_intrinsic(
+            _MOLT_SYS_HASH_INFO,
+            (64, 2305843009213693951, 314159, 0, 1000003, "siphash13", 64, 128, 0),
+            expected_len=len(_HASH_INFO_FIELDS),
+        )
+    )
+    thread_info_values = tuple(
+        _try_tuple_intrinsic(
+            _MOLT_SYS_THREAD_INFO,
+            ("pthread", None, None),
+            expected_len=len(_THREAD_INFO_FIELDS),
+        )
+    )
+
+    g["version"] = version_text
     g["_raw_version_info"] = _rvi
-    g["version_info"] = _rvi
-    g["hexversion"] = 0x030C00F0
-    g["api_version"] = 0
-    g["abiflags"] = ""
-    g["implementation"] = _ImplementationNamespace("molt", "molt-312", _rvi, 0x030C00F0)
-    g["flags"] = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 4300)
+    g["version_info"] = _VersionInfoTuple(_rvi)
+    g["hexversion"] = hexversion_value
+    g["api_version"] = api_version_value
+    g["abiflags"] = abiflags_value
+    g["implementation"] = implementation_value
+    g["flags"] = _FlagsTuple(flags_values)
     g["path"] = []
     g["meta_path"] = []
     g["path_hooks"] = []
@@ -684,10 +778,10 @@ def _init_metadata():
     g["base_prefix"] = ""
     g["base_exec_prefix"] = ""
     g["platlibdir"] = "lib"
-    g["float_info"] = (1.7976931348623157e+308, 1024, 308, 2.2250738585072014e-308, -1021, -307, 15, 53, 2.220446049250313e-16, 2, 1)
-    g["int_info"] = (30, 4, 4300, 640)
-    g["hash_info"] = (64, 2305843009213693951, 314159, 0, 1000003, "siphash13", 64, 128, 0)
-    g["thread_info"] = ("pthread", None, None)
+    g["float_info"] = _FloatInfoTuple(float_info_values)
+    g["int_info"] = _IntInfoTuple(int_info_values)
+    g["hash_info"] = _HashInfoTuple(hash_info_values)
+    g["thread_info"] = _ThreadInfoTuple(thread_info_values)
     g["orig_argv"] = []
     g["copyright"] = "Copyright (c) Molt contributors."
     g["stdlib_module_names"] = frozenset()
