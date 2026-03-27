@@ -33,6 +33,17 @@ def test_runtime_cargo_features_is_cached(monkeypatch) -> None:
     assert info.currsize >= 1
 
 
+def test_runtime_cargo_features_excludes_requested_features(monkeypatch) -> None:
+    cli._runtime_cargo_features_cached.cache_clear()
+    monkeypatch.setenv("MOLT_RUNTIME_TK_NATIVE", "1")
+    monkeypatch.setenv(
+        "MOLT_RUNTIME_EXCLUDE_FEATURES",
+        "molt_tk_native,stdlib_net",
+    )
+
+    assert cli._runtime_cargo_features(None) == ()
+
+
 def test_runtime_fingerprint_changes_with_runtime_features(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -358,3 +369,83 @@ def test_ensure_runtime_lib_does_not_probe_fingerprint_exists(
         cargo_timeout=0.1,
     )
     assert seen_cmds
+
+
+def test_ensure_runtime_lib_excludes_requested_default_features(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_lib = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    fingerprint_path = tmp_path / "runtime.fingerprint.json"
+    seen_cmds: list[list[str]] = []
+
+    monkeypatch.setenv("MOLT_RUNTIME_TK_NATIVE", "1")
+    monkeypatch.setenv(
+        "MOLT_RUNTIME_EXCLUDE_FEATURES",
+        "stdlib_net,stdlib_tk,wasi_host",
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint",
+        lambda *args, **kwargs: {"hash": "new", "rustc": "rustc-test"},
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint_path",
+        lambda *args, **kwargs: fingerprint_path,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+    )
+    monkeypatch.setattr(cli, "_maybe_enable_sccache", lambda _env: None, raising=True)
+    monkeypatch.setattr(
+        cli, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+    )
+
+    def fake_run_cargo(
+        cmd: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        timeout: float | None,
+        json_output: bool,
+        label: str,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, env, timeout, json_output, label
+        seen_cmds.append(list(cmd))
+        runtime_lib.parent.mkdir(parents=True, exist_ok=True)
+        runtime_lib.write_bytes(b"runtime")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(
+        cli, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
+    )
+
+    assert cli._ensure_runtime_lib(
+        runtime_lib,
+        target_triple=None,
+        json_output=True,
+        cargo_profile="dev-fast",
+        project_root=project_root,
+        cargo_timeout=5.0,
+    )
+    assert seen_cmds
+    assert "--no-default-features" in seen_cmds[0]
+    assert "--features" in seen_cmds[0]
+    feature_index = seen_cmds[0].index("--features")
+    features = set(seen_cmds[0][feature_index + 1].split(","))
+    assert "stdlib_net" not in features
+    assert "stdlib_tk" not in features
+    assert "wasi_host" not in features
+    assert "stdlib_math" in features
+    assert "cext_loader" in features
+    assert "molt_tk_native" in features
