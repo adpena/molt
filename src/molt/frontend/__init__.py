@@ -6079,14 +6079,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 free_val = self._emit_free_var_load(node.id)
                 if free_val is not None:
                     return free_val
+            # Check locals BEFORE module_global_mutations: inline
+            # comprehensions bind their iterator variable in self.locals,
+            # which must shadow the module-level name (CPython scoping).
+            local = self._load_local_value(node.id)
+            if local is not None:
+                return local
             if (
                 self.current_func_name == "molt_main"
                 and node.id in self.module_global_mutations
             ):
                 return self._emit_module_attr_get(node.id)
-            local = self._load_local_value(node.id)
-            if local is not None:
-                return local
             global_val = self.globals.get(node.id)
             if global_val is None:
                 if node.id == "NotImplemented":
