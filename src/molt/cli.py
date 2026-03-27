@@ -9372,7 +9372,9 @@ def _backend_daemon_compile_request_bytes(
     # not from the build request).
     env_passthrough = {}
     for key in ("MOLT_TIR_OPT", "MOLT_DISABLE_DEAD_FUNC_ELIM", "MOLT_BACKEND_BATCH_SIZE",
-                "MOLT_MAX_FUNCTION_OPS", "MOLT_DISABLE_RC_COALESCING", "TIR_DUMP", "TIR_OPT_STATS"):
+                "MOLT_MAX_FUNCTION_OPS", "MOLT_DISABLE_RC_COALESCING", "TIR_DUMP", "TIR_OPT_STATS",
+                "MOLT_DUMP_CLIF", "MOLT_DUMP_CLIF_ON_ERROR", "MOLT_DUMP_IR",
+                "MOLT_DEBUG_BIND", "MOLT_TIR_SKIP"):
         val = os.environ.get(key)
         if val is not None:
             env_passthrough[key] = val
