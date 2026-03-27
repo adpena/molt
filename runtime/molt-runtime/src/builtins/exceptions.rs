@@ -380,6 +380,7 @@ pub(crate) fn raise_unicode_encode_error<T: ExceptionSentinel>(
 
 pub(crate) fn raise_not_iterable<T: ExceptionSentinel>(_py: &PyToken<'_>, bits: u64) -> T {
     let type_label = type_name(_py, obj_from_bits(bits));
+    eprintln!("raise_not_iterable: bits=0x{:x} type={}", bits, type_label);
     let msg = format!(
         "'{}' object is not iterable",
         type_label
