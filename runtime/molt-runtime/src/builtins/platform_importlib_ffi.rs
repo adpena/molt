@@ -539,9 +539,7 @@ pub extern "C" fn molt_importlib_exec_extension(
                     return raise_exception::<_>(
                         _py,
                         "ImportError",
-                        &format!(
-                            "failed to load C extension {module_name:?} from {path:?}: {msg}"
-                        ),
+                        &format!("failed to load C extension {module_name:?} from {path:?}: {msg}"),
                     );
                 }
             }

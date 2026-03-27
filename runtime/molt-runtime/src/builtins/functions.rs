@@ -25,19 +25,17 @@ use crate::builtins::numbers::index_i64_with_overflow;
 use crate::builtins::platform::env_state_get;
 use crate::{
     TYPE_ID_BOUND_METHOD, TYPE_ID_BYTES, TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_LIST,
-    TYPE_ID_MODULE, TYPE_ID_STRING,
-    TYPE_ID_TUPLE, alloc_bound_method_obj, alloc_bytes, alloc_code_obj, alloc_dict_with_pairs,
-    alloc_function_obj, alloc_list_with_capacity, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes, bound_method_func_bits, builtin_classes, bytes_like_slice, call_callable1,
-    call_callable2, dec_ref_bits,
-    dict_get_in_place, ensure_function_code_bits, exception_pending, function_dict_bits, function_set_closure_bits, function_set_trampoline_ptr,
-    inc_ref_bits, is_truthy, missing_bits, module_dict_bits, molt_getattr_builtin, molt_getitem_method, molt_iter,
-    molt_iter_next, molt_trace_enter_slot, obj_from_bits, object_class_bits,
-    object_set_class_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_i64, type_name,
+    TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_bound_method_obj, alloc_bytes,
+    alloc_code_obj, alloc_dict_with_pairs, alloc_function_obj, alloc_list_with_capacity,
+    alloc_string, alloc_tuple, attr_name_bits_from_bytes, bound_method_func_bits, builtin_classes,
+    bytes_like_slice, call_callable1, call_callable2, dec_ref_bits, dict_get_in_place,
+    ensure_function_code_bits, exception_pending, function_dict_bits, function_set_closure_bits,
+    function_set_trampoline_ptr, inc_ref_bits, is_truthy, missing_bits, module_dict_bits,
+    molt_getattr_builtin, molt_getitem_method, molt_iter, molt_iter_next, molt_trace_enter_slot,
+    obj_from_bits, object_class_bits, object_set_class_bits, object_type_id, raise_exception,
+    seq_vec_ref, string_obj_to_owned, to_i64, type_name,
 };
 use memchr::{memchr, memmem};
-
-
 
 const THIS_ENCODED: &str = concat!(
     "Gur Mra bs Clguba, ol Gvz Crgref\n\n",
@@ -87,8 +85,6 @@ const OPCODE_PAYLOAD_312_JSON: &str = include_str!("../intrinsics/data/opcode_pa
 const OPCODE_METADATA_PAYLOAD_314_JSON: &str =
     include_str!("../intrinsics/data/opcode_metadata_payload_314.json");
 const TOKEN_PAYLOAD_312_JSON: &str = include_str!("../intrinsics/data/token_payload_312.json");
-
-
 
 const RE_IGNORECASE: i64 = 2;
 const RE_DOTALL: i64 = 16;
@@ -1204,7 +1200,6 @@ pub extern "C" fn molt_enum_init_member(member_bits: u64, name_bits: u64, value_
     })
 }
 
-
 fn shlex_is_safe(s: &str) -> bool {
     s.bytes().all(|b| {
         matches!(
@@ -1718,7 +1713,10 @@ pub(super) fn iter_next_pair(_py: &crate::PyToken<'_>, iter_bits: u64) -> Result
     }
 }
 
-pub(super) fn iterable_to_string_vec(_py: &crate::PyToken<'_>, values_bits: u64) -> Result<Vec<String>, u64> {
+pub(super) fn iterable_to_string_vec(
+    _py: &crate::PyToken<'_>,
+    values_bits: u64,
+) -> Result<Vec<String>, u64> {
     let iter_bits = molt_iter(values_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
@@ -2043,7 +2041,6 @@ pub(super) fn alloc_qs_dict(
     }
     out
 }
-
 
 #[derive(Clone)]
 struct TextWrapOptions {
@@ -3107,8 +3104,6 @@ fn compileall_compile_dir_impl(dir: &str, maxlevels: i64) -> bool {
     }
     success
 }
-
-
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shlex_quote(text_bits: u64) -> u64 {
@@ -4681,7 +4676,6 @@ pub extern "C" fn molt_textwrap_indent_ex(
     })
 }
 
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pkgutil_iter_modules(path_bits: u64, prefix_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -6011,7 +6005,11 @@ pub extern "C" fn molt_compile_builtin(
     _optimize_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        raise_exception::<u64>(_py, "NotImplementedError", "compile() requires the stdlib_ast feature")
+        raise_exception::<u64>(
+            _py,
+            "NotImplementedError",
+            "compile() requires the stdlib_ast feature",
+        )
     })
 }
 
@@ -6025,7 +6023,11 @@ pub extern "C" fn molt_codeop_compile(
     _incomplete_input_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        raise_exception::<u64>(_py, "NotImplementedError", "compile() requires the stdlib_ast feature")
+        raise_exception::<u64>(
+            _py,
+            "NotImplementedError",
+            "compile() requires the stdlib_ast feature",
+        )
     })
 }
 
@@ -6038,7 +6040,11 @@ pub extern "C" fn molt_codeop_compile_command(
     _flags_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        raise_exception::<u64>(_py, "NotImplementedError", "compile() requires the stdlib_ast feature")
+        raise_exception::<u64>(
+            _py,
+            "NotImplementedError",
+            "compile() requires the stdlib_ast feature",
+        )
     })
 }
 

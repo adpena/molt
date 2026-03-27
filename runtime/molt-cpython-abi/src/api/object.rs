@@ -267,10 +267,7 @@ pub unsafe extern "C" fn PyObject_Size(o: *mut PyObject) -> Py_ssize_t {
 // ─── Item access (mapping/sequence protocol) ──────────────────────────────
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyObject_GetItem(
-    o: *mut PyObject,
-    key: *mut PyObject,
-) -> *mut PyObject {
+pub unsafe extern "C" fn PyObject_GetItem(o: *mut PyObject, key: *mut PyObject) -> *mut PyObject {
     if o.is_null() || key.is_null() {
         return ptr::null_mut();
     }
@@ -514,10 +511,7 @@ pub unsafe extern "C" fn Py_IS_TYPE(op: *mut PyObject, tp: *mut PyTypeObject) ->
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyObject_IsSubclass(
-    derived: *mut PyObject,
-    cls: *mut PyObject,
-) -> c_int {
+pub unsafe extern "C" fn PyObject_IsSubclass(derived: *mut PyObject, cls: *mut PyObject) -> c_int {
     if derived.is_null() || cls.is_null() {
         return 0;
     }

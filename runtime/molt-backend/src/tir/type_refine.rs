@@ -272,7 +272,7 @@ fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirTyp
 
         // Add: numeric arithmetic + string concatenation + string/list repetition
         OpCode::Add => match operand_types {
-            [TirType::Str, TirType::Str] => Some(TirType::Str),  // "a" + "b"
+            [TirType::Str, TirType::Str] => Some(TirType::Str), // "a" + "b"
             _ => infer_numeric_arithmetic(operand_types),
         },
         // Mul: numeric arithmetic + string/list repetition (str * int, int * str)
@@ -281,9 +281,7 @@ fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirTyp
             _ => infer_numeric_arithmetic(operand_types),
         },
         // Sub, Mod, Pow: numeric only (str-str is TypeError in Python)
-        OpCode::Sub | OpCode::Mod | OpCode::Pow => {
-            infer_numeric_arithmetic(operand_types)
-        }
+        OpCode::Sub | OpCode::Mod | OpCode::Pow => infer_numeric_arithmetic(operand_types),
         OpCode::Div => {
             // Python: division always produces float unless both are DynBox.
             match operand_types {
@@ -341,9 +339,7 @@ fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirTyp
             Box::new(TirType::DynBox),
         )),
         OpCode::BuildSet => Some(TirType::Set(Box::new(TirType::DynBox))),
-        OpCode::BuildTuple => {
-            Some(TirType::Tuple(operand_types.to_vec()))
-        }
+        OpCode::BuildTuple => Some(TirType::Tuple(operand_types.to_vec())),
 
         // Copy propagates type.
         OpCode::Copy => operand_types.first().cloned(),
@@ -426,9 +422,7 @@ mod tests {
             id: entry_id,
             args: vec![],
             ops,
-            terminator: Terminator::Return {
-                values: vec![],
-            },
+            terminator: Terminator::Return { values: vec![] },
         };
         let mut blocks = HashMap::new();
         blocks.insert(entry_id, block);
@@ -441,7 +435,7 @@ mod tests {
             next_value,
             next_block: 1,
             attrs: AttrDict::new(),
-        has_exception_handling: false,
+            has_exception_handling: false,
             label_id_map: HashMap::new(),
         }
     }
@@ -485,11 +479,26 @@ mod tests {
     fn constants_resolve_to_concrete_types() {
         let ops = vec![
             make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(42)),
-            make_op(OpCode::ConstFloat, vec![], vec![ValueId(1)], float_attr(3.14)),
-            make_op(OpCode::ConstStr, vec![], vec![ValueId(2)], str_attr("hello")),
+            make_op(
+                OpCode::ConstFloat,
+                vec![],
+                vec![ValueId(1)],
+                float_attr(3.14),
+            ),
+            make_op(
+                OpCode::ConstStr,
+                vec![],
+                vec![ValueId(2)],
+                str_attr("hello"),
+            ),
             make_op(OpCode::ConstBool, vec![], vec![ValueId(3)], AttrDict::new()),
             make_op(OpCode::ConstNone, vec![], vec![ValueId(4)], AttrDict::new()),
-            make_op(OpCode::ConstBytes, vec![], vec![ValueId(5)], AttrDict::new()),
+            make_op(
+                OpCode::ConstBytes,
+                vec![],
+                vec![ValueId(5)],
+                AttrDict::new(),
+            ),
         ];
         let mut func = single_block_func(ops, 6);
         let refined = refine_types(&mut func);
@@ -520,7 +529,12 @@ mod tests {
     fn mixed_arithmetic_promotes_to_f64() {
         let ops = vec![
             make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(1)),
-            make_op(OpCode::ConstFloat, vec![], vec![ValueId(1)], float_attr(2.0)),
+            make_op(
+                OpCode::ConstFloat,
+                vec![],
+                vec![ValueId(1)],
+                float_attr(2.0),
+            ),
             make_op(
                 OpCode::Add,
                 vec![ValueId(0), ValueId(1)],
@@ -645,7 +659,7 @@ mod tests {
             next_value: 4,
             next_block: 4,
             attrs: AttrDict::new(),
-        has_exception_handling: false,
+            has_exception_handling: false,
             label_id_map: HashMap::new(),
         };
 
@@ -746,7 +760,7 @@ mod tests {
             next_value: 4,
             next_block: 4,
             attrs: AttrDict::new(),
-        has_exception_handling: false,
+            has_exception_handling: false,
             label_id_map: HashMap::new(),
         };
 
@@ -826,7 +840,7 @@ mod tests {
             next_value: 3,
             next_block: 1,
             attrs: AttrDict::new(),
-        has_exception_handling: false,
+            has_exception_handling: false,
             label_id_map: HashMap::new(),
         };
         let refined = refine_types(&mut func);

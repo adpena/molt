@@ -49,23 +49,23 @@ fn may_throw(opcode: OpCode) -> bool {
     matches!(
         opcode,
         OpCode::Call
-        | OpCode::CallMethod
-        | OpCode::CallBuiltin
-        | OpCode::Raise
-        | OpCode::Index
-        | OpCode::StoreIndex
-        | OpCode::LoadAttr
-        | OpCode::StoreAttr
-        | OpCode::DelAttr
-        | OpCode::DelIndex
-        | OpCode::Import
-        | OpCode::ImportFrom
-        | OpCode::Div
-        | OpCode::FloorDiv
-        | OpCode::Mod
-        | OpCode::GetIter
-        | OpCode::IterNext
-        | OpCode::ForIter
+            | OpCode::CallMethod
+            | OpCode::CallBuiltin
+            | OpCode::Raise
+            | OpCode::Index
+            | OpCode::StoreIndex
+            | OpCode::LoadAttr
+            | OpCode::StoreAttr
+            | OpCode::DelAttr
+            | OpCode::DelIndex
+            | OpCode::Import
+            | OpCode::ImportFrom
+            | OpCode::Div
+            | OpCode::FloorDiv
+            | OpCode::Mod
+            | OpCode::GetIter
+            | OpCode::IterNext
+            | OpCode::ForIter
     )
 }
 
@@ -133,10 +133,21 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             for &res in &op.results {
                 // Loop-carried values (loop_index_start, loop_index_next, iter_next)
                 // must not be folded — they change on each iteration.
-                let original_kind = op.attrs.get("_original_kind")
-                    .and_then(|v| if let AttrValue::Str(s) = v { Some(s.as_str()) } else { None })
+                let original_kind = op
+                    .attrs
+                    .get("_original_kind")
+                    .and_then(|v| {
+                        if let AttrValue::Str(s) = v {
+                            Some(s.as_str())
+                        } else {
+                            None
+                        }
+                    })
                     .unwrap_or("");
-                if matches!(original_kind, "loop_index_start" | "loop_index_next" | "iter_next") {
+                if matches!(
+                    original_kind,
+                    "loop_index_start" | "loop_index_next" | "iter_next"
+                ) {
                     lattice.insert(res, LatticeValue::Bottom);
                     continue;
                 }
@@ -204,9 +215,10 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     .collect();
 
                 // If any operand is Bottom, this result is Bottom.
-                let any_bottom = op.operands.iter().any(|v| {
-                    matches!(lattice.get(v), Some(LatticeValue::Bottom))
-                });
+                let any_bottom = op
+                    .operands
+                    .iter()
+                    .any(|v| matches!(lattice.get(v), Some(LatticeValue::Bottom)));
                 if any_bottom {
                     lattice.insert(result_id, LatticeValue::Bottom);
                     changed = true;
@@ -321,12 +333,10 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                             })
                         }
                     }
-                    Some(LatticeValue::Constant(ConstVal::None)) => {
-                        Some(Terminator::Branch {
-                            target: *else_block,
-                            args: else_args.clone(),
-                        })
-                    }
+                    Some(LatticeValue::Constant(ConstVal::None)) => Some(Terminator::Branch {
+                        target: *else_block,
+                        args: else_args.clone(),
+                    }),
                     _ => None,
                 }
             }
@@ -409,9 +419,7 @@ fn eval_binary_div(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
             // Python `/` on ints returns float
             Some(ConstVal::Float(*x as f64 / *y as f64))
         }
-        (ConstVal::Float(x), ConstVal::Float(y)) if *y != 0.0 => {
-            Some(ConstVal::Float(*x / *y))
-        }
+        (ConstVal::Float(x), ConstVal::Float(y)) if *y != 0.0 => Some(ConstVal::Float(*x / *y)),
         _ => None,
     }
 }
@@ -508,9 +516,7 @@ mod tests {
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops = ops;
-            entry.terminator = Terminator::Return {
-                values: vec![],
-            };
+            entry.terminator = Terminator::Return { values: vec![] };
         }
         func.next_value = next_value;
         run(&mut func);

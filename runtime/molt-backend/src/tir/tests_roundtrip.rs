@@ -89,7 +89,10 @@ mod tests {
             op_args("ret", &["z"]),
         ];
         let result = roundtrip(ops);
-        assert!(!result.is_empty(), "round-trip should produce non-empty ops");
+        assert!(
+            !result.is_empty(),
+            "round-trip should produce non-empty ops"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -351,15 +354,16 @@ mod tests {
 
     #[test]
     fn roundtrip_output_has_terminator() {
-        let ops = vec![
-            op_out("const", "x"),
-            op_args("ret", &["x"]),
-        ];
+        let ops = vec![op_out("const", "x"), op_args("ret", &["x"])];
         let result = roundtrip(ops);
         let has_term = result
             .iter()
             .any(|o| matches!(o.kind.as_str(), "ret" | "ret_void" | "jump" | "br_if"));
-        assert!(has_term, "output must contain a terminator op, got: {:?}", result);
+        assert!(
+            has_term,
+            "output must contain a terminator op, got: {:?}",
+            result
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -396,8 +400,14 @@ mod tests {
 
         // The check_exception op must have a value that matches a label in the output.
         let check_exc = result.iter().find(|o| o.kind == "check_exception");
-        assert!(check_exc.is_some(), "check_exception must survive round-trip");
-        let exc_target = check_exc.unwrap().value.expect("check_exception must have a value");
+        assert!(
+            check_exc.is_some(),
+            "check_exception must survive round-trip"
+        );
+        let exc_target = check_exc
+            .unwrap()
+            .value
+            .expect("check_exception must have a value");
 
         let label_vals: Vec<i64> = result
             .iter()
@@ -463,7 +473,11 @@ mod tests {
         assert!(dict_set.is_some(), "dict_set must survive round-trip");
         let ds = dict_set.unwrap();
         assert_eq!(ds.value, Some(42), "value field must be preserved");
-        assert_eq!(ds.s_value.as_deref(), Some("helper"), "s_value field must be preserved");
+        assert_eq!(
+            ds.s_value.as_deref(),
+            Some("helper"),
+            "s_value field must be preserved"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -503,10 +517,17 @@ mod tests {
         ];
         let result = roundtrip_no_opt(ops);
         let check = result.iter().find(|o| o.kind == "check_exception");
-        assert!(check.is_some(), "check_exception must survive round-trip, got: {:?}",
-            result.iter().map(|o| &o.kind).collect::<Vec<_>>());
+        assert!(
+            check.is_some(),
+            "check_exception must survive round-trip, got: {:?}",
+            result.iter().map(|o| &o.kind).collect::<Vec<_>>()
+        );
         let check = check.unwrap();
-        assert!(check.value.is_some(), "check_exception.value must not be None, got: {:?}", check);
+        assert!(
+            check.value.is_some(),
+            "check_exception.value must not be None, got: {:?}",
+            check
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -546,11 +567,17 @@ mod tests {
         let result = roundtrip_no_opt(ops);
         let try_start = result.iter().find(|o| o.kind == "try_start");
         assert!(try_start.is_some(), "try_start must survive round-trip");
-        assert!(try_start.unwrap().value.is_some(), "try_start.value must be preserved");
+        assert!(
+            try_start.unwrap().value.is_some(),
+            "try_start.value must be preserved"
+        );
 
         let try_end = result.iter().find(|o| o.kind == "try_end");
         assert!(try_end.is_some(), "try_end must survive round-trip");
-        assert!(try_end.unwrap().value.is_some(), "try_end.value must be preserved");
+        assert!(
+            try_end.unwrap().value.is_some(),
+            "try_end.value must be preserved"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -572,7 +599,11 @@ mod tests {
         let result = roundtrip_no_opt(ops);
         let custom = result.iter().find(|o| o.kind == "some_custom_op");
         assert!(custom.is_some(), "custom op must survive round-trip");
-        assert!(custom.unwrap().var.is_some(), "var field must be preserved for passthrough ops, got: {:?}", custom);
+        assert!(
+            custom.unwrap().var.is_some(),
+            "var field must be preserved for passthrough ops, got: {:?}",
+            custom
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -593,7 +624,11 @@ mod tests {
         let result = roundtrip_no_opt(ops);
         let fop = result.iter().find(|o| o.kind == "some_float_op");
         assert!(fop.is_some(), "float op must survive round-trip");
-        assert_eq!(fop.unwrap().f_value, Some(3.14), "f_value field must be preserved");
+        assert_eq!(
+            fop.unwrap().f_value,
+            Some(3.14),
+            "f_value field must be preserved"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -614,7 +649,11 @@ mod tests {
         let result = roundtrip_no_opt(ops);
         let bop = result.iter().find(|o| o.kind == "some_bytes_op");
         assert!(bop.is_some(), "bytes op must survive round-trip");
-        assert_eq!(bop.unwrap().bytes.as_deref(), Some(&[1u8, 2, 3][..]), "bytes field must be preserved");
+        assert_eq!(
+            bop.unwrap().bytes.as_deref(),
+            Some(&[1u8, 2, 3][..]),
+            "bytes field must be preserved"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -664,7 +703,11 @@ mod tests {
         let result = roundtrip_no_opt(ops);
         let cnst = result.iter().find(|o| o.kind == "const");
         assert!(cnst.is_some(), "const must survive round-trip");
-        assert_eq!(cnst.unwrap().value, Some(42), "const.value must be preserved");
+        assert_eq!(
+            cnst.unwrap().value,
+            Some(42),
+            "const.value must be preserved"
+        );
     }
 
     #[test]
@@ -681,7 +724,11 @@ mod tests {
         let result = roundtrip_no_opt(ops);
         let cnst = result.iter().find(|o| o.kind == "const_str");
         assert!(cnst.is_some(), "const_str must survive round-trip");
-        assert_eq!(cnst.unwrap().s_value.as_deref(), Some("hello"), "const_str.s_value must be preserved");
+        assert_eq!(
+            cnst.unwrap().s_value.as_deref(),
+            Some("hello"),
+            "const_str.s_value must be preserved"
+        );
     }
 
     #[test]
@@ -698,7 +745,11 @@ mod tests {
         let result = roundtrip_no_opt(ops);
         let cnst = result.iter().find(|o| o.kind == "const_bytes");
         assert!(cnst.is_some(), "const_bytes must survive round-trip");
-        assert_eq!(cnst.unwrap().bytes.as_deref(), Some(&[0xDEu8, 0xAD][..]), "const_bytes.bytes must be preserved");
+        assert_eq!(
+            cnst.unwrap().bytes.as_deref(),
+            Some(&[0xDEu8, 0xAD][..]),
+            "const_bytes.bytes must be preserved"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -721,7 +772,11 @@ mod tests {
         let call = result.iter().find(|o| o.kind == "call");
         assert!(call.is_some(), "call must survive round-trip");
         let c = call.unwrap();
-        assert_eq!(c.s_value.as_deref(), Some("my_func"), "call.s_value must be preserved");
+        assert_eq!(
+            c.s_value.as_deref(),
+            Some("my_func"),
+            "call.s_value must be preserved"
+        );
         assert_eq!(c.value, Some(5), "call.value must be preserved");
     }
 
@@ -743,7 +798,11 @@ mod tests {
         let result = roundtrip_no_opt(ops);
         let imp = result.iter().find(|o| o.kind == "import");
         assert!(imp.is_some(), "import must survive round-trip");
-        assert_eq!(imp.unwrap().s_value.as_deref(), Some("os"), "import.s_value must be preserved");
+        assert_eq!(
+            imp.unwrap().s_value.as_deref(),
+            Some("os"),
+            "import.s_value must be preserved"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -794,14 +853,26 @@ mod tests {
         ];
         let result = roundtrip_no_opt(ops);
         let sbs = result.iter().find(|o| o.kind == "state_block_start");
-        assert!(sbs.is_some(), "state_block_start must survive round-trip, got kinds: {:?}",
-            result.iter().map(|o| &o.kind).collect::<Vec<_>>());
-        assert!(sbs.unwrap().value.is_some(), "state_block_start.value must be preserved");
+        assert!(
+            sbs.is_some(),
+            "state_block_start must survive round-trip, got kinds: {:?}",
+            result.iter().map(|o| &o.kind).collect::<Vec<_>>()
+        );
+        assert!(
+            sbs.unwrap().value.is_some(),
+            "state_block_start.value must be preserved"
+        );
 
         let sbe = result.iter().find(|o| o.kind == "state_block_end");
-        assert!(sbe.is_some(), "state_block_end must survive round-trip, got kinds: {:?}",
-            result.iter().map(|o| &o.kind).collect::<Vec<_>>());
-        assert!(sbe.unwrap().value.is_some(), "state_block_end.value must be preserved");
+        assert!(
+            sbe.is_some(),
+            "state_block_end must survive round-trip, got kinds: {:?}",
+            result.iter().map(|o| &o.kind).collect::<Vec<_>>()
+        );
+        assert!(
+            sbe.unwrap().value.is_some(),
+            "state_block_end.value must be preserved"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -824,8 +895,16 @@ mod tests {
         let asp = result.iter().find(|o| o.kind == "async_spawn");
         assert!(asp.is_some(), "async_spawn must survive round-trip");
         let a = asp.unwrap();
-        assert_eq!(a.task_kind.as_deref(), Some("coro"), "task_kind must be preserved");
-        assert_eq!(a.container_type.as_deref(), Some("list"), "container_type must be preserved");
+        assert_eq!(
+            a.task_kind.as_deref(),
+            Some("coro"),
+            "task_kind must be preserved"
+        );
+        assert_eq!(
+            a.container_type.as_deref(),
+            Some("list"),
+            "container_type must be preserved"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -846,8 +925,11 @@ mod tests {
         ];
         let result = roundtrip_no_opt(ops);
         let cf = result.iter().find(|o| o.kind == "call_func");
-        assert!(cf.is_some(), "call_func must survive round-trip, got: {:?}",
-            result.iter().map(|o| &o.kind).collect::<Vec<_>>());
+        assert!(
+            cf.is_some(),
+            "call_func must survive round-trip, got: {:?}",
+            result.iter().map(|o| &o.kind).collect::<Vec<_>>()
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -878,12 +960,18 @@ mod tests {
         assert!(
             has_trace_enter,
             "trace_enter_slot must survive round-trip with optimization. Got: {:?}",
-            result.iter().map(|o| format!("{}(v={:?})", o.kind, o.value)).collect::<Vec<_>>()
+            result
+                .iter()
+                .map(|o| format!("{}(v={:?})", o.kind, o.value))
+                .collect::<Vec<_>>()
         );
         assert!(
             has_trace_exit,
             "trace_exit must survive round-trip with optimization. Got: {:?}",
-            result.iter().map(|o| format!("{}(v={:?})", o.kind, o.value)).collect::<Vec<_>>()
+            result
+                .iter()
+                .map(|o| format!("{}(v={:?})", o.kind, o.value))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -901,6 +989,10 @@ mod tests {
         let result = roundtrip_no_opt(ops);
         let cnst = result.iter().find(|o| o.kind == "const");
         assert!(cnst.is_some(), "const must survive round-trip");
-        assert_eq!(cnst.unwrap().value, Some(0), "const.value=0 must be preserved (not treated as None)");
+        assert_eq!(
+            cnst.unwrap().value,
+            Some(0),
+            "const.value=0 must be preserved (not treated as None)"
+        );
     }
 }

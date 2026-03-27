@@ -17,12 +17,7 @@ mod wasm_stubs {
     pub(crate) fn profile_hit_unchecked(_counter: &AtomicU64) {}
 
     #[inline(always)]
-    pub(crate) fn profile_hit_bytes(
-        _py: &crate::PyToken<'_>,
-        _counter: &AtomicU64,
-        _bytes: u64,
-    ) {
-    }
+    pub(crate) fn profile_hit_bytes(_py: &crate::PyToken<'_>, _counter: &AtomicU64, _bytes: u64) {}
 
     pub(crate) fn current_rss_bytes() -> u64 {
         0
@@ -128,12 +123,13 @@ mod native {
         unsafe {
             let mut info: MachTaskBasicInfo = std::mem::zeroed();
             let mut count = INFO_COUNT;
-            let kr = task_info(mach_task_self(), MACH_TASK_BASIC_INFO, &mut info, &mut count);
-            if kr == 0 {
-                info.resident_size
-            } else {
-                0
-            }
+            let kr = task_info(
+                mach_task_self(),
+                MACH_TASK_BASIC_INFO,
+                &mut info,
+                &mut count,
+            );
+            if kr == 0 { info.resident_size } else { 0 }
         }
     }
 
@@ -170,7 +166,12 @@ mod native {
                     break;
                 }
                 if PEAK_RSS_BYTES
-                    .compare_exchange_weak(prev, rss, AtomicOrdering::Relaxed, AtomicOrdering::Relaxed)
+                    .compare_exchange_weak(
+                        prev,
+                        rss,
+                        AtomicOrdering::Relaxed,
+                        AtomicOrdering::Relaxed,
+                    )
                     .is_ok()
                 {
                     break;
@@ -207,9 +208,9 @@ mod native {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::{
-    current_rss_bytes, molt_profile_enabled, molt_profile_handle_resolve,
-    molt_profile_snapshot, molt_profile_struct_field_store, profile_enabled, profile_hit,
-    profile_hit_bytes, profile_hit_unchecked, sample_peak_rss,
+    current_rss_bytes, molt_profile_enabled, molt_profile_handle_resolve, molt_profile_snapshot,
+    molt_profile_struct_field_store, profile_enabled, profile_hit, profile_hit_bytes,
+    profile_hit_unchecked, sample_peak_rss,
 };
 
 /// Mirrors `mach_task_basic_info` from `<mach/task_info.h>`.

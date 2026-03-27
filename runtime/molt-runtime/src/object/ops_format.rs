@@ -7,7 +7,7 @@ use num_traits::{Signed, ToPrimitive};
 use std::borrow::Cow;
 
 use super::ops::range_components_bigint;
-use super::ops_string::{wtf8_from_bytes};
+use super::ops_string::wtf8_from_bytes;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_print_obj(val: u64) {
@@ -1361,7 +1361,10 @@ fn format_int_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, Fo
     Ok(apply_alignment(&prefix, &digits, spec, '>'))
 }
 
-pub(crate) fn format_float_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, FormatError> {
+pub(crate) fn format_float_with_spec(
+    obj: MoltObject,
+    spec: &FormatSpec,
+) -> Result<String, FormatError> {
     let val = if let Some(f) = obj.as_float() {
         f
     } else if let Some(i) = obj.as_int() {

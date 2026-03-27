@@ -23,12 +23,7 @@ unsafe extern "C" {
 
 pub fn raise_exception<T: ExceptionSentinel>(_py: &CoreGilToken, type_name: &str, msg: &str) -> T {
     let bits = unsafe {
-        __molt_ipaddr_raise_exception(
-            type_name.as_ptr(),
-            type_name.len(),
-            msg.as_ptr(),
-            msg.len(),
-        )
+        __molt_ipaddr_raise_exception(type_name.as_ptr(), type_name.len(), msg.as_ptr(), msg.len())
     };
     T::from_bits(bits)
 }
@@ -128,11 +123,8 @@ pub fn release_ptr(ptr: *mut u8) {
 unsafe extern "C" {
     fn __molt_ipaddr_to_i64(bits: u64, out: *mut i64) -> i32;
     fn __molt_ipaddr_int_bits_from_i64(val: i64) -> u64;
-    fn __molt_ipaddr_int_bits_from_bigint(
-        sign: i32,
-        bytes_ptr: *const u8,
-        bytes_len: usize,
-    ) -> u64;
+    fn __molt_ipaddr_int_bits_from_bigint(sign: i32, bytes_ptr: *const u8, bytes_len: usize)
+    -> u64;
 }
 
 pub fn to_i64(obj: MoltObject) -> Option<i64> {

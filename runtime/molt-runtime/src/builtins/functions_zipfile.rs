@@ -4,8 +4,8 @@ use molt_obj_model::MoltObject;
 
 use super::functions::{alloc_string_bits, alloc_string_list, iterable_to_string_vec};
 use crate::{
-    alloc_bytes, alloc_dict_with_pairs, alloc_string, alloc_tuple, bytes_like_slice,
-    dec_ref_bits, is_truthy, obj_from_bits, raise_exception, string_obj_to_owned, to_i64,
+    alloc_bytes, alloc_dict_with_pairs, alloc_string, alloc_tuple, bytes_like_slice, dec_ref_bits,
+    is_truthy, obj_from_bits, raise_exception, string_obj_to_owned, to_i64,
 };
 
 #[unsafe(no_mangle)]

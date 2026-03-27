@@ -4,9 +4,8 @@
 // Uses std::net::{Ipv4Addr, Ipv6Addr} for parsing and validation.
 
 use crate::bridge::{
-    alloc_bytes, alloc_list, alloc_string, dec_ref_bits,
-    int_bits_from_bigint, int_bits_from_i64, raise_exception, release_ptr,
-    string_obj_to_owned, to_i64,
+    alloc_bytes, alloc_list, alloc_string, dec_ref_bits, int_bits_from_bigint, int_bits_from_i64,
+    raise_exception, release_ptr, string_obj_to_owned, to_i64,
 };
 use molt_obj_model::MoltObject;
 use molt_runtime_core::prelude::*;

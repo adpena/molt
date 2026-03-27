@@ -242,9 +242,7 @@ mod tests {
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops = ops;
-            entry.terminator = Terminator::Return {
-                values: vec![],
-            };
+            entry.terminator = Terminator::Return { values: vec![] };
         }
         func.next_value = next_value;
         run(&mut func);
@@ -254,10 +252,7 @@ mod tests {
     #[test]
     fn mul_by_2_becomes_add() {
         // param x = ValueId(0), const 2 = ValueId(1), x * 2 = ValueId(2)
-        let ops = vec![
-            make_const_int(1, 2),
-            make_binop(OpCode::Mul, 2, 0, 1),
-        ];
+        let ops = vec![make_const_int(1, 2), make_binop(OpCode::Mul, 2, 0, 1)];
         let result = run_sr(ops, 3);
         assert_eq!(result[1].opcode, OpCode::Add);
         assert_eq!(result[1].operands, vec![ValueId(0), ValueId(0)]);
@@ -266,10 +261,7 @@ mod tests {
     #[test]
     fn pow_2_becomes_mul() {
         // param x = ValueId(0), const 2 = ValueId(1), x ** 2 = ValueId(2)
-        let ops = vec![
-            make_const_int(1, 2),
-            make_binop(OpCode::Pow, 2, 0, 1),
-        ];
+        let ops = vec![make_const_int(1, 2), make_binop(OpCode::Pow, 2, 0, 1)];
         let result = run_sr(ops, 3);
         assert_eq!(result[1].opcode, OpCode::Mul);
         assert_eq!(result[1].operands, vec![ValueId(0), ValueId(0)]);
@@ -278,10 +270,7 @@ mod tests {
     #[test]
     fn mul_by_3_unchanged() {
         // 3 is not a power of 2 — should not be rewritten.
-        let ops = vec![
-            make_const_int(1, 3),
-            make_binop(OpCode::Mul, 2, 0, 1),
-        ];
+        let ops = vec![make_const_int(1, 3), make_binop(OpCode::Mul, 2, 0, 1)];
         let result = run_sr(ops, 3);
         assert_eq!(result[1].opcode, OpCode::Mul);
         // Operands unchanged.
@@ -291,10 +280,7 @@ mod tests {
     #[test]
     fn mul_float_unchanged() {
         // x * 2.0 where x is I64 param but 2.0 is F64 — should not reduce.
-        let ops = vec![
-            make_const_float(1, 2.0),
-            make_binop(OpCode::Mul, 2, 0, 1),
-        ];
+        let ops = vec![make_const_float(1, 2.0), make_binop(OpCode::Mul, 2, 0, 1)];
         let result = run_sr(ops, 3);
         // The Mul should remain because rhs is F64, not I64.
         assert_eq!(result[1].opcode, OpCode::Mul);
@@ -304,10 +290,7 @@ mod tests {
     fn mul_by_8_unchanged_phase2() {
         // x * 8 — ideally x << 3, but deferred to Phase 3 (no op insertion API).
         // For Phase 2, this remains a Mul.
-        let ops = vec![
-            make_const_int(1, 8),
-            make_binop(OpCode::Mul, 2, 0, 1),
-        ];
+        let ops = vec![make_const_int(1, 8), make_binop(OpCode::Mul, 2, 0, 1)];
         let result = run_sr(ops, 3);
         // Phase 2 doesn't reduce x * 8 yet.
         assert_eq!(result[1].opcode, OpCode::Mul);

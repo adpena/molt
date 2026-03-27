@@ -584,7 +584,10 @@ pub extern "C" fn molt_pathlib_match(path_bits: u64, pattern_bits: u64) -> u64 {
             Err(_) => false,
         };
         #[cfg(not(feature = "stdlib_fs_extra"))]
-        let matched = { let _ = (&s, &pattern); false };
+        let matched = {
+            let _ = (&s, &pattern);
+            false
+        };
         bool_bits(matched)
     })
 }
@@ -1025,7 +1028,9 @@ pub extern "C" fn molt_pathlib_glob(path_bits: u64, pattern_bits: u64) -> u64 {
             }
         }
         #[cfg(not(feature = "stdlib_fs_extra"))]
-        { let _ = &full_pattern; }
+        {
+            let _ = &full_pattern;
+        }
         list_of_strings(_py, &results)
     })
 }
@@ -1070,7 +1075,9 @@ pub extern "C" fn molt_pathlib_rglob(path_bits: u64, pattern_bits: u64) -> u64 {
             }
         }
         #[cfg(not(feature = "stdlib_fs_extra"))]
-        { let _ = &full_pattern; }
+        {
+            let _ = &full_pattern;
+        }
         list_of_strings(_py, &results)
     })
 }

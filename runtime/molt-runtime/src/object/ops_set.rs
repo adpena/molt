@@ -8,8 +8,8 @@ use molt_obj_model::MoltObject;
 
 use super::ops::{ensure_hashable, set_rebuild};
 use super::ops_arith::{
-    set_from_iter_bits, set_like_copy_bits, set_like_difference, set_like_intersection, set_like_ptr_from_bits, set_like_result_type_id, set_like_symdiff,
-    set_like_union,
+    set_from_iter_bits, set_like_copy_bits, set_like_difference, set_like_intersection,
+    set_like_ptr_from_bits, set_like_result_type_id, set_like_symdiff, set_like_union,
 };
 
 /// Specialized `in` for set/frozenset containers (hash lookup, no type dispatch).

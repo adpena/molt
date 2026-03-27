@@ -1,13 +1,11 @@
 //! Memoryview and buffer operations.
 
+use super::ops::{eq_bool_from_bits, is_truthy, type_name};
+use super::ops_bytes::bytes_hex_from_bits;
 use crate::*;
 use molt_obj_model::MoltObject;
-use num_traits::ToPrimitive;
 use num_integer::Integer;
-use super::ops_bytes::bytes_hex_from_bits;
-use super::ops::{eq_bool_from_bits, is_truthy, type_name};
-
-
+use num_traits::ToPrimitive;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {

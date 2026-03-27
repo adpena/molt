@@ -26,10 +26,12 @@ pub extern "C" fn molt_register_function(
 ) {
     // Safety: name_ptr points to a static UTF-8 byte slice supplied by the
     // compiled code object. The caller guarantees lifetime and alignment.
-    let name = unsafe {
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
-    };
-    registry().lock().unwrap().insert(name.to_string(), func_ptr);
+    let name =
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len)) };
+    registry()
+        .lock()
+        .unwrap()
+        .insert(name.to_string(), func_ptr);
 }
 
 /// Deoptimization state — captures live values at the deopt point

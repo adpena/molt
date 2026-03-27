@@ -82,10 +82,7 @@ fn full_profile_has_no_duplicate_import_names() {
     let imports = extract_func_imports(&wasm);
     let mut seen: BTreeSet<String> = BTreeSet::new();
     for (name, _) in &imports {
-        assert!(
-            seen.insert(name.clone()),
-            "duplicate import: {name}"
-        );
+        assert!(seen.insert(name.clone()), "duplicate import: {name}");
     }
 }
 
@@ -95,10 +92,7 @@ fn auto_profile_has_no_duplicate_import_names() {
     let imports = extract_func_imports(&wasm);
     let mut seen: BTreeSet<String> = BTreeSet::new();
     for (name, _) in &imports {
-        assert!(
-            seen.insert(name.clone()),
-            "duplicate import: {name}"
-        );
+        assert!(seen.insert(name.clone()), "duplicate import: {name}");
     }
 }
 
@@ -108,10 +102,7 @@ fn pure_profile_has_no_duplicate_import_names() {
     let imports = extract_func_imports(&wasm);
     let mut seen: BTreeSet<String> = BTreeSet::new();
     for (name, _) in &imports {
-        assert!(
-            seen.insert(name.clone()),
-            "duplicate import: {name}"
-        );
+        assert!(seen.insert(name.clone()), "duplicate import: {name}");
     }
 }
 

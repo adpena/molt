@@ -51,10 +51,7 @@ impl TirFunction {
             .map(|ty| {
                 let id = ValueId(next_value);
                 next_value += 1;
-                TirValue {
-                    id,
-                    ty: ty.clone(),
-                }
+                TirValue { id, ty: ty.clone() }
             })
             .collect();
 
@@ -117,11 +114,7 @@ mod tests {
 
     #[test]
     fn function_new_creates_entry_block_with_params() {
-        let func = TirFunction::new(
-            "add".into(),
-            vec![TirType::I64, TirType::I64],
-            TirType::I64,
-        );
+        let func = TirFunction::new("add".into(), vec![TirType::I64, TirType::I64], TirType::I64);
 
         assert_eq!(func.name, "add");
         assert_eq!(func.entry_block, BlockId(0));
@@ -150,11 +143,7 @@ mod tests {
 
     #[test]
     fn function_with_multiple_blocks() {
-        let mut func = TirFunction::new(
-            "branch_example".into(),
-            vec![TirType::Bool],
-            TirType::I64,
-        );
+        let mut func = TirFunction::new("branch_example".into(), vec![TirType::Bool], TirType::I64);
 
         // Create two successor blocks.
         let then_id = func.fresh_block();
@@ -173,10 +162,7 @@ mod tests {
                 results: vec![ret_val_then],
                 attrs: {
                     let mut m = AttrDict::new();
-                    m.insert(
-                        "value".into(),
-                        crate::tir::ops::AttrValue::Int(1),
-                    );
+                    m.insert("value".into(), crate::tir::ops::AttrValue::Int(1));
                     m
                 },
                 source_span: None,
@@ -196,10 +182,7 @@ mod tests {
                 results: vec![ret_val_else],
                 attrs: {
                     let mut m = AttrDict::new();
-                    m.insert(
-                        "value".into(),
-                        crate::tir::ops::AttrValue::Int(0),
-                    );
+                    m.insert("value".into(), crate::tir::ops::AttrValue::Int(0));
                     m
                 },
                 source_span: None,

@@ -13,5 +13,5 @@ pub mod bridge;
 #[cfg(target_arch = "wasm32")]
 pub mod libc_compat;
 
-pub mod pathlib;
 pub mod os_ext;
+pub mod pathlib;

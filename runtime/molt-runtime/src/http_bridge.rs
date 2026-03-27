@@ -4,8 +4,8 @@
 //! internal function.  The http crate declares matching `extern "C"` imports
 //! and they are resolved at link time.
 
-use crate::*;
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
+use crate::*;
 
 // ---------------------------------------------------------------------------
 // Exception / error handling
@@ -19,17 +19,18 @@ pub extern "C" fn __molt_http_raise_exception(
     msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let type_name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len)) };
-        let msg = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
+        let type_name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
+        };
+        let msg =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
         raise_exception::<u64>(_py, type_name, msg)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_exception_pending() -> i32 {
-    crate::with_gil_entry!(_py, {
-        if exception_pending(_py) { 1 } else { 0 }
-    })
+    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 #[unsafe(no_mangle)]
@@ -182,7 +183,9 @@ pub extern "C" fn __molt_http_to_i64(bits: u64, out: *mut i64) -> i32 {
     let obj = obj_from_bits(bits);
     match to_i64(obj) {
         Some(v) => {
-            unsafe { *out = v; }
+            unsafe {
+                *out = v;
+            }
             1
         }
         None => 0,
@@ -194,7 +197,9 @@ pub extern "C" fn __molt_http_to_f64(bits: u64, out: *mut f64) -> i32 {
     let obj = obj_from_bits(bits);
     match crate::builtins::numbers::to_f64(obj) {
         Some(v) => {
-            unsafe { *out = v; }
+            unsafe {
+                *out = v;
+            }
             1
         }
         None => 0,
@@ -220,7 +225,9 @@ pub extern "C" fn __molt_http_dict_get_in_place(
     crate::with_gil_entry!(_py, {
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
             Some(bits) => {
-                unsafe { *out = bits; }
+                unsafe {
+                    *out = bits;
+                }
                 1
             }
             None => 0,
@@ -261,10 +268,7 @@ pub extern "C" fn __molt_http_molt_iter_next(iter_bits: u64) -> u64 {
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_attr_name_bits_from_bytes(
-    key_ptr: *const u8,
-    key_len: usize,
-) -> u64 {
+pub extern "C" fn __molt_http_attr_name_bits_from_bytes(key_ptr: *const u8, key_len: usize) -> u64 {
     crate::with_gil_entry!(_py, {
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
         match crate::builtins::attr::attr_name_bits_from_bytes(_py, key) {
@@ -303,16 +307,16 @@ pub extern "C" fn __molt_http_call_class_init_with_args(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let args = unsafe { std::slice::from_raw_parts(args_ptr, args_len) };
-        let class_ptr = obj_from_bits(class_bits).as_ptr().unwrap_or(std::ptr::null_mut());
+        let class_ptr = obj_from_bits(class_bits)
+            .as_ptr()
+            .unwrap_or(std::ptr::null_mut());
         unsafe { call_class_init_with_args(_py, class_ptr, args) }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_missing_bits() -> u64 {
-    crate::with_gil_entry!(_py, {
-        missing_bits(_py)
-    })
+    crate::with_gil_entry!(_py, { missing_bits(_py) })
 }
 
 #[unsafe(no_mangle)]
@@ -327,7 +331,11 @@ pub extern "C" fn __molt_http_molt_getattr_builtin(
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_molt_is_callable(bits: u64) -> i32 {
     crate::with_gil_entry!(_py, {
-        if is_truthy(_py, obj_from_bits(molt_is_callable(bits))) { 1 } else { 0 }
+        if is_truthy(_py, obj_from_bits(molt_is_callable(bits))) {
+            1
+        } else {
+            0
+        }
     })
 }
 
@@ -375,11 +383,7 @@ pub extern "C" fn __molt_http_molt_module_import(name_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_molt_object_setattr(
-    obj_bits: u64,
-    name_bits: u64,
-    value_bits: u64,
-) {
+pub extern "C" fn __molt_http_molt_object_setattr(obj_bits: u64, name_bits: u64, value_bits: u64) {
     let _ = crate::molt_object_setattr(obj_bits, name_bits, value_bits);
 }
 
@@ -424,8 +428,14 @@ pub extern "C" fn __molt_http_bytes_like_slice(
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_has_capability(name_ptr: *const u8, name_len: usize) -> i32 {
     crate::with_gil_entry!(_py, {
-        let name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len)) };
-        if crate::has_capability(_py, name) { 1 } else { 0 }
+        let name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
+        };
+        if crate::has_capability(_py, name) {
+            1
+        } else {
+            0
+        }
     })
 }
 
@@ -436,7 +446,8 @@ pub extern "C" fn __molt_http_env_state_get(
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    let key = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(key_ptr, key_len)) };
+    let key =
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(key_ptr, key_len)) };
     match crate::builtins::platform::env_state_get(key) {
         Some(s) => {
             let bytes = s.into_bytes().into_boxed_slice();
@@ -457,12 +468,11 @@ pub extern "C" fn __molt_http_env_state_get(
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_builtin_classes(
-    name_ptr: *const u8,
-    name_len: usize,
-) -> u64 {
+pub extern "C" fn __molt_http_builtin_classes(name_ptr: *const u8, name_len: usize) -> u64 {
     crate::with_gil_entry!(_py, {
-        let name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len)) };
+        let name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
+        };
         let classes = crate::builtin_classes(_py);
         match name {
             "list" => classes.list,
@@ -480,11 +490,17 @@ pub extern "C" fn __molt_http_resolve_global_bits(
     out: *mut u64,
 ) -> i32 {
     crate::with_gil_entry!(_py, {
-        let module = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(module_ptr, module_len)) };
-        let name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len)) };
+        let module = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(module_ptr, module_len))
+        };
+        let name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
+        };
         match crate::builtins::functions_pickle::pickle_resolve_global_bits(_py, module, name) {
             Ok(bits) => {
-                unsafe { *out = bits; }
+                unsafe {
+                    *out = bits;
+                }
                 1
             }
             Err(_) => 0,

@@ -263,8 +263,14 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
     while changed {
         changed = false;
         for &(target, stored_val) in &stored_into {
-            let target_state = escapes.get(&target).copied().unwrap_or(EscapeState::NoEscape);
-            let stored_state = escapes.get(&stored_val).copied().unwrap_or(EscapeState::NoEscape);
+            let target_state = escapes
+                .get(&target)
+                .copied()
+                .unwrap_or(EscapeState::NoEscape);
+            let stored_state = escapes
+                .get(&stored_val)
+                .copied()
+                .unwrap_or(EscapeState::NoEscape);
             if target_state > stored_state {
                 escapes.insert(stored_val, target_state);
                 changed = true;
@@ -340,11 +346,7 @@ mod tests {
     use crate::tir::values::ValueId;
 
     /// Helper to make a simple TirOp.
-    fn make_op(
-        opcode: OpCode,
-        operands: Vec<ValueId>,
-        results: Vec<ValueId>,
-    ) -> TirOp {
+    fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         TirOp {
             dialect: Dialect::Molt,
             opcode,
@@ -364,9 +366,17 @@ mod tests {
         let const_result = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(make_op(OpCode::Alloc, vec![], vec![alloc_val]));
-        entry.ops.push(make_op(OpCode::LoadAttr, vec![alloc_val], vec![load_result]));
-        entry.ops.push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
+        entry
+            .ops
+            .push(make_op(OpCode::Alloc, vec![], vec![alloc_val]));
+        entry.ops.push(make_op(
+            OpCode::LoadAttr,
+            vec![alloc_val],
+            vec![load_result],
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
         entry.terminator = Terminator::Return {
             values: vec![const_result],
         };
@@ -382,7 +392,9 @@ mod tests {
         let alloc_val = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(make_op(OpCode::Alloc, vec![], vec![alloc_val]));
+        entry
+            .ops
+            .push(make_op(OpCode::Alloc, vec![], vec![alloc_val]));
         entry.terminator = Terminator::Return {
             values: vec![alloc_val],
         };
@@ -394,24 +406,22 @@ mod tests {
     /// Test 3: Alloc stored into another (non-alloc) object's field → GlobalEscape.
     #[test]
     fn alloc_stored_into_non_alloc_field_is_global_escape() {
-        let mut func = TirFunction::new(
-            "f".into(),
-            vec![TirType::DynBox],
-            TirType::None,
-        );
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
         let param = ValueId(0); // function parameter, not an alloc
         let alloc_val = func.fresh_value();
         let const_result = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(make_op(OpCode::Alloc, vec![], vec![alloc_val]));
+        entry
+            .ops
+            .push(make_op(OpCode::Alloc, vec![], vec![alloc_val]));
         // StoreAttr: target=param (non-alloc), value=alloc_val
-        entry.ops.push(make_op(
-            OpCode::StoreAttr,
-            vec![param, alloc_val],
-            vec![],
-        ));
-        entry.ops.push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
+        entry
+            .ops
+            .push(make_op(OpCode::StoreAttr, vec![param, alloc_val], vec![]));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
         entry.terminator = Terminator::Return {
             values: vec![const_result],
         };
@@ -429,13 +439,15 @@ mod tests {
         let const_result = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(make_op(OpCode::Alloc, vec![], vec![alloc_val]));
-        entry.ops.push(make_op(
-            OpCode::Call,
-            vec![alloc_val],
-            vec![call_result],
-        ));
-        entry.ops.push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
+        entry
+            .ops
+            .push(make_op(OpCode::Alloc, vec![], vec![alloc_val]));
+        entry
+            .ops
+            .push(make_op(OpCode::Call, vec![alloc_val], vec![call_result]));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
         entry.terminator = Terminator::Return {
             values: vec![const_result],
         };
@@ -453,11 +465,23 @@ mod tests {
         let const_result = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(make_op(OpCode::Alloc, vec![], vec![alloc_val]));
-        entry.ops.push(make_op(OpCode::IncRef, vec![alloc_val], vec![]));
-        entry.ops.push(make_op(OpCode::LoadAttr, vec![alloc_val], vec![load_result]));
-        entry.ops.push(make_op(OpCode::DecRef, vec![alloc_val], vec![]));
-        entry.ops.push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
+        entry
+            .ops
+            .push(make_op(OpCode::Alloc, vec![], vec![alloc_val]));
+        entry
+            .ops
+            .push(make_op(OpCode::IncRef, vec![alloc_val], vec![]));
+        entry.ops.push(make_op(
+            OpCode::LoadAttr,
+            vec![alloc_val],
+            vec![load_result],
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::DecRef, vec![alloc_val], vec![]));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
         entry.terminator = Terminator::Return {
             values: vec![const_result],
         };
@@ -470,7 +494,10 @@ mod tests {
 
         // IncRef and DecRef should be removed.
         assert!(
-            !entry.ops.iter().any(|op| op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef)
+            !entry
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef)
         );
 
         assert_eq!(stats.values_changed, 1);

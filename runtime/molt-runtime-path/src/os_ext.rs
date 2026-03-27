@@ -21,11 +21,10 @@ const EBADF_VALUE: i32 = libc::EBADF;
 #[cfg(target_arch = "wasm32")]
 const EBADF_VALUE: i32 = 9; // EBADF = 9 on WASI
 
-
 use crate::bridge::*;
 use molt_obj_model::MoltObject;
-use molt_runtime_core::prelude::*;
 use molt_runtime_core::obj_from_bits;
+use molt_runtime_core::prelude::*;
 use std::path::{Component, Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -2183,11 +2182,7 @@ pub extern "C" fn molt_os_environ() -> u64 {
 ///
 /// Recursive directory creation (like `mkdir -p`).
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_os_makedirs(
-    path_bits: u64,
-    mode_bits: u64,
-    exist_ok_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_os_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         if !has_capability(_py, "fs.write") {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");

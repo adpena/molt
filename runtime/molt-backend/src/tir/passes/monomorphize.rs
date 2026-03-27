@@ -119,7 +119,11 @@ fn clone_function(func: &TirFunction, new_name: String) -> TirFunction {
 /// 4. Runs `type_refine::refine_types` to propagate concrete types through
 ///    all operations.
 fn specialize(callee: &TirFunction, concrete_args: &[TirType]) -> TirFunction {
-    let suffix: String = concrete_args.iter().map(mangle_type).collect::<Vec<_>>().join("_");
+    let suffix: String = concrete_args
+        .iter()
+        .map(mangle_type)
+        .collect::<Vec<_>>()
+        .join("_");
     let specialized_name = format!("{}__{}", callee.name, suffix);
 
     let mut copy = clone_function(callee, specialized_name);
@@ -287,21 +291,20 @@ pub fn monomorphize(module: &mut TirModule) -> usize {
             }
 
             // Rewrite the call site to use the specialized name.
-            let actual_spec_name = cache.get(&cache_key).cloned().unwrap_or_else(|| spec_name.clone());
+            let actual_spec_name = cache
+                .get(&cache_key)
+                .cloned()
+                .unwrap_or_else(|| spec_name.clone());
             if &actual_spec_name != callee_name {
                 if let Some(block) = module.functions[*caller_idx].blocks.get_mut(bid) {
                     let op = &mut block.ops[*op_idx];
                     // Update "callee" attr (preferred) or "s_value".
                     if op.attrs.contains_key("callee") {
-                        op.attrs.insert(
-                            "callee".to_string(),
-                            AttrValue::Str(actual_spec_name),
-                        );
+                        op.attrs
+                            .insert("callee".to_string(), AttrValue::Str(actual_spec_name));
                     } else {
-                        op.attrs.insert(
-                            "s_value".to_string(),
-                            AttrValue::Str(actual_spec_name),
-                        );
+                        op.attrs
+                            .insert("s_value".to_string(), AttrValue::Str(actual_spec_name));
                     }
                 }
             }
@@ -444,10 +447,7 @@ mod tests {
 
     /// Build a caller that passes already-typed block arguments (to ensure
     /// type env sees non-DynBox types without relying on type_refine inference).
-    fn make_caller_with_typed_args(
-        callee_name: &str,
-        arg_tys: Vec<TirType>,
-    ) -> TirFunction {
+    fn make_caller_with_typed_args(callee_name: &str, arg_tys: Vec<TirType>) -> TirFunction {
         let mut func = TirFunction::new("main".to_string(), arg_tys.clone(), TirType::DynBox);
         // arg ValueIds are 0..arg_tys.len()
         let call_result = ValueId(func.next_value);
@@ -492,7 +492,11 @@ mod tests {
         );
 
         // The specialized function should have I64 param types.
-        let spec = module.functions.iter().find(|f| f.name == "add__I64_I64").unwrap();
+        let spec = module
+            .functions
+            .iter()
+            .find(|f| f.name == "add__I64_I64")
+            .unwrap();
         assert_eq!(spec.param_types, vec![TirType::I64, TirType::I64]);
     }
 
@@ -515,8 +519,14 @@ mod tests {
 
         assert_eq!(specs, 2, "expected 2 specializations (I64 and F64)");
         let names: Vec<&str> = module.functions.iter().map(|f| f.name.as_str()).collect();
-        assert!(names.contains(&"add__I64_I64"), "missing I64 specialization");
-        assert!(names.contains(&"add__F64_F64"), "missing F64 specialization");
+        assert!(
+            names.contains(&"add__I64_I64"),
+            "missing I64 specialization"
+        );
+        assert!(
+            names.contains(&"add__F64_F64"),
+            "missing F64 specialization"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -525,8 +535,7 @@ mod tests {
     #[test]
     fn does_not_specialize_partial_dynbox() {
         let generic = make_generic_add();
-        let caller =
-            make_caller_with_typed_args("add", vec![TirType::DynBox, TirType::I64]);
+        let caller = make_caller_with_typed_args("add", vec![TirType::DynBox, TirType::I64]);
         let mut module = make_module(vec![generic, caller]);
 
         let specs = monomorphize(&mut module);
@@ -557,7 +566,10 @@ mod tests {
         let specs = monomorphize(&mut module);
 
         // Only one specialization should be created despite two call sites.
-        assert_eq!(specs, 1, "cache should deduplicate identical specializations");
+        assert_eq!(
+            specs, 1,
+            "cache should deduplicate identical specializations"
+        );
         let count = module
             .functions
             .iter()
@@ -582,7 +594,10 @@ mod tests {
 
         let specs = monomorphize(&mut module);
 
-        assert_eq!(specs, 0, "no specialization needed for already-concrete function");
+        assert_eq!(
+            specs, 0,
+            "no specialization needed for already-concrete function"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -599,12 +614,22 @@ mod tests {
         // Find the "main" function and verify its call op was rewritten.
         let main_func = module.functions.iter().find(|f| f.name == "main").unwrap();
         let entry = &main_func.blocks[&main_func.entry_block];
-        let call_op = entry.ops.iter().find(|op| op.opcode == OpCode::Call).unwrap();
+        let call_op = entry
+            .ops
+            .iter()
+            .find(|op| op.opcode == OpCode::Call)
+            .unwrap();
         let target = call_op
             .attrs
             .get("callee")
             .or_else(|| call_op.attrs.get("s_value"))
-            .and_then(|v| if let AttrValue::Str(s) = v { Some(s.as_str()) } else { None });
+            .and_then(|v| {
+                if let AttrValue::Str(s) = v {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            });
         assert_eq!(
             target,
             Some("add__I64_I64"),

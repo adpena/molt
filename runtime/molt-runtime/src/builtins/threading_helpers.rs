@@ -65,84 +65,81 @@ pub unsafe extern "C" fn molt_threading_validate_timeout(
         let mode = to_i64(obj_from_bits(mode_bits)).unwrap_or(0);
         let blocking = is_truthy(py, obj_from_bits(blocking_bits));
 
-            // None means no timeout
-            if timeout_obj.is_none() {
-                if mode == 0 {
+        // None means no timeout
+        if timeout_obj.is_none() {
+            if mode == 0 {
+                return raise_exception::<u64>(
+                    py,
+                    "TypeError",
+                    "'NoneType' object cannot be interpreted as an integer or float",
+                );
+            }
+            return MoltObject::none().bits();
+        }
+
+        // Try to convert to float
+        let timeout_val = match to_f64(timeout_obj) {
+            Some(v) => v,
+            None => {
+                let tname = type_name(py, timeout_obj);
+                let msg = format!(
+                    "'{}' object cannot be interpreted as an integer or float",
+                    tname
+                );
+                return raise_exception::<u64>(py, "TypeError", &msg);
+            }
+        };
+
+        const TIMEOUT_MAX: f64 = 9223372036.0;
+
+        match mode {
+            0 => {
+                // Lock mode
+                if !blocking && timeout_val != -1.0 {
                     return raise_exception::<u64>(
                         py,
-                        "TypeError",
-                        "'NoneType' object cannot be interpreted as an integer or float",
+                        "ValueError",
+                        "can't specify a timeout for a non-blocking call",
                     );
                 }
-                return MoltObject::none().bits();
-            }
-
-            // Try to convert to float
-            let timeout_val = match to_f64(timeout_obj) {
-                Some(v) => v,
-                None => {
-                    let tname = type_name(py, timeout_obj);
-                    let msg = format!(
-                        "'{}' object cannot be interpreted as an integer or float",
-                        tname
+                if blocking && timeout_val < 0.0 && timeout_val != -1.0 {
+                    return raise_exception::<u64>(
+                        py,
+                        "ValueError",
+                        "timeout value must be a non-negative number",
                     );
-                    return raise_exception::<u64>(py, "TypeError", &msg);
                 }
-            };
-
-            const TIMEOUT_MAX: f64 = 9223372036.0;
-
-            match mode {
-                0 => {
-                    // Lock mode
-                    if !blocking && timeout_val != -1.0 {
-                        return raise_exception::<u64>(
-                            py,
-                            "ValueError",
-                            "can't specify a timeout for a non-blocking call",
-                        );
-                    }
-                    if blocking && timeout_val < 0.0 && timeout_val != -1.0 {
-                        return raise_exception::<u64>(
-                            py,
-                            "ValueError",
-                            "timeout value must be a non-negative number",
-                        );
-                    }
-                    if blocking && timeout_val != -1.0 && timeout_val > TIMEOUT_MAX {
-                        return raise_exception::<u64>(
-                            py,
-                            "OverflowError",
-                            "timestamp out of range for platform time_t",
-                        );
-                    }
-                    MoltObject::from_float(timeout_val).bits()
+                if blocking && timeout_val != -1.0 && timeout_val > TIMEOUT_MAX {
+                    return raise_exception::<u64>(
+                        py,
+                        "OverflowError",
+                        "timestamp out of range for platform time_t",
+                    );
                 }
-                1 => {
-                    // Event/Condition/Join mode
-                    let clamped = if timeout_val < 0.0 { 0.0 } else { timeout_val };
-                    if clamped > TIMEOUT_MAX {
-                        return raise_exception::<u64>(
-                            py,
-                            "OverflowError",
-                            "timestamp out of range for platform time_t",
-                        );
-                    }
-                    MoltObject::from_float(clamped).bits()
-                }
-                _ => MoltObject::none().bits(),
+                MoltObject::from_float(timeout_val).bits()
             }
-        })
+            1 => {
+                // Event/Condition/Join mode
+                let clamped = if timeout_val < 0.0 { 0.0 } else { timeout_val };
+                if clamped > TIMEOUT_MAX {
+                    return raise_exception::<u64>(
+                        py,
+                        "OverflowError",
+                        "timestamp out of range for platform time_t",
+                    );
+                }
+                MoltObject::from_float(clamped).bits()
+            }
+            _ => MoltObject::none().bits(),
+        }
+    })
 }
 
 /// Invokes trace and profile hooks stored as NaN-boxed callables.
 /// `trace_bits`: the trace hook callable bits (or None).
 /// `profile_bits`: the profile hook callable bits (or None).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_threading_invoke_hooks(
-    trace_bits: u64,
-    profile_bits: u64,
-) -> u64 {
+pub unsafe extern "C" fn molt_threading_invoke_hooks(trace_bits: u64, profile_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry!(py, {
             let trace_obj = obj_from_bits(trace_bits);
@@ -174,11 +171,7 @@ pub unsafe extern "C" fn molt_threading_parse_registry_record(record_bits: u64) 
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(record_bits);
         if obj.is_none() {
-            return raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                "invalid thread registry record",
-            );
+            return raise_exception::<u64>(_py, "RuntimeError", "invalid thread registry record");
         }
         // Pass through validated record
         record_bits
@@ -188,10 +181,7 @@ pub unsafe extern "C" fn molt_threading_parse_registry_record(record_bits: u64) 
 /// Bootstraps the main thread registry entry.
 /// Delegates to molt_thread_registry_set_main.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_threading_bootstrap_main(
-    name_bits: u64,
-    daemon_bits: u64,
-) -> u64 {
+pub unsafe extern "C" fn molt_threading_bootstrap_main(name_bits: u64, daemon_bits: u64) -> u64 {
     unsafe {
         crate::molt_thread_registry_set_main(name_bits, daemon_bits);
     }
@@ -213,7 +203,13 @@ pub unsafe extern "C" fn molt_threading_registry_record_tuple(
     crate::with_gil_entry!(py, {
         let ptr = alloc_tuple(
             py,
-            &[name_bits, daemon_bits, ident_bits, native_id_bits, alive_bits],
+            &[
+                name_bits,
+                daemon_bits,
+                ident_bits,
+                native_id_bits,
+                alive_bits,
+            ],
         );
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -236,7 +232,13 @@ pub extern "C" fn molt_threading_lock_new() -> u64 {
 /// Acquire the lock. Always succeeds (single-threaded). Returns True.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_threading_lock_acquire(lock_bits: u64) -> u64 {
-    unsafe { crate::molt_lock_acquire(lock_bits, MoltObject::from_bool(true).bits(), MoltObject::none().bits()) }
+    unsafe {
+        crate::molt_lock_acquire(
+            lock_bits,
+            MoltObject::from_bool(true).bits(),
+            MoltObject::none().bits(),
+        )
+    }
 }
 
 /// Release the lock. Returns None.

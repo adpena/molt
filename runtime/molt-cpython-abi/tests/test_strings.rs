@@ -55,26 +55,23 @@ fn test_unicode_from_string_and_size() {
 #[test]
 fn test_unicode_from_string_and_size_null_ptr() {
     init();
-    let py =
-        unsafe { molt_cpython_abi::api::strings::PyUnicode_FromStringAndSize(ptr::null(), 5) };
+    let py = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromStringAndSize(ptr::null(), 5) };
     assert!(py.is_null());
 }
 
 #[test]
 fn test_unicode_from_string_and_size_negative_size() {
     init();
-    let py = unsafe {
-        molt_cpython_abi::api::strings::PyUnicode_FromStringAndSize(c"abc".as_ptr(), -1)
-    };
+    let py =
+        unsafe { molt_cpython_abi::api::strings::PyUnicode_FromStringAndSize(c"abc".as_ptr(), -1) };
     assert!(py.is_null());
 }
 
 #[test]
 fn test_unicode_from_string_and_size_zero_length() {
     init();
-    let py = unsafe {
-        molt_cpython_abi::api::strings::PyUnicode_FromStringAndSize(c"abc".as_ptr(), 0)
-    };
+    let py =
+        unsafe { molt_cpython_abi::api::strings::PyUnicode_FromStringAndSize(c"abc".as_ptr(), 0) };
     assert!(!py.is_null());
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
 }
@@ -191,18 +188,15 @@ fn test_bytes_from_string_and_size() {
 #[test]
 fn test_bytes_from_string_and_size_negative_len() {
     init();
-    let py = unsafe {
-        molt_cpython_abi::api::strings::PyBytes_FromStringAndSize(c"abc".as_ptr(), -1)
-    };
+    let py =
+        unsafe { molt_cpython_abi::api::strings::PyBytes_FromStringAndSize(c"abc".as_ptr(), -1) };
     assert!(py.is_null());
 }
 
 #[test]
 fn test_bytes_from_string_and_size_null_allocates_zeros() {
     init();
-    let py = unsafe {
-        molt_cpython_abi::api::strings::PyBytes_FromStringAndSize(ptr::null(), 10)
-    };
+    let py = unsafe { molt_cpython_abi::api::strings::PyBytes_FromStringAndSize(ptr::null(), 10) };
     // Should allocate 10 zero bytes
     assert!(!py.is_null());
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
@@ -211,9 +205,8 @@ fn test_bytes_from_string_and_size_null_allocates_zeros() {
 #[test]
 fn test_bytes_from_string_and_size_zero_length() {
     init();
-    let py = unsafe {
-        molt_cpython_abi::api::strings::PyBytes_FromStringAndSize(c"abc".as_ptr(), 0)
-    };
+    let py =
+        unsafe { molt_cpython_abi::api::strings::PyBytes_FromStringAndSize(c"abc".as_ptr(), 0) };
     assert!(!py.is_null());
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
 }

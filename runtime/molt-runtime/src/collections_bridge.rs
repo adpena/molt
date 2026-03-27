@@ -4,8 +4,8 @@
 //! internal `pub(crate)` function.  The collections crate declares matching
 //! `extern "C"` imports and they are resolved at link time.
 
-use crate::*;
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
+use crate::*;
 
 // ---------------------------------------------------------------------------
 // Exception / error handling
@@ -19,24 +19,23 @@ pub extern "C" fn __molt_collections_raise_exception(
     msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let type_name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len)) };
-        let msg = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
+        let type_name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
+        };
+        let msg =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
         raise_exception::<u64>(_py, type_name, msg)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_collections_exception_pending() -> i32 {
-    crate::with_gil_entry!(_py, {
-        if exception_pending(_py) { 1 } else { 0 }
-    })
+    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_collections_raise_key_error_with_key(key_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        raise_key_error_with_key::<u64>(_py, key_bits)
-    })
+    crate::with_gil_entry!(_py, { raise_key_error_with_key::<u64>(_py, key_bits) })
 }
 
 // ---------------------------------------------------------------------------
@@ -44,7 +43,10 @@ pub extern "C" fn __molt_collections_raise_key_error_with_key(key_bits: u64) -> 
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_collections_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
+pub extern "C" fn __molt_collections_alloc_tuple(
+    elems_ptr: *const u64,
+    elems_len: usize,
+) -> *mut u8 {
     crate::with_gil_entry!(_py, {
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_tuple(_py, elems)
@@ -52,7 +54,10 @@ pub extern "C" fn __molt_collections_alloc_tuple(elems_ptr: *const u64, elems_le
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_collections_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
+pub extern "C" fn __molt_collections_alloc_list(
+    elems_ptr: *const u64,
+    elems_len: usize,
+) -> *mut u8 {
     crate::with_gil_entry!(_py, {
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_list(_py, elems)
@@ -68,7 +73,10 @@ pub extern "C" fn __molt_collections_alloc_string(data_ptr: *const u8, data_len:
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_collections_alloc_dict_with_pairs(pairs_ptr: *const u64, pairs_len: usize) -> *mut u8 {
+pub extern "C" fn __molt_collections_alloc_dict_with_pairs(
+    pairs_ptr: *const u64,
+    pairs_len: usize,
+) -> *mut u8 {
     crate::with_gil_entry!(_py, {
         let pairs = unsafe { std::slice::from_raw_parts(pairs_ptr, pairs_len) };
         alloc_dict_with_pairs(_py, pairs)
@@ -162,7 +170,9 @@ pub extern "C" fn __molt_collections_to_i64(bits: u64, out: *mut i64) -> i32 {
     let obj = obj_from_bits(bits);
     match to_i64(obj) {
         Some(v) => {
-            unsafe { *out = v; }
+            unsafe {
+                *out = v;
+            }
             1
         }
         None => 0,
@@ -177,10 +187,14 @@ pub extern "C" fn __molt_collections_index_i64_with_overflow(
     out: *mut i64,
 ) -> i32 {
     crate::with_gil_entry!(_py, {
-        let type_err = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_err_ptr, type_err_len)) };
+        let type_err = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_err_ptr, type_err_len))
+        };
         match index_i64_with_overflow(_py, bits, type_err, None) {
             Some(v) => {
-                unsafe { *out = v; }
+                unsafe {
+                    *out = v;
+                }
                 1
             }
             None => 0,
@@ -201,7 +215,9 @@ pub extern "C" fn __molt_collections_dict_get_in_place(
     crate::with_gil_entry!(_py, {
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
             Some(bits) => {
-                unsafe { *out = bits; }
+                unsafe {
+                    *out = bits;
+                }
                 1
             }
             None => 0,
@@ -222,12 +238,13 @@ pub extern "C" fn __molt_collections_dict_set_in_place(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_collections_dict_del_in_place(
-    dict_ptr: *mut u8,
-    key_bits: u64,
-) -> i32 {
+pub extern "C" fn __molt_collections_dict_del_in_place(dict_ptr: *mut u8, key_bits: u64) -> i32 {
     crate::with_gil_entry!(_py, {
-        if unsafe { dict_del_in_place(_py, dict_ptr, key_bits) } { 1 } else { 0 }
+        if unsafe { dict_del_in_place(_py, dict_ptr, key_bits) } {
+            1
+        } else {
+            0
+        }
     })
 }
 

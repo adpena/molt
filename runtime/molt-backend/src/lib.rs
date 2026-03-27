@@ -22,9 +22,9 @@ use cranelift_native::builder_with_options as native_isa_builder_with_options;
 #[cfg(feature = "native-backend")]
 use cranelift_object::{ObjectBuilder, ObjectModule};
 #[cfg(feature = "native-backend")]
-use std::collections::{BTreeMap, BTreeSet};
-#[cfg(feature = "native-backend")]
 use std::collections::HashSet;
+#[cfg(feature = "native-backend")]
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "native-backend")]
 use std::fmt::Write as _;
 #[cfg(feature = "native-backend")]
@@ -33,26 +33,22 @@ use std::sync::OnceLock;
 mod ir;
 mod ir_schema;
 mod json_boundary;
-pub mod tir;
-pub mod luau_ir;
-pub mod luau_lower;
 #[cfg(feature = "llvm")]
 pub mod llvm_backend;
+pub mod luau_ir;
+pub mod luau_lower;
 #[cfg(feature = "native-backend")]
 mod native_backend;
 mod passes;
-pub use crate::ir::{
-    FunctionIR, OpIR, PgoProfileIR, SimpleIR,
-    validate_simple_ir,
-};
+pub mod tir;
+pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir};
 #[cfg(feature = "native-backend")]
 use crate::native_backend::TrampolineKey;
 pub use crate::passes::{
     apply_profile_order, build_const_int_map, elide_dead_struct_allocs,
-    elide_safe_exception_checks, eliminate_dead_functions, escape_analysis,
-    fold_constants, fold_constants_cross_block, hoist_loop_invariants,
-    inline_functions, propagate_loop_fast_int, rc_coalescing, rewrite_stateful_loops,
-    split_megafunctions,
+    elide_safe_exception_checks, eliminate_dead_functions, escape_analysis, fold_constants,
+    fold_constants_cross_block, hoist_loop_invariants, inline_functions, propagate_loop_fast_int,
+    rc_coalescing, rewrite_stateful_loops, split_megafunctions,
 };
 
 #[cfg(feature = "luau-backend")]
@@ -60,9 +56,9 @@ pub mod luau;
 #[cfg(feature = "rust-backend")]
 pub mod rust;
 #[cfg(feature = "wasm-backend")]
-mod wasm_imports;
-#[cfg(feature = "wasm-backend")]
 pub mod wasm;
+#[cfg(feature = "wasm-backend")]
+mod wasm_imports;
 
 #[cfg(feature = "egraphs")]
 pub mod egraph_simplify;
@@ -201,7 +197,9 @@ impl NanBoxConsts {
         let v = builder.ins().iconst(types::I64, 5);
         builder.def_var(special_limit_var, v);
 
-        let v = builder.ins().iconst(types::I64, ((QNAN | TAG_INT) >> 48) as i64);
+        let v = builder
+            .ins()
+            .iconst(types::I64, ((QNAN | TAG_INT) >> 48) as i64);
         builder.def_var(int_tag_16_var, v);
 
         let v = builder.ins().iconst(types::I64, INT_MASK as i64);
@@ -268,16 +266,45 @@ struct NativeBackendIrAnalysis {
 }
 
 #[cfg(feature = "native-backend")]
-fn analyze_native_backend_ir(ir: &SimpleIR) -> NativeBackendIrAnalysis {
+#[derive(Clone, Default)]
+pub struct NativeBackendModuleContext {
+    function_arities: BTreeMap<String, usize>,
+    closure_functions: BTreeSet<String>,
+    task_kinds: BTreeMap<String, TrampolineKind>,
+    task_closure_sizes: BTreeMap<String, i64>,
+    leaf_functions: BTreeSet<String>,
+    return_alias_summaries: BTreeMap<String, crate::passes::ReturnAliasSummary>,
+}
+
+#[cfg(feature = "native-backend")]
+impl NativeBackendModuleContext {
+    fn from_functions(functions: &[FunctionIR]) -> Self {
+        let analysis = analyze_native_backend_functions(functions);
+        Self {
+            function_arities: functions
+                .iter()
+                .map(|func| (func.name.clone(), func.params.len()))
+                .collect(),
+            closure_functions: analysis.closure_functions,
+            task_kinds: analysis.task_kinds,
+            task_closure_sizes: analysis.task_closure_sizes,
+            leaf_functions: analysis.leaf_functions,
+            return_alias_summaries: crate::passes::compute_return_alias_summaries(functions),
+        }
+    }
+}
+
+#[cfg(feature = "native-backend")]
+fn analyze_native_backend_functions(functions: &[FunctionIR]) -> NativeBackendIrAnalysis {
     let defined_functions: BTreeSet<String> =
-        ir.functions.iter().map(|func| func.name.clone()).collect();
+        functions.iter().map(|func| func.name.clone()).collect();
     let mut closure_functions: BTreeSet<String> = BTreeSet::new();
     let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
     let mut task_closure_sizes: BTreeMap<String, i64> = BTreeMap::new();
     let mut needs_inlining = false;
     let mut has_task_attrs = false;
 
-    for func_ir in &ir.functions {
+    for func_ir in functions {
         for op in &func_ir.ops {
             match op.kind.as_str() {
                 "call_internal" => needs_inlining = true,
@@ -305,7 +332,7 @@ fn analyze_native_backend_ir(ir: &SimpleIR) -> NativeBackendIrAnalysis {
     }
 
     if has_task_attrs {
-        for func_ir in &ir.functions {
+        for func_ir in functions {
             let mut func_obj_names: BTreeMap<String, String> = BTreeMap::new();
             let mut const_values: BTreeMap<String, i64> = BTreeMap::new();
             let mut const_bools: BTreeMap<String, bool> = BTreeMap::new();
@@ -411,7 +438,7 @@ fn analyze_native_backend_ir(ir: &SimpleIR) -> NativeBackendIrAnalysis {
     // or another function that also has all-int param_types.
     let mut typed_int_candidates: BTreeSet<String> = BTreeSet::new();
     let mut func_param_types_map: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for func_ir in &ir.functions {
+    for func_ir in functions {
         if closure_functions.contains(&func_ir.name) {
             continue;
         }
@@ -473,7 +500,7 @@ fn analyze_native_backend_ir(ir: &SimpleIR) -> NativeBackendIrAnalysis {
     // candidate are either self or another candidate.
     let mut typed_int_functions: BTreeSet<String> = BTreeSet::new();
     for name in &typed_int_candidates {
-        let func_ir = ir.functions.iter().find(|f| &f.name == name).unwrap();
+        let func_ir = functions.iter().find(|f| &f.name == name).unwrap();
         let mut valid = true;
         for op in &func_ir.ops {
             if op.kind == "call_internal" {
@@ -499,12 +526,19 @@ fn analyze_native_backend_ir(ir: &SimpleIR) -> NativeBackendIrAnalysis {
     // Detect leaf functions: functions that contain no user-level calls.
     // These can safely skip the recursion guard since they cannot recurse.
     let mut leaf_functions: BTreeSet<String> = BTreeSet::new();
-    for func_ir in &ir.functions {
-        let has_call = func_ir.ops.iter().any(|op| matches!(
-            op.kind.as_str(),
-            "call" | "call_guarded" | "call_func" | "call_internal"
-            | "call_indirect" | "call_bind" | "invoke_ffi"
-        ));
+    for func_ir in functions {
+        let has_call = func_ir.ops.iter().any(|op| {
+            matches!(
+                op.kind.as_str(),
+                "call"
+                    | "call_guarded"
+                    | "call_func"
+                    | "call_internal"
+                    | "call_indirect"
+                    | "call_bind"
+                    | "invoke_ffi"
+            )
+        });
         if !has_call {
             leaf_functions.insert(func_ir.name.clone());
         }
@@ -525,6 +559,11 @@ fn analyze_native_backend_ir(ir: &SimpleIR) -> NativeBackendIrAnalysis {
         _typed_int_functions: typed_int_functions,
         leaf_functions,
     }
+}
+
+#[cfg(feature = "native-backend")]
+fn analyze_native_backend_ir(ir: &SimpleIR) -> NativeBackendIrAnalysis {
+    analyze_native_backend_functions(&ir.functions)
 }
 
 #[cfg(feature = "native-backend")]
@@ -679,9 +718,7 @@ fn unbox_int(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> V
         let mask = builder.use_var(nbc.qnan_tag_mask);
         let expected = builder.use_var(nbc.qnan_tag_int);
         let masked = builder.ins().band(val, mask);
-        let is_int = builder
-            .ins()
-            .icmp(IntCC::Equal, masked, expected);
+        let is_int = builder.ins().icmp(IntCC::Equal, masked, expected);
         builder
             .ins()
             .trapz(is_int, cranelift_codegen::ir::TrapCode::user(1).unwrap());
@@ -769,7 +806,11 @@ fn is_int_or_bool_tag(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxCon
 ///   - `unboxed` is the sign-extended 47-bit integer payload (valid only when
 ///     the tag check passes).
 #[cfg(feature = "native-backend")]
-fn fused_tag_check_and_unbox_int(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> (Value, Value) {
+fn fused_tag_check_and_unbox_int(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    nbc: &NanBoxConsts,
+) -> (Value, Value) {
     let expected_tag = builder.use_var(nbc.qnan_tag_int);
     let xored = builder.ins().bxor(val, expected_tag);
     let shift = builder.use_var(nbc.int_shift);
@@ -816,7 +857,12 @@ fn is_nanboxed_special(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxCo
 
 /// Check that both NaN-boxed values are plain f64 (not tagged specials).
 #[cfg(feature = "native-backend")]
-fn both_float_check(builder: &mut FunctionBuilder, lhs: Value, rhs: Value, nbc: &NanBoxConsts) -> Value {
+fn both_float_check(
+    builder: &mut FunctionBuilder,
+    lhs: Value,
+    rhs: Value,
+    nbc: &NanBoxConsts,
+) -> Value {
     let lhs_special = is_nanboxed_special(builder, lhs, nbc);
     let rhs_special = is_nanboxed_special(builder, rhs, nbc);
     let either_special = builder.ins().bor(lhs_special, rhs_special);
@@ -861,7 +907,9 @@ pub(crate) fn emit_mixed_int_float_op(
     let rhs_int_block = builder.create_block();
     let not_mixed_block = builder.create_block();
     builder.set_cold_block(not_mixed_block);
-    builder.ins().brif(case_a, lhs_int_block, &[], check_rhs_block, &[]);
+    builder
+        .ins()
+        .brif(case_a, lhs_int_block, &[], check_rhs_block, &[]);
     // LHS is int, RHS is float
     builder.switch_to_block(lhs_int_block);
     builder.seal_block(lhs_int_block);
@@ -879,7 +927,9 @@ pub(crate) fn emit_mixed_int_float_op(
     // Check case_b
     builder.switch_to_block(check_rhs_block);
     builder.seal_block(check_rhs_block);
-    builder.ins().brif(case_b, rhs_int_block, &[], not_mixed_block, &[]);
+    builder
+        .ins()
+        .brif(case_b, rhs_int_block, &[], not_mixed_block, &[]);
     // RHS is int, LHS is float
     builder.switch_to_block(rhs_int_block);
     builder.seal_block(rhs_int_block);
@@ -941,11 +991,7 @@ fn int_value_fits_inline(builder: &mut FunctionBuilder, val: Value) -> Value {
 ///      overflow), AND
 ///   2. The 64-bit result fits in a 47-bit signed inline integer.
 #[cfg(feature = "native-backend")]
-fn imul_checked_inline(
-    builder: &mut FunctionBuilder,
-    lhs: Value,
-    rhs: Value,
-) -> (Value, Value) {
+fn imul_checked_inline(builder: &mut FunctionBuilder, lhs: Value, rhs: Value) -> (Value, Value) {
     let prod = builder.ins().imul(lhs, rhs);
     // smulhi gives the upper 64 bits of the signed 128-bit product.
     let hi = builder.ins().smulhi(lhs, rhs);
@@ -1077,9 +1123,13 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, nbc: &NanB
         .iconst(types::I64, HEADER_REFCOUNT_OFFSET as i64);
     let rc_addr = builder.ins().iadd(raw_ptr, rc_offset);
     let one_i32 = builder.ins().iconst(types::I32, 1);
-    builder
-        .ins()
-        .atomic_rmw(types::I32, MemFlags::trusted(), AtomicRmwOp::Add, rc_addr, one_i32);
+    builder.ins().atomic_rmw(
+        types::I32,
+        MemFlags::trusted(),
+        AtomicRmwOp::Add,
+        rc_addr,
+        one_i32,
+    );
     builder.ins().jump(merge_block, &[]);
 
     // 4. Merge — continue in the merge block
@@ -1098,7 +1148,12 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, nbc: &NanB
 /// Emit an inc_ref_obj — either inlined or as a function call depending on
 /// the `MOLT_INLINE_RC` flag.
 #[cfg(feature = "native-backend")]
-fn emit_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef, nbc: &NanBoxConsts) {
+fn emit_inc_ref_obj(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    call_ref: FuncRef,
+    nbc: &NanBoxConsts,
+) {
     if inline_rc_enabled() {
         emit_inline_inc_ref_obj(builder, val, nbc);
     } else {
@@ -1109,7 +1164,12 @@ fn emit_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef
 /// Emit a ref-adjust (inc_ref_obj) — either inlined or as a function call
 /// depending on the `MOLT_INLINE_RC` flag.
 #[cfg(feature = "native-backend")]
-fn emit_maybe_ref_adjust_v2(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef, nbc: &NanBoxConsts) {
+fn emit_maybe_ref_adjust_v2(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    call_ref: FuncRef,
+    nbc: &NanBoxConsts,
+) {
     if inline_rc_enabled() {
         emit_inline_inc_ref_obj(builder, val, nbc);
     } else {
@@ -1123,7 +1183,12 @@ fn emit_maybe_ref_adjust_v2(builder: &mut FunctionBuilder, val: Value, call_ref:
 /// where cleanup values are immediate integers.
 #[cfg(feature = "native-backend")]
 #[allow(dead_code)]
-fn emit_dec_ref_obj(builder: &mut FunctionBuilder, val: Value, call_ref: FuncRef, nbc: &NanBoxConsts) {
+fn emit_dec_ref_obj(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    call_ref: FuncRef,
+    nbc: &NanBoxConsts,
+) {
     if !inline_rc_enabled() {
         builder.ins().call(call_ref, &[val]);
         return;
@@ -1459,15 +1524,11 @@ pub(crate) fn propagate_tracked_to_branches(
             extend_unique_tracked(block_tracked.entry(target).or_default(), carry);
             return;
         }
-        extend_unique_tracked(
-            block_tracked.entry(target).or_default(),
-            carry.clone(),
-        );
+        extend_unique_tracked(block_tracked.entry(target).or_default(), carry.clone());
     }
 }
 
 #[cfg(feature = "native-backend")]
-
 #[cfg(feature = "native-backend")]
 fn drain_cleanup_tracked_dedup(
     names: &mut Vec<String>,
@@ -1498,7 +1559,6 @@ fn drain_cleanup_tracked_dedup(
     });
     cleanup
 }
-
 
 fn drain_cleanup_entry_tracked(
     names: &mut Vec<String>,
@@ -1537,9 +1597,20 @@ fn drain_cleanup_entry_tracked(
 #[cfg(feature = "native-backend")]
 #[allow(dead_code)]
 const CONTROL_FLOW_OPS: &[&str] = &[
-    "if", "else", "end_if", "loop_start", "loop_end", "loop_for_start",
-    "loop_for_end", "label", "state_label", "jump", "return", "state_yield",
-    "check_exception", "raise",
+    "if",
+    "else",
+    "end_if",
+    "loop_start",
+    "loop_end",
+    "loop_for_start",
+    "loop_for_end",
+    "label",
+    "state_label",
+    "jump",
+    "return",
+    "state_yield",
+    "check_exception",
+    "raise",
 ];
 
 #[cfg(feature = "native-backend")]
@@ -1553,44 +1624,56 @@ pub(crate) fn compute_rc_coalesce_skips(
     let mut skip_dec_ref: HashSet<String> = HashSet::new();
 
     for i in 0..ops.len() {
-        if skip_ops.contains(&i) { continue; }
+        if skip_ops.contains(&i) {
+            continue;
+        }
         let a = &ops[i];
         let a_is_inc = matches!(a.kind.as_str(), "inc_ref" | "borrow");
         let a_is_dec = matches!(a.kind.as_str(), "dec_ref" | "release");
-        if !a_is_inc && !a_is_dec { continue; }
+        if !a_is_inc && !a_is_dec {
+            continue;
+        }
         let a_arg = match a.args.as_ref().and_then(|v| v.first()) {
             Some(name) => name.clone(),
             None => continue,
         };
         for j in (i + 1)..ops.len() {
             let b = &ops[j];
-            if cf_set.contains(b.kind.as_str()) { break; }
+            if cf_set.contains(b.kind.as_str()) {
+                break;
+            }
             let b_kind = b.kind.as_str();
             let b_arg = b.args.as_ref().and_then(|v| v.first());
             let is_match = if a_is_inc {
-                matches!(b_kind, "dec_ref" | "release")
-                    && b_arg.map(String::as_str) == Some(&a_arg)
+                matches!(b_kind, "dec_ref" | "release") && b_arg.map(String::as_str) == Some(&a_arg)
             } else {
-                matches!(b_kind, "inc_ref" | "borrow")
-                    && b_arg.map(String::as_str) == Some(&a_arg)
+                matches!(b_kind, "inc_ref" | "borrow") && b_arg.map(String::as_str) == Some(&a_arg)
             };
             if is_match && !skip_ops.contains(&j) {
                 skip_ops.insert(i);
                 skip_ops.insert(j);
                 break;
             }
-            let uses_var = b.args.as_ref()
+            let uses_var = b
+                .args
+                .as_ref()
                 .map(|args| args.iter().any(|n| n == &a_arg))
                 .unwrap_or(false)
                 || b.var.as_ref().map(|v| v == &a_arg).unwrap_or(false)
                 || b.out.as_ref().map(|o| o == &a_arg).unwrap_or(false);
-            if uses_var { break; }
+            if uses_var {
+                break;
+            }
         }
     }
 
     for (idx, op) in ops.iter().enumerate() {
-        if skip_ops.contains(&idx) { continue; }
-        if !matches!(op.kind.as_str(), "inc_ref" | "borrow") { continue; }
+        if skip_ops.contains(&idx) {
+            continue;
+        }
+        if !matches!(op.kind.as_str(), "inc_ref" | "borrow") {
+            continue;
+        }
         let out_name = match op.out.as_deref() {
             Some(name) if name != "none" => name,
             _ => continue,
@@ -1604,13 +1687,13 @@ pub(crate) fn compute_rc_coalesce_skips(
 
     if !skip_ops.is_empty() || !skip_dec_ref.is_empty() {
         static RC_COALESCE_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let trace = *RC_COALESCE_TRACE.get_or_init(|| {
-            std::env::var("MOLT_RC_COALESCE_TRACE").as_deref() == Ok("1")
-        });
+        let trace = *RC_COALESCE_TRACE
+            .get_or_init(|| std::env::var("MOLT_RC_COALESCE_TRACE").as_deref() == Ok("1"));
         if trace {
             eprintln!(
                 "[rc-coalesce] eliminated {} RC ops, {} dec_ref skips",
-                skip_ops.len(), skip_dec_ref.len()
+                skip_ops.len(),
+                skip_dec_ref.len()
             );
         }
     }
@@ -1652,6 +1735,7 @@ pub struct SimpleBackend {
     pub skip_ir_passes: bool,
     /// Function names that exist in other batches — use Linkage::Import, not trap stubs.
     pub external_function_names: std::collections::BTreeSet<String>,
+    module_context: Option<NativeBackendModuleContext>,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     data_pool: BTreeMap<Vec<u8>, cranelift_module::DataId>,
     next_data_id: u64,
@@ -1762,11 +1846,11 @@ impl SimpleBackend {
         // Default to "speed" for production quality codegen.  Override with
         // MOLT_BACKEND_OPT_LEVEL=none for fast dev-loop compilation (~3-5x
         // faster compile times at the cost of ~30-50% slower generated code).
-        let opt_level = env_setting("MOLT_BACKEND_OPT_LEVEL")
-            .unwrap_or_else(|| "speed".to_string());
-        flag_builder.set("opt_level", &opt_level).unwrap_or_else(|err| {
-            panic!("invalid MOLT_BACKEND_OPT_LEVEL={opt_level:?}: {err:?}")
-        });
+        let opt_level =
+            env_setting("MOLT_BACKEND_OPT_LEVEL").unwrap_or_else(|| "speed".to_string());
+        flag_builder
+            .set("opt_level", &opt_level)
+            .unwrap_or_else(|err| panic!("invalid MOLT_BACKEND_OPT_LEVEL={opt_level:?}: {err:?}"));
         let regalloc_algorithm =
             env_setting("MOLT_BACKEND_REGALLOC_ALGORITHM").unwrap_or_else(|| {
                 // When opt_level=none, default to the fast single-pass
@@ -1954,12 +2038,21 @@ impl SimpleBackend {
             import_ids: BTreeMap::new(),
             skip_ir_passes: false,
             external_function_names: std::collections::BTreeSet::new(),
+            module_context: None,
             data_pool: BTreeMap::new(),
             next_data_id: 0,
             declared_func_arities: BTreeMap::new(),
             defined_func_names: std::collections::BTreeSet::new(),
             deferred_defines: Vec::new(),
         }
+    }
+
+    pub fn build_module_context(functions: &[FunctionIR]) -> NativeBackendModuleContext {
+        NativeBackendModuleContext::from_functions(functions)
+    }
+
+    pub fn set_module_context(&mut self, context: NativeBackendModuleContext) {
+        self.module_context = Some(context);
     }
 
     /// Retry compiling a function at `opt_level=none` after the optimizing
@@ -1990,13 +2083,7 @@ impl SimpleBackend {
             .buffer
             .relocs()
             .iter()
-            .map(|r| {
-                cranelift_module::ModuleReloc::from_mach_reloc(
-                    r,
-                    &retry_ctx.func,
-                    func_id,
-                )
-            })
+            .map(|r| cranelift_module::ModuleReloc::from_mach_reloc(r, &retry_ctx.func, func_id))
             .collect();
         module
             .define_function_bytes(func_id, alignment, &code, &relocs)
@@ -2121,57 +2208,47 @@ impl SimpleBackend {
             match result {
                 CompileResult::Ok(cf) => {
                     if let Err(e) = self.module.define_function_bytes(
-                        cf.func_id, cf.alignment, &cf.code, &cf.relocs,
+                        cf.func_id,
+                        cf.alignment,
+                        &cf.code,
+                        &cf.relocs,
                     ) {
-                        eprintln!(
-                            "ERROR: define_function_bytes failed for {}: {e}",
-                            cf.name
-                        );
+                        eprintln!("ERROR: define_function_bytes failed for {}: {e}", cf.name);
                     } else {
                         self.defined_func_names.insert(cf.name);
                     }
                 }
-                CompileResult::NeedsRetry { func_id, func, name } => {
-                    match Self::retry_define_at_opt_none(
-                        &mut self.module, func_id, func, &name,
-                    ) {
-                        Ok(()) => {
-                            self.defined_func_names.insert(name.clone());
-                            eprintln!(
-                                "  -> {} compiled successfully at opt_level=none",
-                                name
-                            );
-                        }
-                        Err(retry_err) => {
-                            eprintln!(
-                                "  -> retry also failed for {}: {}",
-                                name, retry_err
-                            );
-                            let sig = self.module
-                                .declarations()
-                                .get_function_decl(func_id)
-                                .signature
-                                .clone();
-                            eprintln!(
-                                "  -> emitting trap stub for {} (function too large for Cranelift)",
-                                name
-                            );
-                            match Self::emit_trap_stub(
-                                &mut self.module, func_id, &sig, &name,
-                            ) {
-                                Ok(()) => {
-                                    self.defined_func_names.insert(name);
-                                }
-                                Err(stub_err) => {
-                                    eprintln!(
-                                        "  -> trap stub also failed for {}: {}",
-                                        name, stub_err
-                                    );
-                                }
+                CompileResult::NeedsRetry {
+                    func_id,
+                    func,
+                    name,
+                } => match Self::retry_define_at_opt_none(&mut self.module, func_id, func, &name) {
+                    Ok(()) => {
+                        self.defined_func_names.insert(name.clone());
+                        eprintln!("  -> {} compiled successfully at opt_level=none", name);
+                    }
+                    Err(retry_err) => {
+                        eprintln!("  -> retry also failed for {}: {}", name, retry_err);
+                        let sig = self
+                            .module
+                            .declarations()
+                            .get_function_decl(func_id)
+                            .signature
+                            .clone();
+                        eprintln!(
+                            "  -> emitting trap stub for {} (function too large for Cranelift)",
+                            name
+                        );
+                        match Self::emit_trap_stub(&mut self.module, func_id, &sig, &name) {
+                            Ok(()) => {
+                                self.defined_func_names.insert(name);
+                            }
+                            Err(stub_err) => {
+                                eprintln!("  -> trap stub also failed for {}: {}", name, stub_err);
                             }
                         }
                     }
-                }
+                },
             }
         }
     }
@@ -2217,13 +2294,7 @@ impl SimpleBackend {
             .buffer
             .relocs()
             .iter()
-            .map(|r| {
-                cranelift_module::ModuleReloc::from_mach_reloc(
-                    r,
-                    &ctx.func,
-                    func_id,
-                )
-            })
+            .map(|r| cranelift_module::ModuleReloc::from_mach_reloc(r, &ctx.func, func_id))
             .collect();
         module
             .define_function_bytes(func_id, alignment, &code, &relocs)
@@ -2316,7 +2387,13 @@ impl SimpleBackend {
         params: &[types::Type],
         returns: &[types::Type],
     ) -> cranelift_module::FuncId {
-        Self::import_func_id_split(&mut self.module, &mut self.import_ids, name, params, returns)
+        Self::import_func_id_split(
+            &mut self.module,
+            &mut self.import_ids,
+            name,
+            params,
+            returns,
+        )
     }
 
     pub fn compile(mut self, ir: SimpleIR) -> Vec<u8> {
@@ -2331,7 +2408,9 @@ impl SimpleBackend {
         let _use_llvm = env_setting("MOLT_BACKEND").as_deref() == Some("llvm");
         #[cfg(not(feature = "llvm"))]
         if _use_llvm {
-            eprintln!("[molt] WARNING: MOLT_BACKEND=llvm requested but llvm feature is not compiled in; falling back to Cranelift");
+            eprintln!(
+                "[molt] WARNING: MOLT_BACKEND=llvm requested but llvm feature is not compiled in; falling back to Cranelift"
+            );
         }
         apply_profile_order(&mut ir);
         // ── Pre-TIR IR passes (parallel) ────────────────────────
@@ -2437,23 +2516,26 @@ impl SimpleBackend {
                 // Skip TIR for functions with ops whose operand connections
                 // are broken by the TIR SSA roundtrip: loops (phi), fields
                 // (guarded_field), and exception stack (paired enter/exit).
-                if func_ir.ops.iter().any(|op| matches!(op.kind.as_str(),
-                    "loop_start" | "loop_index_start" |
-                    "guarded_field_set" | "guarded_field_get" |
-                    "guarded_field_set_init" |
-                    "exception_stack_enter" | "exception_stack_exit"
-                )) {
+                if func_ir.ops.iter().any(|op| {
+                    matches!(
+                        op.kind.as_str(),
+                        "loop_start"
+                            | "loop_index_start"
+                            | "guarded_field_set"
+                            | "guarded_field_get"
+                            | "guarded_field_set_init"
+                            | "exception_stack_enter"
+                            | "exception_stack_exit"
+                    )
+                }) {
                     continue;
                 }
                 let body_bytes = crate::tir::serialize::serialize_ops(&func_ir.ops);
-                let content_hash = crate::tir::cache::CompilationCache::compute_hash(
-                    &func_ir.name,
-                    &body_bytes,
-                );
+                let content_hash =
+                    crate::tir::cache::CompilationCache::compute_hash(&func_ir.name, &body_bytes);
                 // Cache hit — apply directly and skip.
                 if let Some(cached_bytes) = tir_cache.get(&content_hash) {
-                    if let Some(cached_ops) =
-                        crate::tir::serialize::deserialize_ops(&cached_bytes)
+                    if let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes)
                     {
                         func_ir.ops = cached_ops;
                         continue;
@@ -2589,8 +2671,7 @@ impl SimpleBackend {
                 // and update the cache.
                 for (idx, content_hash, opt_ops) in results {
                     if let Some(optimized_ops) = opt_ops {
-                        let serialized =
-                            crate::tir::serialize::serialize_ops(&optimized_ops);
+                        let serialized = crate::tir::serialize::serialize_ops(&optimized_ops);
                         tir_cache.put(&content_hash, &serialized, vec![]);
                         ir.functions[idx].ops = optimized_ops;
                     }
@@ -2626,7 +2707,9 @@ impl SimpleBackend {
         // Dead function elimination: remove functions that are unreachable from
         // the entry point after inlining.  This reduces code size for both the
         // native object and the downstream linker's work.
-        if !self.skip_ir_passes { eliminate_dead_functions(&mut ir); }
+        if !self.skip_ir_passes {
+            eliminate_dead_functions(&mut ir);
+        }
         // Megafunction splitting: break up functions with >4000 ops (or
         // MOLT_MAX_FUNCTION_OPS) into private chunk functions to avoid
         // Cranelift's O(n²) register allocator blowup.
@@ -2669,7 +2752,9 @@ impl SimpleBackend {
 
             let func_count = ir.functions.len();
             let total_ops: usize = ir.functions.iter().map(|f| f.ops.len()).sum();
-            eprintln!("MOLT_BACKEND(llvm): compiling {func_count} functions ({total_ops} total ops)");
+            eprintln!(
+                "MOLT_BACKEND(llvm): compiling {func_count} functions ({total_ops} total ops)"
+            );
             let codegen_start = std::time::Instant::now();
 
             for func_ir in &ir.functions {
@@ -2677,7 +2762,11 @@ impl SimpleBackend {
                 if env_setting("TIR_DUMP").as_deref() == Some("1")
                     || env_setting("MOLT_TIR_DUMP").as_deref() == Some("1")
                 {
-                    eprintln!("[LLVM] TIR for '{}':\n{}", tir_func.name, crate::tir::printer::print_function(&tir_func));
+                    eprintln!(
+                        "[LLVM] TIR for '{}':\n{}",
+                        tir_func.name,
+                        crate::tir::printer::print_function(&tir_func)
+                    );
                 }
                 crate::llvm_backend::lowering::lower_tir_to_llvm(&tir_func, &llvm);
             }
@@ -2695,11 +2784,11 @@ impl SimpleBackend {
                 let _ = std::fs::write("/tmp/molt_llvm_before_opt.ll", llvm.dump_ir());
             }
 
-            // NOTE: LLVM optimization is currently disabled because the default
-            // pass pipeline (O2/O3) includes GlobalDCE/Internalize which removes
-            // all externally-visible functions.  To re-enable, use a custom pass
-            // pipeline that preserves external linkage on user functions.
-            // llvm.optimize(MoltOptLevel::Speed);
+            // Run FULL LLVM O3 optimization pipeline.  Entry points are
+            // preserved via dllexport linkage (see LlvmBackend::optimize).
+            // This gives us interprocedural inlining, GlobalDCE, SCCP, GVN,
+            // loop vectorization, SLP vectorization — nothing left on the table.
+            llvm.optimize(MoltOptLevel::Aggressive);
 
             if dump_ir {
                 let _ = std::fs::write("/tmp/molt_llvm_after_opt.ll", llvm.dump_ir());
@@ -2707,12 +2796,17 @@ impl SimpleBackend {
 
             if timing {
                 let codegen_elapsed = codegen_start.elapsed();
-                eprintln!("MOLT_BACKEND_TIMING: LLVM codegen + optimization took {codegen_elapsed:.2?}");
+                eprintln!(
+                    "MOLT_BACKEND_TIMING: LLVM codegen + optimization took {codegen_elapsed:.2?}"
+                );
             }
 
-            // Emit object bytes to a temporary file, then read them back.
+            // Emit object at Aggressive opt level — this enables machine-level
+            // optimizations: instruction scheduling, register allocation
+            // heuristics, and target-specific transforms (NEON/SVE on ARM,
+            // AVX on x86) that O0 emission would skip entirely.
             let tmp_obj = std::env::temp_dir().join("molt_llvm_output.o");
-            llvm.emit_object(&tmp_obj, MoltOptLevel::None)
+            llvm.emit_object(&tmp_obj, MoltOptLevel::Aggressive)
                 .expect("LLVM object emission failed");
             let bytes = std::fs::read(&tmp_obj).expect("failed to read LLVM object file");
             let _ = std::fs::remove_file(&tmp_obj);
@@ -2740,7 +2834,10 @@ impl SimpleBackend {
             ir_analysis.task_kinds.entry(name.clone()).or_insert(*kind);
         }
         for (name, size) in &pre_split_task_closure_sizes {
-            ir_analysis.task_closure_sizes.entry(name.clone()).or_insert(*size);
+            ir_analysis
+                .task_closure_sizes
+                .entry(name.clone())
+                .or_insert(*size);
         }
         // Conditional trace elimination: skip emitting trace_enter/trace_exit calls
         // when tracing is disabled. Each guarded call site emits 2 trace function calls
@@ -2761,6 +2858,40 @@ impl SimpleBackend {
         let total_ops: usize = ir.functions.iter().map(|f| f.ops.len()).sum();
         eprintln!("MOLT_BACKEND: compiling {func_count} functions ({total_ops} total ops)");
         let codegen_start = std::time::Instant::now();
+        let local_function_arities: BTreeMap<String, usize> = ir
+            .functions
+            .iter()
+            .map(|func| (func.name.clone(), func.params.len()))
+            .collect();
+        let local_return_alias_summaries =
+            crate::passes::compute_return_alias_summaries(&ir.functions);
+        let module_context = self.module_context.clone();
+        let effective_function_arities = module_context
+            .as_ref()
+            .map(|context| context.function_arities.clone())
+            .unwrap_or(local_function_arities);
+        let effective_closure_functions = module_context
+            .as_ref()
+            .map(|context| context.closure_functions.clone())
+            .unwrap_or_else(|| ir_analysis.closure_functions.clone());
+        let effective_task_kinds = module_context
+            .as_ref()
+            .map(|context| context.task_kinds.clone())
+            .unwrap_or_else(|| ir_analysis.task_kinds.clone());
+        let effective_task_closure_sizes = module_context
+            .as_ref()
+            .map(|context| context.task_closure_sizes.clone())
+            .unwrap_or_else(|| ir_analysis.task_closure_sizes.clone());
+        let effective_leaf_functions = module_context
+            .as_ref()
+            .map(|context| context.leaf_functions.clone())
+            .unwrap_or_else(|| ir_analysis.leaf_functions.clone());
+        let effective_return_alias_summaries = module_context
+            .as_ref()
+            .map(|context| context.return_alias_summaries.clone())
+            .unwrap_or(local_return_alias_summaries);
+        let mut module_known_functions = ir_analysis.defined_functions.clone();
+        module_known_functions.extend(self.external_function_names.iter().cloned());
         let mut compiled = 0u32;
         let failed = 0u32;
         let mut slowest_func: Option<(String, std::time::Duration)> = None;
@@ -2774,18 +2905,19 @@ impl SimpleBackend {
             let func_start = std::time::Instant::now();
             self.compile_func(
                 func_ir,
-                &ir_analysis.task_kinds,
-                &ir_analysis.task_closure_sizes,
+                &effective_task_kinds,
+                &effective_task_closure_sizes,
                 &ir_analysis.defined_functions,
-                &ir_analysis.closure_functions,
+                &module_known_functions,
+                &effective_closure_functions,
+                &effective_return_alias_summaries,
                 emit_traces,
-                &ir_analysis.leaf_functions,
+                &effective_leaf_functions,
+                &effective_function_arities,
             );
             let func_elapsed = func_start.elapsed();
             if timing && func_elapsed.as_millis() > 500 {
-                eprintln!(
-                    "MOLT_BACKEND_TIMING: function `{func_name}` took {func_elapsed:.2?}"
-                );
+                eprintln!("MOLT_BACKEND_TIMING: function `{func_name}` took {func_elapsed:.2?}");
             }
             if slowest_func
                 .as_ref()
@@ -2840,21 +2972,25 @@ impl SimpleBackend {
         // is referenced with different arities, and functions that were skipped
         // due to signature mismatches or compilation failures.
         let mut stubs_emitted = 0u32;
-        let declared: Vec<(cranelift_module::FuncId, String, cranelift_codegen::ir::Signature)> =
-            self.module
-                .declarations()
-                .get_functions()
-                .filter_map(|(fid, decl)| {
-                    let name = decl.name.clone()?;
-                    if decl.linkage == cranelift_module::Linkage::Export
-                        && !self.defined_func_names.contains(&name)
-                    {
-                        Some((fid, name, decl.signature.clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+        let declared: Vec<(
+            cranelift_module::FuncId,
+            String,
+            cranelift_codegen::ir::Signature,
+        )> = self
+            .module
+            .declarations()
+            .get_functions()
+            .filter_map(|(fid, decl)| {
+                let name = decl.name.clone()?;
+                if decl.linkage == cranelift_module::Linkage::Export
+                    && !self.defined_func_names.contains(&name)
+                {
+                    Some((fid, name, decl.signature.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
         for (fid, name, sig) in declared {
             // In batched compilation, skip trap stubs for functions that
             // exist in other batches — ld -r will resolve them at merge
@@ -2867,11 +3003,9 @@ impl SimpleBackend {
                 // Function exists in another batch — ld -r will provide
                 // the real definition.  Downgrade from Export to Import
                 // so Cranelift's ObjectModule doesn't require a body.
-                let _ = self.module.declare_function(
-                    &name,
-                    cranelift_module::Linkage::Import,
-                    &sig,
-                );
+                let _ =
+                    self.module
+                        .declare_function(&name, cranelift_module::Linkage::Import, &sig);
                 continue;
             }
             if let Err(e) = Self::emit_trap_stub(&mut self.module, fid, &sig, &name) {
@@ -2880,11 +3014,9 @@ impl SimpleBackend {
                 // different body, or another edge case).  As a last resort,
                 // try to downgrade the linkage to Import so `finish()` does
                 // not panic with "Export must be defined."
-                let _ = self.module.declare_function(
-                    &name,
-                    cranelift_module::Linkage::Import,
-                    &sig,
-                );
+                let _ =
+                    self.module
+                        .declare_function(&name, cranelift_module::Linkage::Import, &sig);
             } else {
                 stubs_emitted += 1;
             }
@@ -2908,7 +3040,7 @@ impl SimpleBackend {
             let mut bv = MachOBuildVersion::default();
             bv.platform = cranelift_object::object::macho::PLATFORM_MACOS;
             bv.minos = 0x000B_0000; // macOS 11.0.0
-            bv.sdk = 0;             // no SDK constraint
+            bv.sdk = 0; // no SDK constraint
             product.object.set_macho_build_version(bv);
         }
         let bytes = product.emit().unwrap();
@@ -3279,6 +3411,7 @@ mod tests {
     use super::{
         FunctionIR, OpIR, SimpleBackend, SimpleIR, TrampolineKind, analyze_native_backend_ir,
     };
+    use crate::passes::ReturnAliasSummary;
     use cranelift_codegen::ir::types;
     use std::sync::{Mutex, OnceLock};
 
@@ -3429,6 +3562,42 @@ mod tests {
             Some(&TrampolineKind::Coroutine)
         );
         assert_eq!(analysis.task_closure_sizes.get("worker_poll"), Some(&3));
+    }
+
+    #[test]
+    fn native_backend_module_context_preserves_cross_batch_alias_metadata() {
+        let functions = vec![
+            FunctionIR {
+                name: "helper".to_string(),
+                params: vec!["value".to_string(), "intrinsic".to_string()],
+                ops: vec![OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("value".to_string()),
+                    ..OpIR::default()
+                }],
+                param_types: None,
+            },
+            FunctionIR {
+                name: "helper_poll".to_string(),
+                params: vec!["state".to_string()],
+                ops: vec![OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("state".to_string()),
+                    ..OpIR::default()
+                }],
+                param_types: None,
+            },
+        ];
+
+        let context = SimpleBackend::build_module_context(&functions);
+
+        assert_eq!(context.function_arities.get("helper"), Some(&2));
+        assert_eq!(
+            context.return_alias_summaries.get("helper"),
+            Some(&ReturnAliasSummary::Param(0))
+        );
+        assert!(context.leaf_functions.contains("helper"));
+        assert!(context.leaf_functions.contains("helper_poll"));
     }
 
     #[test]

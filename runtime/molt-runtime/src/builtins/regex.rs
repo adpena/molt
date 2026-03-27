@@ -30,8 +30,8 @@ use molt_obj_model::MoltObject;
 use crate::{
     TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_TUPLE, alloc_dict_with_pairs, alloc_list, alloc_string,
     alloc_tuple, attr_name_bits_from_bytes, dec_ref_bits, exception_pending, inc_ref_bits,
-    is_truthy, obj_from_bits, object_type_id, raise_exception, seq_vec_ref,
-    string_obj_to_owned, to_i64,
+    is_truthy, obj_from_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned,
+    to_i64,
 };
 
 // ---------------------------------------------------------------------------
@@ -3729,8 +3729,7 @@ pub extern "C" fn molt_re_sub_callable(
                     out.push_str(&segment);
 
                     // Build the match result tuple and call the replacement function.
-                    let match_tuple_bits =
-                        build_match_result_bits(_py, &result, group_count);
+                    let match_tuple_bits = build_match_result_bits(_py, &result, group_count);
                     let repl_result_bits = unsafe {
                         crate::call::dispatch::call_callable1(
                             _py,
@@ -3850,8 +3849,12 @@ pub extern "C" fn molt_re_match_group(
                     let gn_ty = unsafe { object_type_id(gn_ptr) };
                     if gn_ty == TYPE_ID_DICT {
                         // Look up name in the dict.
-                        if let Some(name_key_bits) = crate::attr_name_bits_from_bytes(_py, name.as_bytes()) {
-                            if let Some(val_bits) = unsafe { crate::dict_get_in_place(_py, gn_ptr, name_key_bits) } {
+                        if let Some(name_key_bits) =
+                            crate::attr_name_bits_from_bytes(_py, name.as_bytes())
+                        {
+                            if let Some(val_bits) =
+                                unsafe { crate::dict_get_in_place(_py, gn_ptr, name_key_bits) }
+                            {
                                 dec_ref_bits(_py, name_key_bits);
                                 return to_i64(obj_from_bits(val_bits)).map(|v| v as usize);
                             }

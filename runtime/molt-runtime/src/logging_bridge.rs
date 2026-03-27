@@ -4,8 +4,8 @@
 //! internal `pub(crate)` function.  The logging crate declares matching
 //! `extern "C"` imports and they are resolved at link time.
 
-use crate::*;
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
+use crate::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // ---------------------------------------------------------------------------
@@ -20,17 +20,18 @@ pub extern "C" fn __molt_logging_raise_exception(
     msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let type_name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len)) };
-        let msg = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
+        let type_name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
+        };
+        let msg =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
         raise_exception::<u64>(_py, type_name, msg)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_logging_exception_pending() -> i32 {
-    crate::with_gil_entry!(_py, {
-        if exception_pending(_py) { 1 } else { 0 }
-    })
+    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 #[unsafe(no_mangle)]
@@ -98,7 +99,9 @@ pub extern "C" fn __molt_logging_to_i64(bits: u64, out: *mut i64) -> i32 {
     let obj = obj_from_bits(bits);
     match to_i64(obj) {
         Some(v) => {
-            unsafe { *out = v; }
+            unsafe {
+                *out = v;
+            }
             1
         }
         None => 0,
@@ -111,13 +114,14 @@ pub extern "C" fn __molt_logging_to_i64(bits: u64, out: *mut i64) -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_logging_call_callable1(call_bits: u64, arg0: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        unsafe { call_callable1(_py, call_bits, arg0) }
-    })
+    crate::with_gil_entry!(_py, { unsafe { call_callable1(_py, call_bits, arg0) } })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_logging_attr_lookup_ptr_allow_missing(ptr: *mut u8, name_bits: u64) -> u64 {
+pub extern "C" fn __molt_logging_attr_lookup_ptr_allow_missing(
+    ptr: *mut u8,
+    name_bits: u64,
+) -> u64 {
     crate::with_gil_entry!(_py, {
         match unsafe { attr_lookup_ptr_allow_missing(_py, ptr, name_bits) } {
             Some(bits) => bits,

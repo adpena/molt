@@ -2175,11 +2175,7 @@ pub extern "C" fn molt_os_environ() -> u64 {
 ///
 /// Recursive directory creation (like `mkdir -p`).
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_os_makedirs(
-    path_bits: u64,
-    mode_bits: u64,
-    exist_ok_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_os_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if !has_capability(_py, "fs.write") {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");

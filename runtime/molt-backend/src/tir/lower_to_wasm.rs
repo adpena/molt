@@ -99,11 +99,8 @@ struct LowerCtx<'a> {
 impl<'a> LowerCtx<'a> {
     fn new(func: &'a TirFunction) -> Self {
         let rpo = compute_rpo(func);
-        let block_index: HashMap<BlockId, usize> = rpo
-            .iter()
-            .enumerate()
-            .map(|(i, &bid)| (bid, i))
-            .collect();
+        let block_index: HashMap<BlockId, usize> =
+            rpo.iter().enumerate().map(|(i, &bid)| (bid, i)).collect();
 
         Self {
             func,
@@ -147,7 +144,10 @@ impl<'a> LowerCtx<'a> {
 
     /// Get the TIR type of a value (defaults to DynBox if unknown).
     fn type_of(&self, vid: ValueId) -> TirType {
-        self.value_types.get(&vid).cloned().unwrap_or(TirType::DynBox)
+        self.value_types
+            .get(&vid)
+            .cloned()
+            .unwrap_or(TirType::DynBox)
     }
 }
 
@@ -190,9 +190,7 @@ fn rpo_visit(
                 rpo_visit(func, *then_block, visited, order);
                 rpo_visit(func, *else_block, visited, order);
             }
-            Terminator::Switch {
-                cases, default, ..
-            } => {
+            Terminator::Switch { cases, default, .. } => {
                 for (_, target, _) in cases {
                     rpo_visit(func, *target, visited, order);
                 }
@@ -313,13 +311,11 @@ pub fn lower_tir_to_wasm(func: &TirFunction) -> WasmFunctionOutput {
         for (i, &bid) in rpo.iter().enumerate() {
             if i < num_blocks - 1 {
                 if back_edge_targets.contains_key(&bid) {
-                    ctx.instructions.push(Instruction::Loop(
-                        wasm_encoder::BlockType::Empty,
-                    ));
+                    ctx.instructions
+                        .push(Instruction::Loop(wasm_encoder::BlockType::Empty));
                 } else {
-                    ctx.instructions.push(Instruction::Block(
-                        wasm_encoder::BlockType::Empty,
-                    ));
+                    ctx.instructions
+                        .push(Instruction::Block(wasm_encoder::BlockType::Empty));
                 }
             }
         }
@@ -377,7 +373,8 @@ fn emit_op(ctx: &mut LowerCtx, op: &super::ops::TirOp) {
                 let ty = ctx.type_of(result);
                 match ty {
                     TirType::F64 => {
-                        ctx.instructions.push(Instruction::F64Const(Ieee64::from(val as f64)));
+                        ctx.instructions
+                            .push(Instruction::F64Const(Ieee64::from(val as f64)));
                     }
                     _ => {
                         ctx.instructions.push(Instruction::I64Const(val));
@@ -392,7 +389,8 @@ fn emit_op(ctx: &mut LowerCtx, op: &super::ops::TirOp) {
                 _ => 0.0,
             };
             if let Some(&result) = op.results.first() {
-                ctx.instructions.push(Instruction::F64Const(Ieee64::from(val)));
+                ctx.instructions
+                    .push(Instruction::F64Const(Ieee64::from(val)));
                 ctx.emit_set(result);
             }
         }
@@ -551,8 +549,11 @@ fn emit_op(ctx: &mut LowerCtx, op: &super::ops::TirOp) {
         }
 
         // --- Container builders ---
-        OpCode::BuildList | OpCode::BuildDict | OpCode::BuildTuple
-        | OpCode::BuildSet | OpCode::BuildSlice => {
+        OpCode::BuildList
+        | OpCode::BuildDict
+        | OpCode::BuildTuple
+        | OpCode::BuildSet
+        | OpCode::BuildSlice => {
             // Container construction requires runtime calls.
             // Push operand count + operands, call runtime builder.
             for &operand in &op.operands {
@@ -568,8 +569,12 @@ fn emit_op(ctx: &mut LowerCtx, op: &super::ops::TirOp) {
         }
 
         // --- Memory ops (attribute access, indexing) ---
-        OpCode::LoadAttr | OpCode::StoreAttr | OpCode::DelAttr
-        | OpCode::Index | OpCode::StoreIndex | OpCode::DelIndex => {
+        OpCode::LoadAttr
+        | OpCode::StoreAttr
+        | OpCode::DelAttr
+        | OpCode::Index
+        | OpCode::StoreIndex
+        | OpCode::DelIndex => {
             // These require runtime dispatch. Emit operands + call placeholder.
             for &operand in &op.operands {
                 ctx.emit_get(operand);
@@ -682,8 +687,7 @@ fn emit_op(ctx: &mut LowerCtx, op: &super::ops::TirOp) {
         }
 
         // Exception handling / state machine ops — not yet lowered through TIR.
-        OpCode::TryStart | OpCode::TryEnd
-        | OpCode::StateBlockStart | OpCode::StateBlockEnd => {
+        OpCode::TryStart | OpCode::TryEnd | OpCode::StateBlockStart | OpCode::StateBlockEnd => {
             // These are structural markers consumed by higher-level passes.
             // Emit a nop when they leak through to WASM lowering.
         }
@@ -1023,9 +1027,7 @@ fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
             else_block,
             ..
         } => vec![*then_block, *else_block],
-        Terminator::Switch {
-            cases, default, ..
-        } => {
+        Terminator::Switch { cases, default, .. } => {
             let mut succs: Vec<BlockId> = cases.iter().map(|(_, bid, _)| *bid).collect();
             succs.push(*default);
             succs
@@ -1050,8 +1052,16 @@ fn infer_result_type(op: &super::ops::TirOp, ctx: &LowerCtx) -> TirType {
         OpCode::ConstBytes => TirType::Bytes,
         OpCode::Not => TirType::Bool,
         OpCode::And | OpCode::Or => TirType::Bool,
-        OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge
-        | OpCode::Is | OpCode::IsNot | OpCode::In | OpCode::NotIn => TirType::Bool,
+        OpCode::Eq
+        | OpCode::Ne
+        | OpCode::Lt
+        | OpCode::Le
+        | OpCode::Gt
+        | OpCode::Ge
+        | OpCode::Is
+        | OpCode::IsNot
+        | OpCode::In
+        | OpCode::NotIn => TirType::Bool,
         OpCode::Copy => {
             if let Some(&src) = op.operands.first() {
                 ctx.type_of(src)
@@ -1059,8 +1069,15 @@ fn infer_result_type(op: &super::ops::TirOp, ctx: &LowerCtx) -> TirType {
                 TirType::DynBox
             }
         }
-        OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::FloorDiv
-        | OpCode::Mod | OpCode::Neg | OpCode::Pos | OpCode::Pow => {
+        OpCode::Add
+        | OpCode::Sub
+        | OpCode::Mul
+        | OpCode::Div
+        | OpCode::FloorDiv
+        | OpCode::Mod
+        | OpCode::Neg
+        | OpCode::Pos
+        | OpCode::Pow => {
             // Inherit type from first operand.
             if let Some(&src) = op.operands.first() {
                 ctx.type_of(src)
@@ -1123,16 +1140,14 @@ mod tests {
         assert_eq!(output.result_types, vec![ValType::I64]);
 
         // Should contain i64.const 42 somewhere.
-        let has_const = output.instructions.iter().any(|i| {
-            matches!(i, Instruction::I64Const(42))
-        });
+        let has_const = output
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I64Const(42)));
         assert!(has_const, "expected i64.const 42 in output");
 
         // Should end with `end`.
-        assert!(matches!(
-            output.instructions.last(),
-            Some(Instruction::End)
-        ));
+        assert!(matches!(output.instructions.last(), Some(Instruction::End)));
     }
 
     #[test]
@@ -1161,9 +1176,10 @@ mod tests {
         assert_eq!(output.param_types, vec![ValType::I64, ValType::I64]);
 
         // Should contain i64.add.
-        let has_add = output.instructions.iter().any(|i| {
-            matches!(i, Instruction::I64Add)
-        });
+        let has_add = output
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I64Add));
         assert!(has_add, "expected i64.add instruction");
     }
 
@@ -1191,19 +1207,16 @@ mod tests {
         let output = lower_tir_to_wasm(&func);
 
         assert_eq!(output.param_types, vec![ValType::F64, ValType::F64]);
-        let has_f64_add = output.instructions.iter().any(|i| {
-            matches!(i, Instruction::F64Add)
-        });
+        let has_f64_add = output
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::F64Add));
         assert!(has_f64_add, "expected f64.add instruction");
     }
 
     #[test]
     fn conditional_branch() {
-        let mut func = TirFunction::new(
-            "cond_branch".into(),
-            vec![TirType::Bool],
-            TirType::I64,
-        );
+        let mut func = TirFunction::new("cond_branch".into(), vec![TirType::Bool], TirType::I64);
 
         let then_id = func.fresh_block();
         let else_id = func.fresh_block();
@@ -1266,10 +1279,14 @@ mod tests {
         let output = lower_tir_to_wasm(&func);
 
         // Should contain br_if for the conditional branch.
-        let has_br_if = output.instructions.iter().any(|i| {
-            matches!(i, Instruction::BrIf(_))
-        });
-        assert!(has_br_if, "expected br_if instruction for conditional branch");
+        let has_br_if = output
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::BrIf(_)));
+        assert!(
+            has_br_if,
+            "expected br_if instruction for conditional branch"
+        );
     }
 
     #[test]
@@ -1295,9 +1312,10 @@ mod tests {
 
         let output = lower_tir_to_wasm(&func);
 
-        let has_lt = output.instructions.iter().any(|i| {
-            matches!(i, Instruction::I64LtS)
-        });
+        let has_lt = output
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I64LtS));
         assert!(has_lt, "expected i64.lt_s instruction");
     }
 
@@ -1325,14 +1343,16 @@ mod tests {
         let output = lower_tir_to_wasm(&func);
 
         // DynBox add should emit a Call (runtime dispatch), not i64.add.
-        let has_call = output.instructions.iter().any(|i| {
-            matches!(i, Instruction::Call(_))
-        });
+        let has_call = output
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Call(_)));
         assert!(has_call, "expected runtime call for DynBox add");
 
-        let has_i64_add = output.instructions.iter().any(|i| {
-            matches!(i, Instruction::I64Add)
-        });
+        let has_i64_add = output
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I64Add));
         assert!(!has_i64_add, "should NOT emit i64.add for DynBox operands");
     }
 }

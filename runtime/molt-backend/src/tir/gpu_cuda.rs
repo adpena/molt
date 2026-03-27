@@ -66,7 +66,7 @@ pub fn generate_cuda(kernel: &GpuKernel) -> String {
         let comma = if param_idx < total_params { "," } else { "" };
         // Last scalar param — no comma needed; first scalar params get comma
         let _ = i;
-        out.push_str(&format!("    const {} {}{}",  type_str, name, comma));
+        out.push_str(&format!("    const {} {}{}", type_str, name, comma));
         out.push('\n');
     }
 
@@ -337,23 +337,26 @@ mod tests {
     fn vector_add_contains_global_and_thread_builtins() {
         let cuda = generate_cuda(&make_vector_add_kernel());
 
-        assert!(cuda.contains("__global__"), "missing __global__ in:\n{cuda}");
         assert!(
-            cuda.contains("threadIdx"),
-            "missing threadIdx in:\n{cuda}"
+            cuda.contains("__global__"),
+            "missing __global__ in:\n{cuda}"
         );
-        assert!(
-            cuda.contains("blockIdx"),
-            "missing blockIdx in:\n{cuda}"
-        );
-        assert!(
-            cuda.contains("blockDim"),
-            "missing blockDim in:\n{cuda}"
-        );
+        assert!(cuda.contains("threadIdx"), "missing threadIdx in:\n{cuda}");
+        assert!(cuda.contains("blockIdx"), "missing blockIdx in:\n{cuda}");
+        assert!(cuda.contains("blockDim"), "missing blockDim in:\n{cuda}");
         // Buffer params
-        assert!(cuda.contains("* __restrict__ a"), "missing buffer a in:\n{cuda}");
-        assert!(cuda.contains("* __restrict__ b"), "missing buffer b in:\n{cuda}");
-        assert!(cuda.contains("* __restrict__ out"), "missing buffer out in:\n{cuda}");
+        assert!(
+            cuda.contains("* __restrict__ a"),
+            "missing buffer a in:\n{cuda}"
+        );
+        assert!(
+            cuda.contains("* __restrict__ b"),
+            "missing buffer b in:\n{cuda}"
+        );
+        assert!(
+            cuda.contains("* __restrict__ out"),
+            "missing buffer out in:\n{cuda}"
+        );
     }
 
     /// Test 2: type mapping — I64→long long, F64→double, Bool→bool

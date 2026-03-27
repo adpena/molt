@@ -16,8 +16,8 @@ use super::gpu_runtime::*;
 mod real {
     use super::*;
     use metal::{
-        Buffer as MetalBuffer, CommandQueue, CompileOptions, ComputePipelineState, Device,
-        Library, MTLResourceOptions, MTLSize, NSUInteger,
+        Buffer as MetalBuffer, CommandQueue, CompileOptions, ComputePipelineState, Device, Library,
+        MTLResourceOptions, MTLSize, NSUInteger,
     };
     use std::sync::Arc;
 
@@ -97,10 +97,9 @@ mod real {
 
         /// Allocate a GPU-visible buffer of `size_bytes`.
         pub fn alloc_buffer(&self, size_bytes: usize) -> Result<MetalBuffer, GpuError> {
-            let buf = self.device.new_buffer(
-                size_bytes as u64,
-                MTLResourceOptions::StorageModeShared,
-            );
+            let buf = self
+                .device
+                .new_buffer(size_bytes as u64, MTLResourceOptions::StorageModeShared);
             Ok(buf)
         }
 
@@ -117,10 +116,13 @@ mod real {
         ) -> Result<(), GpuError> {
             // Recover the Arc<MetalPipeline> from the opaque handle bytes.
             if kernel.platform != GpuPlatform::Metal {
-                return Err(GpuError::LaunchFailed("Kernel is not a Metal kernel".into()));
+                return Err(GpuError::LaunchFailed(
+                    "Kernel is not a Metal kernel".into(),
+                ));
             }
             let ptr_val = usize::from_ne_bytes(
-                kernel._handle_bytes()
+                kernel
+                    ._handle_bytes()
                     .try_into()
                     .map_err(|_| GpuError::LaunchFailed("Invalid kernel handle".into()))?,
             );
@@ -173,7 +175,8 @@ mod real {
         }
         fn copy_to_device(&self, buffer: &GpuBufferHandle, data: &[u8]) -> Result<(), GpuError> {
             let ptr_val = usize::from_ne_bytes(
-                buffer._handle_bytes()
+                buffer
+                    ._handle_bytes()
                     .try_into()
                     .map_err(|_| GpuError::TransferFailed("Invalid buffer handle".into()))?,
             );
@@ -190,7 +193,8 @@ mod real {
             data: &mut [u8],
         ) -> Result<(), GpuError> {
             let ptr_val = usize::from_ne_bytes(
-                buffer._handle_bytes()
+                buffer
+                    ._handle_bytes()
                     .try_into()
                     .map_err(|_| GpuError::TransferFailed("Invalid buffer handle".into()))?,
             );
@@ -218,7 +222,8 @@ mod real {
         }
         fn free_buffer(&self, buffer: GpuBufferHandle) -> Result<(), GpuError> {
             let ptr_val = usize::from_ne_bytes(
-                buffer._handle_bytes()
+                buffer
+                    ._handle_bytes()
                     .try_into()
                     .map_err(|_| GpuError::AllocationFailed("Invalid buffer handle".into()))?,
             );

@@ -375,9 +375,7 @@ impl RuntimeState {
     /// environment variables on first access.  Returns `None` when
     /// `MOLT_VFS_BUNDLE` is not set in the environment.
     pub(crate) fn get_vfs(&self) -> Option<&crate::vfs::VfsState> {
-        self.vfs_state
-            .get_or_init(crate::vfs::load_vfs)
-            .as_ref()
+        self.vfs_state.get_or_init(crate::vfs::load_vfs).as_ref()
     }
 }
 
@@ -445,7 +443,9 @@ extern "C" fn __core_gil_acquire() -> u64 {
 
 extern "C" fn __core_gil_release(token: u64) {
     if token != 0 {
-        unsafe { drop(Box::from_raw(token as *mut GilGuard)); }
+        unsafe {
+            drop(Box::from_raw(token as *mut GilGuard));
+        }
     }
 }
 

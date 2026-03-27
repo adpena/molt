@@ -1,6 +1,7 @@
 use molt_obj_model::MoltObject;
 use std::sync::OnceLock;
 
+use super::inline_cache::{IC_TABLE_CAPACITY, global_ic_table};
 use crate::{
     GUARD_DICT_SHAPE_LAYOUT_FAIL_CLASS_MISMATCH_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_FAIL_EXPECTED_VERSION_INVALID_COUNT,
@@ -14,7 +15,6 @@ use crate::{
     obj_from_bits, object_class_bits, object_mark_has_ptrs, object_payload_size, object_type_id,
     profile_hit, raise_exception, to_i64, usize_from_bits,
 };
-use super::inline_cache::{IC_TABLE_CAPACITY, global_ic_table};
 
 fn debug_field_bounds_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -57,8 +57,10 @@ pub(crate) unsafe fn object_field_get_ptr_raw(
         let slot = obj_ptr.add(offset) as *const u64;
         let bits = *slot;
         if std::env::var("MOLT_DEBUG_FIELD").is_ok() {
-            eprintln!("[field_get_raw] ptr=0x{:x} offset={} slot=0x{:x} bits=0x{:x}",
-                obj_ptr as usize, offset, slot as usize, bits);
+            eprintln!(
+                "[field_get_raw] ptr=0x{:x} offset={} slot=0x{:x} bits=0x{:x}",
+                obj_ptr as usize, offset, slot as usize, bits
+            );
         }
         inc_ref_bits(_py, bits);
         bits
@@ -90,8 +92,10 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
         profile_hit(_py, &STRUCT_FIELD_STORE_COUNT);
         let slot = obj_ptr.add(offset) as *mut u64;
         if std::env::var("MOLT_DEBUG_FIELD").is_ok() {
-            eprintln!("[field_set_raw] ptr=0x{:x} offset={} slot=0x{:x} val=0x{:x}",
-                obj_ptr as usize, offset, slot as usize, val_bits);
+            eprintln!(
+                "[field_set_raw] ptr=0x{:x} offset={} slot=0x{:x} val=0x{:x}",
+                obj_ptr as usize, offset, slot as usize, val_bits
+            );
         }
         let old_bits = *slot;
         let old_is_ptr = obj_from_bits(old_bits).as_ptr().is_some();
@@ -497,8 +501,7 @@ pub unsafe extern "C" fn molt_getattr_ic(
                             if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
                                 if object_type_id(class_ptr) == TYPE_ID_TYPE {
                                     let attr_len = usize_from_bits(attr_name_len_bits);
-                                    let slice =
-                                        std::slice::from_raw_parts(attr_name_ptr, attr_len);
+                                    let slice = std::slice::from_raw_parts(attr_name_ptr, attr_len);
                                     if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
                                         if let Some(offset) =
                                             class_field_offset(_py, class_ptr, attr_bits)
@@ -549,10 +552,7 @@ pub unsafe extern "C" fn molt_getattr_ic(
 /// # Safety
 /// `obj_ptr` must point to a valid molt object (or be null, which returns 0).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_ic_probe_fast(
-    obj_ptr: *mut u8,
-    ic_index: u64,
-) -> i64 {
+pub unsafe extern "C" fn molt_ic_probe_fast(obj_ptr: *mut u8, ic_index: u64) -> i64 {
     unsafe {
         if obj_ptr.is_null() {
             return 0;
@@ -587,9 +587,8 @@ pub unsafe extern "C" fn molt_ic_probe_fast(
                         // Bump refcount — safe as a relaxed atomic even without GIL.
                         let ptr = obj_from_bits(bits).as_ptr();
                         if let Some(p) = ptr {
-                            let header =
-                                p.sub(std::mem::size_of::<super::MoltHeader>())
-                                    as *mut super::MoltHeader;
+                            let header = p.sub(std::mem::size_of::<super::MoltHeader>())
+                                as *mut super::MoltHeader;
                             if ((*header).flags & super::HEADER_FLAG_IMMORTAL) == 0 {
                                 (*header)
                                     .ref_count
@@ -632,8 +631,7 @@ pub unsafe extern "C" fn molt_getattr_ic_slow(
             let idx = ic_index as usize;
 
             // Full resolution.
-            let result =
-                crate::molt_get_attr_generic(obj_ptr, attr_name_ptr, attr_name_len_bits);
+            let result = crate::molt_get_attr_generic(obj_ptr, attr_name_ptr, attr_name_len_bits);
 
             // Populate the IC on success.
             if idx < IC_TABLE_CAPACITY
@@ -647,11 +645,9 @@ pub unsafe extern "C" fn molt_getattr_ic_slow(
                     if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
                         if object_type_id(class_ptr) == TYPE_ID_TYPE {
                             let attr_len = usize_from_bits(attr_name_len_bits);
-                            let slice =
-                                std::slice::from_raw_parts(attr_name_ptr, attr_len);
+                            let slice = std::slice::from_raw_parts(attr_name_ptr, attr_len);
                             if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
-                                if let Some(offset) =
-                                    class_field_offset(_py, class_ptr, attr_bits)
+                                if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits)
                                 {
                                     if offset <= u32::MAX as usize {
                                         let version = global_type_version();

@@ -42,12 +42,12 @@ pub unsafe extern "C" fn PySequence_Size(o: *mut PyObject) -> Py_ssize_t {
     let h = hooks_or_stubs();
     let tag = classify(bits);
     match tag {
-        t if t == crate::abi_types::MoltTypeTag::List as u8 => {
-            unsafe { (h.list_len)(bits) as Py_ssize_t }
-        }
-        t if t == crate::abi_types::MoltTypeTag::Tuple as u8 => {
-            unsafe { (h.tuple_len)(bits) as Py_ssize_t }
-        }
+        t if t == crate::abi_types::MoltTypeTag::List as u8 => unsafe {
+            (h.list_len)(bits) as Py_ssize_t
+        },
+        t if t == crate::abi_types::MoltTypeTag::Tuple as u8 => unsafe {
+            (h.tuple_len)(bits) as Py_ssize_t
+        },
         t if t == crate::abi_types::MoltTypeTag::Str as u8 => {
             let mut len: usize = 0;
             unsafe { (h.str_data)(bits, &raw mut len) };
@@ -192,10 +192,7 @@ pub unsafe extern "C" fn PySequence_Contains(o: *mut PyObject, value: *mut PyObj
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PySequence_Concat(
-    s1: *mut PyObject,
-    s2: *mut PyObject,
-) -> *mut PyObject {
+pub unsafe extern "C" fn PySequence_Concat(s1: *mut PyObject, s2: *mut PyObject) -> *mut PyObject {
     if s1.is_null() || s2.is_null() {
         return ptr::null_mut();
     }
@@ -249,10 +246,7 @@ pub unsafe extern "C" fn PySequence_Concat(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PySequence_Repeat(
-    o: *mut PyObject,
-    count: Py_ssize_t,
-) -> *mut PyObject {
+pub unsafe extern "C" fn PySequence_Repeat(o: *mut PyObject, count: Py_ssize_t) -> *mut PyObject {
     if o.is_null() || count <= 0 {
         // Return empty sequence of same type.
         let bits = match resolve_bits(o) {

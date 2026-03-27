@@ -46,8 +46,7 @@ fn test_list_append_null_list_returns_error() {
 fn test_list_append_null_item_returns_error() {
     init();
     let list = unsafe { molt_cpython_abi::api::sequences::PyList_New(0) };
-    let result =
-        unsafe { molt_cpython_abi::api::sequences::PyList_Append(list, ptr::null_mut()) };
+    let result = unsafe { molt_cpython_abi::api::sequences::PyList_Append(list, ptr::null_mut()) };
     assert_eq!(result, -1);
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(list) };
 }

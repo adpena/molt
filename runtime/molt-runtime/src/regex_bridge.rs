@@ -4,8 +4,8 @@
 //! internal `pub(crate)` function.  The regex crate declares matching
 //! `extern "C"` imports and they are resolved at link time.
 
-use crate::*;
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
+use crate::*;
 
 // ---------------------------------------------------------------------------
 // Exception / error handling
@@ -19,17 +19,18 @@ pub extern "C" fn __molt_regex_raise_exception(
     msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let type_name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len)) };
-        let msg = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
+        let type_name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
+        };
+        let msg =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
         raise_exception::<u64>(_py, type_name, msg)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_regex_exception_pending() -> i32 {
-    crate::with_gil_entry!(_py, {
-        if exception_pending(_py) { 1 } else { 0 }
-    })
+    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 // ---------------------------------------------------------------------------
@@ -61,7 +62,10 @@ pub extern "C" fn __molt_regex_alloc_string(data_ptr: *const u8, data_len: usize
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_regex_alloc_dict_with_pairs(pairs_ptr: *const u64, pairs_len: usize) -> *mut u8 {
+pub extern "C" fn __molt_regex_alloc_dict_with_pairs(
+    pairs_ptr: *const u64,
+    pairs_len: usize,
+) -> *mut u8 {
     crate::with_gil_entry!(_py, {
         let pairs = unsafe { std::slice::from_raw_parts(pairs_ptr, pairs_len) };
         alloc_dict_with_pairs(_py, pairs)
@@ -134,7 +138,9 @@ pub extern "C" fn __molt_regex_to_i64(bits: u64, out: *mut i64) -> i32 {
     let obj = obj_from_bits(bits);
     match to_i64(obj) {
         Some(v) => {
-            unsafe { *out = v; }
+            unsafe {
+                *out = v;
+            }
             1
         }
         None => 0,
@@ -154,7 +160,9 @@ pub extern "C" fn __molt_regex_dict_get_in_place(
     crate::with_gil_entry!(_py, {
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
             Some(bits) => {
-                unsafe { *out = bits; }
+                unsafe {
+                    *out = bits;
+                }
                 1
             }
             None => 0,
@@ -221,12 +229,16 @@ pub extern "C" fn __molt_regex_molt_iter_next(iter_bits: u64, out: *mut u64) -> 
                 0 // StopIteration or error
             } else {
                 // Actual None value — return it.
-                unsafe { *out = result; }
+                unsafe {
+                    *out = result;
+                }
                 1
             }
         })
     } else {
-        unsafe { *out = result; }
+        unsafe {
+            *out = result;
+        }
         1
     }
 }

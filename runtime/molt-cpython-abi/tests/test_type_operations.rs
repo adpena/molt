@@ -98,11 +98,7 @@ fn test_generic_new_returns_valid_object() {
     init();
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
     let obj = unsafe {
-        molt_cpython_abi::api::typeobj::PyType_GenericNew(
-            &mut tp,
-            ptr::null_mut(),
-            ptr::null_mut(),
-        )
+        molt_cpython_abi::api::typeobj::PyType_GenericNew(&mut tp, ptr::null_mut(), ptr::null_mut())
     };
     assert!(!obj.is_null());
     assert_eq!(unsafe { (*obj).ob_refcnt }, 1);

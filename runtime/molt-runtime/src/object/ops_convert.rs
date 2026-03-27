@@ -1,8 +1,8 @@
 // Type conversion operations.
 // Split from ops.rs for compilation-unit size reduction.
 
-use crate::*;
 use crate::object::accessors::object_field_init_ptr_raw;
+use crate::*;
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
 use num_integer::Integer;

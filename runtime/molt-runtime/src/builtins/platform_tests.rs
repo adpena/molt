@@ -178,11 +178,7 @@ fn extension_spec_bits_for_tests(_py: &PyToken<'_>, module_name: &str, origin: &
     spec_bits
 }
 
-fn assert_pending_exception_contains(
-    _py: &PyToken<'_>,
-    expected_kind: &str,
-    fragments: &[&str],
-) {
+fn assert_pending_exception_contains(_py: &PyToken<'_>, expected_kind: &str, fragments: &[&str]) {
     let (kind, message) =
         pending_exception_kind_and_message(_py).expect("expected pending exception");
     assert_eq!(
@@ -246,13 +242,10 @@ fn sys_bootstrap_state_includes_pythonpath_module_roots_and_pwd() {
             } else {
                 '/'
             };
-            let expected_alpha =
-                bootstrap_resolve_path_entry("alpha", "/tmp/molt_pwd", path_sep);
+            let expected_alpha = bootstrap_resolve_path_entry("alpha", "/tmp/molt_pwd", path_sep);
             let expected_beta = bootstrap_resolve_path_entry("beta", "/tmp/molt_pwd", path_sep);
-            let expected_gamma =
-                bootstrap_resolve_path_entry("gamma", "/tmp/molt_pwd", path_sep);
-            let expected_delta =
-                bootstrap_resolve_path_entry("delta", "/tmp/molt_pwd", path_sep);
+            let expected_gamma = bootstrap_resolve_path_entry("gamma", "/tmp/molt_pwd", path_sep);
+            let expected_delta = bootstrap_resolve_path_entry("delta", "/tmp/molt_pwd", path_sep);
             assert_eq!(
                 state.pythonpath_entries,
                 vec![expected_alpha.clone(), expected_beta.clone()]
@@ -504,8 +497,7 @@ fn importlib_find_in_path_resolves_namespace_package() {
         left_root.to_string_lossy().into_owned(),
         right_root.to_string_lossy().into_owned(),
     ];
-    let namespace =
-        importlib_find_in_path("nspkg", &search_paths, false).expect("namespace spec");
+    let namespace = importlib_find_in_path("nspkg", &search_paths, false).expect("namespace spec");
     assert!(namespace.is_package);
     assert_eq!(namespace.origin, None);
     assert_eq!(namespace.cached, None);
@@ -519,8 +511,7 @@ fn importlib_find_in_path_resolves_namespace_package() {
         ])
     );
 
-    let module =
-        importlib_find_in_path("nspkg.mod", &search_paths, false).expect("module spec");
+    let module = importlib_find_in_path("nspkg.mod", &search_paths, false).expect("module spec");
     let module_origin = module.origin.clone().expect("module origin");
     assert!(module_origin.ends_with("mod.py"));
     assert!(!module.is_package);
@@ -673,15 +664,8 @@ fn extension_spec_boundary_rejects_missing_manifest_sidecar() {
         let search_paths = vec![tmp.to_string_lossy().into_owned()];
 
         crate::with_gil_entry!(_py, {
-            let out = importlib_find_spec_payload(
-                _py,
-                &module_name,
-                &search_paths,
-                None,
-                1,
-                0,
-                false,
-            );
+            let out =
+                importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false);
             assert!(
                 out.is_err(),
                 "expected spec boundary failure for missing manifest"
@@ -716,15 +700,8 @@ fn extension_spec_boundary_rejects_invalid_manifest_payload() {
         let search_paths = vec![tmp.to_string_lossy().into_owned()];
 
         crate::with_gil_entry!(_py, {
-            let out = importlib_find_spec_payload(
-                _py,
-                &module_name,
-                &search_paths,
-                None,
-                1,
-                0,
-                false,
-            );
+            let out =
+                importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false);
             assert!(
                 out.is_err(),
                 "expected spec boundary failure for invalid manifest"
@@ -763,17 +740,10 @@ fn extension_spec_boundary_accepts_valid_manifest() {
         let search_paths = vec![tmp.to_string_lossy().into_owned()];
 
         crate::with_gil_entry!(_py, {
-            let payload = importlib_find_spec_payload(
-                _py,
-                &module_name,
-                &search_paths,
-                None,
-                1,
-                0,
-                false,
-            )
-            .expect("spec boundary should pass")
-            .expect("extension spec should resolve");
+            let payload =
+                importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false)
+                    .expect("spec boundary should pass")
+                    .expect("extension spec should resolve");
             assert_eq!(payload.loader_kind, "extension");
             assert_eq!(
                 payload.origin.as_deref(),
@@ -814,15 +784,8 @@ fn extension_spec_boundary_rejects_manifest_module_mismatch() {
         let search_paths = vec![tmp.to_string_lossy().into_owned()];
 
         crate::with_gil_entry!(_py, {
-            let out = importlib_find_spec_payload(
-                _py,
-                &module_name,
-                &search_paths,
-                None,
-                1,
-                0,
-                false,
-            );
+            let out =
+                importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false);
             assert!(
                 out.is_err(),
                 "expected spec boundary failure for manifest module mismatch"
@@ -861,17 +824,10 @@ fn extension_spec_boundary_revalidates_cache_after_artifact_mutation() {
         let search_paths = vec![tmp.to_string_lossy().into_owned()];
 
         crate::with_gil_entry!(_py, {
-            let payload = importlib_find_spec_payload(
-                _py,
-                &module_name,
-                &search_paths,
-                None,
-                1,
-                0,
-                false,
-            )
-            .expect("first spec boundary pass should succeed")
-            .expect("first extension spec should resolve");
+            let payload =
+                importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false)
+                    .expect("first spec boundary pass should succeed")
+                    .expect("first extension spec should resolve");
             assert_eq!(payload.loader_kind, "extension");
             assert_eq!(
                 payload.origin.as_deref(),
@@ -883,24 +839,13 @@ fn extension_spec_boundary_revalidates_cache_after_artifact_mutation() {
             .expect("mutate extension artifact");
 
         crate::with_gil_entry!(_py, {
-            let out = importlib_find_spec_payload(
-                _py,
-                &module_name,
-                &search_paths,
-                None,
-                1,
-                0,
-                false,
-            );
+            let out =
+                importlib_find_spec_payload(_py, &module_name, &search_paths, None, 1, 0, false);
             assert!(
                 out.is_err(),
                 "expected spec boundary failure after extension mutation"
             );
-            assert_pending_exception_contains(
-                _py,
-                "ImportError",
-                &["extension checksum mismatch"],
-            );
+            assert_pending_exception_contains(_py, "ImportError", &["extension checksum mismatch"]);
         });
 
         std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
@@ -912,8 +857,7 @@ fn extension_spec_object_boundary_enforces_missing_and_valid_manifest() {
     with_trusted_runtime(|| {
         clear_extension_metadata_validation_cache();
         {
-            let tmp =
-                extension_boundary_temp_dir("molt_extension_spec_object_missing_manifest");
+            let tmp = extension_boundary_temp_dir("molt_extension_spec_object_missing_manifest");
             std::fs::create_dir_all(&tmp).expect("create temp dir");
             let module_name = format!("ext_spec_object_missing_{}", std::process::id());
             let filename = extension_boundary_module_filename(&module_name);
@@ -925,11 +869,8 @@ fn extension_spec_object_boundary_enforces_missing_and_valid_manifest() {
             crate::with_gil_entry!(_py, {
                 let spec_bits =
                     extension_spec_bits_for_tests(_py, &module_name, &extension_path_text);
-                let out = importlib_enforce_extension_spec_object_boundary(
-                    _py,
-                    &module_name,
-                    spec_bits,
-                );
+                let out =
+                    importlib_enforce_extension_spec_object_boundary(_py, &module_name, spec_bits);
                 assert!(
                     out.is_err(),
                     "expected extension spec object boundary failure for missing manifest"
@@ -959,8 +900,8 @@ fn extension_spec_object_boundary_enforces_missing_and_valid_manifest() {
             std::fs::write(&extension_path, b"spec-object-boundary-extension")
                 .expect("write extension placeholder");
             let extension_path_text = extension_path.to_string_lossy().into_owned();
-            let extension_sha256 = importlib_sha256_file(&extension_path_text)
-                .expect("hash extension placeholder");
+            let extension_sha256 =
+                importlib_sha256_file(&extension_path_text).expect("hash extension placeholder");
             write_valid_extension_manifest(
                 &tmp.join("extension_manifest.json"),
                 &module_name,
@@ -971,11 +912,8 @@ fn extension_spec_object_boundary_enforces_missing_and_valid_manifest() {
             crate::with_gil_entry!(_py, {
                 let spec_bits =
                     extension_spec_bits_for_tests(_py, &module_name, &extension_path_text);
-                let out = importlib_enforce_extension_spec_object_boundary(
-                    _py,
-                    &module_name,
-                    spec_bits,
-                );
+                let out =
+                    importlib_enforce_extension_spec_object_boundary(_py, &module_name, spec_bits);
                 dec_ref_bits(_py, spec_bits);
                 assert!(
                     out.is_ok(),
@@ -1207,8 +1145,7 @@ fn extension_loader_boundary_revalidates_cache_after_artifact_mutation() {
         std::fs::create_dir_all(&tmp).expect("create temp dir");
         let extension_path = tmp.join(extension_boundary_filename());
         let initial_extension = b"extension-v1";
-        std::fs::write(&extension_path, initial_extension)
-            .expect("write extension placeholder");
+        std::fs::write(&extension_path, initial_extension).expect("write extension placeholder");
         let module_name = "demo.extension.loader.cache";
         let extension_path_text = extension_path.to_string_lossy().into_owned();
         let extension_sha256 =
@@ -1240,11 +1177,7 @@ fn extension_loader_boundary_revalidates_cache_after_artifact_mutation() {
 
         crate::with_gil_entry!(_py, {
             let _ = call_extension_loader_boundary(_py, module_name, &extension_path_text);
-            assert_pending_exception_contains(
-                _py,
-                "ImportError",
-                &["extension checksum mismatch"],
-            );
+            assert_pending_exception_contains(_py, "ImportError", &["extension checksum mismatch"]);
         });
 
         std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
@@ -1340,8 +1273,7 @@ fn importlib_sha256_path_supports_zip_archive_members() {
 
     let archive_member_path = format!("{}/demo/native.so", archive.to_string_lossy());
     crate::with_gil_entry!(_py, {
-        let digest =
-            importlib_sha256_path(_py, &archive_member_path).expect("hash archive member");
+        let digest = importlib_sha256_path(_py, &archive_member_path).expect("hash archive member");
         assert_eq!(digest, importlib_sha256_hex(b"zip-extension-bytes"));
     });
 
@@ -1500,9 +1432,8 @@ fn importlib_zip_source_exec_payload_reads_source_and_resolution() {
     writer.finish().expect("finish zip file");
 
     let archive_text = archive.to_string_lossy().into_owned();
-    let payload =
-        importlib_zip_source_exec_payload("zipmod", &archive_text, "zipmod.py", false)
-            .expect("build zip source exec payload");
+    let payload = importlib_zip_source_exec_payload("zipmod", &archive_text, "zipmod.py", false)
+        .expect("build zip source exec payload");
     assert!(!payload.is_package);
     assert_eq!(payload.module_package, "");
     assert_eq!(payload.package_root, None);
@@ -1787,8 +1718,7 @@ fn importlib_resources_whl_payload_reports_archive_member_flag() {
     writer.finish().expect("finish whl archive");
 
     let archive_text = archive.to_string_lossy().into_owned();
-    let file_payload =
-        importlib_resources_path_payload(&format!("{archive_text}/pkg/data.txt"));
+    let file_payload = importlib_resources_path_payload(&format!("{archive_text}/pkg/data.txt"));
     assert!(file_payload.exists);
     assert!(file_payload.is_file);
     assert!(file_payload.is_archive_member);
@@ -1942,10 +1872,8 @@ fn importlib_bootstrap_payload_reports_resolved_search_paths_and_env_fields() {
             ("PWD", "/tmp/bootstrap_pwd"),
         ],
         || {
-            let payload = importlib_bootstrap_payload(
-                &["src".to_string()],
-                Some(bootstrap_module_file()),
-            );
+            let payload =
+                importlib_bootstrap_payload(&["src".to_string()], Some(bootstrap_module_file()));
             let path_sep = if sys_platform_str().starts_with("win") {
                 '\\'
             } else {

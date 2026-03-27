@@ -1,11 +1,13 @@
 use anyhow::{Context, Result, bail};
 use base64::Engine as Base64Engine;
 use base64::engine::general_purpose::STANDARD;
+use molt_runtime::vfs::snapshot::SnapshotHeader;
 use num_format::{Grouping, SystemLocale};
 use rmpv::Value as MsgpackValue;
 use rmpv::encode::write_value;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
+use sha2::{Digest, Sha256};
 use socket2::{Domain, Protocol, SockAddr, SockAddrStorage, Socket, Type};
 use std::collections::{HashMap, VecDeque};
 use std::env;
@@ -19,8 +21,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, connect};
-use molt_runtime::vfs::snapshot::SnapshotHeader;
-use sha2::{Sha256, Digest};
 use url::Url;
 use wasmtime::{
     Cache, Caller, Config, Engine, Extern, ExternType, Func, FuncType, Linker, Memory, MemoryType,
@@ -4415,7 +4415,11 @@ fn restore_snapshot(
     // Read header length
     let header_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
     if data.len() < 4 + header_len {
-        bail!("snapshot file truncated: expected at least {} bytes, got {}", 4 + header_len, data.len());
+        bail!(
+            "snapshot file truncated: expected at least {} bytes, got {}",
+            4 + header_len,
+            data.len()
+        );
     }
     let header_json = std::str::from_utf8(&data[4..4 + header_len])?;
     let header_value: serde_json::Value = serde_json::from_str(header_json)?;
@@ -4476,10 +4480,7 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             "--bundle" => {
-                bundle_path = Some(
-                    args.next()
-                        .context("--bundle requires a path argument")?,
-                );
+                bundle_path = Some(args.next().context("--bundle requires a path argument")?);
             }
             "--vfs-tmp-quota" => {
                 let val = args
@@ -4516,8 +4517,8 @@ fn main() -> Result<()> {
     let mut vfs_envs: Vec<(String, String)> = Vec::new();
     if let Some(ref bp) = bundle_path {
         // Resolve to absolute so the WASM guest can find it via preopened dirs.
-        let abs = std::fs::canonicalize(bp)
-            .with_context(|| format!("--bundle path not found: {bp}"))?;
+        let abs =
+            std::fs::canonicalize(bp).with_context(|| format!("--bundle path not found: {bp}"))?;
         vfs_envs.push((
             "MOLT_VFS_BUNDLE".to_string(),
             abs.to_string_lossy().to_string(),
@@ -4712,7 +4713,9 @@ fn main() -> Result<()> {
         // via table.set + ref.func instead of passive element segments.
         if let Some(table_init) = output_instance.get_func(&mut store, "molt_table_init") {
             debug_log(|| "calling molt_table_init".to_string());
-            table_init.call(&mut store, &[], &mut []).context("molt_table_init failed")?;
+            table_init
+                .call(&mut store, &[], &mut [])
+                .context("molt_table_init failed")?;
             debug_log(|| "molt_table_init completed".to_string());
         }
 
@@ -4742,7 +4745,9 @@ fn main() -> Result<()> {
 
         // Snapshot capture: after molt_main returns (or after restore).
         if let Some(ref capture_path) = snapshot_capture_path {
-            let memory = store.data().memory
+            let memory = store
+                .data()
+                .memory
                 .ok_or_else(|| anyhow::anyhow!("no linear memory available for snapshot"))?;
             let mem_size = memory.data_size(&store) as u64;
             let header = SnapshotHeader {
@@ -4770,7 +4775,9 @@ fn main() -> Result<()> {
         // Initialize the indirect function table (linked binary path).
         if let Some(table_init) = output_instance.get_func(&mut store, "molt_table_init") {
             debug_log(|| "calling molt_table_init (linked)".to_string());
-            table_init.call(&mut store, &[], &mut []).context("molt_table_init failed")?;
+            table_init
+                .call(&mut store, &[], &mut [])
+                .context("molt_table_init failed")?;
             debug_log(|| "molt_table_init completed (linked)".to_string());
         }
 
@@ -4800,7 +4807,9 @@ fn main() -> Result<()> {
 
         // Snapshot capture: after molt_main returns (or after restore).
         if let Some(ref capture_path) = snapshot_capture_path {
-            let memory = store.data().memory
+            let memory = store
+                .data()
+                .memory
                 .ok_or_else(|| anyhow::anyhow!("no linear memory available for snapshot"))?;
             let mem_size = memory.data_size(&store) as u64;
             let header = SnapshotHeader {

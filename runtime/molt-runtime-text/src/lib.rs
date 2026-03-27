@@ -10,5 +10,5 @@
 /// FFI bridge to molt-runtime internal functions (resolved at link time).
 pub mod bridge;
 
-pub mod unicodedata_mod;
 pub mod html;
+pub mod unicodedata_mod;

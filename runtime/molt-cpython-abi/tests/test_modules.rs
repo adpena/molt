@@ -60,11 +60,7 @@ fn test_module_addobject_null_module_returns_error() {
     init();
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let result = unsafe {
-        molt_cpython_abi::api::modules::PyModule_AddObject(
-            ptr::null_mut(),
-            c"attr".as_ptr(),
-            val,
-        )
+        molt_cpython_abi::api::modules::PyModule_AddObject(ptr::null_mut(), c"attr".as_ptr(), val)
     };
     assert_eq!(result, -1);
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(val) };
@@ -75,8 +71,7 @@ fn test_module_addobject_null_name_returns_error() {
     init();
     let m = unsafe { molt_cpython_abi::api::modules::PyModule_New(c"mod".as_ptr()) };
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
-    let result =
-        unsafe { molt_cpython_abi::api::modules::PyModule_AddObject(m, ptr::null(), val) };
+    let result = unsafe { molt_cpython_abi::api::modules::PyModule_AddObject(m, ptr::null(), val) };
     assert_eq!(result, -1);
     // val ref was not stolen on error, clean up
     unsafe {
@@ -104,11 +99,7 @@ fn test_module_addobject_null_value_returns_error() {
 fn test_module_addintconstant_null_module() {
     init();
     let result = unsafe {
-        molt_cpython_abi::api::modules::PyModule_AddIntConstant(
-            ptr::null_mut(),
-            c"X".as_ptr(),
-            42,
-        )
+        molt_cpython_abi::api::modules::PyModule_AddIntConstant(ptr::null_mut(), c"X".as_ptr(), 42)
     };
     assert_eq!(result, -1);
 }

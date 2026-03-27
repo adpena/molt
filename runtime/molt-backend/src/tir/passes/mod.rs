@@ -4,19 +4,19 @@
 pub mod bce;
 pub mod cha;
 pub mod closure_spec;
-pub mod deforestation;
-pub mod fast_math;
-pub mod vectorize;
 pub mod dce;
-pub mod interprocedural;
+pub mod deforestation;
 pub mod escape_analysis;
+pub mod fast_math;
+pub mod interprocedural;
 pub mod monomorphize;
+pub mod polyhedral;
 pub mod refcount_elim;
 pub mod sccp;
 pub mod strength_reduction;
 pub mod type_guard_hoist;
 pub mod unboxing;
-pub mod polyhedral;
+pub mod vectorize;
 
 /// Statistics returned by each optimization pass.
 #[derive(Debug, Default, Clone)]
@@ -53,14 +53,30 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     let skip = std::env::var("MOLT_TIR_SKIP").unwrap_or_default();
     let skip_set: std::collections::HashSet<&str> = skip.split(',').collect();
 
-    if !skip_set.contains("unboxing") { stats.push(unboxing::run(func)); }
-    if !skip_set.contains("escape_analysis") { stats.push(escape_analysis::run(func)); }
-    if !skip_set.contains("refcount_elim") { stats.push(refcount_elim::run(func)); }
-    if !skip_set.contains("type_guard_hoist") { stats.push(type_guard_hoist::run(func)); }
-    if !skip_set.contains("sccp") { stats.push(sccp::run(func)); }
-    if !skip_set.contains("strength_reduction") { stats.push(strength_reduction::run(func)); }
-    if !skip_set.contains("bce") { stats.push(bce::run(func)); }
-    if !skip_set.contains("dce") { stats.push(dce::run(func)); }
+    if !skip_set.contains("unboxing") {
+        stats.push(unboxing::run(func));
+    }
+    if !skip_set.contains("escape_analysis") {
+        stats.push(escape_analysis::run(func));
+    }
+    if !skip_set.contains("refcount_elim") {
+        stats.push(refcount_elim::run(func));
+    }
+    if !skip_set.contains("type_guard_hoist") {
+        stats.push(type_guard_hoist::run(func));
+    }
+    if !skip_set.contains("sccp") {
+        stats.push(sccp::run(func));
+    }
+    if !skip_set.contains("strength_reduction") {
+        stats.push(strength_reduction::run(func));
+    }
+    if !skip_set.contains("bce") {
+        stats.push(bce::run(func));
+    }
+    if !skip_set.contains("dce") {
+        stats.push(dce::run(func));
+    }
 
     // Verify TIR invariants after all passes.  Instead of panicking
     // (which kills the process under panic=abort profiles), return an
@@ -71,7 +87,7 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
             errors.len(),
             errors
         );
-        return Vec::new();  // signal: verification failed
+        return Vec::new(); // signal: verification failed
     }
 
     // Print stats if TIR_OPT_STATS=1

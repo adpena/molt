@@ -210,7 +210,9 @@ fn pure_profile_excludes_io_imports() {
     let wasm = compile_with_profile(hello_world_ir(), WasmProfile::Pure);
     let names = import_names(&wasm);
 
-    let io_prefixes = ["process_", "socket", "os_", "db_", "ws_", "file_", "stream_"];
+    let io_prefixes = [
+        "process_", "socket", "os_", "db_", "ws_", "file_", "stream_",
+    ];
     for prefix in &io_prefixes {
         let matches: Vec<&String> = names.iter().filter(|n| n.starts_with(prefix)).collect();
         assert!(

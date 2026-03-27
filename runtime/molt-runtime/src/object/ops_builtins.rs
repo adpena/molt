@@ -1,8 +1,8 @@
 // Call dispatch, builtin wrappers, and type constructor builtins.
 // Split from ops.rs for compilation-unit size reduction.
 
-use crate::*;
 use crate::object::ops_string::utf8_char_to_byte_index_cached;
+use crate::*;
 use molt_obj_model::MoltObject;
 use num_integer::Integer;
 use num_traits::{Signed, Zero};
@@ -132,7 +132,9 @@ pub extern "C" fn molt_guarded_call(
     if !recursion_guard_enter() {
         crate::with_gil_entry!(_py, {
             return raise_exception::<u64>(
-                _py, "RecursionError", "maximum recursion depth exceeded",
+                _py,
+                "RecursionError",
+                "maximum recursion depth exceeded",
             );
         });
     }
@@ -142,7 +144,9 @@ pub extern "C" fn molt_guarded_call(
                 let idx = code_id as usize;
                 let code_bits = if idx < slots.len() {
                     slots[idx].load(AtomicOrdering::Acquire)
-                } else { MoltObject::none().bits() };
+                } else {
+                    MoltObject::none().bits()
+                };
                 frame_stack_push(_py, code_bits);
             } else {
                 frame_stack_push(_py, MoltObject::none().bits());
@@ -154,7 +158,9 @@ pub extern "C" fn molt_guarded_call(
         molt_guarded_call_dispatch(fn_ptr, args_ptr, n)
     };
     if code_id >= 0 {
-        crate::with_gil_entry!(_py, { frame_stack_pop(_py); });
+        crate::with_gil_entry!(_py, {
+            frame_stack_pop(_py);
+        });
     }
     recursion_guard_exit();
     result
@@ -172,7 +178,9 @@ pub extern "C" fn molt_guarded_call_obj(
     if !recursion_guard_enter() {
         crate::with_gil_entry!(_py, {
             return raise_exception::<u64>(
-                _py, "RecursionError", "maximum recursion depth exceeded",
+                _py,
+                "RecursionError",
+                "maximum recursion depth exceeded",
             );
         });
     }
@@ -206,7 +214,9 @@ pub extern "C" fn molt_guarded_call_obj(
         molt_guarded_call_dispatch(fn_ptr, args_ptr, n)
     };
     if callee_bits != 0 {
-        crate::with_gil_entry!(_py, { frame_stack_pop(_py); });
+        crate::with_gil_entry!(_py, {
+            frame_stack_pop(_py);
+        });
     }
     recursion_guard_exit();
     result
@@ -234,56 +244,282 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                 f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2))
             }
             4 => {
-                let f: extern "C" fn(u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
-                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3))
+                let f: extern "C" fn(u64, u64, u64, u64) -> u64 =
+                    std::mem::transmute(fn_ptr as usize);
+                f(
+                    *args_ptr,
+                    *args_ptr.add(1),
+                    *args_ptr.add(2),
+                    *args_ptr.add(3),
+                )
             }
             5 => {
-                let f: extern "C" fn(u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
-                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4))
+                let f: extern "C" fn(u64, u64, u64, u64, u64) -> u64 =
+                    std::mem::transmute(fn_ptr as usize);
+                f(
+                    *args_ptr,
+                    *args_ptr.add(1),
+                    *args_ptr.add(2),
+                    *args_ptr.add(3),
+                    *args_ptr.add(4),
+                )
             }
             6 => {
-                let f: extern "C" fn(u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
-                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5))
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64) -> u64 =
+                    std::mem::transmute(fn_ptr as usize);
+                f(
+                    *args_ptr,
+                    *args_ptr.add(1),
+                    *args_ptr.add(2),
+                    *args_ptr.add(3),
+                    *args_ptr.add(4),
+                    *args_ptr.add(5),
+                )
             }
             7 => {
-                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
-                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6))
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> u64 =
+                    std::mem::transmute(fn_ptr as usize);
+                f(
+                    *args_ptr,
+                    *args_ptr.add(1),
+                    *args_ptr.add(2),
+                    *args_ptr.add(3),
+                    *args_ptr.add(4),
+                    *args_ptr.add(5),
+                    *args_ptr.add(6),
+                )
             }
             8 => {
-                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
-                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7))
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> u64 =
+                    std::mem::transmute(fn_ptr as usize);
+                f(
+                    *args_ptr,
+                    *args_ptr.add(1),
+                    *args_ptr.add(2),
+                    *args_ptr.add(3),
+                    *args_ptr.add(4),
+                    *args_ptr.add(5),
+                    *args_ptr.add(6),
+                    *args_ptr.add(7),
+                )
             }
             9 => {
-                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
-                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8))
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 =
+                    std::mem::transmute(fn_ptr as usize);
+                f(
+                    *args_ptr,
+                    *args_ptr.add(1),
+                    *args_ptr.add(2),
+                    *args_ptr.add(3),
+                    *args_ptr.add(4),
+                    *args_ptr.add(5),
+                    *args_ptr.add(6),
+                    *args_ptr.add(7),
+                    *args_ptr.add(8),
+                )
             }
             10 => {
-                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
-                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9))
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 =
+                    std::mem::transmute(fn_ptr as usize);
+                f(
+                    *args_ptr,
+                    *args_ptr.add(1),
+                    *args_ptr.add(2),
+                    *args_ptr.add(3),
+                    *args_ptr.add(4),
+                    *args_ptr.add(5),
+                    *args_ptr.add(6),
+                    *args_ptr.add(7),
+                    *args_ptr.add(8),
+                    *args_ptr.add(9),
+                )
             }
             11 => {
-                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
-                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10))
+                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 =
+                    std::mem::transmute(fn_ptr as usize);
+                f(
+                    *args_ptr,
+                    *args_ptr.add(1),
+                    *args_ptr.add(2),
+                    *args_ptr.add(3),
+                    *args_ptr.add(4),
+                    *args_ptr.add(5),
+                    *args_ptr.add(6),
+                    *args_ptr.add(7),
+                    *args_ptr.add(8),
+                    *args_ptr.add(9),
+                    *args_ptr.add(10),
+                )
             }
             12 => {
-                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
-                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10), *args_ptr.add(11))
+                let f: extern "C" fn(
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                ) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(
+                    *args_ptr,
+                    *args_ptr.add(1),
+                    *args_ptr.add(2),
+                    *args_ptr.add(3),
+                    *args_ptr.add(4),
+                    *args_ptr.add(5),
+                    *args_ptr.add(6),
+                    *args_ptr.add(7),
+                    *args_ptr.add(8),
+                    *args_ptr.add(9),
+                    *args_ptr.add(10),
+                    *args_ptr.add(11),
+                )
             }
             13 => {
-                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
-                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10), *args_ptr.add(11), *args_ptr.add(12))
+                let f: extern "C" fn(
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                ) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(
+                    *args_ptr,
+                    *args_ptr.add(1),
+                    *args_ptr.add(2),
+                    *args_ptr.add(3),
+                    *args_ptr.add(4),
+                    *args_ptr.add(5),
+                    *args_ptr.add(6),
+                    *args_ptr.add(7),
+                    *args_ptr.add(8),
+                    *args_ptr.add(9),
+                    *args_ptr.add(10),
+                    *args_ptr.add(11),
+                    *args_ptr.add(12),
+                )
             }
             14 => {
-                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
-                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10), *args_ptr.add(11), *args_ptr.add(12), *args_ptr.add(13))
+                let f: extern "C" fn(
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                ) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(
+                    *args_ptr,
+                    *args_ptr.add(1),
+                    *args_ptr.add(2),
+                    *args_ptr.add(3),
+                    *args_ptr.add(4),
+                    *args_ptr.add(5),
+                    *args_ptr.add(6),
+                    *args_ptr.add(7),
+                    *args_ptr.add(8),
+                    *args_ptr.add(9),
+                    *args_ptr.add(10),
+                    *args_ptr.add(11),
+                    *args_ptr.add(12),
+                    *args_ptr.add(13),
+                )
             }
             15 => {
-                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
-                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10), *args_ptr.add(11), *args_ptr.add(12), *args_ptr.add(13), *args_ptr.add(14))
+                let f: extern "C" fn(
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                ) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(
+                    *args_ptr,
+                    *args_ptr.add(1),
+                    *args_ptr.add(2),
+                    *args_ptr.add(3),
+                    *args_ptr.add(4),
+                    *args_ptr.add(5),
+                    *args_ptr.add(6),
+                    *args_ptr.add(7),
+                    *args_ptr.add(8),
+                    *args_ptr.add(9),
+                    *args_ptr.add(10),
+                    *args_ptr.add(11),
+                    *args_ptr.add(12),
+                    *args_ptr.add(13),
+                    *args_ptr.add(14),
+                )
             }
             16 => {
-                let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
-                f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2), *args_ptr.add(3), *args_ptr.add(4), *args_ptr.add(5), *args_ptr.add(6), *args_ptr.add(7), *args_ptr.add(8), *args_ptr.add(9), *args_ptr.add(10), *args_ptr.add(11), *args_ptr.add(12), *args_ptr.add(13), *args_ptr.add(14), *args_ptr.add(15))
+                let f: extern "C" fn(
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                    u64,
+                ) -> u64 = std::mem::transmute(fn_ptr as usize);
+                f(
+                    *args_ptr,
+                    *args_ptr.add(1),
+                    *args_ptr.add(2),
+                    *args_ptr.add(3),
+                    *args_ptr.add(4),
+                    *args_ptr.add(5),
+                    *args_ptr.add(6),
+                    *args_ptr.add(7),
+                    *args_ptr.add(8),
+                    *args_ptr.add(9),
+                    *args_ptr.add(10),
+                    *args_ptr.add(11),
+                    *args_ptr.add(12),
+                    *args_ptr.add(13),
+                    *args_ptr.add(14),
+                    *args_ptr.add(15),
+                )
             }
             _ => {
                 // Arity > 16: raise a clear error instead of silently failing.
@@ -329,7 +565,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn molt_call_func_dispatch(
     func_bits: u64,
-    args_ptr_bits: u64,  // u64 to match WASM all-i64 ABI; cast to *const u64 below
+    args_ptr_bits: u64, // u64 to match WASM all-i64 ABI; cast to *const u64 below
     nargs: u64,
     code_id: u64,
 ) -> u64 {
@@ -342,7 +578,11 @@ pub extern "C" fn molt_call_func_dispatch(
         let mut inline_buf = [0u64; 16];
         let heap_args: Vec<u64>;
         let args_slice: &[u64] = if n <= 16 {
-            for i in 0..n { unsafe { inline_buf[i] = *args_ptr.add(i); } }
+            for i in 0..n {
+                unsafe {
+                    inline_buf[i] = *args_ptr.add(i);
+                }
+            }
             &inline_buf[..n]
         } else {
             heap_args = unsafe { (0..n).map(|i| *args_ptr.add(i)).collect() };
@@ -361,7 +601,9 @@ pub extern "C" fn molt_call_func_dispatch(
                     let combined_len = n + 1;
                     if combined_len <= 17 {
                         bound_buf[0] = self_bits;
-                        for i in 0..n { bound_buf[i + 1] = args_slice[i]; }
+                        for i in 0..n {
+                            bound_buf[i + 1] = args_slice[i];
+                        }
                         (inner, &bound_buf[..combined_len])
                     } else {
                         let mut v = Vec::with_capacity(combined_len);
@@ -393,6 +635,10 @@ pub extern "C" fn molt_call_func_dispatch(
         if has_closure {
             return molt_call_func_via_callargs(func_bits, effective_args);
         }
+        let has_trampoline = unsafe { function_trampoline_ptr(func_ptr) } != 0;
+        if has_trampoline {
+            return unsafe { call_function_obj_vec(_py, effective_func, effective_args) };
+        }
 
         // --- Step 4: Direct call fast path ---
         let fn_ptr_val = unsafe { function_fn_ptr(func_ptr) };
@@ -401,9 +647,7 @@ pub extern "C" fn molt_call_func_dispatch(
 
         if func_arity == eff_nargs {
             // Exact arity match — fast path.
-            return molt_call_func_direct(
-                _py, fn_ptr_val, effective_args, code_id, func_bits,
-            );
+            return molt_call_func_direct(_py, fn_ptr_val, effective_args, code_id, func_bits);
         }
 
         // --- Step 5: Handle missing args with defaults ---
@@ -466,7 +710,11 @@ pub extern "C" fn molt_call_func_dispatch(
 
                 if filled {
                     return molt_call_func_direct(
-                        _py, fn_ptr_val, &padded_buf[..padded_len], code_id, func_bits,
+                        _py,
+                        fn_ptr_val,
+                        &padded_buf[..padded_len],
+                        code_id,
+                        func_bits,
                     );
                 }
             }
@@ -502,7 +750,11 @@ pub extern "C" fn molt_call_func_dispatch(
                                             padded_buf[eff_nargs + i] = defaults[start + i];
                                         }
                                         return molt_call_func_direct(
-                                            _py, fn_ptr_val, &padded_buf[..total], code_id, func_bits,
+                                            _py,
+                                            fn_ptr_val,
+                                            &padded_buf[..total],
+                                            code_id,
+                                            func_bits,
                                         );
                                     } else {
                                         // >18 padded args: fall back to Vec (extremely rare).
@@ -538,9 +790,7 @@ fn molt_call_func_direct(
     callable_bits: u64,
 ) -> u64 {
     if !recursion_guard_enter() {
-        return raise_exception::<u64>(
-            _py, "RecursionError", "maximum recursion depth exceeded",
-        );
+        return raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded");
     }
     if code_id != 0 {
         if let Some(func_ptr) = obj_from_bits(callable_bits).as_ptr() {
@@ -628,6 +878,9 @@ unsafe fn probe_simple_func(func_bits: u64, expected_arity: usize) -> Option<u64
         if object_type_id(ptr) != TYPE_ID_FUNCTION {
             return None;
         }
+        if function_trampoline_ptr(ptr) != 0 {
+            return None;
+        }
         if function_closure_bits(ptr) != 0 {
             return None;
         }
@@ -645,7 +898,11 @@ pub extern "C" fn molt_call_func_fast0(func_bits: u64) -> u64 {
         if let Some(fn_ptr) = probe_simple_func(func_bits, 0) {
             if !recursion_guard_enter() {
                 return crate::with_gil_entry!(_py, {
-                    raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded")
+                    raise_exception::<u64>(
+                        _py,
+                        "RecursionError",
+                        "maximum recursion depth exceeded",
+                    )
                 });
             }
             let result = direct_call_0(fn_ptr);
@@ -665,7 +922,11 @@ pub extern "C" fn molt_call_func_fast1(func_bits: u64, a0: u64) -> u64 {
         if let Some(fn_ptr) = probe_simple_func(func_bits, 1) {
             if !recursion_guard_enter() {
                 return crate::with_gil_entry!(_py, {
-                    raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded")
+                    raise_exception::<u64>(
+                        _py,
+                        "RecursionError",
+                        "maximum recursion depth exceeded",
+                    )
                 });
             }
             let result = direct_call_1(fn_ptr, a0);
@@ -685,7 +946,11 @@ pub extern "C" fn molt_call_func_fast2(func_bits: u64, a0: u64, a1: u64) -> u64 
         if let Some(fn_ptr) = probe_simple_func(func_bits, 2) {
             if !recursion_guard_enter() {
                 return crate::with_gil_entry!(_py, {
-                    raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded")
+                    raise_exception::<u64>(
+                        _py,
+                        "RecursionError",
+                        "maximum recursion depth exceeded",
+                    )
                 });
             }
             let result = direct_call_2(fn_ptr, a0, a1);
@@ -705,7 +970,11 @@ pub extern "C" fn molt_call_func_fast3(func_bits: u64, a0: u64, a1: u64, a2: u64
         if let Some(fn_ptr) = probe_simple_func(func_bits, 3) {
             if !recursion_guard_enter() {
                 return crate::with_gil_entry!(_py, {
-                    raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded")
+                    raise_exception::<u64>(
+                        _py,
+                        "RecursionError",
+                        "maximum recursion depth exceeded",
+                    )
                 });
             }
             let result = direct_call_3(fn_ptr, a0, a1, a2);
@@ -837,7 +1106,6 @@ pub extern "C" fn molt_round_builtin(val_bits: u64, ndigits_bits: u64) -> u64 {
         molt_round(val_bits, ndigits, has_ndigits_bits)
     })
 }
-
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_any_builtin(iter_bits: u64) -> u64 {
@@ -1277,7 +1545,6 @@ pub extern "C" fn molt_max_builtin(args_bits: u64, key_bits: u64, default_bits: 
     })
 }
 
-
 struct SortItem {
     key_bits: u64,
     value_bits: u64,
@@ -1505,19 +1772,11 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                 };
                 unsafe {
                     if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "object is not an iterator",
-                        );
+                        return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
                     }
                     let elems = seq_vec_ref(pair_ptr);
                     if elems.len() < 2 {
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "object is not an iterator",
-                        );
+                        return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
                     }
                     let val_bits = elems[0];
                     let done_bits = elems[1];
@@ -1565,7 +1824,9 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                         all_numeric = false;
                         total_bits = MoltObject::from_float(fsum + comp).bits();
                         #[allow(unused_assignments)]
-                        { total_owned = true; }
+                        {
+                            total_owned = true;
+                        }
                     }
                     let next_bits = molt_add(total_bits, val_bits);
                     if obj_from_bits(next_bits).is_none() {
@@ -2880,7 +3141,8 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
                 return crate::molt_bound_method_new(func_bits, obj_bits);
             }
             if obj.is_float()
-                && let Some(func_bits) = crate::builtins::methods::float_method_bits(_py, &attr_name)
+                && let Some(func_bits) =
+                    crate::builtins::methods::float_method_bits(_py, &attr_name)
             {
                 return crate::molt_bound_method_new(func_bits, obj_bits);
             }
@@ -2898,10 +3160,16 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
                     0
                 };
                 if class_bits != 0 {
-                    if let Some(func_bits) = crate::builtins::methods::builtin_class_method_bits(_py, class_bits, &attr_name) {
+                    if let Some(func_bits) = crate::builtins::methods::builtin_class_method_bits(
+                        _py, class_bits, &attr_name,
+                    ) {
                         return crate::molt_bound_method_new(func_bits, obj_bits);
                     }
-                    if let Some(func_bits) = crate::builtins::methods::builtin_class_method_bits(_py, builtins.object, &attr_name) {
+                    if let Some(func_bits) = crate::builtins::methods::builtin_class_method_bits(
+                        _py,
+                        builtins.object,
+                        &attr_name,
+                    ) {
                         return crate::molt_bound_method_new(func_bits, obj_bits);
                     }
                 }
@@ -3103,7 +3371,6 @@ pub extern "C" fn molt_object_ne(self_bits: u64, other_bits: u64) -> u64 {
         not_implemented_bits(_py)
     })
 }
-
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_print_builtin(
@@ -3940,7 +4207,11 @@ pub extern "C" fn molt_slice_builtin(start_bits: u64, stop_bits: u64, step_bits:
             // slice(stop) — single-arg form
             return molt_slice_new(none, start_bits, none);
         }
-        let actual_step = if step_bits == missing { none } else { step_bits };
+        let actual_step = if step_bits == missing {
+            none
+        } else {
+            step_bits
+        };
         molt_slice_new(start_bits, stop_bits, actual_step)
     })
 }
@@ -3998,11 +4269,7 @@ pub extern "C" fn molt_staticmethod_builtin(func_bits: u64) -> u64 {
 
 /// `property(fget=None, fset=None, fdel=None)` — wraps `molt_property_new`.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_property_builtin(
-    get_bits: u64,
-    set_bits: u64,
-    del_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_property_builtin(get_bits: u64, set_bits: u64, del_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let missing = missing_bits(_py);
         let none = MoltObject::none().bits();

@@ -98,7 +98,12 @@ impl TirType {
         // retain-based dedup is fine and avoids requiring Ord on TirType.
         let mut seen = Vec::with_capacity(6);
         members.retain(|m| {
-            if seen.contains(m) { false } else { seen.push(m.clone()); true }
+            if seen.contains(m) {
+                false
+            } else {
+                seen.push(m.clone());
+                true
+            }
         });
 
         if members.len() == 1 {
@@ -131,7 +136,10 @@ impl TirType {
 
     /// Returns true for types that live in machine registers (no heap allocation).
     pub fn is_unboxed(&self) -> bool {
-        matches!(self, TirType::I64 | TirType::F64 | TirType::Bool | TirType::None)
+        matches!(
+            self,
+            TirType::I64 | TirType::F64 | TirType::Bool | TirType::None
+        )
     }
 
     /// Returns true for types that support arithmetic operations.

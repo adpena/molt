@@ -17,8 +17,8 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("alloc_class_trusted", 3),
     ("dec_ref_obj", 1),
     ("inc_ref_obj", 1),
-    ("obj_get_state", 14),  // (i32) -> i64
-    ("obj_set_state", 39),  // (i32, i64) -> ()
+    ("obj_get_state", 14), // (i32) -> i64
+    ("obj_set_state", 39), // (i32, i64) -> ()
     // ── INTERNAL: Module system ──
     ("module_cache_get", 2),
     ("module_cache_set", 3),
@@ -537,7 +537,10 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("importlib_resources_only", 5),
     ("importlib_resources_open_mode_is_text", 2),
     ("importlib_resources_open_resource_bytes_from_package", 7),
-    ("importlib_resources_open_resource_bytes_from_package_parts", 7),
+    (
+        "importlib_resources_open_resource_bytes_from_package_parts",
+        7,
+    ),
     ("importlib_resources_package_info", 5),
     ("importlib_resources_package_leaf_name", 2),
     ("importlib_resources_path_payload", 2),
@@ -552,7 +555,10 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("importlib_resources_reader_is_resource", 3),
     ("importlib_resources_reader_is_resource_from_roots", 3),
     ("importlib_resources_reader_open_resource_bytes", 3),
-    ("importlib_resources_reader_open_resource_bytes_from_roots", 3),
+    (
+        "importlib_resources_reader_open_resource_bytes_from_roots",
+        3,
+    ),
     ("importlib_resources_reader_resource_path", 3),
     ("importlib_resources_reader_resource_path_from_roots", 3),
     ("importlib_resources_reader_roots", 2),
@@ -841,56 +847,59 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     // Absolute minimum needed by ANY program regardless of IR content.
     // Everything else is discovered by IR-scanning below.
     // Target: <80 for hello-world. Current: ~50.
-    ("__structural__", &[
-        // Memory management
-        "alloc",
-        "dec_ref_obj",
-        "inc_ref_obj",
-        // Call dispatch (call_func uses call_func_dispatch)
-        "call_func_dispatch",
-        // Exceptions — any program can raise
-        "exception_active",
-        "exception_class",
-        "exception_clear",
-        "exception_context_set",
-        "exception_kind",
-        "exception_last",
-        "exception_message",
-        "exception_new",
-        "exception_new_from_class",
-        "exception_pending",
-        "exception_pop",
-        "exception_push",
-        "exception_set_cause",
-        "exception_set_last",
-        "exception_set_value",
-        "exception_stack_clear",
-        // Function creation (func_new is used by every module)
-        "func_new",
-        // Pointer resolution
-        "handle_resolve",
-        // Identity and truthiness
-        "is",
-        "is_truthy",
-        "not",
-        // Module system
-        "module_cache_get",
-        "module_cache_set",
-        "module_get_attr",
-        "module_new",
-        "module_set_attr",
-        // Output
-        "print_newline",
-        "print_obj",
-        // Exception raising
-        "raise",
-        // Runtime lifecycle
-        "runtime_init",
-        "runtime_shutdown",
-        // Bootstrap
-        "set_intrinsic_manifest",
-        "sys_set_version_info",
-    ]),
+    (
+        "__structural__",
+        &[
+            // Memory management
+            "alloc",
+            "dec_ref_obj",
+            "inc_ref_obj",
+            // Call dispatch (call_func uses call_func_dispatch)
+            "call_func_dispatch",
+            // Exceptions — any program can raise
+            "exception_active",
+            "exception_class",
+            "exception_clear",
+            "exception_context_set",
+            "exception_kind",
+            "exception_last",
+            "exception_message",
+            "exception_new",
+            "exception_new_from_class",
+            "exception_pending",
+            "exception_pop",
+            "exception_push",
+            "exception_set_cause",
+            "exception_set_last",
+            "exception_set_value",
+            "exception_stack_clear",
+            // Function creation (func_new is used by every module)
+            "func_new",
+            // Pointer resolution
+            "handle_resolve",
+            // Identity and truthiness
+            "is",
+            "is_truthy",
+            "not",
+            // Module system
+            "module_cache_get",
+            "module_cache_set",
+            "module_get_attr",
+            "module_new",
+            "module_set_attr",
+            // Output
+            "print_newline",
+            "print_obj",
+            // Exception raising
+            "raise",
+            // Runtime lifecycle
+            "runtime_init",
+            "runtime_shutdown",
+            // Bootstrap
+            "set_intrinsic_manifest",
+            "sys_set_version_info",
+        ],
+    ),
     // ── On-demand: comparison ops ──
     // Pulled in when comparison ops appear in IR.
     ("eq", &["eq"]),
@@ -901,22 +910,73 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ("ge", &["ge"]),
     // ── On-demand: context managers ──
     // Pulled in when with-statement ops appear in IR.
-    ("context_enter", &["context_enter", "context_exit", "context_depth",
-        "context_closing", "context_null", "context_unwind", "context_unwind_to"]),
-    ("context_exit", &["context_exit", "context_depth", "context_unwind_to"]),
+    (
+        "context_enter",
+        &[
+            "context_enter",
+            "context_exit",
+            "context_depth",
+            "context_closing",
+            "context_null",
+            "context_unwind",
+            "context_unwind_to",
+        ],
+    ),
+    (
+        "context_exit",
+        &["context_exit", "context_depth", "context_unwind_to"],
+    ),
     ("context_closing", &["context_closing"]),
     ("context_null", &["context_null"]),
-    ("context_unwind", &["context_unwind", "context_unwind_to", "context_depth"]),
+    (
+        "context_unwind",
+        &["context_unwind", "context_unwind_to", "context_depth"],
+    ),
     // ── On-demand: class infrastructure ──
     // Pulled in when class-definition ops appear in IR.
-    ("alloc_class", &["alloc_class", "class_new", "class_set_base",
-        "class_apply_set_name", "class_layout_version", "class_set_layout_version"]),
-    ("alloc_class_static", &["alloc_class_static", "class_new", "class_set_base",
-        "class_apply_set_name", "class_layout_version", "class_set_layout_version"]),
-    ("alloc_class_trusted", &["alloc_class_trusted", "class_new", "class_set_base",
-        "class_apply_set_name", "class_layout_version", "class_set_layout_version"]),
-    ("class_new", &["class_new", "class_set_base", "class_apply_set_name",
-        "class_layout_version", "class_set_layout_version"]),
+    (
+        "alloc_class",
+        &[
+            "alloc_class",
+            "class_new",
+            "class_set_base",
+            "class_apply_set_name",
+            "class_layout_version",
+            "class_set_layout_version",
+        ],
+    ),
+    (
+        "alloc_class_static",
+        &[
+            "alloc_class_static",
+            "class_new",
+            "class_set_base",
+            "class_apply_set_name",
+            "class_layout_version",
+            "class_set_layout_version",
+        ],
+    ),
+    (
+        "alloc_class_trusted",
+        &[
+            "alloc_class_trusted",
+            "class_new",
+            "class_set_base",
+            "class_apply_set_name",
+            "class_layout_version",
+            "class_set_layout_version",
+        ],
+    ),
+    (
+        "class_new",
+        &[
+            "class_new",
+            "class_set_base",
+            "class_apply_set_name",
+            "class_layout_version",
+            "class_set_layout_version",
+        ],
+    ),
     // ── On-demand: object field access ──
     // Pulled in when load/store/object ops appear in IR.
     ("object_new", &["object_new", "object_set_class"]),
@@ -1038,7 +1098,10 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ("format_builtin", &["format_builtin"]),
     ("string_eq", &["string_eq"]),
     ("frame_locals_set", &["frame_locals_set"]),
-    ("recursion_guard_enter", &["recursion_guard_enter", "recursion_guard_exit"]),
+    (
+        "recursion_guard_enter",
+        &["recursion_guard_enter", "recursion_guard_exit"],
+    ),
     ("recursion_guard_exit", &["recursion_guard_exit"]),
     // Call support ops
     ("callargs_new", &["callargs_new"]),
@@ -1051,297 +1114,360 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ("function_is_coroutine", &["function_is_coroutine"]),
     ("function_is_generator", &["function_is_generator"]),
     ("function_set_builtin", &["function_set_builtin"]),
-    ("async_generator_yield", &[
-        "asyncgen_hooks_get",
-        "asyncgen_hooks_set",
-        "asyncgen_locals",
-        "asyncgen_locals_register",
+    (
+        "async_generator_yield",
+        &[
+            "asyncgen_hooks_get",
+            "asyncgen_hooks_set",
+            "asyncgen_locals",
+            "asyncgen_locals_register",
+            "asyncgen_new",
+            "asyncgen_shutdown",
+        ],
+    ),
+    (
         "asyncgen_new",
-        "asyncgen_shutdown",
-    ]),
-    ("asyncgen_new", &[
-        "asyncgen_hooks_get",
-        "asyncgen_hooks_set",
-        "asyncgen_locals",
-        "asyncgen_locals_register",
-        "asyncgen_new",
-        "asyncgen_shutdown",
-    ]),
-    ("call_async", &[
-        "handle_resolve",
-        "inc_ref_obj",
-        "task_new",
-    ]),
-    ("call_guarded", &[
-        "call_bind_ic",
-        "callargs_new",
-        "callargs_push_pos",
-        "handle_resolve",
-        "is_function_obj",
-        "is_truthy",
-    ]),
-    ("call_method", &[
-        "call_bind_ic",
-        "callargs_new",
-        "callargs_push_pos",
-    ]),
-    ("cbor_parse", &[
-        "alloc",
-        "cbor_parse_scalar",
-        "cbor_parse_scalar_obj",
-        "handle_resolve",
-    ]),
-    ("closure_load", &[
-        "closure_load",
-        "handle_resolve",
-    ]),
-    ("closure_store", &[
-        "closure_store",
-        "handle_resolve",
-    ]),
-    ("const_bigint", &[
-        "bigint_from_str",
-    ]),
-    ("const_bytes", &[
-        "bytes_from_bytes",
-    ]),
-    ("const_ellipsis", &[
-        "ellipsis",
-    ]),
-    ("const_not_implemented", &[
-        "not_implemented",
-    ]),
-    ("const_str", &[
-        "string_from_bytes",
-    ]),
-    ("coroutine", &[
-        "cancel_token_get_current",
-        "handle_resolve",
-        "inc_ref_obj",
-        "task_new",
-        "task_register_token_owned",
-    ]),
-    ("del_attr_generic_ptr", &[
-        "del_attr_ptr",
-        "handle_resolve",
-    ]),
-    ("dict_new", &[
-        "dict_new",
-        "dict_set",
-    ]),
-    ("frozenset_new", &[
-        "frozenset_add",
-        "frozenset_new",
-    ]),
-    ("function_closure_bits", &[
+        &[
+            "asyncgen_hooks_get",
+            "asyncgen_hooks_set",
+            "asyncgen_locals",
+            "asyncgen_locals_register",
+            "asyncgen_new",
+            "asyncgen_shutdown",
+        ],
+    ),
+    ("call_async", &["handle_resolve", "inc_ref_obj", "task_new"]),
+    (
+        "call_guarded",
+        &[
+            "call_bind_ic",
+            "callargs_new",
+            "callargs_push_pos",
+            "handle_resolve",
+            "is_function_obj",
+            "is_truthy",
+        ],
+    ),
+    (
+        "call_method",
+        &["call_bind_ic", "callargs_new", "callargs_push_pos"],
+    ),
+    (
+        "cbor_parse",
+        &[
+            "alloc",
+            "cbor_parse_scalar",
+            "cbor_parse_scalar_obj",
+            "handle_resolve",
+        ],
+    ),
+    ("closure_load", &["closure_load", "handle_resolve"]),
+    ("closure_store", &["closure_store", "handle_resolve"]),
+    ("const_bigint", &["bigint_from_str"]),
+    ("const_bytes", &["bytes_from_bytes"]),
+    ("const_ellipsis", &["ellipsis"]),
+    ("const_not_implemented", &["not_implemented"]),
+    ("const_str", &["string_from_bytes"]),
+    (
+        "coroutine",
+        &[
+            "cancel_token_get_current",
+            "handle_resolve",
+            "inc_ref_obj",
+            "task_new",
+            "task_register_token_owned",
+        ],
+    ),
+    ("del_attr_generic_ptr", &["del_attr_ptr", "handle_resolve"]),
+    ("dict_new", &["dict_new", "dict_set"]),
+    ("frozenset_new", &["frozenset_add", "frozenset_new"]),
+    (
         "function_closure_bits",
-        "inc_ref_obj",
-    ]),
-    ("gen_locals_register", &[
-        "gen_locals",
+        &["function_closure_bits", "inc_ref_obj"],
+    ),
+    (
         "gen_locals_register",
-    ]),
-    ("get_attr_generic_obj", &[
-        "get_attr_object_ic",
-    ]),
-    ("get_attr_generic_ptr", &[
-        "get_attr_ptr",
-        "handle_resolve",
-    ]),
-    ("get_attr_special_obj", &[
-        "get_attr_special",
-    ]),
-    ("guard_layout", &[
-        "guard_layout_ptr",
-        "handle_resolve",
-    ]),
-    ("guarded_field_get", &[
-        "guard_layout_ptr",
-        "guarded_field_get_ptr",
-        "handle_resolve",
-        "inc_ref_obj",
-    ]),
-    ("guarded_field_init", &[
-        "guard_layout_ptr",
-        "guarded_field_init_ptr",
-        "handle_resolve",
-        "object_field_init_ptr",
-    ]),
-    ("guarded_field_set", &[
-        "guard_layout_ptr",
-        "guarded_field_set_ptr",
-        "handle_resolve",
-        "object_field_set_ptr",
-    ]),
-    ("guarded_load", &[
-        "inc_ref_obj",
-        "object_field_get",
-    ]),
-    ("invoke_ffi", &[
-        "callargs_new",
-        "callargs_push_pos",
-        "invoke_ffi_ic",
-    ]),
-    ("io_wait", &[
-        "io_wait",
-        "io_wait_new",
-    ]),
-    ("io_wait_new", &[
-        "io_wait",
-        "io_wait_new",
-    ]),
-    ("json_parse", &[
-        "alloc",
-        "handle_resolve",
-        "json_parse_scalar",
-        "json_parse_scalar_obj",
-    ]),
-    ("list_new", &[
-        "list_builder_append",
-        "list_builder_finish",
-        "list_builder_new",
-    ]),
-    ("load", &[
-        "inc_ref_obj",
-        "object_field_get",
-    ]),
-    ("msgpack_parse", &[
-        "alloc",
-        "handle_resolve",
-        "msgpack_parse_scalar",
-        "msgpack_parse_scalar_obj",
-    ]),
-    ("object_set_class", &[
-        "handle_resolve",
-        "object_set_class",
-    ]),
-    ("process_spawn", &[
-        "process_poll",
-        "process_spawn",
-    ]),
-    ("set_attr_generic_obj", &[
-        "set_attr_object",
-    ]),
-    ("set_attr_generic_ptr", &[
-        "handle_resolve",
-        "set_attr_ptr",
-    ]),
-    ("set_new", &[
-        "set_add",
-        "set_new",
-    ]),
-    ("state_transition", &[
-        "closure_store",
-        "future_poll",
-        "handle_resolve",
-        "obj_get_state",
-        "obj_set_state",
-        "sleep_register",
-    ]),
-    ("state_yield", &[
-        "inc_ref_obj",
-        "obj_set_state",
-    ]),
-    ("chan_send_yield", &[
-        "chan_send",
-        "obj_set_state",
-    ]),
-    ("chan_recv_yield", &[
-        "chan_recv",
-        "obj_set_state",
-    ]),
-    ("store", &[
-        "object_field_set",
-    ]),
-    ("store_init", &[
-        "object_field_init",
-    ]),
-    ("string_format", &[
-        "format_builtin",
-    ]),
-    ("task_new", &[
-        "task_new",
-        "task_register_token_owned",
-    ]),
-    ("thread_spawn", &[
-        "thread_poll",
-        "thread_spawn",
-    ]),
-    ("thread_submit", &[
-        "thread_poll",
-        "thread_submit",
-    ]),
-    ("tuple_new", &[
-        "list_builder_append",
-        "list_builder_new",
-        "tuple_builder_finish",
-    ]),
-    ("unpack_sequence", &[
-        "index",
-    ]),
-    ("yield_await", &[
-        "future_poll",
-    ]),
-    ("yield_send", &[
-        "future_poll",
-    ]),
+        &["gen_locals", "gen_locals_register"],
+    ),
+    ("get_attr_generic_obj", &["get_attr_object_ic"]),
+    ("get_attr_generic_ptr", &["get_attr_ptr", "handle_resolve"]),
+    ("get_attr_special_obj", &["get_attr_special"]),
+    ("guard_layout", &["guard_layout_ptr", "handle_resolve"]),
+    (
+        "guarded_field_get",
+        &[
+            "guard_layout_ptr",
+            "guarded_field_get_ptr",
+            "handle_resolve",
+            "inc_ref_obj",
+        ],
+    ),
+    (
+        "guarded_field_init",
+        &[
+            "guard_layout_ptr",
+            "guarded_field_init_ptr",
+            "handle_resolve",
+            "object_field_init_ptr",
+        ],
+    ),
+    (
+        "guarded_field_set",
+        &[
+            "guard_layout_ptr",
+            "guarded_field_set_ptr",
+            "handle_resolve",
+            "object_field_set_ptr",
+        ],
+    ),
+    ("guarded_load", &["inc_ref_obj", "object_field_get"]),
+    (
+        "invoke_ffi",
+        &["callargs_new", "callargs_push_pos", "invoke_ffi_ic"],
+    ),
+    ("io_wait", &["io_wait", "io_wait_new"]),
+    ("io_wait_new", &["io_wait", "io_wait_new"]),
+    (
+        "json_parse",
+        &[
+            "alloc",
+            "handle_resolve",
+            "json_parse_scalar",
+            "json_parse_scalar_obj",
+        ],
+    ),
+    (
+        "list_new",
+        &[
+            "list_builder_append",
+            "list_builder_finish",
+            "list_builder_new",
+        ],
+    ),
+    ("load", &["inc_ref_obj", "object_field_get"]),
+    (
+        "msgpack_parse",
+        &[
+            "alloc",
+            "handle_resolve",
+            "msgpack_parse_scalar",
+            "msgpack_parse_scalar_obj",
+        ],
+    ),
+    ("object_set_class", &["handle_resolve", "object_set_class"]),
+    ("process_spawn", &["process_poll", "process_spawn"]),
+    ("set_attr_generic_obj", &["set_attr_object"]),
+    ("set_attr_generic_ptr", &["handle_resolve", "set_attr_ptr"]),
+    ("set_new", &["set_add", "set_new"]),
+    (
+        "state_transition",
+        &[
+            "closure_store",
+            "future_poll",
+            "handle_resolve",
+            "obj_get_state",
+            "obj_set_state",
+            "sleep_register",
+        ],
+    ),
+    ("state_yield", &["inc_ref_obj", "obj_set_state"]),
+    ("chan_send_yield", &["chan_send", "obj_set_state"]),
+    ("chan_recv_yield", &["chan_recv", "obj_set_state"]),
+    ("store", &["object_field_set"]),
+    ("store_init", &["object_field_init"]),
+    ("string_format", &["format_builtin"]),
+    ("task_new", &["task_new", "task_register_token_owned"]),
+    ("thread_spawn", &["thread_poll", "thread_spawn"]),
+    ("thread_submit", &["thread_poll", "thread_submit"]),
+    (
+        "tuple_new",
+        &[
+            "list_builder_append",
+            "list_builder_new",
+            "tuple_builder_finish",
+        ],
+    ),
+    ("unpack_sequence", &["index"]),
+    ("yield_await", &["future_poll"]),
+    ("yield_send", &["future_poll"]),
     // Websocket group: any ws_ op requires the full websocket import set.
     // Each individual ws_ op maps to the same complete group because the
     // runtime's ws implementation is tightly coupled (connect needs wait,
     // send needs wait, etc.).
-    ("ws_connect", &[
-        "ws_close", "ws_connect", "ws_connect_obj", "ws_drop",
-        "ws_pair", "ws_pair_obj", "ws_recv", "ws_send", "ws_send_obj",
-        "ws_wait", "ws_wait_new",
-    ]),
-    ("ws_connect_obj", &[
-        "ws_close", "ws_connect", "ws_connect_obj", "ws_drop",
-        "ws_pair", "ws_pair_obj", "ws_recv", "ws_send", "ws_send_obj",
-        "ws_wait", "ws_wait_new",
-    ]),
-    ("ws_pair", &[
-        "ws_close", "ws_connect", "ws_connect_obj", "ws_drop",
-        "ws_pair", "ws_pair_obj", "ws_recv", "ws_send", "ws_send_obj",
-        "ws_wait", "ws_wait_new",
-    ]),
-    ("ws_pair_obj", &[
-        "ws_close", "ws_connect", "ws_connect_obj", "ws_drop",
-        "ws_pair", "ws_pair_obj", "ws_recv", "ws_send", "ws_send_obj",
-        "ws_wait", "ws_wait_new",
-    ]),
-    ("ws_send", &[
-        "ws_close", "ws_connect", "ws_connect_obj", "ws_drop",
-        "ws_pair", "ws_pair_obj", "ws_recv", "ws_send", "ws_send_obj",
-        "ws_wait", "ws_wait_new",
-    ]),
-    ("ws_send_obj", &[
-        "ws_close", "ws_connect", "ws_connect_obj", "ws_drop",
-        "ws_pair", "ws_pair_obj", "ws_recv", "ws_send", "ws_send_obj",
-        "ws_wait", "ws_wait_new",
-    ]),
-    ("ws_recv", &[
-        "ws_close", "ws_connect", "ws_connect_obj", "ws_drop",
-        "ws_pair", "ws_pair_obj", "ws_recv", "ws_send", "ws_send_obj",
-        "ws_wait", "ws_wait_new",
-    ]),
-    ("ws_close", &[
-        "ws_close", "ws_connect", "ws_connect_obj", "ws_drop",
-        "ws_pair", "ws_pair_obj", "ws_recv", "ws_send", "ws_send_obj",
-        "ws_wait", "ws_wait_new",
-    ]),
-    ("ws_drop", &[
-        "ws_close", "ws_connect", "ws_connect_obj", "ws_drop",
-        "ws_pair", "ws_pair_obj", "ws_recv", "ws_send", "ws_send_obj",
-        "ws_wait", "ws_wait_new",
-    ]),
-    ("ws_wait", &[
-        "ws_close", "ws_connect", "ws_connect_obj", "ws_drop",
-        "ws_pair", "ws_pair_obj", "ws_recv", "ws_send", "ws_send_obj",
-        "ws_wait", "ws_wait_new",
-    ]),
-    ("ws_wait_new", &[
-        "ws_close", "ws_connect", "ws_connect_obj", "ws_drop",
-        "ws_pair", "ws_pair_obj", "ws_recv", "ws_send", "ws_send_obj",
-        "ws_wait", "ws_wait_new",
-    ]),
+    (
+        "ws_connect",
+        &[
+            "ws_close",
+            "ws_connect",
+            "ws_connect_obj",
+            "ws_drop",
+            "ws_pair",
+            "ws_pair_obj",
+            "ws_recv",
+            "ws_send",
+            "ws_send_obj",
+            "ws_wait",
+            "ws_wait_new",
+        ],
+    ),
+    (
+        "ws_connect_obj",
+        &[
+            "ws_close",
+            "ws_connect",
+            "ws_connect_obj",
+            "ws_drop",
+            "ws_pair",
+            "ws_pair_obj",
+            "ws_recv",
+            "ws_send",
+            "ws_send_obj",
+            "ws_wait",
+            "ws_wait_new",
+        ],
+    ),
+    (
+        "ws_pair",
+        &[
+            "ws_close",
+            "ws_connect",
+            "ws_connect_obj",
+            "ws_drop",
+            "ws_pair",
+            "ws_pair_obj",
+            "ws_recv",
+            "ws_send",
+            "ws_send_obj",
+            "ws_wait",
+            "ws_wait_new",
+        ],
+    ),
+    (
+        "ws_pair_obj",
+        &[
+            "ws_close",
+            "ws_connect",
+            "ws_connect_obj",
+            "ws_drop",
+            "ws_pair",
+            "ws_pair_obj",
+            "ws_recv",
+            "ws_send",
+            "ws_send_obj",
+            "ws_wait",
+            "ws_wait_new",
+        ],
+    ),
+    (
+        "ws_send",
+        &[
+            "ws_close",
+            "ws_connect",
+            "ws_connect_obj",
+            "ws_drop",
+            "ws_pair",
+            "ws_pair_obj",
+            "ws_recv",
+            "ws_send",
+            "ws_send_obj",
+            "ws_wait",
+            "ws_wait_new",
+        ],
+    ),
+    (
+        "ws_send_obj",
+        &[
+            "ws_close",
+            "ws_connect",
+            "ws_connect_obj",
+            "ws_drop",
+            "ws_pair",
+            "ws_pair_obj",
+            "ws_recv",
+            "ws_send",
+            "ws_send_obj",
+            "ws_wait",
+            "ws_wait_new",
+        ],
+    ),
+    (
+        "ws_recv",
+        &[
+            "ws_close",
+            "ws_connect",
+            "ws_connect_obj",
+            "ws_drop",
+            "ws_pair",
+            "ws_pair_obj",
+            "ws_recv",
+            "ws_send",
+            "ws_send_obj",
+            "ws_wait",
+            "ws_wait_new",
+        ],
+    ),
+    (
+        "ws_close",
+        &[
+            "ws_close",
+            "ws_connect",
+            "ws_connect_obj",
+            "ws_drop",
+            "ws_pair",
+            "ws_pair_obj",
+            "ws_recv",
+            "ws_send",
+            "ws_send_obj",
+            "ws_wait",
+            "ws_wait_new",
+        ],
+    ),
+    (
+        "ws_drop",
+        &[
+            "ws_close",
+            "ws_connect",
+            "ws_connect_obj",
+            "ws_drop",
+            "ws_pair",
+            "ws_pair_obj",
+            "ws_recv",
+            "ws_send",
+            "ws_send_obj",
+            "ws_wait",
+            "ws_wait_new",
+        ],
+    ),
+    (
+        "ws_wait",
+        &[
+            "ws_close",
+            "ws_connect",
+            "ws_connect_obj",
+            "ws_drop",
+            "ws_pair",
+            "ws_pair_obj",
+            "ws_recv",
+            "ws_send",
+            "ws_send_obj",
+            "ws_wait",
+            "ws_wait_new",
+        ],
+    ),
+    (
+        "ws_wait_new",
+        &[
+            "ws_close",
+            "ws_connect",
+            "ws_connect_obj",
+            "ws_drop",
+            "ws_pair",
+            "ws_pair_obj",
+            "ws_recv",
+            "ws_send",
+            "ws_send_obj",
+            "ws_wait",
+            "ws_wait_new",
+        ],
+    ),
 ];

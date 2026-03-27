@@ -105,20 +105,18 @@ impl SimpleIR {
             if trimmed.is_empty() {
                 continue;
             }
-            let value: JsonValue = serde_json::from_str(trimmed)
-                .map_err(|e| format!("NDJSON parse error: {e}"))?;
+            let value: JsonValue =
+                serde_json::from_str(trimmed).map_err(|e| format!("NDJSON parse error: {e}"))?;
             match value.get("kind").and_then(|v| v.as_str()) {
                 Some("ir_stream_start") => {
                     if let Some(p) = value.get("profile") {
                         if !p.is_null() {
-                            profile =
-                                Some(PgoProfileIR::from_json_value(p, "stream.profile")?);
+                            profile = Some(PgoProfileIR::from_json_value(p, "stream.profile")?);
                         }
                     }
                 }
                 Some("function") => {
-                    functions
-                        .push(FunctionIR::from_json_value(&value, "stream.function")?);
+                    functions.push(FunctionIR::from_json_value(&value, "stream.function")?);
                 }
                 Some("ir_stream_end") => break,
                 _ => {} // skip unknown kinds for forward compat
@@ -408,5 +406,4 @@ mod json_parse_tests {
         assert_eq!(ir.functions.len(), 0);
         assert!(ir.profile.is_none());
     }
-
 }

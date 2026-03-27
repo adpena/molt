@@ -9,8 +9,8 @@
 //! provides the happens-before relationship required for correctness; if the GIL
 //! is ever removed these should be upgraded to `Acquire`/`Release`.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 // ---------------------------------------------------------------------------
 // InlineCache — 16 bytes, fits in half a cache line
@@ -75,7 +75,8 @@ impl InlineCache {
     pub fn update(&self, type_id: u32, offset: u32, current_version: u64) {
         self.cached_type_id.store(type_id, Ordering::Relaxed);
         self.cached_offset.store(offset, Ordering::Relaxed);
-        self.cached_version.store(current_version, Ordering::Relaxed);
+        self.cached_version
+            .store(current_version, Ordering::Relaxed);
     }
 
     /// Invalidate this entry by clearing `cached_type_id`.

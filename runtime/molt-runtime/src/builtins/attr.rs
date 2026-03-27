@@ -8,27 +8,27 @@ use molt_obj_model::MoltObject;
 
 use crate::builtins::annotations::pep649_enabled;
 use crate::{
-    TYPE_ID_CALL_ITER, TYPE_ID_CLASSMETHOD, TYPE_ID_DATACLASS, TYPE_ID_DICT,
-    TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE,
-    TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR,
-    TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_MAP, TYPE_ID_MODULE, TYPE_ID_OBJECT, TYPE_ID_PROPERTY,
-    TYPE_ID_REVERSED, TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
-    TYPE_ID_ZIP, alloc_dict_with_pairs, alloc_function_obj, alloc_property_obj, alloc_string,
-    alloc_tuple, attr_lookup_ptr, builtin_class_method_bits, builtin_classes, builtin_func_bits,
-    call_callable1, call_callable3, call_function_obj1, class_bases_bits, class_bases_vec,
-    class_dict_bits, class_layout_version_bits, class_mro_ref, class_mro_vec, class_name_bits,
-    class_name_for_error, classmethod_func_bits, clear_exception, dataclass_desc_ptr,
-    dataclass_dict_bits, dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits,
-    dict_get_in_place, dict_order, dict_set_in_place, exception_class_bits, exception_dict_bits,
-    exception_kind_bits, exception_pending, exception_type_bits_from_name,
-    inc_ref_bits, init_atomic_bits, instance_dict_bits, instance_set_dict_bits, intern_static_name,
-    is_builtin_class_bits, is_missing_bits, is_truthy, issubclass_bits, maybe_ptr_from_bits,
-    module_dict_bits, molt_awaitable_await, molt_bound_method_new, molt_exception_last,
-    molt_function_get_code, molt_function_get_globals, molt_iter, molt_iter_next, obj_eq,
-    obj_from_bits, object_class_bits, object_field_get_ptr_raw, object_set_class_bits,
-    object_type_id, property_get_bits, raise_exception, runtime_state, seq_vec_ref,
-    staticmethod_func_bits, string_bytes, string_len, string_obj_to_owned, type_name, type_of_bits,
-    profile_hit_unchecked, FIELD_OFFSET_IC_HIT_COUNT, FIELD_OFFSET_IC_MISS_COUNT,
+    FIELD_OFFSET_IC_HIT_COUNT, FIELD_OFFSET_IC_MISS_COUNT, TYPE_ID_CALL_ITER, TYPE_ID_CLASSMETHOD,
+    TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW,
+    TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE, TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE,
+    TYPE_ID_FILTER, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_MAP,
+    TYPE_ID_MODULE, TYPE_ID_OBJECT, TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_STATICMETHOD,
+    TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, TYPE_ID_ZIP, alloc_dict_with_pairs,
+    alloc_function_obj, alloc_property_obj, alloc_string, alloc_tuple, attr_lookup_ptr,
+    builtin_class_method_bits, builtin_classes, builtin_func_bits, call_callable1, call_callable3,
+    call_function_obj1, class_bases_bits, class_bases_vec, class_dict_bits,
+    class_layout_version_bits, class_mro_ref, class_mro_vec, class_name_bits, class_name_for_error,
+    classmethod_func_bits, clear_exception, dataclass_desc_ptr, dataclass_dict_bits,
+    dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits, dict_get_in_place, dict_order,
+    dict_set_in_place, exception_class_bits, exception_dict_bits, exception_kind_bits,
+    exception_pending, exception_type_bits_from_name, inc_ref_bits, init_atomic_bits,
+    instance_dict_bits, instance_set_dict_bits, intern_static_name, is_builtin_class_bits,
+    is_missing_bits, is_truthy, issubclass_bits, maybe_ptr_from_bits, module_dict_bits,
+    molt_awaitable_await, molt_bound_method_new, molt_exception_last, molt_function_get_code,
+    molt_function_get_globals, molt_iter, molt_iter_next, obj_eq, obj_from_bits, object_class_bits,
+    object_field_get_ptr_raw, object_set_class_bits, object_type_id, profile_hit_unchecked,
+    property_get_bits, raise_exception, runtime_state, seq_vec_ref, staticmethod_func_bits,
+    string_bytes, string_len, string_obj_to_owned, type_name, type_of_bits,
 };
 
 struct AttrNameCacheEntry {
@@ -191,12 +191,7 @@ impl FieldOffsetIC {
 
     /// Try to look up a cached field offset.  Returns `Some(offset)` on hit.
     #[inline]
-    fn lookup(
-        &self,
-        class_bits: u64,
-        name_bytes: &[u8],
-        current_version: u64,
-    ) -> Option<usize> {
+    fn lookup(&self, class_bits: u64, name_bytes: &[u8], current_version: u64) -> Option<usize> {
         let name_hash = Self::hash_name(name_bytes);
         let idx = Self::slot_index(class_bits, name_hash);
         let entry = &self.slots[idx];
@@ -265,7 +260,8 @@ pub(crate) fn field_offset_ic_lookup(
     current_version: u64,
 ) -> Option<usize> {
     FIELD_OFFSET_IC_TLS.with(|cell| {
-        cell.borrow().lookup(class_bits, attr_name_bytes, current_version)
+        cell.borrow()
+            .lookup(class_bits, attr_name_bytes, current_version)
     })
 }
 

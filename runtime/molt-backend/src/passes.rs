@@ -1,6 +1,152 @@
 use crate::{FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReturnAliasSummary {
+    Param(usize),
+}
+
+fn alias_source_name<'a>(
+    op: &'a OpIR,
+    summaries: &BTreeMap<String, ReturnAliasSummary>,
+) -> Option<&'a str> {
+    match op.kind.as_str() {
+        "copy" | "copy_var" | "box" | "unbox" | "cast" | "widen" | "identity_alias" => op
+            .args
+            .as_ref()
+            .and_then(|args| args.first())
+            .map(String::as_str),
+        "load_var" => op.var.as_deref().or_else(|| {
+            op.args
+                .as_ref()
+                .and_then(|args| args.first())
+                .map(String::as_str)
+        }),
+        "call" => {
+            let callee = op.s_value.as_ref()?;
+            let ReturnAliasSummary::Param(param_idx) = *summaries.get(callee)?;
+            op.args
+                .as_ref()
+                .and_then(|args| args.get(param_idx))
+                .map(String::as_str)
+        }
+        _ => None,
+    }
+}
+
+fn compute_function_return_alias_summary(
+    func: &FunctionIR,
+    known: &BTreeMap<String, ReturnAliasSummary>,
+) -> Option<ReturnAliasSummary> {
+    let mut alias_roots: BTreeMap<String, String> = BTreeMap::new();
+    for param in &func.params {
+        if param != "none" {
+            alias_roots.insert(param.clone(), param.clone());
+        }
+    }
+
+    for op in &func.ops {
+        let Some(out) = op.out.as_ref() else {
+            continue;
+        };
+        if out == "none" {
+            continue;
+        }
+        if let Some(src) = alias_source_name(op, known) {
+            let root = alias_roots
+                .get(src)
+                .cloned()
+                .unwrap_or_else(|| src.to_string());
+            alias_roots.insert(out.clone(), root);
+        }
+    }
+
+    let const_none_names: BTreeSet<&str> = func
+        .ops
+        .iter()
+        .filter(|op| op.kind == "const_none")
+        .filter_map(|op| op.out.as_deref())
+        .collect();
+
+    let mut summary: Option<ReturnAliasSummary> = None;
+    let mut saw_ret = false;
+    for (ret_idx, op) in func.ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "ret" => {
+                let ret_name = op.var.as_ref()?;
+                if const_none_names.contains(ret_name.as_str()) {
+                    let mut scan_idx = ret_idx;
+                    let mut synthetic_raise_tail = false;
+                    while scan_idx > 0 {
+                        scan_idx -= 1;
+                        let prev = &func.ops[scan_idx];
+                        match prev.kind.as_str() {
+                            "const_none" if prev.out.as_deref() == Some(ret_name.as_str()) => {}
+                            "line" | "check_exception" => {}
+                            "raise" => {
+                                synthetic_raise_tail = true;
+                                break;
+                            }
+                            _ => break,
+                        }
+                    }
+                    if synthetic_raise_tail {
+                        continue;
+                    }
+                }
+                saw_ret = true;
+                let root = alias_roots
+                    .get(ret_name)
+                    .cloned()
+                    .unwrap_or_else(|| ret_name.clone());
+                let param_idx = func.params.iter().position(|param| param == &root)?;
+                let current = ReturnAliasSummary::Param(param_idx);
+                match summary {
+                    None => summary = Some(current),
+                    Some(existing) if existing == current => {}
+                    Some(_) => return None,
+                }
+            }
+            "ret_void" => return None,
+            _ => {}
+        }
+    }
+
+    saw_ret.then_some(summary).flatten()
+}
+
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
+pub fn compute_return_alias_summaries(
+    functions: &[FunctionIR],
+) -> BTreeMap<String, ReturnAliasSummary> {
+    let mut summaries: BTreeMap<String, ReturnAliasSummary> = BTreeMap::new();
+    loop {
+        let mut changed = false;
+        for func in functions {
+            let next = compute_function_return_alias_summary(func, &summaries);
+            match next {
+                Some(summary) => {
+                    if summaries.get(&func.name).copied() != Some(summary) {
+                        summaries.insert(func.name.clone(), summary);
+                        changed = true;
+                    }
+                }
+                None => {
+                    if summaries.remove(&func.name).is_some() {
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            return summaries;
+        }
+    }
+}
+
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
@@ -1150,23 +1296,27 @@ mod tests {
             params: vec![],
             param_types: None,
             ops: vec![
-                make_const_int("total_init", 0),        // 0
-                make_const_int("start", 0),              // 1
-                make_op("loop_start"),                   // 2 (skipped for indexed loops)
-                make_loop_index_start("start", "i"),     // 3
+                make_const_int("total_init", 0),                               // 0
+                make_const_int("start", 0),                                    // 1
+                make_op("loop_start"), // 2 (skipped for indexed loops)
+                make_loop_index_start("start", "i"), // 3
                 make_arith("inplace_add", &["total_init", "i"], "total_next"), // 4
-                make_const_int("step", 1),               // 5
+                make_const_int("step", 1), // 5
                 make_arith("add", &["i", "step"], "next_i"), // 6
-                make_loop_index_next("next_i", "i"),     // 7
-                make_op("loop_continue"),                // 8
-                make_op("loop_end"),                     // 9
+                make_loop_index_next("next_i", "i"), // 7
+                make_op("loop_continue"), // 8
+                make_op("loop_end"),   // 9
             ],
         };
 
         propagate_loop_fast_int(&mut func);
 
         // The inplace_add should now have fast_int=true
-        assert_eq!(func.ops[4].fast_int, Some(true), "inplace_add should be fast_int");
+        assert_eq!(
+            func.ops[4].fast_int,
+            Some(true),
+            "inplace_add should be fast_int"
+        );
         // The add (i + step) should also be fast_int
         assert_eq!(func.ops[6].fast_int, Some(true), "add should be fast_int");
     }
@@ -1235,7 +1385,10 @@ mod tests {
 
         propagate_loop_fast_int(&mut func);
 
-        assert_eq!(func.ops[2].fast_int, None, "should not set fast_int with unknown operand");
+        assert_eq!(
+            func.ops[2].fast_int, None,
+            "should not set fast_int with unknown operand"
+        );
     }
 
     #[test]
@@ -1257,8 +1410,16 @@ mod tests {
 
         propagate_loop_fast_int(&mut func);
 
-        assert_eq!(func.ops[3].fast_int, Some(true), "first add should be fast_int");
-        assert_eq!(func.ops[4].fast_int, Some(true), "chained add should be fast_int via fixpoint");
+        assert_eq!(
+            func.ops[3].fast_int,
+            Some(true),
+            "first add should be fast_int"
+        );
+        assert_eq!(
+            func.ops[4].fast_int,
+            Some(true),
+            "chained add should be fast_int via fixpoint"
+        );
     }
 
     #[test]
@@ -1284,7 +1445,11 @@ mod tests {
 
         propagate_loop_fast_int(&mut func);
 
-        assert_eq!(func.ops[3].fast_int, Some(true), "add with type_hint int operand should be fast_int");
+        assert_eq!(
+            func.ops[3].fast_int,
+            Some(true),
+            "add with type_hint int operand should be fast_int"
+        );
     }
 
     // --- RC coalescing tests ---
@@ -1412,57 +1577,85 @@ pub fn compute_rc_coalesce_skips(
     last_use: &BTreeMap<String, usize>,
 ) -> (HashSet<usize>, HashSet<String>) {
     const CONTROL_FLOW: &[&str] = &[
-        "if", "else", "end_if", "jump", "br_if", "label",
-        "check_exception", "state_transition",
-        "state_yield", "state_switch", "state_label", "exception_push",
-        "exception_pop", "chan_send_yield", "chan_recv_yield",
-        "ret", "ret_void",
-        "loop_start", "loop_index_start", "loop_end",
-        "loop_break_if_true", "loop_break_if_false", "loop_continue",
+        "if",
+        "else",
+        "end_if",
+        "jump",
+        "br_if",
+        "label",
+        "check_exception",
+        "state_transition",
+        "state_yield",
+        "state_switch",
+        "state_label",
+        "exception_push",
+        "exception_pop",
+        "chan_send_yield",
+        "chan_recv_yield",
+        "ret",
+        "ret_void",
+        "loop_start",
+        "loop_index_start",
+        "loop_end",
+        "loop_break_if_true",
+        "loop_break_if_false",
+        "loop_continue",
     ];
     let cf_set: HashSet<&str> = CONTROL_FLOW.iter().copied().collect();
     let mut skip_ops: HashSet<usize> = HashSet::new();
     let mut skip_dec_ref: HashSet<String> = HashSet::new();
 
     for i in 0..ops.len() {
-        if skip_ops.contains(&i) { continue; }
+        if skip_ops.contains(&i) {
+            continue;
+        }
         let a = &ops[i];
         let a_is_inc = matches!(a.kind.as_str(), "inc_ref" | "borrow");
         let a_is_dec = matches!(a.kind.as_str(), "dec_ref" | "release");
-        if !a_is_inc && !a_is_dec { continue; }
+        if !a_is_inc && !a_is_dec {
+            continue;
+        }
         let a_arg = match a.args.as_ref().and_then(|v| v.first()) {
             Some(name) => name.clone(),
             None => continue,
         };
         for j in (i + 1)..ops.len() {
             let b = &ops[j];
-            if cf_set.contains(b.kind.as_str()) { break; }
+            if cf_set.contains(b.kind.as_str()) {
+                break;
+            }
             let b_kind = b.kind.as_str();
             let b_arg = b.args.as_ref().and_then(|v| v.first());
             let is_match = if a_is_inc {
-                matches!(b_kind, "dec_ref" | "release")
-                    && b_arg.map(String::as_str) == Some(&a_arg)
+                matches!(b_kind, "dec_ref" | "release") && b_arg.map(String::as_str) == Some(&a_arg)
             } else {
-                matches!(b_kind, "inc_ref" | "borrow")
-                    && b_arg.map(String::as_str) == Some(&a_arg)
+                matches!(b_kind, "inc_ref" | "borrow") && b_arg.map(String::as_str) == Some(&a_arg)
             };
             if is_match && !skip_ops.contains(&j) {
                 skip_ops.insert(i);
                 skip_ops.insert(j);
                 break;
             }
-            let uses_var = b.args.as_ref()
+            let uses_var = b
+                .args
+                .as_ref()
                 .map(|args| args.iter().any(|n| n == &a_arg))
                 .unwrap_or(false)
                 || b.var.as_ref().map(|v| v == &a_arg).unwrap_or(false)
                 || b.out.as_ref().map(|o| o == &a_arg).unwrap_or(false);
-            if uses_var { break; }
+            if uses_var {
+                break;
+            }
         }
     }
 
     for (idx, op) in ops.iter().enumerate() {
-        if skip_ops.contains(&idx) { continue; }
-        if !matches!(op.kind.as_str(), "inc_ref" | "borrow") { continue; }
+        if skip_ops.contains(&idx) {
+            continue;
+        }
+        if !matches!(op.kind.as_str(), "inc_ref" | "borrow") {
+            continue;
+        }
         let out_name = match op.out.as_deref() {
             Some(name) if name != "none" => name,
             _ => continue,
@@ -1563,8 +1756,15 @@ pub fn rc_coalescing(func_ir: &mut FunctionIR) {
 // ---------------------------------------------------------------------------
 
 const HOISTABLE_OPS: &[&str] = &[
-    "const", "const_int", "const_float", "const_str",
-    "const_bool", "const_none", "const_bytes", "list_new", "tuple_new",
+    "const",
+    "const_int",
+    "const_float",
+    "const_str",
+    "const_bool",
+    "const_none",
+    "const_bytes",
+    "list_new",
+    "tuple_new",
 ];
 
 fn is_hoistable(op: &OpIR) -> bool {
@@ -1785,8 +1985,7 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
             let func_map: BTreeMap<&str, &crate::FunctionIR> =
                 ir.functions.iter().map(|f| (f.name.as_str(), f)).collect();
             let mut visited: BTreeSet<&str> = BTreeSet::new();
-            let mut queue: std::collections::VecDeque<&str> =
-                std::collections::VecDeque::new();
+            let mut queue: std::collections::VecDeque<&str> = std::collections::VecDeque::new();
             if func_map.contains_key("molt_main") {
                 visited.insert("molt_main");
                 queue.push_back("molt_main");
@@ -1843,8 +2042,8 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
         let mut refs: BTreeSet<String> = BTreeSet::new();
         for op in &func.ops {
             match op.kind.as_str() {
-                "call" | "call_internal" | "func_new" | "func_new_closure"
-                | "func_new_builtin" | "code_new" | "call_guarded" => {
+                "call" | "call_internal" | "func_new" | "func_new_closure" | "func_new_builtin"
+                | "code_new" | "call_guarded" => {
                     if let Some(name) = op.s_value.as_ref() {
                         if defined.contains(name.as_str()) {
                             refs.insert(name.clone());
@@ -1878,8 +2077,7 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
                     }
                 }
                 // Ops that take a function pointer address via s_value.
-                "fn_ptr_code_set" | "asyncgen_locals_register"
-                | "gen_locals_register" => {
+                "fn_ptr_code_set" | "asyncgen_locals_register" | "gen_locals_register" => {
                     if let Some(name) = op.s_value.as_ref() {
                         if defined.contains(name.as_str()) {
                             refs.insert(name.clone());
@@ -1887,9 +2085,8 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
                     }
                 }
                 // Other op kinds that legitimately reference functions by name.
-                "task_new" | "generator_send"
-                | "spawn" | "call_func" | "call_method" | "import_from"
-                | "import_name" | "class_def" | "make_function" | "decorator"
+                "task_new" | "generator_send" | "spawn" | "call_func" | "call_method"
+                | "import_from" | "import_name" | "class_def" | "make_function" | "decorator"
                 | "super_call" | "yield_from" | "await" => {
                     if let Some(name) = op.s_value.as_ref() {
                         if defined.contains(name.as_str()) {
@@ -1909,11 +2106,12 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
     let mut reachable: BTreeSet<String> = BTreeSet::new();
     let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
 
-    let seed = |name: String, r: &mut BTreeSet<String>, q: &mut std::collections::VecDeque<String>| {
-        if r.insert(name.clone()) {
-            q.push_back(name);
-        }
-    };
+    let seed =
+        |name: String, r: &mut BTreeSet<String>, q: &mut std::collections::VecDeque<String>| {
+            if r.insert(name.clone()) {
+                q.push_back(name);
+            }
+        };
 
     // (1) First function is always the module entry.
     seed(ir.functions[0].name.clone(), &mut reachable, &mut queue);
@@ -1989,7 +2187,10 @@ const DEFAULT_MAX_FUNCTION_OPS: usize = 4000;
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub fn split_large_function(func: FunctionIR, max_ops: usize) -> Result<(FunctionIR, Vec<FunctionIR>), FunctionIR> {
+pub fn split_large_function(
+    func: FunctionIR,
+    max_ops: usize,
+) -> Result<(FunctionIR, Vec<FunctionIR>), FunctionIR> {
     if func.ops.len() <= max_ops {
         return Err(func);
     }
@@ -2016,8 +2217,10 @@ pub fn split_large_function(func: FunctionIR, max_ops: usize) -> Result<(Functio
     // check_exception, find the span [earliest_ref, label_def] (or
     // [label_def, latest_ref] if the label comes first) and forbid
     // splitting within that range.
-    let mut label_positions: std::collections::BTreeMap<i64, usize> = std::collections::BTreeMap::new();
-    let mut check_exc_refs: std::collections::BTreeMap<i64, (usize, usize)> = std::collections::BTreeMap::new();
+    let mut label_positions: std::collections::BTreeMap<i64, usize> =
+        std::collections::BTreeMap::new();
+    let mut check_exc_refs: std::collections::BTreeMap<i64, (usize, usize)> =
+        std::collections::BTreeMap::new();
     for (idx, op) in func.ops.iter().enumerate() {
         match op.kind.as_str() {
             "label" | "state_label" => {
@@ -2058,7 +2261,6 @@ pub fn split_large_function(func: FunctionIR, max_ops: usize) -> Result<(Functio
         false
     };
 
-
     let mut split_candidates: Vec<usize> = Vec::new();
     let mut depth: i32 = 0;
 
@@ -2070,13 +2272,13 @@ pub fn split_large_function(func: FunctionIR, max_ops: usize) -> Result<(Functio
 
         match op.kind.as_str() {
             // Openers -- increase nesting depth
-            "if" | "loop_start" | "loop_index_start" | "for_iter_start"
-            | "while_start" | "try_start" | "async_for_start" => {
+            "if" | "loop_start" | "loop_index_start" | "for_iter_start" | "while_start"
+            | "try_start" | "async_for_start" => {
                 depth += 1;
             }
             // Closers -- decrease nesting depth
-            "end_if" | "loop_end" | "loop_index_end" | "for_iter_end"
-            | "while_end" | "try_end" | "async_for_end" => {
+            "end_if" | "loop_end" | "loop_index_end" | "for_iter_end" | "while_end" | "try_end"
+            | "async_for_end" => {
                 depth -= 1;
             }
             _ => {}
@@ -2248,7 +2450,11 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
     let is_stateful = func_ir.ops.iter().any(|op| {
         matches!(
             op.kind.as_str(),
-            "state_switch" | "state_transition" | "state_yield" | "chan_send_yield" | "chan_recv_yield"
+            "state_switch"
+                | "state_transition"
+                | "state_yield"
+                | "chan_send_yield"
+                | "chan_recv_yield"
         )
     });
     if !is_stateful {
@@ -2335,10 +2541,7 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
         }
     }
 
-    let yield_loops: Vec<LoopInfo> = finished_loops
-        .into_iter()
-        .filter(|l| l.has_yield)
-        .collect();
+    let yield_loops: Vec<LoopInfo> = finished_loops.into_iter().filter(|l| l.has_yield).collect();
 
     if yield_loops.is_empty() {
         return;
@@ -2430,7 +2633,9 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
                     });
                 }
                 "loop_break_if_false" => {
-                    let cond = op.args.as_ref()
+                    let cond = op
+                        .args
+                        .as_ref()
                         .and_then(|a| a.first().cloned())
                         .unwrap_or_default();
                     let not_var = format!("__slr_not_{idx}");
@@ -2464,4 +2669,3 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
 
     func_ir.ops = new_ops;
 }
-

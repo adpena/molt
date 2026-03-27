@@ -77,7 +77,8 @@ unsafe extern "C" {
     fn __molt_collections_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
     fn __molt_collections_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
     fn __molt_collections_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8;
-    fn __molt_collections_alloc_dict_with_pairs(pairs_ptr: *const u64, pairs_len: usize) -> *mut u8;
+    fn __molt_collections_alloc_dict_with_pairs(pairs_ptr: *const u64, pairs_len: usize)
+    -> *mut u8;
 }
 
 pub fn alloc_tuple(_py: &CoreGilToken, elems: &[u64]) -> *mut u8 {
@@ -108,11 +109,8 @@ unsafe extern "C" {
         out_len: *mut usize,
     ) -> i32;
     fn __molt_collections_is_truthy(bits: u64) -> i32;
-    fn __molt_collections_type_name(
-        bits: u64,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
+    fn __molt_collections_type_name(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize)
+    -> i32;
 }
 
 pub unsafe fn object_type_id(ptr: *mut u8) -> u32 {
@@ -122,7 +120,8 @@ pub unsafe fn object_type_id(ptr: *mut u8) -> u32 {
 pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_collections_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
+    let ok =
+        unsafe { __molt_collections_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
         let boxed =
             unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
@@ -186,7 +185,12 @@ pub fn to_i64(obj: MoltObject) -> Option<i64> {
     if ok != 0 { Some(out) } else { None }
 }
 
-pub fn index_i64_with_overflow(_py: &CoreGilToken, bits: u64, type_err: &str, _overflow_err: Option<&str>) -> Option<i64> {
+pub fn index_i64_with_overflow(
+    _py: &CoreGilToken,
+    bits: u64,
+    type_err: &str,
+    _overflow_err: Option<&str>,
+) -> Option<i64> {
     let mut out: i64 = 0;
     let ok = unsafe {
         __molt_collections_index_i64_with_overflow(
@@ -205,21 +209,38 @@ pub fn index_i64_with_overflow(_py: &CoreGilToken, bits: u64, type_err: &str, _o
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
-    fn __molt_collections_dict_get_in_place(dict_ptr: *mut u8, key_bits: u64, out: *mut u64) -> i32;
-    fn __molt_collections_dict_set_in_place(dict_ptr: *mut u8, key_bits: u64, val_bits: u64) -> i32;
+    fn __molt_collections_dict_get_in_place(dict_ptr: *mut u8, key_bits: u64, out: *mut u64)
+    -> i32;
+    fn __molt_collections_dict_set_in_place(dict_ptr: *mut u8, key_bits: u64, val_bits: u64)
+    -> i32;
     fn __molt_collections_dict_del_in_place(dict_ptr: *mut u8, key_bits: u64) -> i32;
     fn __molt_collections_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64>;
-    fn __molt_collections_dict_order_clone(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize) -> i32;
+    fn __molt_collections_dict_order_clone(
+        ptr: *mut u8,
+        out_ptr: *mut *const u64,
+        out_len: *mut usize,
+    ) -> i32;
 }
 
-pub unsafe fn dict_get_in_place(_py: &CoreGilToken, dict_ptr: *mut u8, key_bits: u64) -> Option<u64> {
+pub unsafe fn dict_get_in_place(
+    _py: &CoreGilToken,
+    dict_ptr: *mut u8,
+    key_bits: u64,
+) -> Option<u64> {
     let mut out: u64 = 0;
     let ok = unsafe { __molt_collections_dict_get_in_place(dict_ptr, key_bits, &mut out) };
     if ok != 0 { Some(out) } else { None }
 }
 
-pub unsafe fn dict_set_in_place(_py: &CoreGilToken, dict_ptr: *mut u8, key_bits: u64, val_bits: u64) {
-    unsafe { __molt_collections_dict_set_in_place(dict_ptr, key_bits, val_bits); }
+pub unsafe fn dict_set_in_place(
+    _py: &CoreGilToken,
+    dict_ptr: *mut u8,
+    key_bits: u64,
+    val_bits: u64,
+) {
+    unsafe {
+        __molt_collections_dict_set_in_place(dict_ptr, key_bits, val_bits);
+    }
 }
 
 pub unsafe fn dict_del_in_place(_py: &CoreGilToken, dict_ptr: *mut u8, key_bits: u64) -> bool {

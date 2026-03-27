@@ -9,12 +9,14 @@
 
 // Fallback for WASM where host function is not available
 #[allow(dead_code)]
-unsafe fn molt_time_local_offset_fallback(_secs: i64) -> i64 { 0 }
+unsafe fn molt_time_local_offset_fallback(_secs: i64) -> i64 {
+    0
+}
 
 use std::fmt::Write as _;
 
-use molt_runtime_core::prelude::*;
 use crate::bridge::*;
+use molt_runtime_core::prelude::*;
 
 // ---------------------------------------------------------------------------
 // Calendar helper types

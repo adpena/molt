@@ -384,10 +384,7 @@ pub(crate) fn raise_not_iterable<T: ExceptionSentinel>(_py: &PyToken<'_>, bits: 
     }
     let type_label = type_name(_py, obj_from_bits(bits));
 
-    let msg = format!(
-        "'{}' object is not iterable",
-        type_label
-    );
+    let msg = format!("'{}' object is not iterable", type_label);
     raise_exception::<T>(_py, "TypeError", &msg)
 }
 
@@ -803,7 +800,9 @@ pub(crate) fn exception_handler_active() -> bool {
 }
 
 pub(crate) fn exception_stack_baseline_get() -> usize {
-    EXCEPTION_STACK_BASELINE.try_with(|cell| cell.get()).unwrap_or(0)
+    EXCEPTION_STACK_BASELINE
+        .try_with(|cell| cell.get())
+        .unwrap_or(0)
 }
 
 pub(crate) fn exception_stack_baseline_set(baseline: usize) {
@@ -2077,17 +2076,14 @@ unsafe fn exception_group_copy_metadata(
                         &runtime_state(_py).interned.notes_name,
                         b"__notes__",
                     );
-                    if let Some(src_notes_bits) =
-                        dict_get_in_place(_py, src_dict_ptr, notes_name)
-                    {
+                    if let Some(src_notes_bits) = dict_get_in_place(_py, src_dict_ptr, notes_name) {
                         // Shallow-copy the notes list to avoid aliasing
                         if let Some(src_notes_ptr) = obj_from_bits(src_notes_bits).as_ptr() {
                             if object_type_id(src_notes_ptr) == TYPE_ID_LIST {
                                 let notes_elems = seq_vec_ref(src_notes_ptr);
                                 let new_list_ptr = alloc_list(_py, notes_elems);
                                 if !new_list_ptr.is_null() {
-                                    let new_list_bits =
-                                        MoltObject::from_ptr(new_list_ptr).bits();
+                                    let new_list_bits = MoltObject::from_ptr(new_list_ptr).bits();
                                     // Ensure dest has a dict
                                     let dest_dict_bits = exception_dict_bits(dest_ptr);
                                     let dest_dict_ptr = if let Some(dd) =
@@ -2114,9 +2110,7 @@ unsafe fn exception_group_copy_metadata(
                                             return;
                                         }
                                         let dp_bits = MoltObject::from_ptr(dp).bits();
-                                        exception_group_set_slot_bits(
-                                            _py, dest_ptr, 9, dp_bits,
-                                        );
+                                        exception_group_set_slot_bits(_py, dest_ptr, 9, dp_bits);
                                         dp
                                     };
                                     dict_set_in_place(
@@ -5355,7 +5349,6 @@ pub extern "C" fn molt_exception_pending_fast() -> u64 {
         0
     }
 }
-
 
 /// Returns a pointer to the `last_exception_pending` AtomicBool byte.
 /// The native Cranelift backend uses this to inline the exception check

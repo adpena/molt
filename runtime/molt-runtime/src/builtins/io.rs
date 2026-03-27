@@ -1369,7 +1369,10 @@ pub(crate) fn path_from_bits_with_flavor(
     ))
 }
 
-pub(crate) fn fspath_bits_with_flavor(_py: &PyToken<'_>, file_bits: u64) -> Result<(u64, PathFlavor), u64> {
+pub(crate) fn fspath_bits_with_flavor(
+    _py: &PyToken<'_>,
+    file_bits: u64,
+) -> Result<(u64, PathFlavor), u64> {
     let obj = obj_from_bits(file_bits);
     let Some(ptr) = obj.as_ptr() else {
         let obj_type = class_name_for_error(type_of_bits(_py, file_bits));
@@ -1501,7 +1504,11 @@ pub(crate) fn path_string_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<Stri
     path_string_with_flavor_from_bits(_py, bits).map(|(path, _flavor)| path)
 }
 
-pub(crate) fn path_str_arg_from_bits(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<String, u64> {
+pub(crate) fn path_str_arg_from_bits(
+    _py: &PyToken<'_>,
+    bits: u64,
+    label: &str,
+) -> Result<String, u64> {
     if let Some(text) = string_obj_to_owned(obj_from_bits(bits)) {
         return Ok(text);
     }
@@ -1510,7 +1517,11 @@ pub(crate) fn path_str_arg_from_bits(_py: &PyToken<'_>, bits: u64, label: &str) 
     Err(raise_exception::<_>(_py, "TypeError", &msg))
 }
 
-pub(crate) fn path_sequence_from_bits(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<Vec<String>, u64> {
+pub(crate) fn path_sequence_from_bits(
+    _py: &PyToken<'_>,
+    bits: u64,
+    label: &str,
+) -> Result<Vec<String>, u64> {
     let obj = obj_from_bits(bits);
     let Some(ptr) = obj.as_ptr() else {
         let msg = format!("{label} must be tuple or list, not NoneType");
@@ -2170,7 +2181,10 @@ fn glob_scandir_type_error_bits(_py: &PyToken<'_>, type_name: &str) -> u64 {
     raise_exception::<_>(_py, "TypeError", &msg)
 }
 
-pub(crate) fn glob_dir_fd_arg_from_bits(_py: &PyToken<'_>, dir_fd_bits: u64) -> Result<GlobDirFdArg, u64> {
+pub(crate) fn glob_dir_fd_arg_from_bits(
+    _py: &PyToken<'_>,
+    dir_fd_bits: u64,
+) -> Result<GlobDirFdArg, u64> {
     if obj_from_bits(dir_fd_bits).is_none() {
         return Ok(GlobDirFdArg::None);
     }
@@ -3245,7 +3259,12 @@ pub(crate) fn path_splitroot_text(path: &str, sep: char) -> (String, String, Str
     }
 }
 
-pub(crate) fn path_relpath_text(_py: &PyToken<'_>, path: &str, start: &str, sep: char) -> Result<String, u64> {
+pub(crate) fn path_relpath_text(
+    _py: &PyToken<'_>,
+    path: &str,
+    start: &str,
+    sep: char,
+) -> Result<String, u64> {
     if path.is_empty() {
         return Err(raise_exception::<_>(_py, "ValueError", "no path specified"));
     }

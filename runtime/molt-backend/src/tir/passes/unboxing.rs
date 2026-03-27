@@ -337,9 +337,12 @@ mod tests {
         //   return %2
         let mut func = TirFunction::new("test".into(), vec![], TirType::I64);
 
-        let v0 = ValueId(func.next_value); func.next_value += 1;
-        let v1 = ValueId(func.next_value); func.next_value += 1;
-        let v2 = ValueId(func.next_value); func.next_value += 1;
+        let v0 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v1 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v2 = ValueId(func.next_value);
+        func.next_value += 1;
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(const_int_op(v0, 42));
@@ -348,7 +351,10 @@ mod tests {
         entry.terminator = Terminator::Return { values: vec![v2] };
 
         // Verify valid before pass.
-        assert!(verify_function(&func).is_ok(), "pre-pass verification failed");
+        assert!(
+            verify_function(&func).is_ok(),
+            "pre-pass verification failed"
+        );
 
         let stats = run(&mut func);
 
@@ -369,7 +375,11 @@ mod tests {
         }
 
         // Verify valid after pass.
-        assert!(verify_function(&func).is_ok(), "post-pass verification failed: {:?}", verify_function(&func).err());
+        assert!(
+            verify_function(&func).is_ok(),
+            "post-pass verification failed: {:?}",
+            verify_function(&func).err()
+        );
     }
 
     // Test 2: Multiple consumers all unbox — Box with 3 Unbox consumers, all removed.
@@ -386,13 +396,20 @@ mod tests {
         //   return %6
         let mut func = TirFunction::new("test".into(), vec![], TirType::I64);
 
-        let v0 = ValueId(func.next_value); func.next_value += 1;
-        let v1 = ValueId(func.next_value); func.next_value += 1;
-        let v2 = ValueId(func.next_value); func.next_value += 1;
-        let v3 = ValueId(func.next_value); func.next_value += 1;
-        let v4 = ValueId(func.next_value); func.next_value += 1;
-        let v5 = ValueId(func.next_value); func.next_value += 1;
-        let v6 = ValueId(func.next_value); func.next_value += 1;
+        let v0 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v1 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v2 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v3 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v4 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v5 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v6 = ValueId(func.next_value);
+        func.next_value += 1;
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(const_int_op(v0, 10));
@@ -404,7 +421,10 @@ mod tests {
         entry.ops.push(add_op(v5, v4, v6));
         entry.terminator = Terminator::Return { values: vec![v6] };
 
-        assert!(verify_function(&func).is_ok(), "pre-pass verification failed");
+        assert!(
+            verify_function(&func).is_ok(),
+            "pre-pass verification failed"
+        );
 
         let stats = run(&mut func);
 
@@ -421,7 +441,11 @@ mod tests {
         assert_eq!(add1.opcode, OpCode::Add);
         assert_eq!(add1.operands, vec![v0, v0], "add should use original value");
 
-        assert!(verify_function(&func).is_ok(), "post-pass verification failed: {:?}", verify_function(&func).err());
+        assert!(
+            verify_function(&func).is_ok(),
+            "post-pass verification failed: {:?}",
+            verify_function(&func).err()
+        );
     }
 
     // Test 3: Mixed consumers — Box with one Unbox and one non-Unbox use, NOT removed.
@@ -435,10 +459,14 @@ mod tests {
         //   return %3
         let mut func = TirFunction::new("test".into(), vec![], TirType::DynBox);
 
-        let v0 = ValueId(func.next_value); func.next_value += 1;
-        let v1 = ValueId(func.next_value); func.next_value += 1;
-        let v2 = ValueId(func.next_value); func.next_value += 1;
-        let v3 = ValueId(func.next_value); func.next_value += 1;
+        let v0 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v1 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v2 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v3 = ValueId(func.next_value);
+        func.next_value += 1;
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(const_int_op(v0, 10));
@@ -447,7 +475,10 @@ mod tests {
         entry.ops.push(add_op(v1, v1, v3));
         entry.terminator = Terminator::Return { values: vec![v3] };
 
-        assert!(verify_function(&func).is_ok(), "pre-pass verification failed");
+        assert!(
+            verify_function(&func).is_ok(),
+            "pre-pass verification failed"
+        );
 
         let stats = run(&mut func);
 
@@ -458,7 +489,10 @@ mod tests {
         let entry = &func.blocks[&func.entry_block];
         assert_eq!(entry.ops.len(), 4, "all ops should remain");
 
-        assert!(verify_function(&func).is_ok(), "post-pass verification failed");
+        assert!(
+            verify_function(&func).is_ok(),
+            "post-pass verification failed"
+        );
     }
 
     // Test 4: No BoxVal ops — function without boxing, no changes.
@@ -467,19 +501,20 @@ mod tests {
         // func @add(i64, i64) -> i64
         //   %2 = add %0, %1
         //   return %2
-        let mut func = TirFunction::new(
-            "add".into(),
-            vec![TirType::I64, TirType::I64],
-            TirType::I64,
-        );
+        let mut func =
+            TirFunction::new("add".into(), vec![TirType::I64, TirType::I64], TirType::I64);
 
-        let v2 = ValueId(func.next_value); func.next_value += 1;
+        let v2 = ValueId(func.next_value);
+        func.next_value += 1;
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(add_op(ValueId(0), ValueId(1), v2));
         entry.terminator = Terminator::Return { values: vec![v2] };
 
-        assert!(verify_function(&func).is_ok(), "pre-pass verification failed");
+        assert!(
+            verify_function(&func).is_ok(),
+            "pre-pass verification failed"
+        );
 
         let stats = run(&mut func);
 
@@ -490,7 +525,10 @@ mod tests {
         let entry = &func.blocks[&func.entry_block];
         assert_eq!(entry.ops.len(), 1);
 
-        assert!(verify_function(&func).is_ok(), "post-pass verification failed");
+        assert!(
+            verify_function(&func).is_ok(),
+            "post-pass verification failed"
+        );
     }
 
     // Test 5: Nested Box/Unbox — Box(Unbox(Box(x))), only inner pair eliminated.
@@ -509,19 +547,26 @@ mod tests {
         //   return %3
         let mut func = TirFunction::new("test".into(), vec![], TirType::DynBox);
 
-        let v0 = ValueId(func.next_value); func.next_value += 1;
-        let v1 = ValueId(func.next_value); func.next_value += 1;
-        let v2 = ValueId(func.next_value); func.next_value += 1;
-        let v3 = ValueId(func.next_value); func.next_value += 1;
+        let v0 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v1 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v2 = ValueId(func.next_value);
+        func.next_value += 1;
+        let v3 = ValueId(func.next_value);
+        func.next_value += 1;
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(const_int_op(v0, 5));
-        entry.ops.push(box_op(v0, v1));     // inner box
-        entry.ops.push(unbox_op(v1, v2));   // inner unbox
-        entry.ops.push(box_op(v2, v3));     // outer box
+        entry.ops.push(box_op(v0, v1)); // inner box
+        entry.ops.push(unbox_op(v1, v2)); // inner unbox
+        entry.ops.push(box_op(v2, v3)); // outer box
         entry.terminator = Terminator::Return { values: vec![v3] };
 
-        assert!(verify_function(&func).is_ok(), "pre-pass verification failed");
+        assert!(
+            verify_function(&func).is_ok(),
+            "pre-pass verification failed"
+        );
 
         let stats = run(&mut func);
 
@@ -534,8 +579,16 @@ mod tests {
         assert_eq!(entry.ops[0].opcode, OpCode::ConstInt);
         assert_eq!(entry.ops[1].opcode, OpCode::BoxVal);
         // Outer box should now take v0 directly (since v2 was replaced by v0).
-        assert_eq!(entry.ops[1].operands, vec![v0], "outer box should use original value");
+        assert_eq!(
+            entry.ops[1].operands,
+            vec![v0],
+            "outer box should use original value"
+        );
 
-        assert!(verify_function(&func).is_ok(), "post-pass verification failed: {:?}", verify_function(&func).err());
+        assert!(
+            verify_function(&func).is_ok(),
+            "post-pass verification failed: {:?}",
+            verify_function(&func).err()
+        );
     }
 }

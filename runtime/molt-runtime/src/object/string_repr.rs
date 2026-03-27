@@ -84,10 +84,7 @@ impl InlineString {
         }
         let mut data = [0u8; 23];
         data[..n].copy_from_slice(bytes);
-        Some(InlineString {
-            len: n as u8,
-            data,
-        })
+        Some(InlineString { len: n as u8, data })
     }
 
     /// Return the stored string as a `&str`.
@@ -199,7 +196,11 @@ mod tests {
     fn inline_round_trip() {
         let original = "Hello, World!";
         let inline = InlineString::try_new(original).expect("should fit");
-        assert_eq!(inline.as_str(), original, "round-trip must preserve content");
+        assert_eq!(
+            inline.as_str(),
+            original,
+            "round-trip must preserve content"
+        );
     }
 
     #[test]

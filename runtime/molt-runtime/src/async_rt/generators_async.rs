@@ -10,16 +10,16 @@ use std::time::{Duration, Instant};
 use molt_obj_model::MoltObject;
 
 use crate::concurrency::GilGuard;
-use crate::object::accessors::resolve_obj_ptr;
 use crate::object::HEADER_FLAG_COROUTINE;
+use crate::object::accessors::resolve_obj_ptr;
 use crate::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{is_block_on_task, process_task_state, thread_task_state};
 
 use super::generators::{
-    asyncio_connect_trace_enabled, debug_current_task, promise_trace_enabled,
-    resolve_sleep_target, sleep_trace_enabled,
+    asyncio_connect_trace_enabled, debug_current_task, promise_trace_enabled, resolve_sleep_target,
+    sleep_trace_enabled,
 };
 
 const ASYNC_SLEEP_YIELD_SECS: f64 = 0.000_001;
@@ -436,9 +436,7 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
         }
         return false;
     }
-    let payload_bytes = unsafe {
-        crate::object::object_payload_size(future_ptr)
-    };
+    let payload_bytes = unsafe { crate::object::object_payload_size(future_ptr) };
     let payload_ptr = future_ptr as *mut u64;
     let deadline_obj = if poll_fn == async_sleep_poll_fn_addr() {
         if payload_bytes < std::mem::size_of::<u64>() {

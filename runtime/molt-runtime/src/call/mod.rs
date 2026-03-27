@@ -2,6 +2,7 @@ pub(crate) mod bind;
 pub(crate) mod class_init;
 pub(crate) mod dispatch;
 pub(crate) mod function;
+pub(crate) mod type_policy;
 
 use crate::builtins::attr::attr_lookup_ptr_any;
 use crate::{PyToken, intern_static_name, runtime_state};

@@ -2,6 +2,9 @@ use crate::PyToken;
 use crate::builtins::exceptions::{
     molt_exception_init, molt_exception_new_bound, molt_exceptiongroup_init,
 };
+use crate::call::type_policy::{
+    InitArgPolicy, resolved_constructor_init_policy, resolved_new_is_default_object_new,
+};
 use crate::*;
 use std::borrow::Cow;
 
@@ -767,22 +770,11 @@ pub(crate) unsafe fn call_class_init_with_args(
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
         let new_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
-        let mut default_new = false;
+        let mut resolved_new_bits = None;
         let inst_bits =
             if let Some(new_bits) = class_attr_lookup_raw_mro(_py, class_ptr, new_name_bits) {
-                if let Some(new_ptr) = obj_from_bits(new_bits).as_ptr() {
-                    let new_func_bits = if object_type_id(new_ptr) == TYPE_ID_BOUND_METHOD {
-                        bound_method_func_bits(new_ptr)
-                    } else {
-                        new_bits
-                    };
-                    if let Some(new_func_ptr) = obj_from_bits(new_func_bits).as_ptr()
-                        && object_type_id(new_func_ptr) == TYPE_ID_FUNCTION
-                        && function_fn_ptr(new_func_ptr) == fn_addr!(molt_object_new_bound)
-                    {
-                        default_new = true;
-                    }
-                }
+                resolved_new_bits = Some(new_bits);
+                let default_new = resolved_new_is_default_object_new(resolved_new_bits);
                 let inst_bits = if default_new {
                     if let Some(inst_bits) = alloc_dataclass_for_class(_py, class_ptr) {
                         inst_bits
@@ -839,23 +831,16 @@ pub(crate) unsafe fn call_class_init_with_args(
         else {
             return inst_bits;
         };
-        if default_new
-            && !args.is_empty()
-            && let Some(init_ptr) = obj_from_bits(init_bits).as_ptr()
-        {
-            let init_func_bits = if object_type_id(init_ptr) == TYPE_ID_BOUND_METHOD {
-                bound_method_func_bits(init_ptr)
-            } else {
-                init_bits
-            };
-            if let Some(init_func_ptr) = obj_from_bits(init_func_bits).as_ptr()
-                && object_type_id(init_func_ptr) == TYPE_ID_FUNCTION
-                && function_fn_ptr(init_func_ptr) == fn_addr!(molt_object_init)
-            {
+        match resolved_constructor_init_policy(resolved_new_bits, Some(init_bits)) {
+            InitArgPolicy::RejectConstructorArgs if !args.is_empty() => {
                 let class_name = class_name_for_error(class_bits);
                 let msg = format!("{class_name}() takes no arguments");
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
+            InitArgPolicy::RejectConstructorArgs | InitArgPolicy::SkipObjectInit => {
+                return inst_bits;
+            }
+            InitArgPolicy::ForwardArgs => {}
         }
         let builder_bits = molt_callargs_new(args.len() as u64, 0);
         if builder_bits == 0 {
@@ -870,6 +855,37 @@ pub(crate) unsafe fn call_class_init_with_args(
 }
 
 pub(crate) fn raise_not_callable(_py: &PyToken<'_>, obj: MoltObject) -> u64 {
+    let trace_not_callable = matches!(
+        std::env::var("MOLT_TRACE_NOT_CALLABLE").ok().as_deref(),
+        Some("1")
+    );
+    if trace_not_callable {
+        if let Some(frame) =
+            crate::state::tls::FRAME_STACK.with(|stack| stack.borrow().last().copied())
+            && let Some(code_ptr) = maybe_ptr_from_bits(frame.code_bits)
+        {
+            let (name_bits, file_bits) =
+                unsafe { (code_name_bits(code_ptr), code_filename_bits(code_ptr)) };
+            let name = string_obj_to_owned(obj_from_bits(name_bits))
+                .unwrap_or_else(|| "<code>".to_string());
+            let file = string_obj_to_owned(obj_from_bits(file_bits))
+                .unwrap_or_else(|| "<file>".to_string());
+            eprintln!(
+                "molt not_callable frame name={} file={} line={}",
+                name, file, frame.line
+            );
+        }
+        eprintln!(
+            "molt not_callable bits=0x{:x} type={} ptr={} none={} bool={:?} int={:?} float={:?}",
+            obj.bits(),
+            type_name(_py, obj),
+            obj.as_ptr().is_some(),
+            obj.is_none(),
+            obj.as_bool(),
+            obj.as_int(),
+            obj.as_float(),
+        );
+    }
     let msg = format!("'{}' object is not callable", type_name(_py, obj));
     raise_exception::<_>(_py, "TypeError", &msg)
 }

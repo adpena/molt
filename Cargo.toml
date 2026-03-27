@@ -242,11 +242,13 @@ debug = 0
 [profile.dev-fast.package.zip]
 debug = 0
 
+# Fast iteration profile: O2 with more codegen units for faster linking.
+# The daemon uses this for quick recompilation during development.
 [profile.release-fast]
 inherits = "release"
 opt-level = 2
 lto = "thin"
-codegen-units = 16
+codegen-units = 8
 strip = "symbols"
 panic = "unwind"
 
@@ -285,15 +287,19 @@ debug = 1
 cranelift-codegen = { path = "vendor/cranelift-codegen-0.130.0" }
 
 # Optimize runtime crates for SIZE — statically linked into output binaries.
+# Runtime packages: opt-level 3 for maximum native performance.
+# The WASM/size-optimized builds use profile.wasm-release (opt="z").
+# These are the hot-path functions called millions of times — every
+# bit of inlining, vectorization, and scheduling matters.
 [profile.release.package.molt-runtime]
-opt-level = "z"
+opt-level = 3
 codegen-units = 1
 
 [profile.release.package.molt-runtime-core]
-opt-level = "z"
+opt-level = 3
 
 [profile.release.package.molt-obj-model]
-opt-level = "z"
+opt-level = 3
 
 [profile.release.package.molt-runtime-collections]
-opt-level = "z"
+opt-level = 3

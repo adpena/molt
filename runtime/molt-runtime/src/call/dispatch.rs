@@ -1,12 +1,12 @@
+use crate::call::type_policy::{InitArgPolicy, resolved_constructor_init_policy};
 use crate::{
-    MoltObject, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_FUNCTION,
+    MoltObject, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_DATACLASS, TYPE_ID_FUNCTION,
     TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT, TYPE_ID_TYPE, bound_method_func_bits,
     call_builtin_type_if_needed, call_function_obj0, call_function_obj1, call_function_obj2,
-    call_function_obj3, class_attr_lookup_raw_mro, class_dict_bits, class_name_for_error,
-    dict_get_in_place, function_arity, function_fn_ptr, generic_alias_origin_bits,
-    intern_static_name, lookup_call_attr, molt_call_bind, molt_callargs_new,
-    molt_callargs_push_pos, molt_object_init, molt_object_new_bound, obj_from_bits, object_type_id,
-    raise_exception, raise_not_callable, runtime_state, try_call_generator,
+    call_function_obj3, class_attr_lookup_raw_mro, class_name_for_error, function_arity,
+    generic_alias_origin_bits, intern_static_name, lookup_call_attr, molt_call_bind,
+    molt_callargs_new, molt_callargs_push_pos, obj_from_bits, object_type_id, raise_exception,
+    raise_not_callable, runtime_state, try_call_generator,
 };
 
 unsafe fn call_type_via_bind(_py: &PyToken<'_>, call_bits: u64, args: &[u64]) -> u64 {
@@ -19,68 +19,17 @@ unsafe fn call_type_via_bind(_py: &PyToken<'_>, call_bits: u64, args: &[u64]) ->
             if object_type_id(call_ptr) == TYPE_ID_TYPE {
                 let new_name_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
-                let mut default_new = false;
-                if let Some(dict_ptr) = obj_from_bits(class_dict_bits(call_ptr)).as_ptr()
-                    && object_type_id(dict_ptr) == TYPE_ID_DICT
-                {
-                    if let Some(val_bits) = dict_get_in_place(_py, dict_ptr, new_name_bits) {
-                        if let Some(val_ptr) = obj_from_bits(val_bits).as_ptr() {
-                            let val_func_bits = if object_type_id(val_ptr) == TYPE_ID_BOUND_METHOD {
-                                bound_method_func_bits(val_ptr)
-                            } else {
-                                val_bits
-                            };
-                            if let Some(val_func_ptr) = obj_from_bits(val_func_bits).as_ptr()
-                                && object_type_id(val_func_ptr) == TYPE_ID_FUNCTION
-                                && function_fn_ptr(val_func_ptr) == fn_addr!(molt_object_new_bound)
-                            {
-                                default_new = true;
-                            }
-                        }
-                    } else {
-                        default_new = true;
-                    }
-                }
-                if !default_new
-                    && let Some(new_bits) = class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits)
-                    && let Some(new_ptr) = obj_from_bits(new_bits).as_ptr()
-                {
-                    let new_func_bits = if object_type_id(new_ptr) == TYPE_ID_BOUND_METHOD {
-                        bound_method_func_bits(new_ptr)
-                    } else {
-                        new_bits
-                    };
-                    if let Some(new_func_ptr) = obj_from_bits(new_func_bits).as_ptr()
-                        && object_type_id(new_func_ptr) == TYPE_ID_FUNCTION
-                        && function_fn_ptr(new_func_ptr) == fn_addr!(molt_object_new_bound)
-                    {
-                        default_new = true;
-                    }
-                }
-                if default_new {
-                    let init_name_bits = intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.init_name,
-                        b"__init__",
-                    );
-                    if let Some(init_bits) =
-                        class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits)
-                        && let Some(init_ptr) = obj_from_bits(init_bits).as_ptr()
-                    {
-                        let init_func_bits = if object_type_id(init_ptr) == TYPE_ID_BOUND_METHOD {
-                            bound_method_func_bits(init_ptr)
-                        } else {
-                            init_bits
-                        };
-                        if let Some(init_func_ptr) = obj_from_bits(init_func_bits).as_ptr()
-                            && object_type_id(init_func_ptr) == TYPE_ID_FUNCTION
-                            && function_fn_ptr(init_func_ptr) == fn_addr!(molt_object_init)
-                        {
-                            let class_name = class_name_for_error(call_bits);
-                            let msg = format!("{class_name}() takes no arguments");
-                            return raise_exception::<_>(_py, "TypeError", &msg);
-                        }
-                    }
+                let new_bits = class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits);
+                let init_name_bits =
+                    intern_static_name(_py, &runtime_state(_py).interned.init_name, b"__init__");
+                let init_bits = class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits);
+                if matches!(
+                    resolved_constructor_init_policy(new_bits, init_bits),
+                    InitArgPolicy::RejectConstructorArgs
+                ) {
+                    let class_name = class_name_for_error(call_bits);
+                    let msg = format!("{class_name}() takes no arguments");
+                    return raise_exception::<_>(_py, "TypeError", &msg);
                 }
             }
         }

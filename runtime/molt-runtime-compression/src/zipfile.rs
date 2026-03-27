@@ -5,11 +5,11 @@
 //!
 //! ABI: NaN-boxed u64 in/out.
 
-use molt_runtime_core::prelude::*;
 use crate::bridge::*;
+use molt_runtime_core::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::{Read, Write, Cursor};
+use std::io::{Cursor, Read, Write};
 use std::sync::atomic::{AtomicI64, Ordering};
 
 // ── Handle-id counter ───────────────────────────────────────────────────
@@ -57,10 +57,13 @@ pub extern "C" fn molt_zipfile_open(path_bits: u64, mode_bits: u64) -> u64 {
             }
             "w" => {
                 ZIP_MAP.with(|m| {
-                    m.borrow_mut().insert(id, ZipState::Writer {
-                        path,
-                        entries: Vec::new(),
-                    });
+                    m.borrow_mut().insert(
+                        id,
+                        ZipState::Writer {
+                            path,
+                            entries: Vec::new(),
+                        },
+                    );
                 });
             }
             _ => return raise_exception(_py, "ValueError", "unsupported zipfile mode"),
@@ -85,12 +88,13 @@ pub extern "C" fn molt_zipfile_close(handle_bits: u64) -> u64 {
                 };
                 let mut writer = zip::ZipWriter::new(file);
                 for (name, data, method) in &entries {
-                    let options = zip::write::SimpleFileOptions::default()
-                        .compression_method(if *method == 8 {
+                    let options = zip::write::SimpleFileOptions::default().compression_method(
+                        if *method == 8 {
                             zip::CompressionMethod::Deflated
                         } else {
                             zip::CompressionMethod::Stored
-                        });
+                        },
+                    );
                     if let Err(e) = writer.start_file(name.as_str(), options) {
                         return raise_exception(_py, "IOError", &format!("{}", e));
                     }
@@ -174,7 +178,9 @@ pub extern "C" fn molt_zipfile_namelist(handle_bits: u64) -> u64 {
                     let cursor = Cursor::new(data);
                     let mut archive = match zip::ZipArchive::new(cursor) {
                         Ok(a) => a,
-                        Err(e) => return raise_exception(_py, "ValueError", &format!("bad zip: {}", e)),
+                        Err(e) => {
+                            return raise_exception(_py, "ValueError", &format!("bad zip: {}", e))
+                        }
                     };
                     let mut bits = Vec::with_capacity(archive.len());
                     for i in 0..archive.len() {
@@ -221,7 +227,9 @@ pub extern "C" fn molt_zipfile_read(handle_bits: u64, name_bits: u64) -> u64 {
                     let cursor = Cursor::new(data);
                     let mut archive = match zip::ZipArchive::new(cursor) {
                         Ok(a) => a,
-                        Err(e) => return raise_exception(_py, "ValueError", &format!("bad zip: {}", e)),
+                        Err(e) => {
+                            return raise_exception(_py, "ValueError", &format!("bad zip: {}", e))
+                        }
                     };
                     let mut entry = match archive.by_name(&name) {
                         Ok(e) => e,

@@ -18,8 +18,6 @@ pub(crate) mod binascii;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod bz2;
 pub(crate) mod callable;
-#[cfg(feature = "stdlib_compression")]
-pub(crate) mod compression_bridge;
 pub(crate) mod classes;
 #[cfg(not(feature = "stdlib_math"))]
 pub(crate) mod cmath_mod;
@@ -29,6 +27,8 @@ pub(crate) mod codecs_ext;
 pub(crate) mod collections_ext;
 #[cfg(not(feature = "stdlib_math"))]
 pub(crate) mod colorsys;
+#[cfg(feature = "stdlib_compression")]
+pub(crate) mod compression_bridge;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod compression_common;
 pub(crate) mod concurrent;
@@ -89,7 +89,6 @@ pub(crate) mod itertools;
 pub(crate) mod json;
 #[cfg(not(feature = "stdlib_logging_ext"))]
 pub(crate) mod logging_ext;
-mod micro_stubs;
 #[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]
 pub(crate) mod lzma;
 #[cfg(all(feature = "stdlib_compression", target_arch = "wasm32"))]
@@ -98,6 +97,7 @@ pub(crate) mod lzma;
 #[cfg(not(feature = "stdlib_math"))]
 pub(crate) mod math;
 pub(crate) mod methods;
+mod micro_stubs;
 pub(crate) mod modules;
 pub(crate) mod numbers;
 pub(crate) mod operator;

@@ -52,12 +52,11 @@ mod cbor_tests {
     }
 }
 
-
 #[test]
 #[cfg(feature = "cbor")]
 fn test_cbor_nan_infinity_round_trip() {
-    use molt_backend::ir::{SimpleIR, FunctionIR, OpIR};
-    
+    use molt_backend::ir::{FunctionIR, OpIR, SimpleIR};
+
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "test_nan".to_string(),
@@ -86,11 +85,11 @@ fn test_cbor_nan_infinity_round_trip() {
         }],
         profile: None,
     };
-    
+
     let mut buf = Vec::new();
     ciborium::ser::into_writer(&ir, &mut buf).unwrap();
     let decoded: SimpleIR = ciborium::de::from_reader(&buf[..]).unwrap();
-    
+
     assert_eq!(decoded.functions.len(), 1);
     let ops = &decoded.functions[0].ops;
     assert_eq!(ops.len(), 3);
