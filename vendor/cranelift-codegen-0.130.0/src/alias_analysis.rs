@@ -229,7 +229,12 @@ impl<'a> AliasAnalysis<'a> {
             }
 
             visit_block_succs(func, block, |_inst, succ, _from_table| {
-                let succ_first_inst = func.layout.block_insts(succ).next().unwrap();
+                let Some(succ_first_inst) = func.layout.block_insts(succ).next() else {
+                    // Empty successor block — skip alias analysis for this edge.
+                    // This can happen when the frontend creates blocks that are
+                    // never populated (e.g. unused loop body/after blocks).
+                    return;
+                };
                 let updated = match self.block_input.get_mut(&succ) {
                     Some(succ_state) => {
                         let old = *succ_state;

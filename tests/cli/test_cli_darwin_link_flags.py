@@ -55,18 +55,23 @@ def test_detect_macos_deployment_target_uses_stable_arch_baseline(
     assert cli._detect_macos_deployment_target(arch) == expected
 
 
-def test_detect_macos_deployment_target_arm64_uses_system_version(
+def test_detect_macos_deployment_target_arm64_uses_sdk_version(
     monkeypatch,
 ) -> None:
-    """arm64/aarch64/unknown arches use the real system version."""
-    import platform
+    """arm64/aarch64/unknown arches use the SDK version (xcrun --show-sdk-version)."""
+    import subprocess
 
     monkeypatch.delenv("MOLT_MACOSX_DEPLOYMENT_TARGET", raising=False)
     monkeypatch.delenv("MACOSX_DEPLOYMENT_TARGET", raising=False)
-    ver = platform.mac_ver()[0]
-    parts = ver.split(".")
-    expected = ".".join(parts[:2]) if len(parts) >= 2 else ver
+    try:
+        expected = subprocess.check_output(
+            ["xcrun", "--show-sdk-version"], text=True, timeout=5
+        ).strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        import platform
+        ver = platform.mac_ver()[0]
+        parts = ver.split(".")
+        expected = ".".join(parts[:2]) if len(parts) >= 2 else ver
     for arch in ("arm64", "aarch64", "mystery"):
         result = cli._detect_macos_deployment_target(arch)
-        # Should return the real system version, not a hardcoded baseline
         assert result == expected, f"arch={arch}: got {result}, expected {expected}"
