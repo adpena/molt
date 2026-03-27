@@ -10182,6 +10182,7 @@ impl SimpleBackend {
                     }
                 }
                 "load" => {
+                    eprintln!("HIT LOAD HANDLER func={} idx={}", func_ir.name, op_idx);
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let offset_val = op.value.unwrap_or(0);
@@ -10229,9 +10230,13 @@ impl SimpleBackend {
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let offset = op.value.unwrap_or(0) as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
+                    // Use volatile to absolutely prevent Cranelift from merging
+                    // or reordering loads from object fields.
+                    let mut flags = MemFlags::new();
+                    flags.set_readonly();
                     let res = builder
                         .ins()
-                        .load(types::I64, MemFlags::trusted(), obj_ptr, offset);
+                        .load(types::I64, flags, obj_ptr, offset);
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
                     let Some(out_name) = op.out else { continue; };
                     def_var_named(&mut builder, &vars, out_name, res);
