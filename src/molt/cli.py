@@ -12702,12 +12702,17 @@ def _build_native_link_command(
     else:
         _link_inputs.extend(["-Wl,--whole-archive", str(runtime_lib), "-Wl,--no-whole-archive", "-o", str(output_binary)])
     link_cmd.extend(_link_inputs)
+    # Suppress non-actionable linker warnings (e.g. Xcode's hardcoded
+    # -L/usr/local/lib, SDK version mismatches) unless the user opts in
+    # to seeing them via MOLT_LINKER_WARNINGS=1.
+    suppress_linker_warnings = os.environ.get("MOLT_LINKER_WARNINGS") != "1"
     if target_triple:
         if "apple" in target_triple or "darwin" in target_triple:
             link_cmd.append("-Wl,-dead_strip")
             link_cmd.append("-Wl,-exported_symbol,_main")
             link_cmd.extend(["-Wl,-x", "-Wl,-S"])
-            link_cmd.append("-Wl,-w")
+            if suppress_linker_warnings:
+                link_cmd.append("-Wl,-w")
             link_cmd.append("-lc++")
         elif "linux" in target_triple:
             link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
@@ -12725,7 +12730,8 @@ def _build_native_link_command(
             link_cmd.append("-Wl,-dead_strip")
             link_cmd.append("-Wl,-exported_symbol,_main")
             link_cmd.extend(["-Wl,-x", "-Wl,-S"])
-            link_cmd.append("-Wl,-w")
+            if suppress_linker_warnings:
+                link_cmd.append("-Wl,-w")
             link_cmd.append("-lc++")
         elif sys.platform.startswith("linux"):
             link_cmd.extend(["-fdata-sections", "-ffunction-sections"])

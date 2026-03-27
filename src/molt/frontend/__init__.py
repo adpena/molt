@@ -26314,18 +26314,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             # typing module.  Fall through to the normal import path.
             pass
         if module_name == "_intrinsics":
-            # Compile-time intrinsic calls with constant string args are
-            # resolved directly to BUILTIN_FUNC ops in visit_Call.  But
-            # calls with *variable* args (e.g. _safe_intrinsic(name)) need
-            # a real runtime binding.  Emit a BUILTIN_FUNC for
-            # molt_require_intrinsic_runtime and bind it to each imported
-            # name so that both paths work.
+            # Two resolution paths for _require_intrinsic calls:
+            #   1. Constant-arg calls (e.g. _require_intrinsic("molt_print"))
+            #      are resolved at compile time in visit_Call → BUILTIN_FUNC.
+            #   2. Variable-arg calls (e.g. _safe_intrinsic(name)) cannot be
+            #      resolved at compile time and need a real runtime binding.
+            # Emit a BUILTIN_FUNC for molt_require_intrinsic_runtime and
+            # bind it to each imported name so both paths work.
             for alias in node.names:
                 bind_name = alias.asname or alias.name
                 func_val = MoltValue(self.next_var(), type_hint="function")
                 self.emit(
                     MoltOp(
                         kind="BUILTIN_FUNC",
+                        # arity=1 must match: extern "C" fn molt_require_intrinsic_runtime(name_bits: u64) -> u64
                         args=["molt_require_intrinsic_runtime", 1],
                         result=func_val,
                     )
