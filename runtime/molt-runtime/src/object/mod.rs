@@ -1442,18 +1442,16 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
         if (header.flags & HEADER_FLAG_IMMORTAL) != 0 {
             return;
         }
-        let prev = header.ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
-        // Guard: if prev was already 0 (double-free) or the underflow wrapped
-        // to u32::MAX, restore the refcount and return without freeing.
-        // This can happen when the codegen's drain_cleanup_tracked emits
-        // duplicate dec_ref calls for the same variable from different
-        // tracking lists. Making dec_ref idempotent is a safety net —
-        // the codegen should be fixed to not emit duplicates, but this
-        // prevents heap corruption from double-free in the meantime.
-        if prev == 0 || prev == u32::MAX {
-            header.ref_count.store(0, AtomicOrdering::Release);
-            return;
+        // Check-before-decrement: prevent double-free by verifying refcount > 0
+        // BEFORE the atomic decrement. Under the GIL, only one thread runs at a
+        // time, so this load → check → fetch_sub sequence is safe.
+        // The codegen's drain_cleanup_tracked can emit duplicate dec_ref calls
+        // from different tracking lists; this guard makes dec_ref idempotent.
+        let current = header.ref_count.load(AtomicOrdering::Acquire);
+        if current == 0 {
+            return; // Already freed — no-op
         }
+        let prev = header.ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
         if debug_file_rc() && header.type_id == TYPE_ID_FILE_HANDLE {
             eprintln!(
                 "molt file rc dec ptr=0x{:x} count={}",
