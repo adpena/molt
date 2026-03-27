@@ -172,10 +172,7 @@ fn verify_terminators(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                     if !func.blocks.contains_key(target) {
                         errors.push(VerifyError::block(
                             *bid,
-                            format!(
-                                "switch case {} target ^{} does not exist",
-                                case_val, target
-                            ),
+                            format!("switch case {} target ^{} does not exist", case_val, target),
                         ));
                     }
                 }
@@ -190,9 +187,7 @@ fn verify_terminators(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 // ---------------------------------------------------------------------------
 
 fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
-    let arg_count = |bid: &BlockId| -> Option<usize> {
-        func.blocks.get(bid).map(|b| b.args.len())
-    };
+    let arg_count = |bid: &BlockId| -> Option<usize> { func.blocks.get(bid).map(|b| b.args.len()) };
 
     for (bid, block) in &func.blocks {
         match &block.terminator {
@@ -245,7 +240,12 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                     }
                 }
             }
-            Terminator::Switch { cases, default, default_args, .. } => {
+            Terminator::Switch {
+                cases,
+                default,
+                default_args,
+                ..
+            } => {
                 if let Some(expected) = arg_count(default) {
                     if default_args.len() != expected {
                         errors.push(VerifyError::block(
@@ -323,9 +323,7 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
             Some(&def_bid) => {
                 if def_bid == bid {
                     // Same block: ensure definition comes before use.
-                    if let (Some(use_idx), Some(def_idx_opt)) =
-                        (op_idx, def_op_index.get(&used))
-                    {
+                    if let (Some(use_idx), Some(def_idx_opt)) = (op_idx, def_op_index.get(&used)) {
                         if let Some(def_idx) = def_idx_opt {
                             if *def_idx >= use_idx {
                                 errors.push(VerifyError::op(
@@ -423,8 +421,7 @@ fn compute_dominators(func: &TirFunction) -> HashMap<BlockId, Option<BlockId>> {
 
     // BFS to find reachable blocks and RPO order.
     let rpo = bfs_order(func);
-    let rpo_index: HashMap<BlockId, usize> =
-        rpo.iter().enumerate().map(|(i, &b)| (b, i)).collect();
+    let rpo_index: HashMap<BlockId, usize> = rpo.iter().enumerate().map(|(i, &b)| (b, i)).collect();
 
     // Build predecessor map.
     let mut pred: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
@@ -592,11 +589,8 @@ mod tests {
 
     /// Build a minimal valid function: add(i64, i64) -> i64.
     fn valid_add_function() -> TirFunction {
-        let mut func = TirFunction::new(
-            "add".into(),
-            vec![TirType::I64, TirType::I64],
-            TirType::I64,
-        );
+        let mut func =
+            TirFunction::new("add".into(), vec![TirType::I64, TirType::I64], TirType::I64);
         let result = ValueId(func.next_value);
         func.next_value += 1;
 
@@ -654,9 +648,7 @@ mod tests {
         assert!(result.is_err());
         let errors = result.unwrap_err();
         assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("does not exist")),
+            errors.iter().any(|e| e.message.contains("does not exist")),
             "expected 'does not exist' error, got: {:?}",
             errors
         );
@@ -759,9 +751,7 @@ mod tests {
         assert!(result.is_err());
         let errors = result.unwrap_err();
         assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("never defined")),
+            errors.iter().any(|e| e.message.contains("never defined")),
             "expected undefined value error, got: {:?}",
             errors
         );

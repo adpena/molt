@@ -104,8 +104,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 .any(|v| matches!(type_map.get(v), Some(TirType::F64)));
 
             if is_fp || result_is_fp {
-                op.attrs
-                    .insert("fast_math".into(), AttrValue::Bool(true));
+                op.attrs.insert("fast_math".into(), AttrValue::Bool(true));
                 stats.values_changed += 1;
             }
         }
@@ -165,8 +164,7 @@ mod tests {
     fn run_pass(ops: Vec<TirOp>, mark_func: bool) -> Vec<TirOp> {
         let mut func = TirFunction::new("test".into(), vec![], TirType::None);
         if mark_func {
-            func.attrs
-                .insert("fast_math".into(), AttrValue::Bool(true));
+            func.attrs.insert("fast_math".into(), AttrValue::Bool(true));
         }
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();

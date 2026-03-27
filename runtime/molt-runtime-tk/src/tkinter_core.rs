@@ -35,8 +35,7 @@ use molt_runtime_core::prelude::*;
 
 /// Read a string value as an owned Rust String.
 fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
-    rt_string_as_bytes(obj.bits())
-        .map(|b| String::from_utf8_lossy(b).into_owned())
+    rt_string_as_bytes(obj.bits()).map(|b| String::from_utf8_lossy(b).into_owned())
 }
 
 /// Extract i64 from a MoltObject.
@@ -56,7 +55,10 @@ fn to_f64(obj: MoltObject) -> Option<f64> {
 fn alloc_str_bits(value: &str) -> Result<u64, u64> {
     let bits = rt_string_from(value);
     if bits == 0 || rt_exception_pending() {
-        return Err(rt_raise_str("MemoryError", "failed to allocate tkinter_core string"));
+        return Err(rt_raise_str(
+            "MemoryError",
+            "failed to allocate tkinter_core string",
+        ));
     }
     Ok(bits)
 }
@@ -67,7 +69,10 @@ fn alloc_str_bits(value: &str) -> Result<u64, u64> {
 fn alloc_list_bits(elems: &[u64]) -> Result<u64, u64> {
     let bits = rt_list(elems);
     if bits == 0 || rt_exception_pending() {
-        return Err(rt_raise_str("MemoryError", "failed to allocate tkinter_core list"));
+        return Err(rt_raise_str(
+            "MemoryError",
+            "failed to allocate tkinter_core list",
+        ));
     }
     Ok(bits)
 }
@@ -78,7 +83,10 @@ fn alloc_list_bits(elems: &[u64]) -> Result<u64, u64> {
 fn alloc_tuple_result(elems: &[u64]) -> Result<u64, u64> {
     let bits = rt_tuple(elems);
     if bits == 0 || rt_exception_pending() {
-        return Err(rt_raise_str("MemoryError", "failed to allocate tkinter_core tuple"));
+        return Err(rt_raise_str(
+            "MemoryError",
+            "failed to allocate tkinter_core tuple",
+        ));
     }
     Ok(bits)
 }
@@ -441,7 +449,10 @@ pub extern "C" fn molt_tk_splitdict(tcl_str_bits: u64, cut_minus_bits: u64) -> u
         let items = split_tcl_list(&tcl_str);
 
         if !items.len().is_multiple_of(2) {
-            return rt_raise_str("RuntimeError", "Tcl list representing a dict is expected to contain an even number of elements");
+            return rt_raise_str(
+                "RuntimeError",
+                "Tcl list representing a dict is expected to contain an even number of elements",
+            );
         }
 
         // Build list of [key, value] pairs
@@ -724,11 +735,7 @@ pub extern "C" fn molt_tk_cnfmerge(cnf_bits: u64, kw_bits: u64) -> u64 {
 /// Emit a normalized "-key", value pair into the output vec.
 /// The key is converted to string, normalized with leading "-", and
 /// underscores in the key name are preserved (matching CPython tkinter behavior).
-fn emit_option_pair(
-    key_bits: u64,
-    value_bits: u64,
-    out: &mut Vec<u64>,
-) -> Result<(), u64> {
+fn emit_option_pair(key_bits: u64, value_bits: u64, out: &mut Vec<u64>) -> Result<(), u64> {
     let key_str = bits_to_string(key_bits).unwrap_or_else(|| {
         // If key is not a string, try int/float rendering
         if let Some(i) = bits_as_i64(key_bits) {

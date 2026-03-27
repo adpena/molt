@@ -24,10 +24,8 @@ use super::ops::{
     bytes_ascii_upper, dict_like_bits_from_ptr, format_with_spec, parse_codec_arg,
     parse_format_spec, repeat_sequence, simd_has_any_ascii_lower, simd_has_any_ascii_upper,
     simd_is_all_ascii_alnum, simd_is_all_ascii_alpha, simd_is_all_ascii_digit,
-    simd_is_all_ascii_printable, simd_is_all_ascii_whitespace, slice_bounds_from_args,
-    slice_match,
+    simd_is_all_ascii_printable, simd_is_all_ascii_whitespace, slice_bounds_from_args, slice_match,
 };
-
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_find(hay_bits: u64, needle_bits: u64) -> u64 {
@@ -38,8 +36,7 @@ pub extern "C" fn molt_string_find(hay_bits: u64, needle_bits: u64) -> u64 {
             unsafe {
                 if object_type_id(hay_ptr) == TYPE_ID_STRING {
                     let hay_len = string_len(hay_ptr);
-                    let hay_bytes =
-                        std::slice::from_raw_parts(string_bytes(hay_ptr), hay_len);
+                    let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), hay_len);
                     if hay_bytes.is_ascii() {
                         if let Some(needle_ptr) = obj_from_bits(needle_bits).as_ptr() {
                             if object_type_id(needle_ptr) == TYPE_ID_STRING {
@@ -78,8 +75,7 @@ pub extern "C" fn molt_string_rfind(hay_bits: u64, needle_bits: u64) -> u64 {
             unsafe {
                 if object_type_id(hay_ptr) == TYPE_ID_STRING {
                     let hay_len = string_len(hay_ptr);
-                    let hay_bytes =
-                        std::slice::from_raw_parts(string_bytes(hay_ptr), hay_len);
+                    let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), hay_len);
                     if hay_bytes.is_ascii() {
                         if let Some(needle_ptr) = obj_from_bits(needle_bits).as_ptr() {
                             if object_type_id(needle_ptr) == TYPE_ID_STRING {
@@ -568,7 +564,10 @@ pub extern "C" fn molt_string_startswith_slice(
                 return MoltObject::from_bool(false).bits();
             }
             let (start_byte, end_byte) = if hay_is_ascii {
-                ((start as usize).min(hay_bytes.len()), (end as usize).min(hay_bytes.len()))
+                (
+                    (start as usize).min(hay_bytes.len()),
+                    (end as usize).min(hay_bytes.len()),
+                )
             } else {
                 (
                     utf8_char_to_byte_index_cached(_py, hay_bytes, start, Some(hay_ptr as usize)),
@@ -666,7 +665,10 @@ pub extern "C" fn molt_string_endswith_slice(
                 return MoltObject::from_bool(false).bits();
             }
             let (start_byte, end_byte) = if hay_is_ascii {
-                ((start as usize).min(hay_bytes.len()), (end as usize).min(hay_bytes.len()))
+                (
+                    (start as usize).min(hay_bytes.len()),
+                    (end as usize).min(hay_bytes.len()),
+                )
             } else {
                 (
                     utf8_char_to_byte_index_cached(_py, hay_bytes, start, Some(hay_ptr as usize)),
@@ -838,7 +840,10 @@ pub extern "C" fn molt_string_count_slice(
                 return MoltObject::from_int(count).bits();
             }
             let (start_byte, end_byte) = if hay_is_ascii {
-                ((start as usize).min(hay_bytes.len()), (end as usize).min(hay_bytes.len()))
+                (
+                    (start as usize).min(hay_bytes.len()),
+                    (end as usize).min(hay_bytes.len()),
+                )
             } else {
                 (
                     utf8_char_to_byte_index_cached(_py, hay_bytes, start, Some(hay_ptr as usize)),
@@ -1093,7 +1098,6 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
         }
     })
 }
-
 
 #[derive(Copy, Clone)]
 enum FormatContext {
@@ -2097,7 +2101,14 @@ fn utf8_count_prefix_blocked(bytes: &[u8], prefix_len: usize) -> i64 {
 fn count_utf8_bytes(bytes: &[u8]) -> i64 {
     // simdutf::count_utf8 counts non-continuation bytes, which works
     // correctly on both valid UTF-8 and WTF-8. No validation needed.
-    simdutf::count_utf8(bytes) as i64
+    #[cfg(feature = "simdutf")]
+    {
+        simdutf::count_utf8(bytes) as i64
+    }
+    #[cfg(not(feature = "simdutf"))]
+    {
+        bytes.iter().filter(|&&b| (b & 0xC0) != 0x80).count() as i64
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2135,7 +2146,6 @@ unsafe fn count_utf8_codepoints_wasm_simd(bytes: &[u8]) -> i64 {
         count
     }
 }
-
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_splitlines(hay_bits: u64, keepends_bits: u64) -> u64 {
@@ -4095,4 +4105,3 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
         }
     })
 }
-

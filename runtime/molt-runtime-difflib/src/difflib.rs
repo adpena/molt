@@ -6,11 +6,11 @@
 //!   - Diff generators: unified_diff, context_diff, ndiff
 //!   - Helpers: get_close_matches, is_junk
 
-use molt_runtime_core::prelude::*;
 use crate::bridge::{
-    alloc_list, alloc_string, alloc_tuple, dec_ref_bits,
-    raise_exception, string_obj_to_owned, to_f64, to_i64, type_name,
+    alloc_list, alloc_string, alloc_tuple, dec_ref_bits, raise_exception, string_obj_to_owned,
+    to_f64, to_i64, type_name,
 };
+use molt_runtime_core::prelude::*;
 
 // ---------------------------------------------------------------------------
 // SequenceMatcher implementation (Ratcliff/Obershelp / LCS)

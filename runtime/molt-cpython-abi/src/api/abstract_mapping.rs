@@ -83,10 +83,7 @@ pub unsafe extern "C" fn PyMapping_HasKey(o: *mut PyObject, key: *mut PyObject) 
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyMapping_HasKeyString(
-    o: *mut PyObject,
-    key: *const c_char,
-) -> c_int {
+pub unsafe extern "C" fn PyMapping_HasKeyString(o: *mut PyObject, key: *const c_char) -> c_int {
     if o.is_null() || key.is_null() {
         return 0;
     }

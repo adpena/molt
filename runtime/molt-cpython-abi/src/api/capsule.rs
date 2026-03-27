@@ -84,10 +84,7 @@ pub unsafe extern "C" fn PyCapsule_GetName(capsule: *mut PyObject) -> *const c_c
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyCapsule_IsValid(
-    capsule: *mut PyObject,
-    name: *const c_char,
-) -> c_int {
+pub unsafe extern "C" fn PyCapsule_IsValid(capsule: *mut PyObject, name: *const c_char) -> c_int {
     if capsule.is_null() {
         return 0;
     }

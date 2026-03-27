@@ -71,9 +71,8 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         }
         mapping
     };
-    let block_label_id = |bid: &BlockId| -> i64 {
-        label_id_for_block.get(bid).copied().unwrap_or(bid.0 as i64)
-    };
+    let block_label_id =
+        |bid: &BlockId| -> i64 { label_id_for_block.get(bid).copied().unwrap_or(bid.0 as i64) };
 
     // Collect block argument info for all blocks so we can generate
     // `store_var` assignments at branch sites.
@@ -213,8 +212,20 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             // while SCCP-generated const_bool ops store it as AttrValue::Bool.
             // Handle both representations to avoid silently converting true→false.
             value: Some(match op.attrs.get("value") {
-                Some(AttrValue::Bool(b)) => if *b { 1 } else { 0 },
-                Some(AttrValue::Int(i)) => if *i != 0 { 1 } else { 0 },
+                Some(AttrValue::Bool(b)) => {
+                    if *b {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                Some(AttrValue::Int(i)) => {
+                    if *i != 0 {
+                        1
+                    } else {
+                        0
+                    }
+                }
                 _ => 0,
             }),
             out: out_var,
@@ -270,8 +281,8 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
 
         // Memory.
         OpCode::LoadAttr => {
-            let kind = attr_str(&op.attrs, "_original_kind")
-                .unwrap_or_else(|| "get_attr".to_string());
+            let kind =
+                attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "get_attr".to_string());
             Some(OpIR {
                 kind,
                 args: Some(operand_args(op)),
@@ -282,8 +293,8 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             })
         }
         OpCode::StoreAttr => {
-            let kind = attr_str(&op.attrs, "_original_kind")
-                .unwrap_or_else(|| "set_attr".to_string());
+            let kind =
+                attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "set_attr".to_string());
             Some(OpIR {
                 kind,
                 args: Some(operand_args(op)),
@@ -292,13 +303,12 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             })
         }
         OpCode::Index => {
-            let kind = attr_str(&op.attrs, "_original_kind")
-                .unwrap_or_else(|| "index".to_string());
+            let kind = attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "index".to_string());
             Some(binary_op(&kind, op, out_var))
         }
         OpCode::StoreIndex => {
-            let kind = attr_str(&op.attrs, "_original_kind")
-                .unwrap_or_else(|| "store_index".to_string());
+            let kind =
+                attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "store_index".to_string());
             Some(OpIR {
                 kind,
                 args: Some(operand_args(op)),
@@ -311,8 +321,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         // Recover the original SimpleIR kind (call_func, call_indirect, etc.)
         // if it was preserved during the SSA lift.
         OpCode::Call => {
-            let kind = attr_str(&op.attrs, "_original_kind")
-                .unwrap_or_else(|| "call".to_string());
+            let kind = attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "call".to_string());
             Some(OpIR {
                 kind,
                 s_value: attr_str(&op.attrs, "s_value"),
@@ -321,7 +330,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 value: attr_int(&op.attrs, "value"),
                 ..OpIR::default()
             })
-        },
+        }
         OpCode::CallMethod => Some(OpIR {
             kind: "call_method".to_string(),
             args: Some(operand_args(op)),
@@ -330,8 +339,8 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             ..OpIR::default()
         }),
         OpCode::CallBuiltin => {
-            let kind = attr_str(&op.attrs, "_original_kind")
-                .unwrap_or_else(|| "call_builtin".to_string());
+            let kind =
+                attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "call_builtin".to_string());
             Some(OpIR {
                 kind,
                 args: Some(operand_args(op)),
@@ -339,7 +348,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 out: out_var,
                 ..OpIR::default()
             })
-        },
+        }
 
         // Box/unbox — no-ops at SimpleIR level (type info discarded).
         OpCode::BoxVal | OpCode::UnboxVal | OpCode::TypeGuard => {
@@ -362,7 +371,11 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 // Passthrough: reconstruct the original SimpleIR op with all fields.
                 Some(OpIR {
                     kind: original_kind,
-                    args: if op.operands.is_empty() { None } else { Some(operand_args(op)) },
+                    args: if op.operands.is_empty() {
+                        None
+                    } else {
+                        Some(operand_args(op))
+                    },
                     out: out_var,
                     value: attr_int(&op.attrs, "value"),
                     f_value: attr_float(&op.attrs, "f_value"),
@@ -535,8 +548,8 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
 
         // Remaining attribute ops.
         OpCode::DelAttr => {
-            let kind = attr_str(&op.attrs, "_original_kind")
-                .unwrap_or_else(|| "del_attr".to_string());
+            let kind =
+                attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "del_attr".to_string());
             Some(OpIR {
                 kind,
                 args: Some(operand_args(op)),
@@ -545,8 +558,8 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             })
         }
         OpCode::DelIndex => {
-            let kind = attr_str(&op.attrs, "_original_kind")
-                .unwrap_or_else(|| "del_index".to_string());
+            let kind =
+                attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "del_index".to_string());
             Some(OpIR {
                 kind,
                 args: Some(operand_args(op)),
@@ -773,9 +786,13 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
             Some(TirType::F64) => {
                 opir.fast_float = Some(true);
             }
-            Some(ty @ TirType::Bool) | Some(ty @ TirType::Str) | Some(ty @ TirType::Bytes)
-            | Some(ty @ TirType::List(_)) | Some(ty @ TirType::Dict(_, _))
-            | Some(ty @ TirType::Set(_)) | Some(ty @ TirType::Tuple(_))
+            Some(ty @ TirType::Bool)
+            | Some(ty @ TirType::Str)
+            | Some(ty @ TirType::Bytes)
+            | Some(ty @ TirType::List(_))
+            | Some(ty @ TirType::Dict(_, _))
+            | Some(ty @ TirType::Set(_))
+            | Some(ty @ TirType::Tuple(_))
             | Some(ty @ TirType::BigInt) => {
                 opir.type_hint = Some(type_to_hint_string(ty));
             }
@@ -916,11 +933,8 @@ mod tests {
     use crate::tir::values::ValueId;
 
     fn add_function() -> TirFunction {
-        let mut func = TirFunction::new(
-            "add".into(),
-            vec![TirType::I64, TirType::I64],
-            TirType::I64,
-        );
+        let mut func =
+            TirFunction::new("add".into(), vec![TirType::I64, TirType::I64], TirType::I64);
 
         let result = ValueId(func.next_value);
         func.next_value += 1;
@@ -961,7 +975,10 @@ mod tests {
     fn ret_op_has_var_set() {
         let func = add_function();
         let ops = lower_to_simple_ir(&func, &HashMap::new());
-        let ret_op = ops.iter().find(|o| o.kind == "ret").expect("expected a ret op");
+        let ret_op = ops
+            .iter()
+            .find(|o| o.kind == "ret")
+            .expect("expected a ret op");
         assert!(
             ret_op.var.is_some(),
             "ret op must have `var` set for the native backend; got: {:?}",
@@ -1155,7 +1172,11 @@ mod tests {
         // Verify the type map has I64 for all three values.
         assert_eq!(type_map.get(&v0), Some(&TirType::I64), "v0 should be I64");
         assert_eq!(type_map.get(&v1), Some(&TirType::I64), "v1 should be I64");
-        assert_eq!(type_map.get(&v2), Some(&TirType::I64), "v2 should be I64 (add of two I64s)");
+        assert_eq!(
+            type_map.get(&v2),
+            Some(&TirType::I64),
+            "v2 should be I64 (add of two I64s)"
+        );
 
         // Lower to SimpleIR with the type map.
         let ops = lower_to_simple_ir(&func, &type_map);
@@ -1308,7 +1329,10 @@ mod tests {
             );
             // Bool should NOT set fast_int or fast_float.
             assert!(eq_op.fast_int.is_none(), "bool op should not have fast_int");
-            assert!(eq_op.fast_float.is_none(), "bool op should not have fast_float");
+            assert!(
+                eq_op.fast_float.is_none(),
+                "bool op should not have fast_float"
+            );
         }
     }
 
@@ -1320,9 +1344,18 @@ mod tests {
         let add_ops: Vec<&OpIR> = ops.iter().filter(|o| o.kind == "add").collect();
         assert!(!add_ops.is_empty());
         for add_op in &add_ops {
-            assert!(add_op.fast_int.is_none(), "empty type map should not set fast_int");
-            assert!(add_op.fast_float.is_none(), "empty type map should not set fast_float");
-            assert!(add_op.type_hint.is_none(), "empty type map should not set type_hint");
+            assert!(
+                add_op.fast_int.is_none(),
+                "empty type map should not set fast_int"
+            );
+            assert!(
+                add_op.fast_float.is_none(),
+                "empty type map should not set fast_float"
+            );
+            assert!(
+                add_op.type_hint.is_none(),
+                "empty type map should not set type_hint"
+            );
         }
     }
 }

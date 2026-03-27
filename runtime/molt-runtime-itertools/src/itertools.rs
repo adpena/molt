@@ -2,23 +2,16 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::bridge::{
+    self, ExceptionSentinel, alloc_function, alloc_instance_for_class, alloc_itertools_class,
+    alloc_kwd_mark, alloc_list, alloc_tuple, bridge_call_bind, bridge_callargs_expand_star,
+    bridge_callargs_new, bridge_molt_add, bridge_molt_eq, bridge_molt_iter_next, call_callable1,
+    call_callable2, class_set_iter_next, dec_ref_bits, exception_pending, inc_ref_bits,
+    index_i64_from_obj, is_truthy, missing_bits, molt_iter_bridge as molt_iter, object_class_bits,
+    object_type_id, raise_exception, raise_not_iterable, seq_vec_ref, tuple_from_iter_bits,
+};
 use molt_runtime_core::prelude::*;
 use molt_runtime_core::type_ids::*;
-use crate::bridge::{
-    self,
-    alloc_instance_for_class, alloc_itertools_class, alloc_function, alloc_kwd_mark,
-    alloc_list, alloc_tuple,
-    bridge_call_bind, bridge_callargs_expand_star, bridge_callargs_new,
-    bridge_molt_add, bridge_molt_eq, bridge_molt_iter_next,
-    call_callable1, call_callable2,
-    class_set_iter_next,
-    dec_ref_bits, exception_pending, inc_ref_bits,
-    index_i64_from_obj,
-    is_truthy, missing_bits, molt_iter_bridge as molt_iter,
-    object_class_bits, object_type_id,
-    raise_exception, raise_not_iterable, seq_vec_ref,
-    tuple_from_iter_bits, ExceptionSentinel,
-};
 
 static ITER_SELF_FN: AtomicU64 = AtomicU64::new(0);
 static KWD_MARK_BITS: AtomicU64 = AtomicU64::new(0);
@@ -81,15 +74,11 @@ fn init_atomic_bits(_py: &PyToken, slot: &AtomicU64, f: impl FnOnce() -> u64) ->
 }
 
 fn builtin_func_bits(_py: &PyToken, slot: &AtomicU64, fn_ptr: u64, arity: u64) -> u64 {
-    init_atomic_bits(_py, slot, || {
-        alloc_function(_py, fn_ptr, arity)
-    })
+    init_atomic_bits(_py, slot, || alloc_function(_py, fn_ptr, arity))
 }
 
 fn kwd_mark_bits(_py: &PyToken) -> u64 {
-    init_atomic_bits(_py, &KWD_MARK_BITS, || {
-        alloc_kwd_mark(_py)
-    })
+    init_atomic_bits(_py, &KWD_MARK_BITS, || alloc_kwd_mark(_py))
 }
 
 #[unsafe(no_mangle)]
@@ -1733,8 +1722,7 @@ pub extern "C" fn molt_itertools_filterfalse_next(self_bits: u64) -> u64 {
             let truthy = if use_identity {
                 is_truthy(_py, obj_from_bits(value_bits))
             } else {
-                let predicate_out =
-                    call_callable1(_py, predicate_bits, value_bits);
+                let predicate_out = call_callable1(_py, predicate_bits, value_bits);
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
@@ -1831,8 +1819,7 @@ pub extern "C" fn molt_itertools_product(iterables_bits: u64, repeat_bits: u64) 
             let iterables = unsafe { seq_vec_ref(iterables_ptr) };
             let mut base_pools: Vec<u64> = Vec::with_capacity(iterables.len());
             for &iterable_bits in iterables.iter() {
-                let Some(tuple_bits) = tuple_from_iter_bits(_py, iterable_bits)
-                else {
+                let Some(tuple_bits) = tuple_from_iter_bits(_py, iterable_bits) else {
                     for bits in base_pools.iter().copied() {
                         dec_ref_bits(_py, bits);
                     }

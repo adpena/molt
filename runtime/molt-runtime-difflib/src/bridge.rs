@@ -22,12 +22,7 @@ unsafe extern "C" {
 
 pub fn raise_exception<T: ExceptionSentinel>(_py: &CoreGilToken, type_name: &str, msg: &str) -> T {
     let bits = unsafe {
-        __molt_difflib_raise_exception(
-            type_name.as_ptr(),
-            type_name.len(),
-            msg.as_ptr(),
-            msg.len(),
-        )
+        __molt_difflib_raise_exception(type_name.as_ptr(), type_name.len(), msg.as_ptr(), msg.len())
     };
     T::from_bits(bits)
 }
@@ -88,11 +83,7 @@ unsafe extern "C" {
         out_ptr: *mut *const u8,
         out_len: *mut usize,
     ) -> i32;
-    fn __molt_difflib_type_name(
-        bits: u64,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
+    fn __molt_difflib_type_name(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
 }
 
 pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {

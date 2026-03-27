@@ -3,8 +3,8 @@
 //! All dispatch goes through a single `RuntimeVtable` fetched once at init.
 //! The only extern "C" symbol is `__molt_serial_get_vtable`.
 
-use molt_runtime_core::prelude::*;
 use molt_runtime_core::RuntimeVtable;
+use molt_runtime_core::prelude::*;
 use std::borrow::Cow;
 use std::sync::OnceLock;
 
@@ -39,12 +39,7 @@ fn vt() -> &'static RuntimeVtable {
 
 pub fn raise_exception<T: ExceptionSentinel>(_py: &PyToken, type_name: &str, msg: &str) -> T {
     let bits = unsafe {
-        (vt().raise_exception)(
-            type_name.as_ptr(),
-            type_name.len(),
-            msg.as_ptr(),
-            msg.len(),
-        )
+        (vt().raise_exception)(type_name.as_ptr(), type_name.len(), msg.as_ptr(), msg.len())
     };
     T::from_bits(bits)
 }
@@ -233,8 +228,7 @@ pub fn to_bigint(obj: MoltObject) -> Option<num_bigint::BigInt> {
     let mut out_sign: i32 = 0;
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok =
-        unsafe { (vt().to_bigint)(obj.bits(), &mut out_sign, &mut out_ptr, &mut out_len) };
+    let ok = unsafe { (vt().to_bigint)(obj.bits(), &mut out_sign, &mut out_ptr, &mut out_len) };
     if ok == 0 {
         return None;
     }
@@ -283,8 +277,7 @@ pub fn bigint_ref(ptr: *mut u8) -> num_bigint::BigInt {
     let mut out_sign: i32 = 0;
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok =
-        unsafe { (vt().bigint_ref)(ptr, &mut out_sign, &mut out_ptr, &mut out_len) };
+    let ok = unsafe { (vt().bigint_ref)(ptr, &mut out_sign, &mut out_ptr, &mut out_len) };
     if ok == 0 || out_len == 0 {
         return BigInt::from(0);
     }
@@ -303,9 +296,8 @@ pub fn bigint_from_f64_trunc(val: f64) -> num_bigint::BigInt {
     let mut out_sign: i32 = 0;
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe {
-        (vt().bigint_from_f64_trunc)(val, &mut out_sign, &mut out_ptr, &mut out_len)
-    };
+    let ok =
+        unsafe { (vt().bigint_from_f64_trunc)(val, &mut out_sign, &mut out_ptr, &mut out_len) };
     if ok == 0 || out_len == 0 {
         return BigInt::from(0);
     }
@@ -404,8 +396,7 @@ pub fn intern_static_name(_py: &PyToken, key: &[u8]) -> u64 {
 pub fn class_name_for_error(type_bits: u64) -> String {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok =
-        unsafe { (vt().class_name_for_error)(type_bits, &mut out_ptr, &mut out_len) };
+    let ok = unsafe { (vt().class_name_for_error)(type_bits, &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
         let boxed =
             unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
@@ -466,11 +457,7 @@ pub unsafe fn bytearray_vec(ptr: *mut u8) -> &'static mut Vec<u8> {
 // Container helpers
 // ---------------------------------------------------------------------------
 
-pub unsafe fn dict_get_in_place(
-    _py: &PyToken,
-    dict_ptr: *mut u8,
-    key_bits: u64,
-) -> Option<u64> {
+pub unsafe fn dict_get_in_place(_py: &PyToken, dict_ptr: *mut u8, key_bits: u64) -> Option<u64> {
     let mut out: u64 = 0;
     let ok = unsafe { (vt().dict_get_in_place)(dict_ptr, key_bits, &mut out) };
     if ok != 0 { Some(out) } else { None }
@@ -563,11 +550,7 @@ pub fn attr_name_bits_from_bytes(_py: &PyToken, name: &[u8]) -> Option<u64> {
     if ok != 0 { Some(out) } else { None }
 }
 
-pub unsafe fn call_class_init_with_args(
-    _py: &PyToken,
-    class_ptr: *mut u8,
-    args: &[u64],
-) -> u64 {
+pub unsafe fn call_class_init_with_args(_py: &PyToken, class_ptr: *mut u8, args: &[u64]) -> u64 {
     unsafe { (vt().call_class_init_with_args)(class_ptr, args.as_ptr(), args.len()) }
 }
 
@@ -598,7 +581,11 @@ pub fn iterable_to_string_vec(_py: &PyToken, values_bits: u64) -> Result<Vec<Str
         match molt_iter_next(_py, iter_bits) {
             Some(item_bits) => {
                 let Some(item) = string_obj_to_owned(obj_from_bits(item_bits)) else {
-                    return Err(raise_exception::<u64>(_py, "TypeError", "expected str item"));
+                    return Err(raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        "expected str item",
+                    ));
                 };
                 out.push(item);
             }

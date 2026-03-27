@@ -19,8 +19,7 @@ unsafe extern "C" {
 // ---------------------------------------------------------------------------
 
 fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
-    rt_string_as_bytes(obj.bits())
-        .map(|b| String::from_utf8_lossy(b).into_owned())
+    rt_string_as_bytes(obj.bits()).map(|b| String::from_utf8_lossy(b).into_owned())
 }
 
 fn to_i64(obj: MoltObject) -> Option<i64> {
@@ -1367,30 +1366,35 @@ fn format_permission_error_message(state: &TkGateState) -> String {
 
 fn raise_tk_gate_error(py: &PyToken, op: TkOperation, state: &TkGateState) -> u64 {
     if state.wasm_unsupported {
-        return raise_exception_u64(py,
+        return raise_exception_u64(
+            py,
             "NotImplementedError",
             &format_tk_unavailable_message(op, state),
         );
     }
     if state.backend_unimplemented {
-        return raise_exception_u64(py,
+        return raise_exception_u64(
+            py,
             "RuntimeError",
             &format_tk_unavailable_message(op, state),
         );
     }
     if state.missing_gui_window || state.missing_process_spawn {
-        return raise_exception_u64(py,
+        return raise_exception_u64(
+            py,
             "PermissionError",
             &format_permission_error_message(state),
         );
     }
     if has_platform_preflight_blockers(state) {
-        return raise_exception_u64(py,
+        return raise_exception_u64(
+            py,
             "RuntimeError",
             &format_tk_unavailable_message(op, state),
         );
     }
-    raise_exception_u64(py,
+    raise_exception_u64(
+        py,
         "RuntimeError",
         &format!("internal tkinter gate error ({})", op.symbol()),
     )
@@ -1437,7 +1441,8 @@ fn raise_tcl_error(py: &PyToken, message: &str) -> u64 {
 fn alloc_string_bits(py: &PyToken, value: &str) -> Result<u64, u64> {
     let bits = rt_string_from(value);
     if bits == 0 || rt_exception_pending() {
-        return Err(raise_exception_u64(py,
+        return Err(raise_exception_u64(
+            py,
             "MemoryError",
             "failed to allocate tkinter string",
         ));
@@ -1482,10 +1487,7 @@ fn clear_value_map_refs(py: &PyToken, values: &mut HashMap<String, u64>) {
     }
 }
 
-fn clear_nested_value_map_refs(
-    py: &PyToken,
-    values: &mut HashMap<String, HashMap<String, u64>>,
-) {
+fn clear_nested_value_map_refs(py: &PyToken, values: &mut HashMap<String, HashMap<String, u64>>) {
     for mut nested in values.drain().map(|(_, nested)| nested) {
         clear_value_map_refs(py, &mut nested);
     }
@@ -1767,11 +1769,7 @@ fn remove_trace_registration(
     }
 }
 
-fn clear_trace_registrations_for_variable(
-    py: &PyToken,
-    app: &mut TkAppState,
-    variable_name: &str,
-) {
+fn clear_trace_registrations_for_variable(py: &PyToken, app: &mut TkAppState, variable_name: &str) {
     let Some(registrations) = app.traces.remove(variable_name) else {
         return;
     };
@@ -1802,7 +1800,8 @@ fn normalize_bind_add_prefix(py: &PyToken, add_bits: u64) -> Result<String, u64>
         return match value {
             0 => Ok(String::new()),
             1 => Ok("+".to_string()),
-            _ => Err(raise_exception_u64(py,
+            _ => Err(raise_exception_u64(
+                py,
                 "TypeError",
                 "bind add must be one of: None, '', False, True, or '+'",
             )),
@@ -1812,13 +1811,15 @@ fn normalize_bind_add_prefix(py: &PyToken, add_bits: u64) -> Result<String, u64>
         return match value.as_str() {
             "" => Ok(String::new()),
             "+" => Ok("+".to_string()),
-            _ => Err(raise_exception_u64(py,
+            _ => Err(raise_exception_u64(
+                py,
                 "TypeError",
                 "bind add must be one of: None, '', False, True, or '+'",
             )),
         };
     }
-    Err(raise_exception_u64(py,
+    Err(raise_exception_u64(
+        py,
         "TypeError",
         "bind add must be one of: None, '', False, True, or '+'",
     ))
@@ -2845,11 +2846,7 @@ fn parse_command_words(command: &str) -> Vec<String> {
     vec![command.to_string()]
 }
 
-fn run_tk_word_commands(
-    py: &PyToken,
-    handle: i64,
-    commands: &[Vec<String>],
-) -> Result<(), u64> {
+fn run_tk_word_commands(py: &PyToken, handle: i64, commands: &[Vec<String>]) -> Result<(), u64> {
     for words in commands {
         let out_bits = call_tk_command_from_strings(py, handle, words)?;
         release_result_bits(py, out_bits);
@@ -3266,8 +3263,7 @@ fn alloc_tcl_obj_from_part(
         TclObjKind::Scalar(text) => {
             let bytes = CString::new(text.as_bytes())
                 .map_err(|_| "Tcl string contained interior NUL byte".to_string())?;
-            let obj =
-                unsafe { (api.new_string_obj)(bytes.as_ptr(), text.len() as c_int) };
+            let obj = unsafe { (api.new_string_obj)(bytes.as_ptr(), text.len() as c_int) };
             if obj.is_null() {
                 return Err("Tcl_NewStringObj returned null".to_string());
             }
@@ -3281,9 +3277,7 @@ fn alloc_tcl_obj_from_part(
             let interp = interp_addr as *mut c_void;
             for nested in list {
                 let nested_obj = alloc_tcl_obj_from_part(api, interp_addr, nested)?;
-                let rc = unsafe {
-                    (api.list_obj_append_element)(interp, list_obj, nested_obj)
-                };
+                let rc = unsafe { (api.list_obj_append_element)(interp, list_obj, nested_obj) };
                 if rc != TCL_OK {
                     // Safely free refcount-0 objects: incr then decr
                     unsafe {
@@ -3328,9 +3322,7 @@ fn eval_tcl_without_gil(
 
     let rc = {
         let _gil_release = GilReleaseGuard::new();
-        unsafe {
-            (api.eval_objv)(interp, objv.len() as c_int, objv.as_ptr(), 0)
-        }
+        unsafe { (api.eval_objv)(interp, objv.len() as c_int, objv.as_ptr(), 0) }
     };
 
     for &obj in &objv {
@@ -3394,7 +3386,10 @@ fn run_tcl_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> 
                     app.last_error = None;
                 }
             }
-            Ok(tcl_result_to_bits(py, TclObj::scalar_from_interp(result, interp_addr)))
+            Ok(tcl_result_to_bits(
+                py,
+                TclObj::scalar_from_interp(result, interp_addr),
+            ))
         }
         Err(err) => {
             let message = format!("tk command failed: {err}");
@@ -3428,7 +3423,10 @@ fn take_pending_tcl_callbacks(py: &PyToken, handle: i64) -> Result<Vec<Vec<Strin
 
     // Read and reset the pending callbacks variable with GIL released.
     let pending_text = {
-        let get_parts = [TclObj::from("set"), TclObj::from("::__molt_pending_callbacks")];
+        let get_parts = [
+            TclObj::from("set"),
+            TclObj::from("::__molt_pending_callbacks"),
+        ];
         let reset_parts = [
             TclObj::from("set"),
             TclObj::from("::__molt_pending_callbacks"),
@@ -3448,9 +3446,7 @@ fn take_pending_tcl_callbacks(py: &PyToken, handle: i64) -> Result<Vec<Vec<Strin
             unsafe { api.incr_ref_count_obj(obj) };
             get_objv.push(obj);
         }
-        let rc = unsafe {
-            (api.eval_objv)(interp, get_objv.len() as c_int, get_objv.as_ptr(), 0)
-        };
+        let rc = unsafe { (api.eval_objv)(interp, get_objv.len() as c_int, get_objv.as_ptr(), 0) };
         for &obj in &get_objv {
             unsafe { api.decr_ref_count_obj(obj) };
         }
@@ -4210,11 +4206,7 @@ fn clamp_dialog_selection(default_index: i64, button_count: usize) -> i64 {
     default_index.clamp(0, max_index)
 }
 
-fn handle_headless_tk_dialog_command(
-    py: &PyToken,
-    handle: i64,
-    args: &[u64],
-) -> Result<u64, u64> {
+fn handle_headless_tk_dialog_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> {
     if args.len() < 6 {
         return Err(raise_tcl_for_handle(
             py,
@@ -4611,11 +4603,7 @@ fn variable_version(app: &TkAppState, variable_name: &str) -> u64 {
         .unwrap_or_default()
 }
 
-fn call_tk_command_from_strings(
-    py: &PyToken,
-    handle: i64,
-    argv: &[String],
-) -> Result<u64, u64> {
+fn call_tk_command_from_strings(py: &PyToken, handle: i64, argv: &[String]) -> Result<u64, u64> {
     let mut arg_bits = Vec::with_capacity(argv.len());
     for word in argv {
         match alloc_string_bits(py, word) {
@@ -5754,11 +5742,7 @@ fn handle_tkwait_window_target(py: &PyToken, handle: i64, target: &str) -> Resul
     Ok(MoltObject::none().bits())
 }
 
-fn handle_tkwait_visibility_target(
-    py: &PyToken,
-    handle: i64,
-    target: &str,
-) -> Result<u64, u64> {
+fn handle_tkwait_visibility_target(py: &PyToken, handle: i64, target: &str) -> Result<u64, u64> {
     if target != "." {
         let exists_now = {
             let registry = tk_registry().lock().unwrap();
@@ -13971,11 +13955,7 @@ fn handle_source_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64,
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
-fn run_tcl_rename_and_sync_callbacks(
-    py: &PyToken,
-    handle: i64,
-    args: &[u64],
-) -> Result<u64, u64> {
+fn run_tcl_rename_and_sync_callbacks(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> {
     if args.len() != 3 {
         return run_tcl_command(py, handle, args);
     }
@@ -14008,11 +13988,7 @@ fn run_tcl_rename_and_sync_callbacks(
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
-fn run_tcl_after_and_sync_callbacks(
-    py: &PyToken,
-    handle: i64,
-    args: &[u64],
-) -> Result<u64, u64> {
+fn run_tcl_after_and_sync_callbacks(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> {
     let out = run_tcl_command(py, handle, args)?;
     if args.len() != 3 {
         return Ok(out);
@@ -14715,7 +14691,8 @@ pub extern "C" fn molt_tk_after_cancel(app_bits: u64, identifier_bits: u64) -> u
         };
         let identifier_obj = obj_from_bits(identifier_bits);
         if !is_truthy(_py, identifier_obj) {
-            return raise_exception_u64(_py,
+            return raise_exception_u64(
+                _py,
                 "ValueError",
                 "id must be a valid identifier returned from after or after_idle",
             );
@@ -15681,7 +15658,8 @@ pub extern "C" fn molt_tk_filehandler_create(
             return raise_tcl_for_handle(_py, handle, "file descriptor must be an integer");
         };
         if fd < 0 {
-            return raise_exception_u64(_py,
+            return raise_exception_u64(
+                _py,
                 "ValueError",
                 &format!("file descriptor cannot be a negative integer ({fd})"),
             );
@@ -15805,7 +15783,8 @@ pub extern "C" fn molt_tk_filehandler_delete(app_bits: u64, fd_bits: u64) -> u64
             return raise_tcl_for_handle(_py, handle, "file descriptor must be an integer");
         };
         if fd < 0 {
-            return raise_exception_u64(_py,
+            return raise_exception_u64(
+                _py,
                 "ValueError",
                 &format!("file descriptor cannot be a negative integer ({fd})"),
             );
@@ -15926,7 +15905,8 @@ pub extern "C" fn molt_tk_getboolean(value_bits: u64) -> u64 {
             if let Some(parsed) = parse_bool_text(&text) {
                 return MoltObject::from_bool(parsed).bits();
             }
-            return raise_exception_u64(_py,
+            return raise_exception_u64(
+                _py,
                 "ValueError",
                 &format!("invalid boolean value \"{text}\""),
             );
@@ -15945,7 +15925,8 @@ pub extern "C" fn molt_tk_getdouble(value_bits: u64) -> u64 {
         {
             return MoltObject::from_float(value).bits();
         }
-        raise_exception_u64(_py,
+        raise_exception_u64(
+            _py,
             "ValueError",
             &format!(
                 "invalid floating-point value \"{}\"",

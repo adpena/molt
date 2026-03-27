@@ -226,7 +226,7 @@ pub unsafe extern "C" fn PyTuple_Check(op: *mut PyObject) -> c_int {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyTuple_Pack(n: Py_ssize_t, /* ... */) -> *mut PyObject {
+pub unsafe extern "C" fn PyTuple_Pack(n: Py_ssize_t /* ... */) -> *mut PyObject {
     // Variadic — without va_list we can only create an empty tuple.
     // Real variadic support is in the C shim.
     unsafe { PyTuple_New(n) }
@@ -272,10 +272,7 @@ pub unsafe extern "C" fn PySet_Size(anyset: *mut PyObject) -> Py_ssize_t {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PySet_Contains(
-    anyset: *mut PyObject,
-    key: *mut PyObject,
-) -> c_int {
+pub unsafe extern "C" fn PySet_Contains(anyset: *mut PyObject, key: *mut PyObject) -> c_int {
     let _ = (anyset, key);
     // Cannot check set membership without set hooks.
     0

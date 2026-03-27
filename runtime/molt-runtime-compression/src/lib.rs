@@ -4,13 +4,13 @@
 //! so they can be excluded from micro/edge builds without recompiling the core runtime.
 
 pub mod bridge;
-pub mod compression_common;
 pub mod bz2;
+pub mod compression_common;
 pub mod gzip;
-pub mod zlib;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod lzma;
 #[allow(dead_code)]
 pub mod lzma_wasm;
 pub mod tarfile;
 pub mod zipfile;
+pub mod zlib;

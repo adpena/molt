@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// For single-threaded programs, atomic increment/decrement with Relaxed
 /// ordering is essentially free (compiles to a single add/sub instruction).
 static FAST_RECURSION_DEPTH: AtomicUsize = AtomicUsize::new(0);
-static FAST_RECURSION_LIMIT: AtomicUsize = AtomicUsize::new(crate::state::tls::DEFAULT_RECURSION_LIMIT);
+static FAST_RECURSION_LIMIT: AtomicUsize =
+    AtomicUsize::new(crate::state::tls::DEFAULT_RECURSION_LIMIT);
 
 pub(crate) fn recursion_limit_get() -> usize {
     FAST_RECURSION_LIMIT.load(Ordering::Relaxed)

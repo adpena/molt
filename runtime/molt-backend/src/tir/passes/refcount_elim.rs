@@ -62,7 +62,10 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         for i in 0..n {
             let op = &block.ops[i];
             if (op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef)
-                && op.operands.first().map_or(false, |v| stack_alloc_vals.contains(v))
+                && op
+                    .operands
+                    .first()
+                    .map_or(false, |v| stack_alloc_vals.contains(v))
             {
                 remove[i] = true;
             }
@@ -138,7 +141,9 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         // Step 2c: Apply removals.
         let before_len = block.ops.len();
         let mut remove_iter = remove.iter();
-        block.ops.retain(|_| !remove_iter.next().copied().unwrap_or(false));
+        block
+            .ops
+            .retain(|_| !remove_iter.next().copied().unwrap_or(false));
         let removed = before_len - block.ops.len();
         stats.ops_removed += removed;
     }
@@ -229,7 +234,10 @@ mod tests {
         assert_eq!(stats.ops_removed, 2);
         // StackAlloc itself stays
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 1);
-        assert_eq!(func.blocks[&func.entry_block].ops[0].opcode, OpCode::StackAlloc);
+        assert_eq!(
+            func.blocks[&func.entry_block].ops[0].opcode,
+            OpCode::StackAlloc
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -244,7 +252,9 @@ mod tests {
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(make_op(OpCode::IncRef, vec![v], vec![]));
-        entry.ops.push(make_op(OpCode::Call, vec![callee], vec![result]));
+        entry
+            .ops
+            .push(make_op(OpCode::Call, vec![callee], vec![result]));
         entry.ops.push(make_op(OpCode::DecRef, vec![v], vec![]));
         entry.terminator = Terminator::Return { values: vec![] };
 

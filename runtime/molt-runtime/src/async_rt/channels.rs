@@ -1809,9 +1809,7 @@ pub(crate) fn ws_wait_release(_py: &PyToken<'_>, future_ptr: *mut u8) {
         return;
     }
     let _header = unsafe { header_from_obj_ptr(future_ptr) };
-    let payload_bytes = unsafe {
-        crate::object::object_payload_size(future_ptr)
-    };
+    let payload_bytes = unsafe { crate::object::object_payload_size(future_ptr) };
     if payload_bytes < std::mem::size_of::<u64>() {
         return;
     }
@@ -1837,9 +1835,7 @@ pub(crate) fn ws_wait_release(_py: &PyToken<'_>, future_ptr: *mut u8) {
         return;
     }
     let header = unsafe { header_from_obj_ptr(future_ptr) };
-    let payload_bytes = unsafe {
-        crate::object::object_payload_size(future_ptr)
-    };
+    let payload_bytes = unsafe { crate::object::object_payload_size(future_ptr) };
     if payload_bytes < std::mem::size_of::<u64>() {
         return;
     }
@@ -2428,9 +2424,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
         // SAFETY: `obj_bits` must reference a live awaitable object.
         let _header = unsafe { header_from_obj_ptr(obj_ptr) };
         // SAFETY: header pointer came from a live object header.
-        let payload_bytes = unsafe {
-            crate::object::object_payload_size(obj_ptr)
-        };
+        let payload_bytes = unsafe { crate::object::object_payload_size(obj_ptr) };
         let payload_len = payload_bytes / std::mem::size_of::<u64>();
         if payload_len < 2 {
             return raise_exception::<i64>(_py, "TypeError", "ws wait payload too small");
@@ -2547,9 +2541,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
         // SAFETY: `obj_bits` must reference a live awaitable object.
         let header = unsafe { header_from_obj_ptr(obj_ptr) };
         // SAFETY: header pointer came from a live object header.
-        let payload_bytes = unsafe {
-            crate::object::object_payload_size(obj_ptr)
-        };
+        let payload_bytes = unsafe { crate::object::object_payload_size(obj_ptr) };
         let payload_len = payload_bytes / std::mem::size_of::<u64>();
         if payload_len < 2 {
             return raise_exception::<i64>(_py, "TypeError", "ws wait payload too small");
@@ -2721,7 +2713,9 @@ fn db_query_impl(
         hook(req_ptr, len, out, token_id)
     }
     #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-    { 7 }
+    {
+        7
+    }
 }
 
 fn db_exec_impl(
@@ -2761,7 +2755,9 @@ fn db_exec_impl(
         hook(req_ptr, len, out, token_id)
     }
     #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-    { 7 }
+    {
+        7
+    }
 }
 
 fn db_error(_py: &PyToken<'_>, op: &str, code: i32, cap: &str) -> u64 {

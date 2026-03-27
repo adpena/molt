@@ -6,21 +6,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::builtins::numbers::to_f64;
-use crate::object::maybe_ptr_from_bits;
+use super::functions::{
+    alloc_qs_dict, alloc_qsl_list, alloc_string_bits, alloc_string_tuple, iter_next_pair,
+};
 use crate::builtins::exceptions::exception_kind_bits;
-use super::functions::{alloc_qs_dict, alloc_qsl_list, alloc_string_bits, alloc_string_tuple, iter_next_pair};
+use crate::builtins::numbers::to_f64;
 use crate::builtins::platform::env_state_get;
+use crate::object::maybe_ptr_from_bits;
 use crate::{
-    TYPE_ID_MODULE, TYPE_ID_LIST, TYPE_ID_TUPLE,
-    alloc_bytes, alloc_dict_with_pairs, alloc_list_with_capacity, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes, bytes_like_slice,
-    call_callable0, call_callable1, call_callable2, call_class_init_with_args,
+    TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_TUPLE, alloc_bytes, alloc_dict_with_pairs,
+    alloc_list_with_capacity, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
+    bytes_like_slice, call_callable0, call_callable1, call_callable2, call_class_init_with_args,
     clear_exception, dec_ref_bits, exception_pending, inc_ref_bits, is_truthy, missing_bits,
-    molt_exception_last, molt_getattr_builtin, molt_is_callable, molt_iter,
-    molt_list_insert, obj_from_bits, object_type_id,
-    raise_exception, seq_vec_ref, string_obj_to_owned,
-    to_i64,
+    molt_exception_last, molt_getattr_builtin, molt_is_callable, molt_iter, molt_list_insert,
+    obj_from_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_i64,
 };
 
 struct MoltUrllibResponse {
@@ -7002,4 +7001,3 @@ pub extern "C" fn molt_http_client_response_message(handle_bits: u64) -> u64 {
         urllib_response_message_bits(_py, handle)
     })
 }
-

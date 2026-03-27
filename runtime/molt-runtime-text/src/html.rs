@@ -7,13 +7,12 @@
 //!   - html.entities: html5, codepoint2name, name2codepoint dictionaries
 
 use crate::bridge::{
-    alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple,
-    dec_ref_bits, inc_ref_bits, is_truthy, raise_exception, string_obj_to_owned,
-    to_i64, type_name,
+    alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple, dec_ref_bits, inc_ref_bits,
+    is_truthy, raise_exception, string_obj_to_owned, to_i64, type_name,
 };
 use molt_obj_model::MoltObject;
-use molt_runtime_core::prelude::*;
 use molt_runtime_core::obj_from_bits;
+use molt_runtime_core::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};

@@ -40,15 +40,12 @@ pub fn instrument_function(func_name: &str, num_counters: u32) -> Vec<String> {
 /// defaults to `"llvm-profdata"`.
 pub fn load_profile(profile_path: &str) -> HashMap<String, Vec<u64>> {
     // Resolve the llvm-profdata binary.
-    let profdata_bin = std::env::var("LLVM_PROFDATA")
-        .unwrap_or_else(|_| "llvm-profdata".to_string());
+    let profdata_bin =
+        std::env::var("LLVM_PROFDATA").unwrap_or_else(|_| "llvm-profdata".to_string());
 
     // If a .profraw file was given, merge it first.
     let profdata_path = if profile_path.ends_with(".profraw") {
-        let merged = format!(
-            "{}.profdata",
-            profile_path.trim_end_matches(".profraw")
-        );
+        let merged = format!("{}.profdata", profile_path.trim_end_matches(".profraw"));
         let status = std::process::Command::new(&profdata_bin)
             .args(["merge", "-o", &merged, profile_path])
             .status();

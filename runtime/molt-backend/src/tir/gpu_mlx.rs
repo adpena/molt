@@ -4,10 +4,10 @@
 #[cfg(all(target_os = "macos", feature = "mlx"))]
 use mlx_rs as mlx;
 
-#[cfg(all(target_os = "macos", feature = "mlx"))]
-use super::gpu_runtime::{CompiledKernel, GpuBufferHandle, GpuDevice, GpuError, GpuPlatform};
 #[cfg(not(all(target_os = "macos", feature = "mlx")))]
 use super::gpu_runtime::{CompiledKernel, GpuBufferHandle, GpuDevice, GpuError};
+#[cfg(all(target_os = "macos", feature = "mlx"))]
+use super::gpu_runtime::{CompiledKernel, GpuBufferHandle, GpuDevice, GpuError, GpuPlatform};
 
 /// MLX device for Apple Silicon unified memory compute.
 #[derive(Debug)]

@@ -1057,12 +1057,7 @@ fn protocol_collect_own_members(
     ignored: &[&[u8]],
 ) -> Result<(), u64> {
     // Collect names from __annotations__
-    let ann_bits = get_attr_default(
-        _py,
-        cls_bits,
-        b"__annotations__",
-        MoltObject::none().bits(),
-    );
+    let ann_bits = get_attr_default(_py, cls_bits, b"__annotations__", MoltObject::none().bits());
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
@@ -1106,8 +1101,7 @@ fn protocol_collect_own_members(
                     let skip = match &name_str {
                         Some(s) => {
                             let b = s.as_bytes();
-                            ignored.contains(&b)
-                                || (b.starts_with(b"_") && !b.starts_with(b"__"))
+                            ignored.contains(&b) || (b.starts_with(b"_") && !b.starts_with(b"__"))
                         }
                         None => false,
                     };

@@ -26,9 +26,7 @@ pub fn lower_type<'ctx>(ctx: &'ctx Context, ty: &TirType) -> BasicTypeEnum<'ctx>
         // NaN-boxed dynamic value: 64-bit integer holding tag + payload.
         TirType::DynBox => ctx.i64_type().into(),
         // Reference types are opaque pointers to heap objects.
-        TirType::Str | TirType::Bytes => {
-            ctx.ptr_type(inkwell::AddressSpace::default()).into()
-        }
+        TirType::Str | TirType::Bytes => ctx.ptr_type(inkwell::AddressSpace::default()).into(),
         TirType::List(_) | TirType::Dict(_, _) | TirType::Set(_) => {
             ctx.ptr_type(inkwell::AddressSpace::default()).into()
         }
@@ -37,9 +35,7 @@ pub fn lower_type<'ctx>(ctx: &'ctx Context, ty: &TirType) -> BasicTypeEnum<'ctx>
                 fields.iter().map(|f| lower_type(ctx, f)).collect();
             ctx.struct_type(&field_types, false).into()
         }
-        TirType::Ptr(_) | TirType::Func(_) => {
-            ctx.ptr_type(inkwell::AddressSpace::default()).into()
-        }
+        TirType::Ptr(_) | TirType::Func(_) => ctx.ptr_type(inkwell::AddressSpace::default()).into(),
         // Box(inner) is still a NaN-boxed i64 at the machine level;
         // the inner type is only used for optimization decisions.
         TirType::Box(_) => ctx.i64_type().into(),

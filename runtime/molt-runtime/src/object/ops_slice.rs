@@ -1,12 +1,10 @@
 //! Slice and dataclass operations.
 
 use crate::*;
-use std::collections::HashMap;
-use num_traits::{Signed, Zero};
-use num_bigint::BigInt;
 use molt_obj_model::MoltObject;
-
-
+use num_bigint::BigInt;
+use num_traits::{Signed, Zero};
+use std::collections::HashMap;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_slice_new(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {

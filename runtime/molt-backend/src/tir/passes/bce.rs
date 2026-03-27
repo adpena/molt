@@ -163,7 +163,9 @@ mod tests {
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops = ops;
-        entry.terminator = Terminator::Return { values: vec![result] };
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
 
         let stats = run(&mut func);
 
@@ -198,7 +200,9 @@ mod tests {
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops = ops;
-        entry.terminator = Terminator::Return { values: vec![result] };
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
 
         let stats = run(&mut func);
         assert_eq!(stats.values_changed, 1);
@@ -207,10 +211,7 @@ mod tests {
             .iter()
             .find(|o| o.opcode == OpCode::Index)
             .unwrap();
-        assert_eq!(
-            index_op.attrs.get("bce_safe"),
-            Some(&AttrValue::Bool(true))
-        );
+        assert_eq!(index_op.attrs.get("bce_safe"), Some(&AttrValue::Bool(true)));
     }
 
     // ------------------------------------------------------------------
@@ -231,10 +232,15 @@ mod tests {
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops = ops;
-        entry.terminator = Terminator::Return { values: vec![result] };
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
 
         let stats = run(&mut func);
-        assert_eq!(stats.values_changed, 0, "Negative constant must not be marked bce_safe");
+        assert_eq!(
+            stats.values_changed, 0,
+            "Negative constant must not be marked bce_safe"
+        );
         let index_op = func.blocks[&func.entry_block]
             .ops
             .iter()
@@ -264,7 +270,9 @@ mod tests {
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops = ops;
-        entry.terminator = Terminator::Return { values: vec![result] };
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
 
         let stats = run(&mut func);
         assert_eq!(stats.values_changed, 0);
@@ -294,9 +302,9 @@ mod tests {
     fn mixed_indices_only_safe_ones_marked() {
         let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::None);
         let container = func.fresh_value();
-        let const_idx = func.fresh_value();   // ConstInt(5) → safe
-        let neg_idx = func.fresh_value();     // ConstInt(-2) → unsafe
-        let param_idx = ValueId(0);           // parameter → unsafe
+        let const_idx = func.fresh_value(); // ConstInt(5) → safe
+        let neg_idx = func.fresh_value(); // ConstInt(-2) → unsafe
+        let param_idx = ValueId(0); // parameter → unsafe
 
         let r0 = func.fresh_value();
         let r1 = func.fresh_value();
@@ -316,10 +324,15 @@ mod tests {
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops = ops;
-        entry.terminator = Terminator::Return { values: vec![r0, r1, r2] };
+        entry.terminator = Terminator::Return {
+            values: vec![r0, r1, r2],
+        };
 
         let stats = run(&mut func);
-        assert_eq!(stats.values_changed, 1, "Only one Index should be marked bce_safe");
+        assert_eq!(
+            stats.values_changed, 1,
+            "Only one Index should be marked bce_safe"
+        );
 
         let index_ops: Vec<_> = func.blocks[&func.entry_block]
             .ops

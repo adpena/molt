@@ -85,10 +85,7 @@ pub unsafe extern "C" fn PyNumber_Add(o1: *mut PyObject, o2: *mut PyObject) -> *
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyNumber_Subtract(
-    o1: *mut PyObject,
-    o2: *mut PyObject,
-) -> *mut PyObject {
+pub unsafe extern "C" fn PyNumber_Subtract(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
     let a = match resolve_bits(o1) {
         Some(b) => b,
         None => return ptr::null_mut(),
@@ -111,10 +108,7 @@ pub unsafe extern "C" fn PyNumber_Subtract(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyNumber_Multiply(
-    o1: *mut PyObject,
-    o2: *mut PyObject,
-) -> *mut PyObject {
+pub unsafe extern "C" fn PyNumber_Multiply(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
     let a = match resolve_bits(o1) {
         Some(b) => b,
         None => return ptr::null_mut(),
@@ -218,10 +212,7 @@ pub unsafe extern "C" fn PyNumber_FloorDivide(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyNumber_Remainder(
-    o1: *mut PyObject,
-    o2: *mut PyObject,
-) -> *mut PyObject {
+pub unsafe extern "C" fn PyNumber_Remainder(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
     let a = match resolve_bits(o1) {
         Some(b) => b,
         None => return ptr::null_mut(),
@@ -395,10 +386,7 @@ pub unsafe extern "C" fn PyNumber_Invert(o: *mut PyObject) -> *mut PyObject {
 // ─── Bitwise operations ──────────────────────────────────────────────────
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyNumber_Lshift(
-    o1: *mut PyObject,
-    o2: *mut PyObject,
-) -> *mut PyObject {
+pub unsafe extern "C" fn PyNumber_Lshift(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
     let a = resolve_bits(o1).and_then(as_i64);
     let b = resolve_bits(o2).and_then(as_i64);
     match (a, b) {
@@ -420,10 +408,7 @@ pub unsafe extern "C" fn PyNumber_Lshift(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyNumber_Rshift(
-    o1: *mut PyObject,
-    o2: *mut PyObject,
-) -> *mut PyObject {
+pub unsafe extern "C" fn PyNumber_Rshift(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
     let a = resolve_bits(o1).and_then(as_i64);
     let b = resolve_bits(o2).and_then(as_i64);
     match (a, b) {
@@ -553,10 +538,7 @@ pub unsafe extern "C" fn PyNumber_Index(o: *mut PyObject) -> *mut PyObject {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyNumber_AsSsize_t(
-    o: *mut PyObject,
-    _exc: *mut PyObject,
-) -> Py_ssize_t {
+pub unsafe extern "C" fn PyNumber_AsSsize_t(o: *mut PyObject, _exc: *mut PyObject) -> Py_ssize_t {
     let bits = match resolve_bits(o) {
         Some(b) => b,
         None => return -1,
@@ -642,10 +624,7 @@ pub unsafe extern "C" fn PyNumber_InPlaceAnd(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyNumber_InPlaceOr(
-    o1: *mut PyObject,
-    o2: *mut PyObject,
-) -> *mut PyObject {
+pub unsafe extern "C" fn PyNumber_InPlaceOr(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
     unsafe { PyNumber_Or(o1, o2) }
 }
 
@@ -658,10 +637,7 @@ pub unsafe extern "C" fn PyNumber_InPlaceXor(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyNumber_Divmod(
-    o1: *mut PyObject,
-    o2: *mut PyObject,
-) -> *mut PyObject {
+pub unsafe extern "C" fn PyNumber_Divmod(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
     let quotient = unsafe { PyNumber_FloorDivide(o1, o2) };
     let remainder = unsafe { PyNumber_Remainder(o1, o2) };
     if quotient.is_null() || remainder.is_null() {

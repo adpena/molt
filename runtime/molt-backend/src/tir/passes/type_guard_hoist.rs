@@ -135,19 +135,11 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     let mut loop_headers: HashMap<BlockId, LoopInfo> = HashMap::new();
 
     for (&bid, preds) in &pred_map {
-        let back_preds: Vec<BlockId> = preds
-            .iter()
-            .copied()
-            .filter(|p| p.0 >= bid.0)
-            .collect();
+        let back_preds: Vec<BlockId> = preds.iter().copied().filter(|p| p.0 >= bid.0).collect();
         if back_preds.is_empty() {
             continue; // not a loop header
         }
-        let non_back_preds: Vec<BlockId> = preds
-            .iter()
-            .copied()
-            .filter(|p| p.0 < bid.0)
-            .collect();
+        let non_back_preds: Vec<BlockId> = preds.iter().copied().filter(|p| p.0 < bid.0).collect();
         // Unique preheader = exactly one non-back predecessor.
         let preheader = if non_back_preds.len() == 1 {
             Some(non_back_preds[0])
@@ -279,7 +271,10 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     let mut inserts: HashMap<BlockId, Vec<TirOp>> = HashMap::new();
 
     for work in hoist_list {
-        removals.entry(work.source_block).or_default().push(work.source_idx);
+        removals
+            .entry(work.source_block)
+            .or_default()
+            .push(work.source_idx);
         inserts.entry(work.preheader).or_default().push(work.op);
     }
 
@@ -315,9 +310,9 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tir::blocks::{TirBlock, Terminator};
+    use crate::tir::blocks::{Terminator, TirBlock};
     use crate::tir::function::TirFunction;
-    use crate::tir::ops::{AttrValue, AttrDict, Dialect, OpCode, TirOp};
+    use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
     use crate::tir::values::ValueId;
 
@@ -362,7 +357,7 @@ mod tests {
         let ok = func.fresh_value();
 
         let loop_header_id = func.fresh_block(); // BlockId(1)
-        let loop_body_id = func.fresh_block();   // BlockId(2)
+        let loop_body_id = func.fresh_block(); // BlockId(2)
 
         // Entry (bb0): define x, branch to loop header
         {
@@ -401,8 +396,14 @@ mod tests {
         let stats = run(&mut func);
 
         // The TypeGuard should have been moved.
-        assert!(stats.ops_removed >= 1, "expected at least one op removed from loop block");
-        assert!(stats.ops_added >= 1, "expected at least one op added to preheader");
+        assert!(
+            stats.ops_removed >= 1,
+            "expected at least one op removed from loop block"
+        );
+        assert!(
+            stats.ops_added >= 1,
+            "expected at least one op added to preheader"
+        );
 
         // TypeGuard should now be in the preheader (bb0), not in bb1.
         let entry_ops = &func.blocks[&func.entry_block].ops;
@@ -429,7 +430,7 @@ mod tests {
         let ok = func.fresh_value();
 
         let loop_header_id = func.fresh_block(); // BlockId(1)
-        let loop_body_id = func.fresh_block();   // BlockId(2)
+        let loop_body_id = func.fresh_block(); // BlockId(2)
 
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -469,7 +470,10 @@ mod tests {
         let stats = run(&mut func);
 
         // TypeGuard on %y (defined in loop body) must NOT be hoisted.
-        assert_eq!(stats.ops_removed, 0, "should not hoist TypeGuard on loop-local value");
+        assert_eq!(
+            stats.ops_removed, 0,
+            "should not hoist TypeGuard on loop-local value"
+        );
         let body_ops = &func.blocks[&loop_body_id].ops;
         assert!(
             body_ops.iter().any(|op| op.opcode == OpCode::TypeGuard),
@@ -512,9 +516,11 @@ mod tests {
         assert_eq!(stats.ops_removed, 0);
         assert_eq!(stats.ops_added, 0);
         // TypeGuard is still in the entry block
-        assert!(func.blocks[&func.entry_block]
-            .ops
-            .iter()
-            .any(|op| op.opcode == OpCode::TypeGuard));
+        assert!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::TypeGuard)
+        );
     }
 }

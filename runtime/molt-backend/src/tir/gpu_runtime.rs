@@ -13,8 +13,7 @@ pub trait GpuDevice {
     /// Copy data from host to GPU buffer.
     fn copy_to_device(&self, buffer: &GpuBufferHandle, data: &[u8]) -> Result<(), GpuError>;
     /// Copy data from GPU buffer to host.
-    fn copy_from_device(&self, buffer: &GpuBufferHandle, data: &mut [u8])
-        -> Result<(), GpuError>;
+    fn copy_from_device(&self, buffer: &GpuBufferHandle, data: &mut [u8]) -> Result<(), GpuError>;
     /// Launch a compiled kernel.
     fn launch_kernel(
         &self,
@@ -184,11 +183,7 @@ mod tests {
 
     #[test]
     fn compiled_kernel_construction() {
-        let kernel = CompiledKernel::new(
-            "matmul".into(),
-            GpuPlatform::Metal,
-            vec![0xDE, 0xAD],
-        );
+        let kernel = CompiledKernel::new("matmul".into(), GpuPlatform::Metal, vec![0xDE, 0xAD]);
         assert_eq!(kernel.name, "matmul");
         assert_eq!(kernel.platform, GpuPlatform::Metal);
     }

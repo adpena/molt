@@ -109,7 +109,9 @@ fn test_object_typecheck_mismatched_type() {
 fn test_object_typecheck_null_args() {
     init();
     assert_eq!(
-        unsafe { molt_cpython_abi::api::typeobj::PyObject_TypeCheck(ptr::null_mut(), ptr::null_mut()) },
+        unsafe {
+            molt_cpython_abi::api::typeobj::PyObject_TypeCheck(ptr::null_mut(), ptr::null_mut())
+        },
         0
     );
 }
@@ -122,7 +124,9 @@ fn test_object_typecheck_null_args() {
 fn test_isinstance_null_returns_zero() {
     init();
     assert_eq!(
-        unsafe { molt_cpython_abi::api::typeobj::PyObject_IsInstance(ptr::null_mut(), ptr::null_mut()) },
+        unsafe {
+            molt_cpython_abi::api::typeobj::PyObject_IsInstance(ptr::null_mut(), ptr::null_mut())
+        },
         0
     );
 }
@@ -226,7 +230,11 @@ fn test_richcompare_null_is_safe() {
     init();
     // v=NULL should not crash
     let result = unsafe {
-        molt_cpython_abi::api::typeobj::PyObject_RichCompare(ptr::null_mut(), ptr::null_mut(), PY_EQ)
+        molt_cpython_abi::api::typeobj::PyObject_RichCompare(
+            ptr::null_mut(),
+            ptr::null_mut(),
+            PY_EQ,
+        )
     };
     // Returns NotImplemented sentinel
     assert!(std::ptr::eq(result, unsafe {

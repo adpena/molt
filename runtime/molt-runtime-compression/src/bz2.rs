@@ -1,8 +1,8 @@
-use molt_runtime_core::prelude::*;
 use crate::bridge::*;
-use bzip2::Compression as BzCompression;
 use bzip2::read::BzDecoder;
 use bzip2::write::BzEncoder;
+use bzip2::Compression as BzCompression;
+use molt_runtime_core::prelude::*;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};
 

@@ -29,21 +29,12 @@ unsafe extern "C" {
         ctx_len: usize,
     ) -> u64;
 
-    fn __molt_path_raise_os_error_errno(
-        errno: i64,
-        ctx_ptr: *const u8,
-        ctx_len: usize,
-    ) -> u64;
+    fn __molt_path_raise_os_error_errno(errno: i64, ctx_ptr: *const u8, ctx_len: usize) -> u64;
 }
 
 pub fn raise_exception<T: ExceptionSentinel>(_py: &CoreGilToken, type_name: &str, msg: &str) -> T {
     let bits = unsafe {
-        __molt_path_raise_exception(
-            type_name.as_ptr(),
-            type_name.len(),
-            msg.as_ptr(),
-            msg.len(),
-        )
+        __molt_path_raise_exception(type_name.as_ptr(), type_name.len(), msg.as_ptr(), msg.len())
     };
     T::from_bits(bits)
 }
@@ -52,29 +43,21 @@ pub fn exception_pending(_py: &CoreGilToken) -> bool {
     unsafe { __molt_path_exception_pending() != 0 }
 }
 
-pub fn raise_os_error<T: ExceptionSentinel>(_py: &CoreGilToken, err: std::io::Error, ctx: &str) -> T {
+pub fn raise_os_error<T: ExceptionSentinel>(
+    _py: &CoreGilToken,
+    err: std::io::Error,
+    ctx: &str,
+) -> T {
     let kind = err.kind() as u32;
     let msg = err.to_string();
     let bits = unsafe {
-        __molt_path_raise_os_error(
-            kind,
-            msg.as_ptr(),
-            msg.len(),
-            ctx.as_ptr(),
-            ctx.len(),
-        )
+        __molt_path_raise_os_error(kind, msg.as_ptr(), msg.len(), ctx.as_ptr(), ctx.len())
     };
     T::from_bits(bits)
 }
 
 pub fn raise_os_error_errno<T: ExceptionSentinel>(_py: &CoreGilToken, errno: i64, ctx: &str) -> T {
-    let bits = unsafe {
-        __molt_path_raise_os_error_errno(
-            errno,
-            ctx.as_ptr(),
-            ctx.len(),
-        )
-    };
+    let bits = unsafe { __molt_path_raise_os_error_errno(errno, ctx.as_ptr(), ctx.len()) };
     T::from_bits(bits)
 }
 
@@ -284,17 +267,9 @@ pub fn molt_object_hash(bits: u64) -> u64 {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_path_path_from_bits(
-        bits: u64,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
+    fn __molt_path_path_from_bits(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
 
-    fn __molt_path_type_name(
-        bits: u64,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
+    fn __molt_path_type_name(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
 }
 
 pub fn path_from_bits(_py: &CoreGilToken, bits: u64) -> Result<std::path::PathBuf, String> {
@@ -309,8 +284,9 @@ pub fn path_from_bits(_py: &CoreGilToken, bits: u64) -> Result<std::path::PathBu
     } else {
         // Error message is in the returned buffer
         if !out_ptr.is_null() && out_len > 0 {
-            let boxed =
-                unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+            let boxed = unsafe {
+                Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len))
+            };
             Err(String::from_utf8_lossy(&boxed).into_owned())
         } else {
             Err("path_from_bits failed".to_string())

@@ -5,19 +5,19 @@
 //! This backend targets maximum runtime performance at the cost of
 //! slower compilation. Use Cranelift backend for development iteration.
 
-pub mod types;
-pub mod runtime_imports;
 pub mod lowering;
 pub mod pgo;
+pub mod runtime_imports;
+pub mod types;
 
+#[cfg(feature = "llvm")]
+use inkwell::OptimizationLevel;
+#[cfg(feature = "llvm")]
+use inkwell::builder::Builder;
 #[cfg(feature = "llvm")]
 use inkwell::context::Context;
 #[cfg(feature = "llvm")]
 use inkwell::module::Module;
-#[cfg(feature = "llvm")]
-use inkwell::builder::Builder;
-#[cfg(feature = "llvm")]
-use inkwell::OptimizationLevel;
 #[cfg(feature = "llvm")]
 use inkwell::targets::TargetMachine;
 
@@ -36,7 +36,11 @@ impl<'ctx> LlvmBackend<'ctx> {
         // Set target triple for the host
         let triple = inkwell::targets::TargetMachine::get_default_triple();
         module.set_triple(&triple);
-        Self { context, module, builder }
+        Self {
+            context,
+            module,
+            builder,
+        }
     }
 
     /// Get the compiled LLVM IR as a string (for debugging).
@@ -69,11 +73,33 @@ pub enum LtoMode {
 
 #[cfg(feature = "llvm")]
 impl<'ctx> LlvmBackend<'ctx> {
-    /// Run LLVM optimization passes on the module using the new pass manager.
+    /// Run the FULL LLVM O2/O3 optimization pipeline on the module.
+    ///
+    /// Before running the pipeline, all user-defined functions are marked
+    /// with `dllexport` linkage so GlobalDCE/Internalize cannot remove
+    /// them.  After optimization, linkage is restored to `External`.
+    /// This gives us 100% of LLVM's optimization power (interprocedural
+    /// inlining, GlobalDCE of unused helpers, SCCP, loop vectorization)
+    /// while preserving all entry points the linker needs.
     pub fn optimize(&self, opt_level: MoltOptLevel) {
+        use inkwell::module::Linkage;
         use inkwell::passes::PassBuilderOptions;
 
         let target_machine = self.create_target_machine(&opt_level);
+
+        // Mark all externally-visible functions as dllexport so the
+        // Internalize pass treats them as API and doesn't remove them.
+        let mut preserved: Vec<(String, Linkage)> = Vec::new();
+        let mut func = self.module.get_first_function();
+        while let Some(f) = func {
+            let linkage = f.get_linkage();
+            if linkage == Linkage::External && f.count_basic_blocks() > 0 {
+                preserved.push((f.get_name().to_str().unwrap_or("").to_string(), linkage));
+                f.set_linkage(Linkage::DLLExport);
+            }
+            func = f.get_next_function();
+        }
+
         let passes = match opt_level {
             MoltOptLevel::None => "default<O0>",
             MoltOptLevel::Speed => "default<O2>",
@@ -81,16 +107,21 @@ impl<'ctx> LlvmBackend<'ctx> {
         };
 
         let options = PassBuilderOptions::create();
-        self.module
-            .run_passes(passes, &target_machine, options)
-            .expect("LLVM pass pipeline failed");
+        if let Err(e) = self.module.run_passes(passes, &target_machine, options) {
+            eprintln!("WARNING: LLVM optimization pipeline failed: {e}; continuing unoptimized");
+        }
+
+        // Restore original linkage after optimization.
+        for (name, linkage) in &preserved {
+            if let Some(f) = self.module.get_function(name) {
+                f.set_linkage(*linkage);
+            }
+        }
     }
 
     /// Create a native target machine for the host CPU at the given opt level.
     fn create_target_machine(&self, opt_level: &MoltOptLevel) -> TargetMachine {
-        use inkwell::targets::{
-            CodeModel, InitializationConfig, RelocMode, Target,
-        };
+        use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target};
 
         Target::initialize_native(&InitializationConfig::default())
             .expect("Failed to initialize native target");

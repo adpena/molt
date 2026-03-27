@@ -10,13 +10,12 @@
 //! nargs support: None (one), '?', '*', '+', N (integer), REMAINDER.
 
 use molt_obj_model::MoltObject;
-use molt_runtime_core::prelude::*;
 use molt_runtime_core::obj_from_bits;
+use molt_runtime_core::prelude::*;
 
 use crate::bridge::{
-    alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple,
-    dec_ref_bits, is_truthy, raise_exception, string_obj_to_owned, to_i64,
-    type_name, seq_vec_ref, ExceptionSentinel,
+    ExceptionSentinel, alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple, dec_ref_bits,
+    is_truthy, raise_exception, seq_vec_ref, string_obj_to_owned, to_i64, type_name,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;

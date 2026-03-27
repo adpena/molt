@@ -103,9 +103,7 @@ pub extern "C" fn molt_type_of(val_bits: u64) -> u64 {
 /// `molt_type_of` and mirrors CPython's `Py_TYPE()` semantics.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_type_of_borrowed(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        type_of_bits(_py, val_bits)
-    })
+    crate::with_gil_entry!(_py, { type_of_bits(_py, val_bits) })
 }
 
 #[unsafe(no_mangle)]
@@ -1740,7 +1738,7 @@ pub unsafe extern "C" fn molt_object_set_class(obj_ptr: *mut u8, class_bits: u64
         crate::with_gil_entry!(_py, {
             if obj_ptr.is_null() {
                 return MoltObject::none().bits();
-}
+            }
             let header = header_from_obj_ptr(obj_ptr);
             if crate::object::object_poll_fn(obj_ptr) != 0 {
                 return raise_exception::<_>(_py, "TypeError", "cannot set class on async object");
@@ -2614,7 +2612,10 @@ pub extern "C" fn molt_future_features() -> u64 {
         for feature in FUTURE_FEATURES {
             let name_ptr = alloc_string(_py, feature.name.as_bytes());
             if name_ptr.is_null() {
-                eprintln!("MOLT_WARN: molt_future_features: alloc_string failed for '{}'", feature.name);
+                eprintln!(
+                    "MOLT_WARN: molt_future_features: alloc_string failed for '{}'",
+                    feature.name
+                );
                 for bits in rows {
                     dec_ref_bits(_py, bits);
                 }
@@ -5570,10 +5571,7 @@ pub extern "C" fn molt_dataclasses_field_flags(fields_dict_bits: u64) -> u64 {
 /// `initvar_values_bits` is a tuple of the InitVar field values in declaration
 /// order.  If the instance has no `__post_init__` method, this is a no-op.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_post_init(
-    instance_bits: u64,
-    initvar_values_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_dataclasses_post_init(instance_bits: u64, initvar_values_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let missing = missing_bits(_py);
 
@@ -5602,8 +5600,7 @@ pub extern "C" fn molt_dataclasses_post_init(
             .as_ptr()
             .is_some_and(|ptr| unsafe {
                 let ty = object_type_id(ptr);
-                (ty == TYPE_ID_TUPLE || ty == TYPE_ID_LIST)
-                    && !seq_vec_ref(ptr).is_empty()
+                (ty == TYPE_ID_TUPLE || ty == TYPE_ID_LIST) && !seq_vec_ref(ptr).is_empty()
             });
 
         let result_bits = if has_args {
@@ -5691,10 +5688,7 @@ pub extern "C" fn molt_dataclasses_field_metadata(field_bits: u64) -> u64 {
 /// in a `types.MappingProxyType` if it isn't already one.  If `metadata_dict`
 /// is None or empty, sets an empty MappingProxy.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_set_field_metadata(
-    field_bits: u64,
-    metadata_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_dataclasses_set_field_metadata(field_bits: u64, metadata_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let Some(meta_name_bits) = attr_name_bits_from_bytes(_py, b"metadata") else {
             return MoltObject::none().bits();

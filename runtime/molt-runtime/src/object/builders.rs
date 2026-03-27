@@ -662,11 +662,14 @@ pub(crate) fn alloc_tuple(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
                 unsafe {
                     let header = header_from_obj_ptr(ptr);
                     (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL;
-                    (*header).ref_count.store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+                    (*header)
+                        .ref_count
+                        .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
                 }
                 // CAS: if another thread beat us, use theirs (single-threaded on WASM, but safe)
                 let _ = EMPTY_TUPLE_PTR.compare_exchange(
-                    0, ptr as u64,
+                    0,
+                    ptr as u64,
                     std::sync::atomic::Ordering::Relaxed,
                     std::sync::atomic::Ordering::Relaxed,
                 );
@@ -993,8 +996,8 @@ static EMPTY_STRING_PTR: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 /// objects stored here are marked `HEADER_FLAG_IMMORTAL | HEADER_FLAG_INTERNED` so the
 /// GC never frees them, and repeated allocations of the same identifier return the same
 /// heap object (pointer equality).
-fn molt_string_intern_pool(
-) -> &'static std::sync::Mutex<std::collections::HashMap<Box<[u8]>, usize>> {
+fn molt_string_intern_pool()
+-> &'static std::sync::Mutex<std::collections::HashMap<Box<[u8]>, usize>> {
     static POOL: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<Box<[u8]>, usize>>,
     > = std::sync::OnceLock::new();
@@ -1012,10 +1015,13 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
                 unsafe {
                     let header = header_from_obj_ptr(ptr);
                     (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL;
-                    (*header).ref_count.store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+                    (*header)
+                        .ref_count
+                        .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
                 }
                 let _ = EMPTY_STRING_PTR.compare_exchange(
-                    0, ptr as u64,
+                    0,
+                    ptr as u64,
                     std::sync::atomic::Ordering::Relaxed,
                     std::sync::atomic::Ordering::Relaxed,
                 );
@@ -1033,8 +1039,8 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
     // Fast pre-check: all bytes must be ASCII and the string must look like an
     // identifier.  We use `is_identifier_like` from string_intern which is a
     // purely byte-level check with no allocation.
-    let is_ident =
-        bytes.is_ascii() && crate::object::string_intern::is_identifier_like(
+    let is_ident = bytes.is_ascii()
+        && crate::object::string_intern::is_identifier_like(
             // SAFETY: we just verified all bytes are ASCII which is a subset of UTF-8.
             unsafe { std::str::from_utf8_unchecked(bytes) },
         );
@@ -1056,9 +1062,11 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
             let data_ptr = ptr.add(std::mem::size_of::<usize>());
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
             let header = header_from_obj_ptr(ptr);
-            (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL
-                | crate::object::HEADER_FLAG_INTERNED;
-            (*header).ref_count.store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+            (*header).flags |=
+                crate::object::HEADER_FLAG_IMMORTAL | crate::object::HEADER_FLAG_INTERNED;
+            (*header)
+                .ref_count
+                .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
         }
         // Insert into pool; on concurrent miss (two threads race) we accept the
         // redundant allocation — the first writer wins and the second allocation
@@ -1111,10 +1119,13 @@ pub(crate) fn alloc_bytes(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
                 unsafe {
                     let header = header_from_obj_ptr(ptr);
                     (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL;
-                    (*header).ref_count.store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+                    (*header)
+                        .ref_count
+                        .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
                 }
                 let _ = EMPTY_BYTES_PTR.compare_exchange(
-                    0, ptr as u64,
+                    0,
+                    ptr as u64,
                     std::sync::atomic::Ordering::Relaxed,
                     std::sync::atomic::Ordering::Relaxed,
                 );

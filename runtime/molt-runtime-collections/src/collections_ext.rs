@@ -13,17 +13,15 @@
 // is the canonical ordered representation of a Molt dict object.
 
 use molt_obj_model::MoltObject;
-use molt_runtime_core::prelude::*;
 use molt_runtime_core::obj_from_bits;
+use molt_runtime_core::prelude::*;
 
 use crate::bridge::{
-    alloc_dict_with_pairs, alloc_list, alloc_string,
-    alloc_tuple, dec_ref_bits, exception_pending, inc_ref_bits,
-    is_truthy, object_type_id, raise_exception, seq_vec_ref,
-    string_obj_to_owned, to_i64, dict_get_in_place, dict_set_in_place,
-    dict_del_in_place, dict_order_clone, obj_eq, call_callable0,
-    raise_key_error_with_key, index_i64_with_overflow, type_name,
-    ExceptionSentinel,
+    ExceptionSentinel, alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple,
+    call_callable0, dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_order_clone,
+    dict_set_in_place, exception_pending, inc_ref_bits, index_i64_with_overflow, is_truthy, obj_eq,
+    object_type_id, raise_exception, raise_key_error_with_key, seq_vec_ref, string_obj_to_owned,
+    to_i64, type_name,
 };
 
 use std::collections::{HashMap, VecDeque};

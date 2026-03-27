@@ -14,8 +14,8 @@
 // The Python stdlib wrapper can call molt_enum_auto_value(len(existing_members))
 // to get the next value.
 
-use crate::*;
 use crate::object::builders::alloc_class_obj;
+use crate::*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Flag arithmetic helpers

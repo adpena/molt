@@ -205,10 +205,7 @@ mod tests {
             for_op.attrs.get("polyhedral_tileable"),
             Some(&AttrValue::Bool(true))
         );
-        assert_eq!(
-            for_op.attrs.get("tile_size"),
-            Some(&AttrValue::Int(32))
-        );
+        assert_eq!(for_op.attrs.get("tile_size"), Some(&AttrValue::Int(32)));
     }
 
     #[test]

@@ -19,10 +19,7 @@ pub fn plan_split(module: &TirModule) -> WasmSplitPlan {
     let mut user = Vec::new();
 
     for func in &module.functions {
-        if func.name.starts_with("__builtins__")
-            || func.name == "__main__"
-            || func.name == "main"
-        {
+        if func.name.starts_with("__builtins__") || func.name == "__main__" || func.name == "main" {
             core.push(func.name.clone());
         } else if func.name.starts_with("stdlib_") || func.name.contains("__stdlib__") {
             stdlib.push(func.name.clone());

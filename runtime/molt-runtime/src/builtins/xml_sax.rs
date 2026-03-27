@@ -4,9 +4,8 @@
 //! saxutils (escape, unescape, quoteattr).
 
 use crate::{
-    MoltObject, alloc_list, alloc_string, alloc_tuple,
-    obj_from_bits, raise_exception, string_obj_to_owned,
-    to_i64, int_bits_from_i64,
+    MoltObject, alloc_list, alloc_string, alloc_tuple, int_bits_from_i64, obj_from_bits,
+    raise_exception, string_obj_to_owned, to_i64,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -125,7 +124,11 @@ fn sax_parse(xml: &str) -> Result<Vec<SaxEvent>, String> {
     Ok(events)
 }
 
-fn sax_parse_content(data: &[u8], mut pos: usize, events: &mut Vec<SaxEvent>) -> Result<usize, String> {
+fn sax_parse_content(
+    data: &[u8],
+    mut pos: usize,
+    events: &mut Vec<SaxEvent>,
+) -> Result<usize, String> {
     while pos < data.len() {
         if data[pos] == b'<' {
             if pos + 1 < data.len() && data[pos + 1] == b'/' {
@@ -135,7 +138,11 @@ fn sax_parse_content(data: &[u8], mut pos: usize, events: &mut Vec<SaxEvent>) ->
                 pos = sax_skip_pi(data, pos, events)?;
                 continue;
             }
-            if pos + 3 < data.len() && data[pos + 1] == b'!' && data[pos + 2] == b'-' && data[pos + 3] == b'-' {
+            if pos + 3 < data.len()
+                && data[pos + 1] == b'!'
+                && data[pos + 2] == b'-'
+                && data[pos + 3] == b'-'
+            {
                 pos = sax_skip_comment(data, pos)?;
                 continue;
             }
@@ -159,7 +166,11 @@ fn sax_parse_content(data: &[u8], mut pos: usize, events: &mut Vec<SaxEvent>) ->
     Ok(pos)
 }
 
-fn sax_parse_element(data: &[u8], mut pos: usize, events: &mut Vec<SaxEvent>) -> Result<usize, String> {
+fn sax_parse_element(
+    data: &[u8],
+    mut pos: usize,
+    events: &mut Vec<SaxEvent>,
+) -> Result<usize, String> {
     pos += 1;
     let (name, new_pos) = parse_name(data, pos)?;
     pos = new_pos;
@@ -170,7 +181,8 @@ fn sax_parse_element(data: &[u8], mut pos: usize, events: &mut Vec<SaxEvent>) ->
         if pos >= data.len() {
             return Err("unexpected end of tag".to_string());
         }
-        if data[pos] == b'>' || (data[pos] == b'/' && pos + 1 < data.len() && data[pos + 1] == b'>') {
+        if data[pos] == b'>' || (data[pos] == b'/' && pos + 1 < data.len() && data[pos + 1] == b'>')
+        {
             break;
         }
         let (attr_name, new_pos) = parse_name(data, pos)?;
@@ -234,7 +246,9 @@ fn sax_skip_pi(data: &[u8], mut pos: usize, events: &mut Vec<SaxEvent>) -> Resul
 
 fn sax_skip_comment(data: &[u8], mut pos: usize) -> Result<usize, String> {
     pos += 4;
-    while pos + 2 < data.len() && !(data[pos] == b'-' && data[pos + 1] == b'-' && data[pos + 2] == b'>') {
+    while pos + 2 < data.len()
+        && !(data[pos] == b'-' && data[pos + 1] == b'-' && data[pos + 2] == b'>')
+    {
         pos += 1;
     }
     if pos + 2 < data.len() {
@@ -272,24 +286,19 @@ pub extern "C" fn molt_xml_sax_parsestring(xml_bits: u64) -> u64 {
         let xml = match string_obj_to_owned(obj_from_bits(xml_bits)) {
             Some(s) => s,
             None => {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "argument must be str or bytes",
-                );
+                return raise_exception::<u64>(_py, "TypeError", "argument must be str or bytes");
             }
         };
         match sax_parse(&xml) {
             Ok(events) => {
                 let id = next_handle_id();
                 SAX_PARSERS.with(|m| {
-                    m.borrow_mut().insert(id, SaxParserState { events, index: 0 });
+                    m.borrow_mut()
+                        .insert(id, SaxParserState { events, index: 0 });
                 });
                 int_bits_from_i64(_py, id)
             }
-            Err(msg) => {
-                raise_exception::<u64>(_py, "SAXParseException", &msg)
-            }
+            Err(msg) => raise_exception::<u64>(_py, "SAXParseException", &msg),
         }
     })
 }
@@ -312,12 +321,8 @@ pub extern "C" fn molt_xml_sax_next_event(handle_bits: u64) -> u64 {
             state.index += 1;
 
             match event {
-                SaxEvent::StartDocument => {
-                    mk_tuple(_py, &[mk_str(_py, "startDocument")])
-                }
-                SaxEvent::EndDocument => {
-                    mk_tuple(_py, &[mk_str(_py, "endDocument")])
-                }
+                SaxEvent::StartDocument => mk_tuple(_py, &[mk_str(_py, "startDocument")]),
+                SaxEvent::EndDocument => mk_tuple(_py, &[mk_str(_py, "endDocument")]),
                 SaxEvent::StartElement { name, attrs } => {
                     let name_bits = mk_str(_py, &name);
                     let mut attr_pairs = Vec::with_capacity(attrs.len());
@@ -333,9 +338,14 @@ pub extern "C" fn molt_xml_sax_next_event(handle_bits: u64) -> u64 {
                 SaxEvent::Characters { content } => {
                     mk_tuple(_py, &[mk_str(_py, "characters"), mk_str(_py, &content)])
                 }
-                SaxEvent::ProcessingInstruction { target, data } => {
-                    mk_tuple(_py, &[mk_str(_py, "processingInstruction"), mk_str(_py, &target), mk_str(_py, &data)])
-                }
+                SaxEvent::ProcessingInstruction { target, data } => mk_tuple(
+                    _py,
+                    &[
+                        mk_str(_py, "processingInstruction"),
+                        mk_str(_py, &target),
+                        mk_str(_py, &data),
+                    ],
+                ),
             }
         })
     })

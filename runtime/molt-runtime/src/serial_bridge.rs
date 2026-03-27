@@ -4,25 +4,19 @@
 //! `__molt_serial_get_vtable()`.  All bridge functions are private to this
 //! module — no individual `#[no_mangle]` C symbols are exported.
 
-use crate::*;
 use crate::builtins::classes::class_name_for_error as _class_name_for_error;
 use crate::builtins::containers::list_len as _list_len;
 use crate::builtins::numbers::{
-    bigint_bits as _bigint_bits,
-    bigint_from_f64_trunc as _bigint_from_f64_trunc,
-    bigint_to_inline as _bigint_to_inline,
-    index_bigint_from_obj as _index_bigint_from_obj,
-    index_i64_from_obj as _index_i64_from_obj,
-    to_bigint as _to_bigint,
-    to_f64 as _to_f64,
+    bigint_bits as _bigint_bits, bigint_from_f64_trunc as _bigint_from_f64_trunc,
+    bigint_to_inline as _bigint_to_inline, index_bigint_from_obj as _index_bigint_from_obj,
+    index_i64_from_obj as _index_i64_from_obj, to_bigint as _to_bigint, to_f64 as _to_f64,
 };
 use crate::builtins::type_ops::type_of_bits as _type_of_bits;
 use crate::object::ops::{
-    format_obj as _format_obj,
-    format_obj_str as _format_obj_str,
-    string_obj_to_owned as _string_obj_to_owned,
-    type_name as _type_name,
+    format_obj as _format_obj, format_obj_str as _format_obj_str,
+    string_obj_to_owned as _string_obj_to_owned, type_name as _type_name,
 };
+use crate::*;
 use num_bigint::{BigInt, Sign};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -37,16 +31,17 @@ extern "C" fn bridge_raise_exception(
     msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let type_name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len)) };
-        let msg = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
+        let type_name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
+        };
+        let msg =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
         raise_exception::<u64>(_py, type_name, msg)
     })
 }
 
 extern "C" fn bridge_exception_pending() -> i32 {
-    crate::with_gil_entry!(_py, {
-        if exception_pending(_py) { 1 } else { 0 }
-    })
+    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 // ---------------------------------------------------------------------------
@@ -110,11 +105,7 @@ extern "C" fn bridge_string_obj_to_owned(
     }
 }
 
-extern "C" fn bridge_type_name(
-    bits: u64,
-    out_ptr: *mut *const u8,
-    out_len: *mut usize,
-) -> i32 {
+extern "C" fn bridge_type_name(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(bits);
         let name = _type_name(_py, obj);
@@ -193,11 +184,19 @@ extern "C" fn bridge_bytes_like_slice_raw(
 }
 
 extern "C" fn bridge_memoryview_is_c_contiguous_view(ptr: *mut u8) -> i32 {
-    if unsafe { crate::object::memoryview::memoryview_is_c_contiguous_view(ptr) } { 1 } else { 0 }
+    if unsafe { crate::object::memoryview::memoryview_is_c_contiguous_view(ptr) } {
+        1
+    } else {
+        0
+    }
 }
 
 extern "C" fn bridge_memoryview_readonly(ptr: *mut u8) -> i32 {
-    if unsafe { memoryview_readonly(ptr) } { 1 } else { 0 }
+    if unsafe { memoryview_readonly(ptr) } {
+        1
+    } else {
+        0
+    }
 }
 
 extern "C" fn bridge_memoryview_nbytes(ptr: *mut u8) -> usize {
@@ -240,7 +239,9 @@ extern "C" fn bridge_to_i64(bits: u64, out: *mut i64) -> i32 {
     let obj = obj_from_bits(bits);
     match to_i64(obj) {
         Some(v) => {
-            unsafe { *out = v; }
+            unsafe {
+                *out = v;
+            }
             1
         }
         None => 0,
@@ -251,7 +252,9 @@ extern "C" fn bridge_to_f64(bits: u64, out: *mut f64) -> i32 {
     let obj = obj_from_bits(bits);
     match _to_f64(obj) {
         Some(v) => {
-            unsafe { *out = v; }
+            unsafe {
+                *out = v;
+            }
             1
         }
         None => 0,
@@ -288,9 +291,7 @@ extern "C" fn bridge_to_bigint(
 }
 
 extern "C" fn bridge_int_bits_from_i64(val: i64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        int_bits_from_i64(_py, val)
-    })
+    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, val) })
 }
 
 extern "C" fn bridge_int_bits_from_i128(val_lo: u64, val_hi: u64) -> u64 {
@@ -300,11 +301,7 @@ extern "C" fn bridge_int_bits_from_i128(val_lo: u64, val_hi: u64) -> u64 {
     })
 }
 
-extern "C" fn bridge_int_bits_from_bigint(
-    sign: i32,
-    data_ptr: *const u8,
-    data_len: usize,
-) -> u64 {
+extern "C" fn bridge_int_bits_from_bigint(sign: i32, data_ptr: *const u8, data_len: usize) -> u64 {
     crate::with_gil_entry!(_py, {
         let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         let sign = match sign {
@@ -372,11 +369,7 @@ extern "C" fn bridge_bigint_from_f64_trunc(
     1
 }
 
-extern "C" fn bridge_bigint_bits(
-    sign: i32,
-    data_ptr: *const u8,
-    data_len: usize,
-) -> u64 {
+extern "C" fn bridge_bigint_bits(sign: i32, data_ptr: *const u8, data_len: usize) -> u64 {
     crate::with_gil_entry!(_py, {
         let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         let sign = match sign {
@@ -389,11 +382,7 @@ extern "C" fn bridge_bigint_bits(
     })
 }
 
-extern "C" fn bridge_bigint_to_inline(
-    sign: i32,
-    data_ptr: *const u8,
-    data_len: usize,
-) -> u64 {
+extern "C" fn bridge_bigint_to_inline(sign: i32, data_ptr: *const u8, data_len: usize) -> u64 {
     let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
     let sign = match sign {
         -1 => Sign::Minus,
@@ -407,13 +396,10 @@ extern "C" fn bridge_bigint_to_inline(
     }
 }
 
-extern "C" fn bridge_index_i64_from_obj(
-    obj_bits: u64,
-    err_ptr: *const u8,
-    err_len: usize,
-) -> i64 {
+extern "C" fn bridge_index_i64_from_obj(obj_bits: u64, err_ptr: *const u8, err_len: usize) -> i64 {
     crate::with_gil_entry!(_py, {
-        let err = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
+        let err =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         _index_i64_from_obj(_py, obj_bits, err)
     })
 }
@@ -427,7 +413,8 @@ extern "C" fn bridge_index_bigint_from_obj(
     out_len: *mut usize,
 ) -> i32 {
     crate::with_gil_entry!(_py, {
-        let err = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
+        let err =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         match _index_bigint_from_obj(_py, obj_bits, err) {
             Some(value) => {
                 let (sign, bytes) = value.to_bytes_be();
@@ -456,9 +443,7 @@ extern "C" fn bridge_index_bigint_from_obj(
 // ---------------------------------------------------------------------------
 
 extern "C" fn bridge_call_callable0(call_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        unsafe { call_callable0(_py, call_bits) }
-    })
+    crate::with_gil_entry!(_py, { unsafe { call_callable0(_py, call_bits) } })
 }
 
 extern "C" fn bridge_call_callable2(call_bits: u64, arg0: u64, arg1: u64) -> u64 {
@@ -554,9 +539,7 @@ extern "C" fn bridge_class_name_for_error(
 }
 
 extern "C" fn bridge_type_of_bits(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        _type_of_bits(_py, val_bits)
-    })
+    crate::with_gil_entry!(_py, { _type_of_bits(_py, val_bits) })
 }
 
 extern "C" fn bridge_maybe_ptr_from_bits(bits: u64) -> *mut u8 {
@@ -572,11 +555,7 @@ extern "C" fn bridge_molt_is_callable(bits: u64) -> i32 {
     if obj.as_bool() == Some(true) { 1 } else { 0 }
 }
 
-extern "C" fn bridge_format_obj(
-    bits: u64,
-    out_ptr: *mut *const u8,
-    out_len: *mut usize,
-) -> i32 {
+extern "C" fn bridge_format_obj(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(bits);
         let s = _format_obj(_py, obj);
@@ -623,15 +602,13 @@ extern "C" fn bridge_bytearray_vec(ptr: *mut u8) -> *mut Vec<u8> {
 // Container helpers
 // ---------------------------------------------------------------------------
 
-extern "C" fn bridge_dict_get_in_place(
-    dict_ptr: *mut u8,
-    key_bits: u64,
-    out: *mut u64,
-) -> i32 {
+extern "C" fn bridge_dict_get_in_place(dict_ptr: *mut u8, key_bits: u64, out: *mut u64) -> i32 {
     crate::with_gil_entry!(_py, {
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
             Some(bits) => {
-                unsafe { *out = bits; }
+                unsafe {
+                    *out = bits;
+                }
                 1
             }
             None => 0,
@@ -639,11 +616,7 @@ extern "C" fn bridge_dict_get_in_place(
     })
 }
 
-extern "C" fn bridge_dict_set_in_place(
-    dict_ptr: *mut u8,
-    key_bits: u64,
-    val_bits: u64,
-) -> i32 {
+extern "C" fn bridge_dict_set_in_place(dict_ptr: *mut u8, key_bits: u64, val_bits: u64) -> i32 {
     crate::with_gil_entry!(_py, {
         unsafe { dict_set_in_place(_py, dict_ptr, key_bits, val_bits) };
         1
@@ -676,20 +649,22 @@ extern "C" fn bridge_molt_iter_next(iter_bits: u64, out: *mut u64) -> i32 {
                 0 // StopIteration or error
             } else {
                 // Actual None value — return it.
-                unsafe { *out = result; }
+                unsafe {
+                    *out = result;
+                }
                 1
             }
         })
     } else {
-        unsafe { *out = result; }
+        unsafe {
+            *out = result;
+        }
         1
     }
 }
 
 extern "C" fn bridge_raise_not_iterable(bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        raise_not_iterable::<u64>(_py, bits)
-    })
+    crate::with_gil_entry!(_py, { raise_not_iterable::<u64>(_py, bits) })
 }
 
 extern "C" fn bridge_molt_sorted_builtin(bits: u64) -> u64 {
@@ -765,7 +740,9 @@ extern "C" fn bridge_attr_name_bits_from_bytes(
         let name = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
         match crate::builtins::attr::attr_name_bits_from_bytes(_py, name) {
             Some(bits) => {
-                unsafe { *out = bits; }
+                unsafe {
+                    *out = bits;
+                }
                 1
             }
             None => 0,
@@ -785,9 +762,7 @@ extern "C" fn bridge_call_class_init_with_args(
 }
 
 extern "C" fn bridge_missing_bits() -> u64 {
-    crate::with_gil_entry!(_py, {
-        crate::builtins::methods::missing_bits(_py)
-    })
+    crate::with_gil_entry!(_py, { crate::builtins::methods::missing_bits(_py) })
 }
 
 extern "C" fn bridge_molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bits: u64) -> u64 {

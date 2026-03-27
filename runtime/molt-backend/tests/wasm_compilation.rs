@@ -159,7 +159,10 @@ fn empty_module_exports_memory() {
 fn single_function_produces_code_section() {
     let wasm = compile_single_function(vec![op("ret_void")], &[]);
     let code_count = count_code_sections(&wasm);
-    assert!(code_count > 0, "should have at least one code section entry");
+    assert!(
+        code_count > 0,
+        "should have at least one code section entry"
+    );
 }
 
 // -----------------------------------------------------------------------

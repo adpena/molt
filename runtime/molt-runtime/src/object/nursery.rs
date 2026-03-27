@@ -9,8 +9,8 @@
 const NURSERY_SIZE: usize = 64 * 1024; // 64KB
 
 pub struct Nursery {
-    data: Vec<u8>,  // backing storage (heap-allocated, reusable)
-    cursor: usize,  // next allocation offset
+    data: Vec<u8>, // backing storage (heap-allocated, reusable)
+    cursor: usize, // next allocation offset
 }
 
 impl Nursery {
@@ -38,7 +38,10 @@ impl Nursery {
     /// Debug-asserts that `align` is a power of two and `size > 0`.
     #[inline(always)]
     pub fn alloc(&mut self, size: usize, align: usize) -> Option<*mut u8> {
-        debug_assert!(align.is_power_of_two(), "alignment must be a power of two, got {align}");
+        debug_assert!(
+            align.is_power_of_two(),
+            "alignment must be a power of two, got {align}"
+        );
         debug_assert!(size > 0, "zero-size allocations are not supported");
         // Guard against align=0 in release builds (would cause !(align-1) = !usize::MAX = 0,
         // making aligned = 0 regardless of cursor — incorrect but not UB).
@@ -237,10 +240,7 @@ mod tests {
 
         // Clean up promoted allocation
         unsafe {
-            std::alloc::dealloc(
-                result,
-                std::alloc::Layout::from_size_align(16, 8).unwrap(),
-            );
+            std::alloc::dealloc(result, std::alloc::Layout::from_size_align(16, 8).unwrap());
         }
     }
 }

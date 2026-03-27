@@ -1,6 +1,6 @@
+use crate::bridge::*;
 use crate::hashlib::{HashHandle, build_hash_handle};
 use molt_runtime_core::prelude::*;
-use crate::bridge::*;
 
 #[derive(Clone)]
 pub(crate) struct HmacHandle {

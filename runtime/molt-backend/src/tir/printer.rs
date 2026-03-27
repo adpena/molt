@@ -186,11 +186,7 @@ pub fn print_type(ty: &TirType) -> String {
         TirType::Dict(k, v) => format!("dict<{}, {}>", print_type(k), print_type(v)),
         TirType::Set(inner) => format!("set<{}>", print_type(inner)),
         TirType::Tuple(elems) => {
-            let inner = elems
-                .iter()
-                .map(print_type)
-                .collect::<Vec<_>>()
-                .join(", ");
+            let inner = elems.iter().map(print_type).collect::<Vec<_>>().join(", ");
             format!("tuple<{}>", inner)
         }
         TirType::Box(inner) => format!("box<{}>", print_type(inner)),
@@ -445,11 +441,8 @@ mod tests {
         //     %2 = molt.add %0, %1
         //     return %2
         // }
-        let mut func = TirFunction::new(
-            "add".into(),
-            vec![TirType::I64, TirType::I64],
-            TirType::I64,
-        );
+        let mut func =
+            TirFunction::new("add".into(), vec![TirType::I64, TirType::I64], TirType::I64);
 
         let result = ValueId(func.next_value);
         func.next_value += 1;

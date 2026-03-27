@@ -8,7 +8,7 @@ use crate::*;
 use molt_obj_model::MoltObject;
 use std::cmp::Ordering;
 
-use super::ops::{compare_objects, CompareOutcome};
+use super::ops::{CompareOutcome, compare_objects};
 
 fn heapq_lt(_py: &PyToken<'_>, a_bits: u64, b_bits: u64) -> Option<bool> {
     let res_bits = super::ops_compare::molt_lt(a_bits, b_bits);

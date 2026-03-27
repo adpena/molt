@@ -155,10 +155,7 @@ mod tests {
             ops[0].attrs.get("callee"),
             Some(&AttrValue::Str("fallback_fn".into()))
         );
-        assert_eq!(
-            ops[0].attrs.get("deopt"),
-            Some(&AttrValue::Bool(true))
-        );
+        assert_eq!(ops[0].attrs.get("deopt"), Some(&AttrValue::Bool(true)));
         assert_eq!(ops[0].operands.len(), 2);
     }
 }

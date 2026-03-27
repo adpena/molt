@@ -102,9 +102,7 @@ fn const_str_creates_data_segment_with_string_bytes() {
     });
 
     let segments = extract_data_segments(&wasm);
-    let has_hello = segments
-        .iter()
-        .any(|seg| seg.data == b"hello");
+    let has_hello = segments.iter().any(|seg| seg.data == b"hello");
     assert!(
         has_hello,
         "should have a data segment containing 'hello' bytes"

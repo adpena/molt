@@ -40,8 +40,16 @@ pub extern "C" fn molt_bz2_decompressor_new() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_bz2_decompressor_decompress(handle_bits: u64, data_bits: u64, max_length_bits: u64) -> u64 {
-    molt_runtime_compression::bz2::molt_bz2_decompressor_decompress(handle_bits, data_bits, max_length_bits)
+pub extern "C" fn molt_bz2_decompressor_decompress(
+    handle_bits: u64,
+    data_bits: u64,
+    max_length_bits: u64,
+) -> u64 {
+    molt_runtime_compression::bz2::molt_bz2_decompressor_decompress(
+        handle_bits,
+        data_bits,
+        max_length_bits,
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -65,7 +73,11 @@ pub extern "C" fn molt_bz2_decompressor_unused_data(handle_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_bz2_file_open(filename_bits: u64, mode_bits: u64, compresslevel_bits: u64) -> u64 {
+pub extern "C" fn molt_bz2_file_open(
+    filename_bits: u64,
+    mode_bits: u64,
+    compresslevel_bits: u64,
+) -> u64 {
     molt_runtime_compression::bz2::molt_bz2_file_open(filename_bits, mode_bits, compresslevel_bits)
 }
 

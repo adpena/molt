@@ -4,10 +4,12 @@
 //! internal `pub(crate)` function.  The crypto crate declares matching
 //! `extern "C"` imports and they are resolved at link time.
 
-use crate::*;
 use crate::builtins::containers::dict_len as _dict_len;
-use crate::builtins::numbers::{index_bigint_from_obj as _index_bigint_from_obj, index_i64_from_obj as _index_i64_from_obj};
+use crate::builtins::numbers::{
+    index_bigint_from_obj as _index_bigint_from_obj, index_i64_from_obj as _index_i64_from_obj,
+};
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
+use crate::*;
 use num_bigint::{BigInt, Sign};
 
 // ---------------------------------------------------------------------------
@@ -22,17 +24,18 @@ pub extern "C" fn __molt_crypto_raise_exception(
     msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let type_name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len)) };
-        let msg = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
+        let type_name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
+        };
+        let msg =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
         raise_exception::<u64>(_py, type_name, msg)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_crypto_exception_pending() -> i32 {
-    crate::with_gil_entry!(_py, {
-        if exception_pending(_py) { 1 } else { 0 }
-    })
+    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 // ---------------------------------------------------------------------------
@@ -182,7 +185,9 @@ pub extern "C" fn __molt_crypto_to_i64(bits: u64, out: *mut i64) -> i32 {
     let obj = obj_from_bits(bits);
     match to_i64(obj) {
         Some(v) => {
-            unsafe { *out = v; }
+            unsafe {
+                *out = v;
+            }
             1
         }
         None => 0,
@@ -191,9 +196,7 @@ pub extern "C" fn __molt_crypto_to_i64(bits: u64, out: *mut i64) -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_crypto_int_bits_from_i64(val: i64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        int_bits_from_i64(_py, val)
-    })
+    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, val) })
 }
 
 #[unsafe(no_mangle)]
@@ -221,7 +224,8 @@ pub extern "C" fn __molt_crypto_index_i64_from_obj(
     err_len: usize,
 ) -> i64 {
     crate::with_gil_entry!(_py, {
-        let err = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
+        let err =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         _index_i64_from_obj(_py, obj_bits, err)
     })
 }
@@ -236,7 +240,8 @@ pub extern "C" fn __molt_crypto_index_bigint_from_obj(
     out_len: *mut usize,
 ) -> i32 {
     crate::with_gil_entry!(_py, {
-        let err = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
+        let err =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         match _index_bigint_from_obj(_py, obj_bits, err) {
             Some(value) => {
                 let (sign, bytes) = value.to_bytes_be();
@@ -278,7 +283,9 @@ pub extern "C" fn __molt_crypto_dict_get_in_place(
     crate::with_gil_entry!(_py, {
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
             Some(bits) => {
-                unsafe { *out = bits; }
+                unsafe {
+                    *out = bits;
+                }
                 1
             }
             None => 0,

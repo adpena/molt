@@ -24,11 +24,15 @@ pub extern "C" fn molt_bridge_to_i64(obj_bits: u64, ok: *mut bool) -> i64 {
     let obj = obj_from_bits(obj_bits);
     match crate::builtins::numbers::to_i64(obj) {
         Some(v) => {
-            unsafe { *ok = true; }
+            unsafe {
+                *ok = true;
+            }
             v
         }
         None => {
-            unsafe { *ok = false; }
+            unsafe {
+                *ok = false;
+            }
             0
         }
     }
@@ -41,7 +45,8 @@ pub extern "C" fn molt_bridge_index_i64_from_obj(
     err_len: usize,
 ) -> i64 {
     crate::with_gil_entry!(_py, {
-        let err = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
+        let err =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         crate::builtins::numbers::index_i64_from_obj(_py, obj_bits, err)
     })
 }
@@ -56,17 +61,18 @@ pub extern "C" fn molt_bridge_raise_exception(
     msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let kind = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(kind_ptr, kind_len)) };
-        let msg = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
+        let kind = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(kind_ptr, kind_len))
+        };
+        let msg =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
         raise_exception::<u64>(_py, kind, msg)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bridge_exception_pending() -> bool {
-    crate::with_gil_entry!(_py, {
-        exception_pending(_py)
-    })
+    crate::with_gil_entry!(_py, { exception_pending(_py) })
 }
 
 // -- Bytes / memory -----------------------------------------------------------
@@ -83,11 +89,15 @@ pub extern "C" fn molt_bridge_alloc_bytes(data_ptr: *const u8, data_len: usize) 
 pub extern "C" fn molt_bridge_bytes_like_slice(ptr: *mut u8, out_len: *mut usize) -> *const u8 {
     match unsafe { bytes_like_slice(ptr) } {
         Some(slice) => {
-            unsafe { *out_len = slice.len(); }
+            unsafe {
+                *out_len = slice.len();
+            }
             slice.as_ptr()
         }
         None => {
-            unsafe { *out_len = 0; }
+            unsafe {
+                *out_len = 0;
+            }
             std::ptr::null()
         }
     }
@@ -111,14 +121,18 @@ pub extern "C" fn molt_bridge_string_obj_to_owned(obj_bits: u64, out_len: *mut u
     match string_obj_to_owned(obj) {
         Some(s) => {
             let len = s.len();
-            unsafe { *out_len = len; }
+            unsafe {
+                *out_len = len;
+            }
             let mut v = s.into_bytes();
             let ptr = v.as_mut_ptr();
             std::mem::forget(v);
             ptr
         }
         None => {
-            unsafe { *out_len = 0; }
+            unsafe {
+                *out_len = 0;
+            }
             std::ptr::null_mut()
         }
     }
@@ -127,7 +141,9 @@ pub extern "C" fn molt_bridge_string_obj_to_owned(obj_bits: u64, out_len: *mut u
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bridge_free_string(ptr: *mut u8, len: usize) {
     if !ptr.is_null() {
-        unsafe { drop(Vec::from_raw_parts(ptr, len, len)); }
+        unsafe {
+            drop(Vec::from_raw_parts(ptr, len, len));
+        }
     }
 }
 
@@ -144,7 +160,9 @@ pub extern "C" fn molt_bridge_type_name(obj_bits: u64, out_len: *mut usize) -> *
             let mut buf = buf.borrow_mut();
             buf.clear();
             buf.push_str(&name);
-            unsafe { *out_len = buf.len(); }
+            unsafe {
+                *out_len = buf.len();
+            }
             buf.as_ptr()
         })
     })

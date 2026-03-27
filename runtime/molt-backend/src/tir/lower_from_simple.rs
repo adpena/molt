@@ -10,7 +10,7 @@ use crate::ir::FunctionIR;
 use super::blocks::{BlockId, TirBlock};
 use super::cfg::CFG;
 use super::function::TirFunction;
-use super::ssa::{convert_to_ssa_with_params, SsaOutput};
+use super::ssa::{SsaOutput, convert_to_ssa_with_params};
 use super::types::TirType;
 use super::values::ValueId;
 
@@ -205,10 +205,7 @@ fn string_to_tir_type(s: &str) -> TirType {
 
 /// Infer the function return type by examining all Return terminators.
 /// Uses a lattice meet to combine multiple return types.
-fn infer_return_type(
-    blocks: &[TirBlock],
-    types: &HashMap<ValueId, TirType>,
-) -> TirType {
+fn infer_return_type(blocks: &[TirBlock], types: &HashMap<ValueId, TirType>) -> TirType {
     use super::blocks::Terminator;
 
     let mut result_type: Option<TirType> = None;
@@ -325,11 +322,15 @@ mod tests {
     // =======================================================================
     #[test]
     fn trivial_function_lowering() {
-        let func_ir = make_func("test_add", &[], vec![
-            op_val_out("const", 1, "x"),
-            op_args_out("add", &["x"], "y"),
-            op_args("ret", &["y"]),
-        ]);
+        let func_ir = make_func(
+            "test_add",
+            &[],
+            vec![
+                op_val_out("const", 1, "x"),
+                op_args_out("add", &["x"], "y"),
+                op_args("ret", &["y"]),
+            ],
+        );
 
         let tir = lower_to_tir(&func_ir);
 
@@ -357,20 +358,27 @@ mod tests {
     // =======================================================================
     #[test]
     fn if_else_control_flow() {
-        let func_ir = make_func("test_branch", &[], vec![
-            op_val_out("const", 0, "c"),          // 0 entry
-            op_args("if", &["c"]),                 // 1 ends entry
-            op_val_out("const", 1, "x"),           // 2 then
-            op("else"),                            // 3 else
-            op_val_out("const", 2, "x"),           // 4 else body
-            op("end_if"),                          // 5 join
-            op_args("ret", &["x"]),                // 6 return
-        ]);
+        let func_ir = make_func(
+            "test_branch",
+            &[],
+            vec![
+                op_val_out("const", 0, "c"), // 0 entry
+                op_args("if", &["c"]),       // 1 ends entry
+                op_val_out("const", 1, "x"), // 2 then
+                op("else"),                  // 3 else
+                op_val_out("const", 2, "x"), // 4 else body
+                op("end_if"),                // 5 join
+                op_args("ret", &["x"]),      // 6 return
+            ],
+        );
 
         let tir = lower_to_tir(&func_ir);
 
         assert_eq!(tir.name, "test_branch");
-        assert!(tir.blocks.len() >= 3, "if/else should produce at least 3 blocks");
+        assert!(
+            tir.blocks.len() >= 3,
+            "if/else should produce at least 3 blocks"
+        );
 
         // Find the join block — it should have a block argument for `x`.
         let join_block = tir.blocks.values().find(|b| !b.args.is_empty());
@@ -380,16 +388,18 @@ mod tests {
         );
         let join = join_block.unwrap();
         assert_eq!(
-            join.args.len(), 1,
+            join.args.len(),
+            1,
             "join block should have 1 block arg (for x)"
         );
 
         // There should be a block with a CondBranch terminator (the block
         // containing the `if` op — which may or may not be the entry block,
         // depending on how the CFG splits).
-        let has_cond_branch = tir.blocks.values().any(|b| {
-            matches!(b.terminator, Terminator::CondBranch { .. })
-        });
+        let has_cond_branch = tir
+            .blocks
+            .values()
+            .any(|b| matches!(b.terminator, Terminator::CondBranch { .. }));
         assert!(
             has_cond_branch,
             "should have a block with CondBranch terminator"
@@ -401,12 +411,16 @@ mod tests {
     // =======================================================================
     #[test]
     fn fast_int_type_propagation() {
-        let func_ir = make_func("int_add", &[], vec![
-            op_val_out("const", 1, "a"),
-            op_val_out("const", 2, "b"),
-            op_fast_int("add", &["a", "b"], "c"),
-            op_args("ret", &["c"]),
-        ]);
+        let func_ir = make_func(
+            "int_add",
+            &[],
+            vec![
+                op_val_out("const", 1, "a"),
+                op_val_out("const", 2, "b"),
+                op_fast_int("add", &["a", "b"], "c"),
+                op_args("ret", &["c"]),
+            ],
+        );
 
         let tir = lower_to_tir(&func_ir);
 
@@ -415,10 +429,7 @@ mod tests {
         // The add op is the third op (index 2).
         assert!(entry.ops.len() >= 3, "should have at least 3 ops");
         let add_op = &entry.ops[2];
-        assert!(
-            !add_op.results.is_empty(),
-            "add op should have a result"
-        );
+        assert!(!add_op.results.is_empty(), "add op should have a result");
         // The result's type in the function should be I64 because fast_int was set.
         // We don't store types on TirFunction directly, but we can verify via
         // the return type inference — since the only return is `c` which is I64,
@@ -435,12 +446,16 @@ mod tests {
     // =======================================================================
     #[test]
     fn fast_float_type_propagation() {
-        let func_ir = make_func("float_add", &[], vec![
-            op_val_out("const", 1, "a"),
-            op_val_out("const", 2, "b"),
-            op_fast_float("add", &["a", "b"], "c"),
-            op_args("ret", &["c"]),
-        ]);
+        let func_ir = make_func(
+            "float_add",
+            &[],
+            vec![
+                op_val_out("const", 1, "a"),
+                op_val_out("const", 2, "b"),
+                op_fast_float("add", &["a", "b"], "c"),
+                op_args("ret", &["c"]),
+            ],
+        );
 
         let tir = lower_to_tir(&func_ir);
 
@@ -472,10 +487,7 @@ mod tests {
         let func_ir = FunctionIR {
             name: "typed_add".to_string(),
             params: vec!["a".to_string(), "b".to_string()],
-            ops: vec![
-                op_args_out("add", &["a", "b"], "c"),
-                op_args("ret", &["c"]),
-            ],
+            ops: vec![op_args_out("add", &["a", "b"], "c"), op_args("ret", &["c"])],
             param_types: Some(vec!["int".to_string(), "float".to_string()]),
         };
 

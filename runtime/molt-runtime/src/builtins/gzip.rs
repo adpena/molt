@@ -5,7 +5,11 @@
 //! exports them with the expected symbol names.
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_gzip_compress(data_bits: u64, compresslevel_bits: u64, mtime_bits: u64) -> u64 {
+pub extern "C" fn molt_gzip_compress(
+    data_bits: u64,
+    compresslevel_bits: u64,
+    mtime_bits: u64,
+) -> u64 {
     molt_runtime_compression::gzip::molt_gzip_compress(data_bits, compresslevel_bits, mtime_bits)
 }
 
@@ -15,7 +19,11 @@ pub extern "C" fn molt_gzip_decompress(data_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_gzip_open(filename_bits: u64, mode_bits: u64, compresslevel_bits: u64) -> u64 {
+pub extern "C" fn molt_gzip_open(
+    filename_bits: u64,
+    mode_bits: u64,
+    compresslevel_bits: u64,
+) -> u64 {
     molt_runtime_compression::gzip::molt_gzip_open(filename_bits, mode_bits, compresslevel_bits)
 }
 

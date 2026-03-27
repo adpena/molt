@@ -5,7 +5,12 @@
 //! exports them with the expected symbol names.
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_hmac_new(key_bits: u64, msg_bits: u64, name_bits: u64, options_bits: u64) -> u64 {
+pub extern "C" fn molt_hmac_new(
+    key_bits: u64,
+    msg_bits: u64,
+    name_bits: u64,
+    options_bits: u64,
+) -> u64 {
     molt_runtime_crypto::hmac::molt_hmac_new(key_bits, msg_bits, name_bits, options_bits)
 }
 

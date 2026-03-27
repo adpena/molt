@@ -25,12 +25,7 @@ unsafe extern "C" {
 
 pub fn raise_exception<T: ExceptionSentinel>(_py: &PyToken, type_name: &str, msg: &str) -> T {
     let bits = unsafe {
-        __molt_math_raise_exception(
-            type_name.as_ptr(),
-            type_name.len(),
-            msg.as_ptr(),
-            msg.len(),
-        )
+        __molt_math_raise_exception(type_name.as_ptr(), type_name.len(), msg.as_ptr(), msg.len())
     };
     T::from_bits(bits)
 }
@@ -96,22 +91,14 @@ unsafe extern "C" {
         out_ptr: *mut *const u8,
         out_len: *mut usize,
     ) -> i32;
-    fn __molt_math_type_name(
-        bits: u64,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
+    fn __molt_math_type_name(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
     fn __molt_math_is_truthy(bits: u64) -> i32;
     fn __molt_math_bytes_like_slice(
         ptr: *mut u8,
         out_ptr: *mut *const u8,
         out_len: *mut usize,
     ) -> i32;
-    fn __molt_math_string_bytes(
-        ptr: *mut u8,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
+    fn __molt_math_string_bytes(ptr: *mut u8, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
     fn __molt_math_string_len(ptr: *mut u8) -> usize;
 }
 
@@ -210,21 +197,23 @@ unsafe extern "C" {
         out_len: *mut usize,
     ) -> i32;
     fn __molt_math_int_bits_from_i64(val: i64) -> u64;
-    fn __molt_math_int_bits_from_bigint(
-        sign: i32,
-        data_ptr: *const u8,
-        data_len: usize,
-    ) -> u64;
+    fn __molt_math_int_bits_from_bigint(sign: i32, data_ptr: *const u8, data_len: usize) -> u64;
     fn __molt_math_bigint_ptr_from_bits(bits: u64) -> *mut u8;
-    fn __molt_math_bigint_ref(ptr: *mut u8, out_sign: *mut i32, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
-    fn __molt_math_bigint_from_f64_trunc(val: f64, out_sign: *mut i32, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
+    fn __molt_math_bigint_ref(
+        ptr: *mut u8,
+        out_sign: *mut i32,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+    ) -> i32;
+    fn __molt_math_bigint_from_f64_trunc(
+        val: f64,
+        out_sign: *mut i32,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+    ) -> i32;
     fn __molt_math_bigint_bits(sign: i32, data_ptr: *const u8, data_len: usize) -> u64;
     fn __molt_math_bigint_to_inline(sign: i32, data_ptr: *const u8, data_len: usize) -> u64;
-    fn __molt_math_index_i64_from_obj(
-        obj_bits: u64,
-        err_ptr: *const u8,
-        err_len: usize,
-    ) -> i64;
+    fn __molt_math_index_i64_from_obj(obj_bits: u64, err_ptr: *const u8, err_len: usize) -> i64;
     fn __molt_math_index_bigint_from_obj(
         obj_bits: u64,
         err_ptr: *const u8,
@@ -252,7 +241,8 @@ pub fn to_bigint(obj: MoltObject) -> Option<num_bigint::BigInt> {
     let mut out_sign: i32 = 0;
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_math_to_bigint(obj.bits(), &mut out_sign, &mut out_ptr, &mut out_len) };
+    let ok =
+        unsafe { __molt_math_to_bigint(obj.bits(), &mut out_sign, &mut out_ptr, &mut out_len) };
     if ok == 0 {
         return None;
     }
@@ -264,7 +254,8 @@ pub fn to_bigint(obj: MoltObject) -> Option<num_bigint::BigInt> {
     if out_len == 0 {
         return Some(BigInt::from(0));
     }
-    let bytes = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+    let bytes =
+        unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
     Some(BigInt::from_bytes_be(sign, &bytes))
 }
 
@@ -303,7 +294,8 @@ pub fn bigint_ref(ptr: *mut u8) -> num_bigint::BigInt {
         0 => Sign::NoSign,
         _ => Sign::Plus,
     };
-    let bytes = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+    let bytes =
+        unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
     BigInt::from_bytes_be(sign, &bytes)
 }
 
@@ -312,7 +304,9 @@ pub fn bigint_from_f64_trunc(val: f64) -> num_bigint::BigInt {
     let mut out_sign: i32 = 0;
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_math_bigint_from_f64_trunc(val, &mut out_sign, &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        __molt_math_bigint_from_f64_trunc(val, &mut out_sign, &mut out_ptr, &mut out_len)
+    };
     if ok == 0 || out_len == 0 {
         return BigInt::from(0);
     }
@@ -321,7 +315,8 @@ pub fn bigint_from_f64_trunc(val: f64) -> num_bigint::BigInt {
         0 => Sign::NoSign,
         _ => Sign::Plus,
     };
-    let bytes = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+    let bytes =
+        unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
     BigInt::from_bytes_be(sign, &bytes)
 }
 
@@ -395,7 +390,11 @@ unsafe extern "C" {
     fn __molt_math_call_callable2(call_bits: u64, arg0: u64, arg1: u64) -> u64;
     fn __molt_math_attr_lookup_ptr_allow_missing(ptr: *mut u8, name_bits: u64) -> u64;
     fn __molt_math_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64;
-    fn __molt_math_class_name_for_error(type_bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
+    fn __molt_math_class_name_for_error(
+        type_bits: u64,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+    ) -> i32;
     fn __molt_math_type_of_bits(val_bits: u64) -> u64;
     fn __molt_math_maybe_ptr_from_bits(bits: u64) -> *mut u8;
     fn __molt_math_molt_is_callable(bits: u64) -> i32;
@@ -425,7 +424,8 @@ pub fn class_name_for_error(type_bits: u64) -> String {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_math_class_name_for_error(type_bits, &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
-        let boxed = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed =
+            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
         String::from_utf8_lossy(&boxed).into_owned()
     } else {
         "<unknown>".to_string()
@@ -450,7 +450,8 @@ pub fn format_obj(_py: &PyToken, obj: MoltObject) -> String {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_math_format_obj(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
-        let boxed = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed =
+            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
         String::from_utf8_lossy(&boxed).into_owned()
     } else {
         "<?>".to_string()
@@ -462,7 +463,8 @@ pub fn format_obj_str(_py: &PyToken, obj: MoltObject) -> String {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_math_format_obj_str(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
-        let boxed = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed =
+            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
         String::from_utf8_lossy(&boxed).into_owned()
     } else {
         "<?>".to_string()
@@ -487,7 +489,12 @@ pub unsafe fn dict_get_in_place(_py: &PyToken, dict_ptr: *mut u8, key_bits: u64)
     if ok != 0 { Some(out) } else { None }
 }
 
-pub unsafe fn dict_set_in_place(_py: &PyToken, dict_ptr: *mut u8, key_bits: u64, val_bits: u64) -> bool {
+pub unsafe fn dict_set_in_place(
+    _py: &PyToken,
+    dict_ptr: *mut u8,
+    key_bits: u64,
+    val_bits: u64,
+) -> bool {
     unsafe { __molt_math_dict_set_in_place(dict_ptr, key_bits, val_bits) != 0 }
 }
 

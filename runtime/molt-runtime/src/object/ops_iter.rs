@@ -805,9 +805,10 @@ unsafe fn iter_return_cached(
         let cached = iter_cached_tuple(iter_ptr);
 
         if !cached.is_null() {
-            let header_ptr =
-                cached.sub(std::mem::size_of::<MoltHeader>()) as *const MoltHeader;
-            let rc = (*header_ptr).ref_count.load(std::sync::atomic::Ordering::Relaxed);
+            let header_ptr = cached.sub(std::mem::size_of::<MoltHeader>()) as *const MoltHeader;
+            let rc = (*header_ptr)
+                .ref_count
+                .load(std::sync::atomic::Ordering::Relaxed);
             if rc == 1 {
                 // Exclusively owned — reuse by mutating elements in place.
                 let vec = seq_vec(cached);
@@ -1361,7 +1362,8 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         let table = set_table(target_ptr);
                         let order = set_order(target_ptr);
                         let mut slot = idx;
-                        while slot < table.len() && (table[slot] == 0 || table[slot] == usize::MAX) {
+                        while slot < table.len() && (table[slot] == 0 || table[slot] == usize::MAX)
+                        {
                             slot += 1;
                         }
                         if slot >= table.len() {
@@ -1620,13 +1622,7 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                 if idx >= len {
                     iter_set_index(ptr, len);
                 }
-                return iter_return_cached(
-                    _py,
-                    ptr,
-                    MoltObject::none().bits(),
-                    true,
-                    false,
-                );
+                return iter_return_cached(_py, ptr, MoltObject::none().bits(), true, false);
             }
         }
         MoltObject::none().bits()
@@ -1706,19 +1702,17 @@ pub extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut u64) ->
                             if idx == ITER_EXHAUSTED {
                                 return done_true;
                             }
-                            if let Some(value) = range_value_at_index_i64(
-                                start_i64, stop_i64, step_i64, idx as i128,
-                            ) {
+                            if let Some(value) =
+                                range_value_at_index_i64(start_i64, stop_i64, step_i64, idx as i128)
+                            {
                                 let val_bits = MoltObject::from_int(value).bits();
                                 *value_out = val_bits;
-                                let next_idx =
-                                    idx.checked_add(1).unwrap_or(ITER_EXHAUSTED);
+                                let next_idx = idx.checked_add(1).unwrap_or(ITER_EXHAUSTED);
                                 iter_set_index(ptr, next_idx);
                                 return done_false;
                             }
                             let len = range_len_i128(start_i64, stop_i64, step_i64);
-                            let len_usize =
-                                usize::try_from(len).unwrap_or(ITER_EXHAUSTED);
+                            let len_usize = usize::try_from(len).unwrap_or(ITER_EXHAUSTED);
                             iter_set_index(ptr, len_usize);
                             return done_true;
                         }
@@ -1788,7 +1782,3 @@ pub extern "C" fn molt_anext(obj_bits: u64) -> u64 {
         }
     })
 }
-
-
-
-

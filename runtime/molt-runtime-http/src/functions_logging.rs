@@ -4,13 +4,13 @@ use molt_obj_model::MoltObject;
 
 use molt_runtime_core::obj_from_bits;
 
-use crate::functions_http::{alloc_string_bits, urllib_request_attr_optional};
 use crate::bridge::{
     alloc_string, attr_name_bits_from_bytes, builtin_classes, call_callable0, call_callable1,
-    call_class_init_with_args, clear_exception, dec_ref_bits, dict_get_in_place,
-    exception_pending, inc_ref_bits, missing_bits, molt_getattr_builtin, object_type_id,
-    raise_exception, resolve_global_bits, seq_vec_ref, string_obj_to_owned, to_f64, to_i64,
+    call_class_init_with_args, clear_exception, dec_ref_bits, dict_get_in_place, exception_pending,
+    inc_ref_bits, missing_bits, molt_getattr_builtin, object_type_id, raise_exception,
+    resolve_global_bits, seq_vec_ref, string_obj_to_owned, to_f64, to_i64,
 };
+use crate::functions_http::{alloc_string_bits, urllib_request_attr_optional};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_runtime_ready() -> u64 {
@@ -32,7 +32,10 @@ fn logging_percent_lookup_mapping_value(
     value
 }
 
-fn logging_percent_render_str(_py: &molt_runtime_core::CoreGilToken, value_bits: u64) -> Option<String> {
+fn logging_percent_render_str(
+    _py: &molt_runtime_core::CoreGilToken,
+    value_bits: u64,
+) -> Option<String> {
     let rendered_bits = crate::bridge::molt_str_from_obj(value_bits);
     if exception_pending(_py) {
         return None;
@@ -42,7 +45,10 @@ fn logging_percent_render_str(_py: &molt_runtime_core::CoreGilToken, value_bits:
     rendered
 }
 
-fn logging_percent_render_repr(_py: &molt_runtime_core::CoreGilToken, value_bits: u64) -> Option<String> {
+fn logging_percent_render_repr(
+    _py: &molt_runtime_core::CoreGilToken,
+    value_bits: u64,
+) -> Option<String> {
     let rendered_bits = crate::bridge::molt_repr_from_obj(value_bits);
     if exception_pending(_py) {
         return None;
@@ -221,7 +227,10 @@ fn logging_config_dict_items(
     Ok(pairs)
 }
 
-fn logging_config_name_list(_py: &molt_runtime_core::CoreGilToken, seq_bits: u64) -> Result<Vec<String>, u64> {
+fn logging_config_name_list(
+    _py: &molt_runtime_core::CoreGilToken,
+    seq_bits: u64,
+) -> Result<Vec<String>, u64> {
     let list_bits = unsafe { call_callable1(_py, builtin_classes(_py, "list"), seq_bits) };
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
@@ -292,12 +301,13 @@ fn logging_config_clear_logger_handlers(
         return Ok(());
     };
     let ty = unsafe { object_type_id(handlers_ptr) };
-    let snapshot: Vec<u64> = if ty == crate::bridge::type_id_list() || ty == crate::bridge::type_id_tuple() {
-        unsafe { seq_vec_ref(handlers_ptr).to_vec() }
-    } else {
-        dec_ref_bits(_py, handlers_bits);
-        return Ok(());
-    };
+    let snapshot: Vec<u64> =
+        if ty == crate::bridge::type_id_list() || ty == crate::bridge::type_id_tuple() {
+            unsafe { seq_vec_ref(handlers_ptr).to_vec() }
+        } else {
+            dec_ref_bits(_py, handlers_bits);
+            return Ok(());
+        };
     dec_ref_bits(_py, handlers_bits);
     for handler_bits in snapshot {
         let out_bits =
@@ -353,23 +363,21 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
-        let stream_handler_class_bits =
-            match resolve_global_bits(_py, "logging", "StreamHandler") {
-                Ok(bits) => bits,
-                Err(bits) => {
-                    dec_ref_bits(_py, formatter_class_bits);
-                    return bits;
-                }
-            };
-        let file_handler_class_bits =
-            match resolve_global_bits(_py, "logging", "FileHandler") {
-                Ok(bits) => bits,
-                Err(bits) => {
-                    dec_ref_bits(_py, stream_handler_class_bits);
-                    dec_ref_bits(_py, formatter_class_bits);
-                    return bits;
-                }
-            };
+        let stream_handler_class_bits = match resolve_global_bits(_py, "logging", "StreamHandler") {
+            Ok(bits) => bits,
+            Err(bits) => {
+                dec_ref_bits(_py, formatter_class_bits);
+                return bits;
+            }
+        };
+        let file_handler_class_bits = match resolve_global_bits(_py, "logging", "FileHandler") {
+            Ok(bits) => bits,
+            Err(bits) => {
+                dec_ref_bits(_py, stream_handler_class_bits);
+                dec_ref_bits(_py, formatter_class_bits);
+                return bits;
+            }
+        };
         let get_logger_bits = match resolve_global_bits(_py, "logging", "getLogger") {
             Ok(bits) => bits,
             Err(bits) => {
@@ -425,8 +433,13 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                         return bits;
                     }
                 };
-                let formatter_bits =
-                    unsafe { call_class_init_with_args(_py, MoltObject::from_ptr(formatter_class_ptr).bits(), &[fmt_bits]) };
+                let formatter_bits = unsafe {
+                    call_class_init_with_args(
+                        _py,
+                        MoltObject::from_ptr(formatter_class_ptr).bits(),
+                        &[fmt_bits],
+                    )
+                };
                 if exception_pending(_py) {
                     dec_ref_bits(_py, name_bits);
                     dec_ref_bits(_py, cfg_bits);
@@ -541,7 +554,11 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                         }
                     };
                     unsafe {
-                        call_class_init_with_args(_py, MoltObject::from_ptr(stream_handler_class_ptr).bits(), &[stream_arg_bits])
+                        call_class_init_with_args(
+                            _py,
+                            MoltObject::from_ptr(stream_handler_class_ptr).bits(),
+                            &[stream_arg_bits],
+                        )
                     }
                 } else if class_name == "logging.FileHandler" {
                     let filename_bits = match logging_config_dict_lookup(_py, cfg_bits, "filename")

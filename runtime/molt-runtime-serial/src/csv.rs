@@ -1,5 +1,5 @@
-use molt_runtime_core::prelude::*;
 use crate::bridge::*;
+use molt_runtime_core::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -407,11 +407,7 @@ fn csv_parse_line(
 // Build a MoltObject list from parsed fields.
 // QUOTE_NONNUMERIC converts unquoted non-empty fields to float.
 // ─────────────────────────────────────────────────────────────────────────────
-fn fields_to_list(
-    _py: &PyToken,
-    fields: &[ParsedField],
-    dialect: &Dialect,
-) -> Result<u64, u64> {
+fn fields_to_list(_py: &PyToken, fields: &[ParsedField], dialect: &Dialect) -> Result<u64, u64> {
     let mut bits_vec: Vec<u64> = Vec::with_capacity(fields.len());
     for field in fields {
         if dialect.quoting == QUOTE_NONNUMERIC && !field.was_quoted && !field.text.is_empty() {
@@ -682,11 +678,7 @@ fn write_row_to_string(_py: &PyToken, row_bits: u64, dialect: &Dialect) -> Resul
     Ok(record)
 }
 
-fn sequence_items_from_bits(
-    _py: &PyToken,
-    bits: u64,
-    param_name: &str,
-) -> Result<Vec<u64>, u64> {
+fn sequence_items_from_bits(_py: &PyToken, bits: u64, param_name: &str) -> Result<Vec<u64>, u64> {
     let obj = obj_from_bits(bits);
     let Some(ptr) = obj.as_ptr() else {
         let msg = format!("{param_name} must be a sequence");
@@ -943,32 +935,32 @@ fn alloc_optional_char_bits(_py: &PyToken, value: Option<char>) -> Result<(u64, 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_quote_minimal() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_MINIMAL).bits() )
+    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_MINIMAL).bits())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_quote_all() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_ALL).bits() )
+    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_ALL).bits())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_quote_nonnumeric() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_NONNUMERIC).bits() )
+    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_NONNUMERIC).bits())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_quote_none() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_NONE).bits() )
+    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_NONE).bits())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_quote_strings() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_STRINGS).bits() )
+    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_STRINGS).bits())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_quote_notnull() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_NOTNULL).bits() )
+    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_int(QUOTE_NOTNULL).bits())
 }
 
 // ── field_size_limit (arity 1) ────────────────────────────────────────────────

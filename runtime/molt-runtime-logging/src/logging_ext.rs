@@ -8,11 +8,8 @@
 //! visibility.  The GIL serializes all Python-level access so the Mutex is
 //! always uncontended — it only satisfies Rust's `Send + Sync` requirements.
 
+use crate::bridge::{alloc_string, dec_ref_bits, raise_exception, string_obj_to_owned, to_i64};
 use molt_runtime_core::prelude::*;
-use crate::bridge::{
-    alloc_string, dec_ref_bits, raise_exception,
-    string_obj_to_owned, to_i64,
-};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{LazyLock, Mutex};
@@ -1116,9 +1113,9 @@ pub extern "C" fn molt_logging_stream_handler_emit(handler_bits: u64, record_bit
                     if let Some(stream_ptr) = obj_from_bits(stream_obj_bits).as_ptr() {
                         unsafe {
                             let write_name = crate::bridge::intern_static_name(_py, b"write");
-                            if let Some(write_fn) =
-                                crate::bridge::attr_lookup_ptr_allow_missing(_py, stream_ptr, write_name)
-                            {
+                            if let Some(write_fn) = crate::bridge::attr_lookup_ptr_allow_missing(
+                                _py, stream_ptr, write_name,
+                            ) {
                                 let result = crate::bridge::call_callable1(_py, write_fn, msg_bits);
                                 if !obj_from_bits(result).is_none() {
                                     dec_ref_bits(_py, result);
@@ -1376,12 +1373,18 @@ pub extern "C" fn molt_logging_logger_log(
                             let msg_bits_val = MoltObject::from_ptr(msg_ptr).bits();
                             if let Some(stream_ptr) = obj_from_bits(stream_obj_bits).as_ptr() {
                                 unsafe {
-                                    let write_name = crate::bridge::intern_static_name(_py, b"write");
-                                    if let Some(write_fn) = crate::bridge::attr_lookup_ptr_allow_missing(
-                                        _py, stream_ptr, write_name,
-                                    ) {
-                                        let result =
-                                            crate::bridge::call_callable1(_py, write_fn, msg_bits_val);
+                                    let write_name =
+                                        crate::bridge::intern_static_name(_py, b"write");
+                                    if let Some(write_fn) =
+                                        crate::bridge::attr_lookup_ptr_allow_missing(
+                                            _py, stream_ptr, write_name,
+                                        )
+                                    {
+                                        let result = crate::bridge::call_callable1(
+                                            _py,
+                                            write_fn,
+                                            msg_bits_val,
+                                        );
                                         if !obj_from_bits(result).is_none() {
                                             dec_ref_bits(_py, result);
                                         }

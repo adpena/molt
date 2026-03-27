@@ -125,7 +125,9 @@ pub extern "C" fn molt_contextvars_get(var_bits: u64) -> u64 {
                 inc_ref_bits(py, bits);
                 bits
             }
-            _ => raise_exception::<u64>(py, "LookupError", "ContextVar has no value and no default"),
+            _ => {
+                raise_exception::<u64>(py, "LookupError", "ContextVar has no value and no default")
+            }
         }
     })
 }
@@ -197,8 +199,11 @@ pub extern "C" fn molt_contextvars_reset(var_bits: u64, token_bits: u64) -> u64 
         };
 
         if caller_var != var_handle {
-            return raise_exception::<u64>(py, "ValueError",
-                "Token was created by a different ContextVar");
+            return raise_exception::<u64>(
+                py,
+                "ValueError",
+                "Token was created by a different ContextVar",
+            );
         }
 
         if used {

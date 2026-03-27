@@ -247,7 +247,6 @@ fn read_dir_recursive(base: &str) -> Vec<(String, Vec<u8>)> {
 // ---------------------------------------------------------------------------
 // Embedded bundle support for WASM targets (no filesystem access)
 // ---------------------------------------------------------------------------
-
 use std::sync::Mutex;
 
 /// Global slot for bundle data injected by the host before `_start`.
@@ -273,11 +272,17 @@ pub extern "C" fn molt_vfs_inject_entry(
     let path = unsafe { std::slice::from_raw_parts(path_ptr, path_len) };
     let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
     let path_str = String::from_utf8_lossy(path).to_string();
-    if path_str.is_empty() || path_str.starts_with('/') || path_str.contains("..") || path_str.contains('\0') {
+    if path_str.is_empty()
+        || path_str.starts_with('/')
+        || path_str.contains("..")
+        || path_str.contains('\0')
+    {
         return; // reject unsafe paths
     }
     let mut guard = INJECTED_BUNDLE.lock().unwrap();
-    guard.get_or_insert_with(Vec::new).push((path_str, data.to_vec()));
+    guard
+        .get_or_insert_with(Vec::new)
+        .push((path_str, data.to_vec()));
 }
 
 /// Host calls this to signal all entries have been injected.
@@ -295,10 +300,7 @@ pub(crate) fn load_vfs() -> Option<VfsState> {
     if let Some(entries) = injected {
         if !entries.is_empty() {
             let mut mt = MountTable::new();
-            mt.add_mount(
-                "/bundle",
-                Arc::new(bundle::BundleFs::from_entries(entries)),
-            );
+            mt.add_mount("/bundle", Arc::new(bundle::BundleFs::from_entries(entries)));
             let quota_mb = std::env::var("MOLT_VFS_TMP_QUOTA_MB")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -317,10 +319,7 @@ pub(crate) fn load_vfs() -> Option<VfsState> {
     // /bundle from tar or directory
     if std::path::Path::new(&bundle_path).is_dir() {
         let entries = read_dir_recursive(&bundle_path);
-        mt.add_mount(
-            "/bundle",
-            Arc::new(bundle::BundleFs::from_entries(entries)),
-        );
+        mt.add_mount("/bundle", Arc::new(bundle::BundleFs::from_entries(entries)));
     } else if bundle_path.ends_with(".tar") {
         #[cfg(feature = "vfs_bundle_tar")]
         {
@@ -614,9 +613,10 @@ mod tests {
     #[test]
     fn vfs_state_from_table() {
         let mut mt = MountTable::new();
-        let bundle: Arc<dyn VfsBackend> = Arc::new(BundleFs::from_entries(vec![
-            ("main.py".into(), b"print('hi')".to_vec()),
-        ]));
+        let bundle: Arc<dyn VfsBackend> = Arc::new(BundleFs::from_entries(vec![(
+            "main.py".into(),
+            b"print('hi')".to_vec(),
+        )]));
         mt.add_mount("/bundle", bundle);
         mt.add_mount("/tmp", Arc::new(TmpFs::new(8)));
         mt.add_mount("/dev", Arc::new(DevFs::new()));

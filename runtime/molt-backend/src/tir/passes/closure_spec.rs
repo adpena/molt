@@ -70,10 +70,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 continue;
             }
             // Check whether any operand is a known static function reference.
-            let has_known_func_arg = op
-                .operands
-                .iter()
-                .any(|v| known_func_refs.contains_key(v));
+            let has_known_func_arg = op.operands.iter().any(|v| known_func_refs.contains_key(v));
 
             if has_known_func_arg && is_small {
                 op.attrs
@@ -135,10 +132,7 @@ mod tests {
     fn call_with_known_func_arg_is_marked() {
         // ValueId(0) = I64 param, ValueId(1) = ConstStr("my_lambda"),
         // ValueId(2) = Call(callee=1, arg=0)
-        let ops = vec![
-            make_const_str(1, "my_lambda"),
-            make_call(2, 1, 0),
-        ];
+        let ops = vec![make_const_str(1, "my_lambda"), make_call(2, 1, 0)];
         let result = run_pass(ops);
         assert_eq!(
             result[1].attrs.get("closure_specialized"),

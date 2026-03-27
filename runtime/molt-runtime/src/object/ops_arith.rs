@@ -35,7 +35,10 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
         let rhs = obj_from_bits(b);
         // Guard: skip int fast path if either operand is a float, because
         // to_i64 coerces exact-integer floats (e.g. 2.0 -> 2).
-        if !lhs.is_float() && !rhs.is_float() && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+        if !lhs.is_float()
+            && !rhs.is_float()
+            && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
+        {
             let res = li as i128 + ri as i128;
             return int_bits_from_i128(_py, res);
         }
@@ -186,33 +189,41 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                                 let l_len = string_len(ptr);
                                 let r_len = string_len(r_ptr);
                                 if let Some(content_len) = l_len.checked_add(r_len) {
-                                let needed = std::mem::size_of::<MoltHeader>()
-                                    + std::mem::size_of::<usize>()
-                                    + content_len;
-                                let total_sz = super::total_size_from_header(header, ptr);
-                                if total_sz >= needed {
-                                    // Fast: spare capacity — append in place, zero alloc
-                                    let l_data = string_bytes(ptr) as *mut u8;
-                                    let r_data = string_bytes(r_ptr);
-                                    std::ptr::copy_nonoverlapping(r_data, l_data.add(l_len), r_len);
-                                    *(ptr as *mut usize) = l_len + r_len;
-                                    super::object_set_state(ptr, 0); // invalidate hash
-                                    inc_ref_bits(_py, a);
-                                    return a;
-                                }
-                                // Slow: allocate 2x, amortised growth
-                                let new_cap = std::cmp::max(total_sz * 2, needed + 64);
-                                let new_ptr = alloc_object(_py, new_cap, TYPE_ID_STRING);
-                                if !new_ptr.is_null() {
-                                    let l_data = string_bytes(ptr);
-                                    let r_data = string_bytes(r_ptr);
-                                    let n_data = string_bytes(new_ptr) as *mut u8;
-                                    std::ptr::copy_nonoverlapping(l_data, n_data, l_len);
-                                    std::ptr::copy_nonoverlapping(r_data, n_data.add(l_len), r_len);
-                                    *(new_ptr as *mut usize) = l_len + r_len;
-                                    // Caller dec-refs old LHS after storing result.
-                                    return MoltObject::from_ptr(new_ptr).bits();
-                                }
+                                    let needed = std::mem::size_of::<MoltHeader>()
+                                        + std::mem::size_of::<usize>()
+                                        + content_len;
+                                    let total_sz = super::total_size_from_header(header, ptr);
+                                    if total_sz >= needed {
+                                        // Fast: spare capacity — append in place, zero alloc
+                                        let l_data = string_bytes(ptr) as *mut u8;
+                                        let r_data = string_bytes(r_ptr);
+                                        std::ptr::copy_nonoverlapping(
+                                            r_data,
+                                            l_data.add(l_len),
+                                            r_len,
+                                        );
+                                        *(ptr as *mut usize) = l_len + r_len;
+                                        super::object_set_state(ptr, 0); // invalidate hash
+                                        inc_ref_bits(_py, a);
+                                        return a;
+                                    }
+                                    // Slow: allocate 2x, amortised growth
+                                    let new_cap = std::cmp::max(total_sz * 2, needed + 64);
+                                    let new_ptr = alloc_object(_py, new_cap, TYPE_ID_STRING);
+                                    if !new_ptr.is_null() {
+                                        let l_data = string_bytes(ptr);
+                                        let r_data = string_bytes(r_ptr);
+                                        let n_data = string_bytes(new_ptr) as *mut u8;
+                                        std::ptr::copy_nonoverlapping(l_data, n_data, l_len);
+                                        std::ptr::copy_nonoverlapping(
+                                            r_data,
+                                            n_data.add(l_len),
+                                            r_len,
+                                        );
+                                        *(new_ptr as *mut usize) = l_len + r_len;
+                                        // Caller dec-refs old LHS after storing result.
+                                        return MoltObject::from_ptr(new_ptr).bits();
+                                    }
                                 } // if let Some(content_len) — overflow falls through
                             }
                         }
@@ -256,7 +267,10 @@ pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if !lhs.is_float() && !rhs.is_float() && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+        if !lhs.is_float()
+            && !rhs.is_float()
+            && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
+        {
             let res = li as i128 - ri as i128;
             return int_bits_from_i128(_py, res);
         }
@@ -672,7 +686,10 @@ pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if !lhs.is_float() && !rhs.is_float() && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
+        if !lhs.is_float()
+            && !rhs.is_float()
+            && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
+        {
             let res = li as i128 * ri as i128;
             return int_bits_from_i128(_py, res);
         }
@@ -832,7 +849,11 @@ pub extern "C" fn molt_floordiv(a: u64, b: u64) -> u64 {
             } else {
                 let q = li / ri;
                 let r = li % ri;
-                let res = if r != 0 && (r < 0) != (ri < 0) { q - 1 } else { q };
+                let res = if r != 0 && (r < 0) != (ri < 0) {
+                    q - 1
+                } else {
+                    q
+                };
                 return MoltObject::from_int(res).bits();
             }
         }
@@ -1874,7 +1895,11 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
         let either_float = lhs.is_float() || rhs.is_float();
         if !either_float && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
             if ri == 0 {
-                return raise_exception::<_>(_py, "ZeroDivisionError", "integer division or modulo by zero");
+                return raise_exception::<_>(
+                    _py,
+                    "ZeroDivisionError",
+                    "integer division or modulo by zero",
+                );
             }
             let mut rem = li % ri;
             if rem != 0 && (rem > 0) != (ri > 0) {
@@ -1900,7 +1925,11 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
         }
         if !either_float && let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
             if r_big.is_zero() {
-                return raise_exception::<_>(_py, "ZeroDivisionError", "integer division or modulo by zero");
+                return raise_exception::<_>(
+                    _py,
+                    "ZeroDivisionError",
+                    "integer division or modulo by zero",
+                );
             }
             let res = l_big.mod_floor(&r_big);
             if let Some(i) = bigint_to_inline(&res) {
@@ -2320,7 +2349,9 @@ pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits:
                 }
             }
         }
-        if !val.is_float() && let Some(i) = to_i64(val) {
+        if !val.is_float()
+            && let Some(i) = to_i64(val)
+        {
             if !has_ndigits {
                 return MoltObject::from_int(i).bits();
             }
@@ -2622,7 +2653,11 @@ pub(super) unsafe fn set_like_symdiff(
     }
 }
 
-pub(super) unsafe fn set_like_copy_bits(_py: &PyToken<'_>, ptr: *mut u8, result_type_id: u32) -> u64 {
+pub(super) unsafe fn set_like_copy_bits(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    result_type_id: u32,
+) -> u64 {
     unsafe {
         let elems = set_order(ptr);
         let res_bits = set_like_new_bits(result_type_id, elems.len());
@@ -2695,7 +2730,12 @@ pub(super) unsafe fn set_from_iter_bits(_py: &PyToken<'_>, other_bits: u64) -> O
     }
 }
 
-pub(super) fn binary_type_error(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject, op: &str) -> u64 {
+pub(super) fn binary_type_error(
+    _py: &PyToken<'_>,
+    lhs: MoltObject,
+    rhs: MoltObject,
+    op: &str,
+) -> u64 {
     let msg = format!(
         "unsupported operand type(s) for {op}: '{}' and '{}'",
         type_name(_py, lhs),

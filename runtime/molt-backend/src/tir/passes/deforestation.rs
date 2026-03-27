@@ -385,8 +385,14 @@ fn fuse_any_all(
                 "early_exit_on".into(),
                 AttrValue::Bool(is_any), // any: exit on true; all: exit on false
             );
-            m.insert("element".into(), AttrValue::Int(chain.element_value.0 as i64));
-            m.insert("source".into(), AttrValue::Int(chain.source_iterable.0 as i64));
+            m.insert(
+                "element".into(),
+                AttrValue::Int(chain.element_value.0 as i64),
+            );
+            m.insert(
+                "source".into(),
+                AttrValue::Int(chain.source_iterable.0 as i64),
+            );
             m
         },
         source_span: None,
@@ -584,11 +590,7 @@ mod tests {
     ///     result = CallBuiltin("sum", elem)
     ///     → Return(result)
     fn build_iter_sum_function() -> TirFunction {
-        let mut func = TirFunction::new(
-            "test_sum".into(),
-            vec![TirType::DynBox],
-            TirType::I64,
-        );
+        let mut func = TirFunction::new("test_sum".into(), vec![TirType::DynBox], TirType::I64);
 
         // Values: 0=data(param), 1=iter, 2=elem, 3=elem_valid, 4=result
         let iter_val = func.fresh_value(); // 1
@@ -603,11 +605,9 @@ mod tests {
         // bb0 (entry): GetIter → Branch bb1
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-            entry.ops.push(make_op(
-                OpCode::GetIter,
-                vec![ValueId(0)],
-                vec![iter_val],
-            ));
+            entry
+                .ops
+                .push(make_op(OpCode::GetIter, vec![ValueId(0)], vec![iter_val]));
             entry.terminator = Terminator::Branch {
                 target: bb1,
                 args: vec![],
@@ -676,7 +676,10 @@ mod tests {
         let mut func = build_iter_sum_function();
         let stats = run(&mut func);
 
-        assert!(stats.values_changed >= 1, "should have fused at least one chain");
+        assert!(
+            stats.values_changed >= 1,
+            "should have fused at least one chain"
+        );
         assert!(stats.ops_added >= 2, "should have added init + add ops");
 
         // The CallBuiltin("sum") should have been replaced with a Copy.
@@ -752,11 +755,9 @@ mod tests {
         let mut func = TirFunction::new("noop".into(), vec![TirType::I64], TirType::I64);
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-            entry.ops.push(make_op(
-                OpCode::ConstInt,
-                vec![],
-                vec![ValueId(0)],
-            ));
+            entry
+                .ops
+                .push(make_op(OpCode::ConstInt, vec![], vec![ValueId(0)]));
             entry.terminator = Terminator::Return {
                 values: vec![ValueId(0)],
             };
@@ -797,11 +798,8 @@ mod tests {
         let mut func = build_iter_sum_function();
 
         let bb3 = BlockId(3);
-        func.blocks.get_mut(&bb3).unwrap().ops[0] = make_call_builtin(
-            "all",
-            ValueId(2),
-            ValueId(4),
-        );
+        func.blocks.get_mut(&bb3).unwrap().ops[0] =
+            make_call_builtin("all", ValueId(2), ValueId(4));
 
         let stats = run(&mut func);
 
@@ -834,25 +832,23 @@ mod tests {
 
     #[test]
     fn purity_check_impure_call() {
-        let ops = vec![
-            make_op(OpCode::Call, vec![ValueId(0)], vec![ValueId(1)]),
-        ];
+        let ops = vec![make_op(OpCode::Call, vec![ValueId(0)], vec![ValueId(1)])];
         assert!(!is_pure_body(&ops));
     }
 
     #[test]
     fn purity_check_impure_store_attr() {
-        let ops = vec![
-            make_op(OpCode::StoreAttr, vec![ValueId(0), ValueId(1)], vec![]),
-        ];
+        let ops = vec![make_op(
+            OpCode::StoreAttr,
+            vec![ValueId(0), ValueId(1)],
+            vec![],
+        )];
         assert!(!is_pure_body(&ops));
     }
 
     #[test]
     fn purity_check_impure_yield() {
-        let ops = vec![
-            make_op(OpCode::Yield, vec![ValueId(0)], vec![ValueId(1)]),
-        ];
+        let ops = vec![make_op(OpCode::Yield, vec![ValueId(0)], vec![ValueId(1)])];
         assert!(!is_pure_body(&ops));
     }
 

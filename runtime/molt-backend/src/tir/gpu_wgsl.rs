@@ -17,7 +17,6 @@
 ///   in i32 before dispatch.
 /// - **DynBox / Str / Bytes / List / Dict**: Not representable in a compute
 ///   shader. These types must be serialised to plain buffer data before launch.
-
 use std::fmt::Write as FmtWrite;
 
 use super::types::TirType;
@@ -403,10 +402,22 @@ mod tests {
     fn buffer_bindings_increment() {
         let wgsl = generate_wgsl(&make_vector_add_kernel());
         // Buffers a, b, c at bindings 0, 1, 2; params at 3
-        assert!(wgsl.contains("@binding(0)"), "missing @binding(0) in:\n{wgsl}");
-        assert!(wgsl.contains("@binding(1)"), "missing @binding(1) in:\n{wgsl}");
-        assert!(wgsl.contains("@binding(2)"), "missing @binding(2) in:\n{wgsl}");
-        assert!(wgsl.contains("@binding(3)"), "missing @binding(3) in:\n{wgsl}");
+        assert!(
+            wgsl.contains("@binding(0)"),
+            "missing @binding(0) in:\n{wgsl}"
+        );
+        assert!(
+            wgsl.contains("@binding(1)"),
+            "missing @binding(1) in:\n{wgsl}"
+        );
+        assert!(
+            wgsl.contains("@binding(2)"),
+            "missing @binding(2) in:\n{wgsl}"
+        );
+        assert!(
+            wgsl.contains("@binding(3)"),
+            "missing @binding(3) in:\n{wgsl}"
+        );
     }
 
     #[test]
@@ -416,7 +427,10 @@ mod tests {
             wgsl.contains("array<f32>"),
             "expected array<f32> for F64 buffers in:\n{wgsl}"
         );
-        assert!(!wgsl.contains("f64"), "unexpected f64 in WGSL output:\n{wgsl}");
+        assert!(
+            !wgsl.contains("f64"),
+            "unexpected f64 in WGSL output:\n{wgsl}"
+        );
     }
 
     #[test]
@@ -448,7 +462,10 @@ mod tests {
             wgsl.contains("array<i32>"),
             "expected array<i32> for I64 buffers in:\n{wgsl}"
         );
-        assert!(!wgsl.contains("i64"), "unexpected i64 in WGSL output:\n{wgsl}");
+        assert!(
+            !wgsl.contains("i64"),
+            "unexpected i64 in WGSL output:\n{wgsl}"
+        );
     }
 
     #[test]

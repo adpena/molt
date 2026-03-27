@@ -60,14 +60,18 @@ fn attr_site_name_cache() -> &'static Mutex<HashMap<u64, u64>> {
 }
 
 pub(crate) fn clear_attr_site_name_cache(_py: &PyToken<'_>) {
-    let mut cache = attr_site_name_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let mut cache = attr_site_name_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     for (_site, bits) in cache.drain() {
         if bits != 0 {
             dec_ref_bits(_py, bits);
         }
     }
     // Also clear the result IC cache.
-    let mut rc = attr_ic_result_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let mut rc = attr_ic_result_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     for (_site, entry) in rc.drain() {
         if entry.name_bits != 0 {
             dec_ref_bits(_py, entry.name_bits);
@@ -98,7 +102,9 @@ fn ic_site_from_bits(site_bits: u64) -> Option<u64> {
 
 unsafe fn attr_name_bits_for_site(_py: &PyToken<'_>, site_id: u64, slice: &[u8]) -> Option<u64> {
     unsafe {
-        let mut cache = attr_site_name_cache().lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = attr_site_name_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(bits) = cache.get(&site_id).copied() {
             if let Some(ptr) = obj_from_bits(bits).as_ptr()
                 && object_type_id(ptr) == TYPE_ID_STRING
@@ -1130,7 +1136,8 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     );
                     let val_bits = MoltObject::from_int(lasti).bits();
                     let _header = header_from_obj_ptr(obj_ptr);
-                    let mut code_bits = fn_ptr_code_get(_py, crate::object::object_poll_fn(obj_ptr));
+                    let mut code_bits =
+                        fn_ptr_code_get(_py, crate::object::object_poll_fn(obj_ptr));
                     if code_bits == 0 {
                         code_bits = MoltObject::none().bits();
                     } else {
@@ -2358,11 +2365,16 @@ pub(crate) unsafe fn attr_lookup_ptr(
                         return Some(MoltObject::from_bool(running).bits());
                     }
                     "cr_frame" => {
-                        if crate::object::object_poll_fn(obj_ptr) == 0 || ((*header).flags & HEADER_FLAG_TASK_DONE) != 0
+                        if crate::object::object_poll_fn(obj_ptr) == 0
+                            || ((*header).flags & HEADER_FLAG_TASK_DONE) != 0
                         {
                             return Some(MoltObject::none().bits());
                         }
-                        let lasti = if crate::object::object_state(obj_ptr) == 0 { -1 } else { 0 };
+                        let lasti = if crate::object::object_state(obj_ptr) == 0 {
+                            -1
+                        } else {
+                            0
+                        };
                         let frame_bits = molt_object_new();
                         let Some(frame_ptr) = maybe_ptr_from_bits(frame_bits) else {
                             return Some(MoltObject::none().bits());
@@ -2382,7 +2394,8 @@ pub(crate) unsafe fn attr_lookup_ptr(
                         return Some(frame_bits);
                     }
                     "cr_code" => {
-                        let code_bits = fn_ptr_code_get(_py, crate::object::object_poll_fn(obj_ptr));
+                        let code_bits =
+                            fn_ptr_code_get(_py, crate::object::object_poll_fn(obj_ptr));
                         if code_bits != 0 {
                             inc_ref_bits(_py, code_bits);
                             return Some(code_bits);
@@ -4672,7 +4685,9 @@ pub unsafe extern "C" fn molt_get_attr_object(
                         return bound_bits as i64;
                     }
                     // Inherited from object (base of all builtin numeric types).
-                    if let Some(func_bits) = builtin_class_method_bits(_py, builtins.object, attr_name) {
+                    if let Some(func_bits) =
+                        builtin_class_method_bits(_py, builtins.object, attr_name)
+                    {
                         let bound_bits = molt_bound_method_new(func_bits, obj_bits);
                         return bound_bits as i64;
                     }
@@ -4710,7 +4725,9 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                     || type_id == TYPE_ID_TYPE
                 {
                     let current_version = global_type_version();
-                    let cache = attr_ic_result_cache().lock().unwrap_or_else(|e| e.into_inner());
+                    let cache = attr_ic_result_cache()
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     if let Some(entry) = cache.get(&site_id) {
                         if entry.type_version == current_version
                             && entry.obj_type_id == type_id
@@ -4720,8 +4737,10 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                             if let Some(name_ptr) = obj_from_bits(entry.name_bits).as_ptr()
                                 && object_type_id(name_ptr) == TYPE_ID_STRING
                             {
-                                let cached_name =
-                                    std::slice::from_raw_parts(string_bytes(name_ptr), string_len(name_ptr));
+                                let cached_name = std::slice::from_raw_parts(
+                                    string_bytes(name_ptr),
+                                    string_len(name_ptr),
+                                );
                                 if cached_name == slice {
                                     profile_hit_unchecked(&ATTR_IC_RESULT_HIT_COUNT);
                                     let result = entry.result_bits;
@@ -4773,15 +4792,17 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                                     // not a function/property/classmethod). Caching
                                     // descriptor-bound results (bound methods, property
                                     // getter results) would serve the wrong instance.
-                                    let cacheable = out == mro_bits
-                                        || (!obj_from_bits(mro_bits).is_ptr());
+                                    let cacheable =
+                                        out == mro_bits || (!obj_from_bits(mro_bits).is_ptr());
 
                                     if cacheable {
                                         profile_hit_unchecked(&ATTR_IC_RESULT_MISS_COUNT);
                                         let current_version = global_type_version();
                                         inc_ref_bits(_py, name_bits);
                                         inc_ref_bits(_py, out);
-                                        let mut cache = attr_ic_result_cache().lock().unwrap_or_else(|e| e.into_inner());
+                                        let mut cache = attr_ic_result_cache()
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
                                         if let Some(old) = cache.insert(
                                             site_id,
                                             AttrICEntry {
@@ -4990,10 +5011,13 @@ pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
                     0
                 };
                 if class_bits != 0 {
-                    if let Some(func_bits) = builtin_class_method_bits(_py, class_bits, &attr_name) {
+                    if let Some(func_bits) = builtin_class_method_bits(_py, class_bits, &attr_name)
+                    {
                         return molt_bound_method_new(func_bits, obj_bits);
                     }
-                    if let Some(func_bits) = builtin_class_method_bits(_py, builtins.object, &attr_name) {
+                    if let Some(func_bits) =
+                        builtin_class_method_bits(_py, builtins.object, &attr_name)
+                    {
                         return molt_bound_method_new(func_bits, obj_bits);
                     }
                 }

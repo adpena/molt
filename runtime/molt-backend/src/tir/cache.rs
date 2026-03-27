@@ -154,7 +154,10 @@ impl CompilationCache {
             changed_hashes.iter().map(String::as_str).collect();
 
         self.index.retain(|_hash, entry| {
-            !entry.dependencies.iter().any(|d| changed.contains(d.as_str()))
+            !entry
+                .dependencies
+                .iter()
+                .any(|d| changed.contains(d.as_str()))
         });
     }
 
@@ -162,9 +165,8 @@ impl CompilationCache {
     /// `max_age_secs` seconds.
     pub fn evict_stale(&mut self, max_age_secs: u64) {
         let now = unix_now();
-        self.index.retain(|_hash, entry| {
-            now.saturating_sub(entry.last_access) <= max_age_secs
-        });
+        self.index
+            .retain(|_hash, entry| now.saturating_sub(entry.last_access) <= max_age_secs);
     }
 
     /// Persist the cache index to `cache_dir/index.txt`.
@@ -190,7 +192,9 @@ impl CompilationCache {
 
         // Atomic write: write to PID-unique temp file then rename so concurrent
         // readers never see a partially-written index.
-        let tmp_path = self.cache_dir.join(format!("index.txt.tmp.{}", std::process::id()));
+        let tmp_path = self
+            .cache_dir
+            .join(format!("index.txt.tmp.{}", std::process::id()));
         if std::fs::write(&tmp_path, &lines).is_err() {
             return;
         }
@@ -319,8 +323,14 @@ mod tests {
         cache.invalidate(&[dep_hash.clone()]);
 
         assert!(cache.get(&dep_hash).is_some(), "dep entry should remain");
-        assert!(cache.get(&caller_hash).is_none(), "caller should be invalidated");
-        assert!(cache.get(&other_hash).is_some(), "unrelated entry should remain");
+        assert!(
+            cache.get(&caller_hash).is_none(),
+            "caller should be invalidated"
+        );
+        assert!(
+            cache.get(&other_hash).is_some(),
+            "unrelated entry should remain"
+        );
     }
 
     /// 4. evict_stale removes old entries
@@ -366,7 +376,10 @@ mod tests {
 
         cache.evict_stale(60);
 
-        assert!(cache.get(&hash).is_some(), "recent entry must not be evicted");
+        assert!(
+            cache.get(&hash).is_some(),
+            "recent entry must not be evicted"
+        );
     }
 
     /// 6. save_index + load_index round-trip

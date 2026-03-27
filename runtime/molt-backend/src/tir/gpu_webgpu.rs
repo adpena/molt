@@ -58,10 +58,12 @@ impl WebGpuDevice {
         _name: &str,
         wgsl_source: &str,
     ) -> Result<wgpu::ShaderModule, GpuError> {
-        let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
-        });
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+            });
         Ok(module)
     }
 
@@ -116,11 +118,7 @@ impl GpuDevice for WebGpuDevice {
         Ok(())
     }
 
-    fn copy_from_device(
-        &self,
-        buffer: &GpuBufferHandle,
-        data: &mut [u8],
-    ) -> Result<(), GpuError> {
+    fn copy_from_device(&self, buffer: &GpuBufferHandle, data: &mut [u8]) -> Result<(), GpuError> {
         let id = Self::buffer_id_from_handle(buffer)?;
         let size = buffer.size_bytes as u64;
 
@@ -177,10 +175,12 @@ impl GpuDevice for WebGpuDevice {
             .wgsl_source()
             .ok_or_else(|| GpuError::LaunchFailed("No WGSL source in kernel handle".into()))?;
 
-        let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
-        });
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+            });
 
         let pipeline = self
             .device
@@ -278,7 +278,11 @@ impl WebGpuDevice {
         Err(GpuError::DeviceNotAvailable(WEBGPU_STUB_MSG.into()))
     }
 
-    pub fn compile_wgsl(&self, _name: &str, _wgsl_source: &str) -> Result<CompiledKernel, GpuError> {
+    pub fn compile_wgsl(
+        &self,
+        _name: &str,
+        _wgsl_source: &str,
+    ) -> Result<CompiledKernel, GpuError> {
         Err(GpuError::DeviceNotAvailable(WEBGPU_STUB_MSG.into()))
     }
 }
@@ -332,7 +336,9 @@ mod tests {
     #[cfg(feature = "gpu-webgpu")]
     fn webgpu_device_implements_gpu_device_trait() {
         let device = WebGpuDevice::new().expect("WebGpuDevice::new should succeed");
-        let buf = device.alloc_buffer(512).expect("alloc_buffer should succeed");
+        let buf = device
+            .alloc_buffer(512)
+            .expect("alloc_buffer should succeed");
         assert_eq!(buf.size_bytes, 512);
         assert_eq!(buf.platform, GpuPlatform::WebGpu);
     }

@@ -5,10 +5,10 @@
 // monolithic molt-runtime crate.  All runtime access goes through
 // `crate::bridge::*`.
 
-use molt_runtime_core::prelude::*;
 use crate::bridge::*;
 #[cfg(feature = "crypto")]
 use digest::Digest;
+use molt_runtime_core::prelude::*;
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
@@ -49,7 +49,12 @@ fn compat_molt_is_callable(_py: &PyToken, bits: u64) -> bool {
 
 /// Wraps bridge::molt_sorted_builtin — monolith takes 3 args, bridge takes 2 + _py.
 #[inline]
-fn compat_molt_sorted_builtin(_py: &PyToken, data_bits: u64, _key_bits: u64, _reverse_bits: u64) -> u64 {
+fn compat_molt_sorted_builtin(
+    _py: &PyToken,
+    data_bits: u64,
+    _key_bits: u64,
+    _reverse_bits: u64,
+) -> u64 {
     molt_sorted_builtin(_py, data_bits)
 }
 
@@ -408,59 +413,57 @@ fn coerce_real(_py: &PyToken, val_bits: u64) -> Option<RealValue> {
         return Some(RealValue::BigIntExact(bigint_ref(ptr).clone()));
     }
     if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-            let float_name_bits =
-                intern_static_name(_py, b"__float__");
-            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) {
-                let res_bits = call_callable0(_py, call_bits);
-                dec_ref_bits(_py, call_bits);
-                if exception_pending(_py) {
-                    return None;
-                }
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(f) = res_obj.as_float() {
-                    return Some(RealValue::Float(f));
-                }
-                let owner = class_name_for_error(type_of_bits(_py, val_bits));
-                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                if res_obj.as_ptr().is_some() {
-                    dec_ref_bits(_py, res_bits);
-                }
-                let msg = format!("{owner}.__float__ returned non-float (type {res_type})");
-                return raise_exception::<Option<RealValue>>(_py, "TypeError", &msg);
-            }
+        let float_name_bits = intern_static_name(_py, b"__float__");
+        if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) {
+            let res_bits = call_callable0(_py, call_bits);
+            dec_ref_bits(_py, call_bits);
             if exception_pending(_py) {
                 return None;
             }
-            let index_name_bits =
-                intern_static_name(_py, b"__index__");
-            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
-                let res_bits = call_callable0(_py, call_bits);
-                dec_ref_bits(_py, call_bits);
-                if exception_pending(_py) {
-                    return None;
-                }
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(i) = to_i64(res_obj) {
-                    if res_obj.as_ptr().is_some() {
-                        dec_ref_bits(_py, res_bits);
-                    }
-                    return Some(RealValue::IntCoerced(i));
-                }
-                if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
-                    let big = bigint_ref(big_ptr).clone();
-                    dec_ref_bits(_py, res_bits);
-                    return Some(RealValue::BigIntCoerced(big));
-                }
-                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                if res_obj.as_ptr().is_some() {
-                    dec_ref_bits(_py, res_bits);
-                }
-                let msg = format!("__index__ returned non-int (type {res_type})");
-                return raise_exception::<Option<RealValue>>(_py, "TypeError", &msg);
+            let res_obj = obj_from_bits(res_bits);
+            if let Some(f) = res_obj.as_float() {
+                return Some(RealValue::Float(f));
             }
+            let owner = class_name_for_error(type_of_bits(_py, val_bits));
+            let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+            if res_obj.as_ptr().is_some() {
+                dec_ref_bits(_py, res_bits);
+            }
+            let msg = format!("{owner}.__float__ returned non-float (type {res_type})");
+            return raise_exception::<Option<RealValue>>(_py, "TypeError", &msg);
+        }
+        if exception_pending(_py) {
+            return None;
+        }
+        let index_name_bits = intern_static_name(_py, b"__index__");
+        if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
+            let res_bits = call_callable0(_py, call_bits);
+            dec_ref_bits(_py, call_bits);
             if exception_pending(_py) {
                 return None;
             }
+            let res_obj = obj_from_bits(res_bits);
+            if let Some(i) = to_i64(res_obj) {
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, res_bits);
+                }
+                return Some(RealValue::IntCoerced(i));
+            }
+            if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
+                let big = bigint_ref(big_ptr).clone();
+                dec_ref_bits(_py, res_bits);
+                return Some(RealValue::BigIntCoerced(big));
+            }
+            let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+            if res_obj.as_ptr().is_some() {
+                dec_ref_bits(_py, res_bits);
+            }
+            let msg = format!("__index__ returned non-int (type {res_type})");
+            return raise_exception::<Option<RealValue>>(_py, "TypeError", &msg);
+        }
+        if exception_pending(_py) {
+            return None;
+        }
     }
     let type_label = type_name(_py, obj);
     let msg = format!("must be real number, not {type_label}");
@@ -479,59 +482,57 @@ fn coerce_real_named(_py: &PyToken, val_bits: u64, name: &str) -> Option<RealVal
         return Some(RealValue::BigIntExact(bigint_ref(ptr).clone()));
     }
     if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-            let float_name_bits =
-                intern_static_name(_py, b"__float__");
-            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) {
-                let res_bits = call_callable0(_py, call_bits);
-                dec_ref_bits(_py, call_bits);
-                if exception_pending(_py) {
-                    return None;
-                }
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(f) = res_obj.as_float() {
-                    return Some(RealValue::Float(f));
-                }
-                let owner = class_name_for_error(type_of_bits(_py, val_bits));
-                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                if res_obj.as_ptr().is_some() {
-                    dec_ref_bits(_py, res_bits);
-                }
-                let msg = format!("{owner}.__float__ returned non-float (type {res_type})");
-                return raise_exception::<Option<RealValue>>(_py, "TypeError", &msg);
-            }
+        let float_name_bits = intern_static_name(_py, b"__float__");
+        if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) {
+            let res_bits = call_callable0(_py, call_bits);
+            dec_ref_bits(_py, call_bits);
             if exception_pending(_py) {
                 return None;
             }
-            let index_name_bits =
-                intern_static_name(_py, b"__index__");
-            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
-                let res_bits = call_callable0(_py, call_bits);
-                dec_ref_bits(_py, call_bits);
-                if exception_pending(_py) {
-                    return None;
-                }
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(i) = to_i64(res_obj) {
-                    if res_obj.as_ptr().is_some() {
-                        dec_ref_bits(_py, res_bits);
-                    }
-                    return Some(RealValue::IntCoerced(i));
-                }
-                if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
-                    let big = bigint_ref(big_ptr).clone();
-                    dec_ref_bits(_py, res_bits);
-                    return Some(RealValue::BigIntCoerced(big));
-                }
-                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                if res_obj.as_ptr().is_some() {
-                    dec_ref_bits(_py, res_bits);
-                }
-                let msg = format!("__index__ returned non-int (type {res_type})");
-                return raise_exception::<Option<RealValue>>(_py, "TypeError", &msg);
+            let res_obj = obj_from_bits(res_bits);
+            if let Some(f) = res_obj.as_float() {
+                return Some(RealValue::Float(f));
             }
+            let owner = class_name_for_error(type_of_bits(_py, val_bits));
+            let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+            if res_obj.as_ptr().is_some() {
+                dec_ref_bits(_py, res_bits);
+            }
+            let msg = format!("{owner}.__float__ returned non-float (type {res_type})");
+            return raise_exception::<Option<RealValue>>(_py, "TypeError", &msg);
+        }
+        if exception_pending(_py) {
+            return None;
+        }
+        let index_name_bits = intern_static_name(_py, b"__index__");
+        if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
+            let res_bits = call_callable0(_py, call_bits);
+            dec_ref_bits(_py, call_bits);
             if exception_pending(_py) {
                 return None;
             }
+            let res_obj = obj_from_bits(res_bits);
+            if let Some(i) = to_i64(res_obj) {
+                if res_obj.as_ptr().is_some() {
+                    dec_ref_bits(_py, res_bits);
+                }
+                return Some(RealValue::IntCoerced(i));
+            }
+            if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
+                let big = bigint_ref(big_ptr).clone();
+                dec_ref_bits(_py, res_bits);
+                return Some(RealValue::BigIntCoerced(big));
+            }
+            let res_type = class_name_for_error(type_of_bits(_py, res_bits));
+            if res_obj.as_ptr().is_some() {
+                dec_ref_bits(_py, res_bits);
+            }
+            let msg = format!("__index__ returned non-int (type {res_type})");
+            return raise_exception::<Option<RealValue>>(_py, "TypeError", &msg);
+        }
+        if exception_pending(_py) {
+            return None;
+        }
     }
     let type_label = type_name(_py, obj);
     let msg = format!("{name}() argument must be a real number, not {type_label}");
@@ -1717,17 +1718,16 @@ pub extern "C" fn molt_math_floor(val_bits: u64) -> u64 {
             return bits;
         }
         if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-                let floor_name_bits =
-                    intern_static_name(_py, b"__floor__");
-                if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, floor_name_bits) {
-                    let callable_ok = compat_molt_is_callable(_py, call_bits);
-                    if callable_ok {
-                        let res_bits = call_callable0(_py, call_bits);
-                        dec_ref_bits(_py, call_bits);
-                        return res_bits;
-                    }
+            let floor_name_bits = intern_static_name(_py, b"__floor__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, floor_name_bits) {
+                let callable_ok = compat_molt_is_callable(_py, call_bits);
+                if callable_ok {
+                    let res_bits = call_callable0(_py, call_bits);
                     dec_ref_bits(_py, call_bits);
+                    return res_bits;
                 }
+                dec_ref_bits(_py, call_bits);
+            }
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -1762,17 +1762,16 @@ pub extern "C" fn molt_math_ceil(val_bits: u64) -> u64 {
             return bits;
         }
         if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-                let ceil_name_bits =
-                    intern_static_name(_py, b"__ceil__");
-                if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, ceil_name_bits) {
-                    let callable_ok = compat_molt_is_callable(_py, call_bits);
-                    if callable_ok {
-                        let res_bits = call_callable0(_py, call_bits);
-                        dec_ref_bits(_py, call_bits);
-                        return res_bits;
-                    }
+            let ceil_name_bits = intern_static_name(_py, b"__ceil__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, ceil_name_bits) {
+                let callable_ok = compat_molt_is_callable(_py, call_bits);
+                if callable_ok {
+                    let res_bits = call_callable0(_py, call_bits);
                     dec_ref_bits(_py, call_bits);
+                    return res_bits;
                 }
+                dec_ref_bits(_py, call_bits);
+            }
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -1807,17 +1806,16 @@ pub extern "C" fn molt_math_trunc(val_bits: u64) -> u64 {
             return bits;
         }
         if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-                let trunc_name_bits =
-                    intern_static_name(_py, b"__trunc__");
-                if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, trunc_name_bits) {
-                    let callable_ok = compat_molt_is_callable(_py, call_bits);
-                    if callable_ok {
-                        let res_bits = call_callable0(_py, call_bits);
-                        dec_ref_bits(_py, call_bits);
-                        return res_bits;
-                    }
+            let trunc_name_bits = intern_static_name(_py, b"__trunc__");
+            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, trunc_name_bits) {
+                let callable_ok = compat_molt_is_callable(_py, call_bits);
+                if callable_ok {
+                    let res_bits = call_callable0(_py, call_bits);
                     dec_ref_bits(_py, call_bits);
+                    return res_bits;
                 }
+                dec_ref_bits(_py, call_bits);
+            }
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -2777,11 +2775,7 @@ fn statistics_sorted_values(_py: &PyToken, data_bits: u64) -> Option<u64> {
     Some(sorted_bits)
 }
 
-fn statistics_collect_sorted_real(
-    _py: &PyToken,
-    data_bits: u64,
-    opname: &str,
-) -> Option<Vec<f64>> {
+fn statistics_collect_sorted_real(_py: &PyToken, data_bits: u64, opname: &str) -> Option<Vec<f64>> {
     let mut values = collect_real_vec(_py, data_bits)?;
     if values.is_empty() {
         let msg = format!("{opname} requires at least one data point");
@@ -3351,9 +3345,7 @@ fn statistics_seed_bigint(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
     };
     let seed_bytes: Vec<u8> = unsafe {
         match object_type_id(seed_ptr) {
-            TYPE_ID_STRING => {
-                compat_string_bytes(seed_ptr).to_vec()
-            }
+            TYPE_ID_STRING => compat_string_bytes(seed_ptr).to_vec(),
             TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => {
                 let Some(slice) = bytes_like_slice(seed_ptr) else {
                     return statistics_seed_type_error(_py);
@@ -3437,8 +3429,7 @@ fn statistics_normal_dist_samples_mode(
         if object_type_id(marker_ptr) != TYPE_ID_STRING {
             false
         } else {
-            let marker_bytes =
-                compat_string_bytes(marker_ptr);
+            let marker_bytes = compat_string_bytes(marker_ptr);
             marker_bytes == STATISTICS_NORMAL_DIST_INV_CDF_MODE_MARKER
         }
     };

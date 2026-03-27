@@ -6,12 +6,9 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
-    alloc_list_with_capacity, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes, bytes_like_slice,
-    call_class_init_with_args, dec_ref_bits, exception_pending,
-    is_truthy, missing_bits, molt_getattr_builtin,
-    obj_from_bits,
-    raise_exception, string_obj_to_owned,
+    alloc_list_with_capacity, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
+    bytes_like_slice, call_class_init_with_args, dec_ref_bits, exception_pending, is_truthy,
+    missing_bits, molt_getattr_builtin, obj_from_bits, raise_exception, string_obj_to_owned,
     to_i64,
 };
 
@@ -1995,7 +1992,6 @@ pub extern "C" fn molt_email_quoprimime_decode(encoded_bits: u64, eol_bits: u64)
     })
 }
 
-
 // Duplicated from functions.rs for self-containedness
 fn urllib_base64_encode(input: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -2006,8 +2002,16 @@ fn urllib_base64_encode(input: &[u8]) -> String {
     let mut idx = 0usize;
     while idx < input.len() {
         let b0 = input[idx];
-        let b1 = if idx + 1 < input.len() { input[idx + 1] } else { 0 };
-        let b2 = if idx + 2 < input.len() { input[idx + 2] } else { 0 };
+        let b1 = if idx + 1 < input.len() {
+            input[idx + 1]
+        } else {
+            0
+        };
+        let b2 = if idx + 2 < input.len() {
+            input[idx + 2]
+        } else {
+            0
+        };
         let n = ((b0 as u32) << 16) | ((b1 as u32) << 8) | (b2 as u32);
         out.push(TABLE[((n >> 18) & 0x3f) as usize] as char);
         out.push(TABLE[((n >> 12) & 0x3f) as usize] as char);

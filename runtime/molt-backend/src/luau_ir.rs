@@ -228,14 +228,11 @@ impl DefUseInfo {
         for (func_idx, func) in module.functions.iter().enumerate() {
             // Parameters are definitions
             for (name, _ty) in &func.params {
-                info.defs
-                    .entry(name.clone())
-                    .or_default()
-                    .push(DefSite {
-                        func_idx,
-                        stmt_path: vec![],
-                        is_local: true,
-                    });
+                info.defs.entry(name.clone()).or_default().push(DefSite {
+                    func_idx,
+                    stmt_path: vec![],
+                    is_local: true,
+                });
             }
             info.analyze_stmts(&func.body, func_idx, &mut vec![]);
         }
@@ -254,27 +251,21 @@ impl DefUseInfo {
     fn analyze_stmt(&mut self, stmt: &LuauStmt, func_idx: usize, path: &[usize]) {
         match stmt {
             LuauStmt::Local(name, _, expr) => {
-                self.defs
-                    .entry(name.clone())
-                    .or_default()
-                    .push(DefSite {
-                        func_idx,
-                        stmt_path: path.to_vec(),
-                        is_local: true,
-                    });
+                self.defs.entry(name.clone()).or_default().push(DefSite {
+                    func_idx,
+                    stmt_path: path.to_vec(),
+                    is_local: true,
+                });
                 self.analyze_expr(expr, func_idx, path);
             }
             LuauStmt::Assign(target, expr) => {
                 // The target's variable is a def
                 if let LuauExpr::Var(name) = target {
-                    self.defs
-                        .entry(name.clone())
-                        .or_default()
-                        .push(DefSite {
-                            func_idx,
-                            stmt_path: path.to_vec(),
-                            is_local: false,
-                        });
+                    self.defs.entry(name.clone()).or_default().push(DefSite {
+                        func_idx,
+                        stmt_path: path.to_vec(),
+                        is_local: false,
+                    });
                 } else {
                     self.analyze_expr(target, func_idx, path);
                 }
@@ -282,14 +273,11 @@ impl DefUseInfo {
             }
             LuauStmt::MultiAssign(vars, expr) => {
                 for v in vars {
-                    self.defs
-                        .entry(v.clone())
-                        .or_default()
-                        .push(DefSite {
-                            func_idx,
-                            stmt_path: path.to_vec(),
-                            is_local: false,
-                        });
+                    self.defs.entry(v.clone()).or_default().push(DefSite {
+                        func_idx,
+                        stmt_path: path.to_vec(),
+                        is_local: false,
+                    });
                 }
                 self.analyze_expr(expr, func_idx, path);
             }
@@ -322,14 +310,11 @@ impl DefUseInfo {
                 step,
                 body,
             } => {
-                self.defs
-                    .entry(var.clone())
-                    .or_default()
-                    .push(DefSite {
-                        func_idx,
-                        stmt_path: path.to_vec(),
-                        is_local: true,
-                    });
+                self.defs.entry(var.clone()).or_default().push(DefSite {
+                    func_idx,
+                    stmt_path: path.to_vec(),
+                    is_local: true,
+                });
                 self.analyze_expr(start, func_idx, path);
                 self.analyze_expr(stop, func_idx, path);
                 if let Some(s) = step {
@@ -340,14 +325,11 @@ impl DefUseInfo {
             }
             LuauStmt::ForGeneric { vars, iter, body } => {
                 for v in vars {
-                    self.defs
-                        .entry(v.clone())
-                        .or_default()
-                        .push(DefSite {
-                            func_idx,
-                            stmt_path: path.to_vec(),
-                            is_local: true,
-                        });
+                    self.defs.entry(v.clone()).or_default().push(DefSite {
+                        func_idx,
+                        stmt_path: path.to_vec(),
+                        is_local: true,
+                    });
                 }
                 self.analyze_expr(iter, func_idx, path);
                 let mut p = path.to_vec();
@@ -378,13 +360,10 @@ impl DefUseInfo {
     fn analyze_expr(&mut self, expr: &LuauExpr, func_idx: usize, path: &[usize]) {
         match expr {
             LuauExpr::Var(name) => {
-                self.uses
-                    .entry(name.clone())
-                    .or_default()
-                    .push(UseSite {
-                        func_idx,
-                        stmt_path: path.to_vec(),
-                    });
+                self.uses.entry(name.clone()).or_default().push(UseSite {
+                    func_idx,
+                    stmt_path: path.to_vec(),
+                });
                 *self.use_counts.entry(name.clone()).or_insert(0) += 1;
             }
             LuauExpr::BinOp(l, _, r) | LuauExpr::Concat(l, r) => {
@@ -611,11 +590,7 @@ impl<'a> LuauEmitter<'a> {
                 self.line("end");
             }
             LuauStmt::ForGeneric { vars, iter, body } => {
-                self.line(&format!(
-                    "for {} in {} do",
-                    vars.join(", "),
-                    fmt_expr(iter)
-                ));
+                self.line(&format!("for {} in {} do", vars.join(", "), fmt_expr(iter)));
                 self.indent += 1;
                 for s in body {
                     self.emit_stmt(s);
@@ -665,14 +640,7 @@ fn fmt_expr(expr: &LuauExpr) -> String {
     match expr {
         LuauExpr::Lit(lit) => match lit {
             LuauLit::Nil => "nil".to_string(),
-            LuauLit::Bool(b) => {
-                if *b {
-                    "true"
-                } else {
-                    "false"
-                }
-                .to_string()
-            }
+            LuauLit::Bool(b) => if *b { "true" } else { "false" }.to_string(),
             LuauLit::Int(n) => n.to_string(),
             LuauLit::Float(f) => format!("{f}"),
             LuauLit::Str(s) => format!("\"{}\"", escape_luau_str(s)),
@@ -1059,11 +1027,7 @@ mod tests {
                 params: vec![],
                 return_type: None,
                 body: vec![
-                    LuauStmt::Local(
-                        "x".to_string(),
-                        None,
-                        LuauExpr::Lit(LuauLit::Int(1)),
-                    ),
+                    LuauStmt::Local("x".to_string(), None, LuauExpr::Lit(LuauLit::Int(1))),
                     LuauStmt::ExprStmt(LuauExpr::BinOp(
                         Box::new(LuauExpr::Var("x".to_string())),
                         LuauBinOp::Add,

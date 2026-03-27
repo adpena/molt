@@ -21,9 +21,9 @@ impl CudaDevice {
     pub fn new() -> Result<Self, super::gpu_runtime::GpuError> {
         match cudarc::driver::CudaDevice::new(0) {
             Ok(dev) => Ok(Self { inner: dev }),
-            Err(e) => Err(super::gpu_runtime::GpuError::DeviceNotAvailable(
-                format!("CUDA init failed: {e}"),
-            )),
+            Err(e) => Err(super::gpu_runtime::GpuError::DeviceNotAvailable(format!(
+                "CUDA init failed: {e}"
+            ))),
         }
     }
 

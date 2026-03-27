@@ -54,8 +54,9 @@ pub extern "C" fn molt_itertools_alloc_class(
     layout_size: i64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let name =
-            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len)) };
+        let name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
+        };
         let name_str_ptr = alloc_string(_py, name.as_bytes());
         if name_str_ptr.is_null() {
             return MoltObject::none().bits();
@@ -188,7 +189,8 @@ pub extern "C" fn molt_index_i64_from_obj(
     err_len: usize,
 ) -> i64 {
     crate::with_gil_entry!(_py, {
-        let err = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
+        let err =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         builtins::numbers::index_i64_from_obj(_py, obj_bits, err)
     })
 }
@@ -210,7 +212,5 @@ pub extern "C" fn molt_intern_static_name(key_ptr: *const u8, key_len: usize) ->
 /// raise_not_iterable — exposed for the itertools crate.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_raise_not_iterable(bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        raise_not_iterable::<u64>(_py, bits)
-    })
+    crate::with_gil_entry!(_py, { raise_not_iterable::<u64>(_py, bits) })
 }

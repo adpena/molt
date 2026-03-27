@@ -4,8 +4,8 @@
 //! internal `pub(crate)` function.  The stringprep crate declares matching
 //! `extern "C"` imports and they are resolved at link time.
 
-use crate::*;
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
+use crate::*;
 
 // ---------------------------------------------------------------------------
 // Exception / error handling
@@ -19,8 +19,11 @@ pub extern "C" fn __molt_stringprep_raise_exception(
     msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let type_name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len)) };
-        let msg = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
+        let type_name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
+        };
+        let msg =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
         raise_exception::<u64>(_py, type_name, msg)
     })
 }

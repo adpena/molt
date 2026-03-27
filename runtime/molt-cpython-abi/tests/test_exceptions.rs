@@ -133,7 +133,10 @@ fn test_print_clears_exception() {
     unsafe { molt_cpython_abi::api::errors::PyErr_Print() };
 
     let occurred = unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() };
-    assert!(occurred.is_null(), "Exception should be cleared after Print");
+    assert!(
+        occurred.is_null(),
+        "Exception should be cleared after Print"
+    );
 }
 
 #[test]
@@ -154,9 +157,7 @@ fn test_format_sets_exception_returns_null() {
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     let exc = &raw mut PyExc_TypeError;
-    let result = unsafe {
-        molt_cpython_abi::api::errors::PyErr_Format(exc, c"bad type".as_ptr())
-    };
+    let result = unsafe { molt_cpython_abi::api::errors::PyErr_Format(exc, c"bad type".as_ptr()) };
     assert!(result.is_null(), "PyErr_Format should return NULL");
 
     let occurred = unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() };
