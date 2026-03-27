@@ -141,11 +141,7 @@ class EnumType(type):
             namespace = {}
             for member_name, member_value in names:
                 namespace[member_name] = member_value
-            bases = (cls,) if cls is not Enum else ()
-            if cls is Enum:
-                bases = ()
-            else:
-                bases = (cls,)
+            bases = () if cls is Enum else (cls,)
             new_cls = cls.__class__.__new__(cls.__class__, value, bases, namespace)
             if module is not None:
                 new_cls.__module__ = module

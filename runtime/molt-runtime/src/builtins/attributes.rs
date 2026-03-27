@@ -1818,6 +1818,21 @@ pub(crate) unsafe fn attr_lookup_ptr(
         }
         if type_id == TYPE_ID_FUNCTION {
             if let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits)) {
+                if name == "__get__" {
+                    // CPython parity: all function objects (including
+                    // builtin_function_or_method) expose __get__ for the
+                    // descriptor protocol.  f.__get__(instance, owner) returns
+                    // a bound method binding f to instance, or f itself when
+                    // instance is None.
+                    let func_bits = crate::builtins::methods::builtin_func_bits(
+                        _py,
+                        &runtime_state(_py).method_cache.function_descriptor_get,
+                        fn_addr!(molt_function_descriptor_get),
+                        3, // (self, instance, owner)
+                    );
+                    let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+                    return Some(molt_bound_method_new(func_bits, self_bits));
+                }
                 if name == "__code__" {
                     // CPython parity: builtin_function_or_method objects do not expose __code__.
                     let builtin_bits = builtin_classes(_py).builtin_function_or_method;
@@ -4919,6 +4934,28 @@ pub unsafe extern "C" fn molt_del_attr_object(
             attr_error(_py, type_name(_py, obj), attr_name)
         })
     }
+}
+
+/// Implements the descriptor protocol `__get__` for function objects.
+///
+/// CPython semantics: `func.__get__(instance, owner)` returns a bound method
+/// when `instance` is not `None`, or the function itself otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_function_descriptor_get(
+    self_bits: u64,
+    instance_bits: u64,
+    _owner_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let instance_obj = obj_from_bits(instance_bits);
+        if instance_obj.is_none() {
+            // Unbound access: return the function itself.
+            inc_ref_bits(_py, self_bits);
+            return self_bits;
+        }
+        // Bound access: return a bound method wrapping self bound to instance.
+        molt_bound_method_new(self_bits, instance_bits)
+    })
 }
 
 #[unsafe(no_mangle)]

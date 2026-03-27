@@ -516,6 +516,7 @@ pub(crate) struct MethodCache {
     pub(crate) exception_group_derive: AtomicU64,
     pub(crate) generic_alias_new: AtomicU64,
     pub(crate) generic_alias_class_getitem: AtomicU64,
+    pub(crate) function_descriptor_get: AtomicU64,
 }
 
 impl MethodCache {
@@ -794,6 +795,7 @@ impl MethodCache {
             exception_group_derive: AtomicU64::new(0),
             generic_alias_new: AtomicU64::new(0),
             generic_alias_class_getitem: AtomicU64::new(0),
+            function_descriptor_get: AtomicU64::new(0),
         }
     }
 }
@@ -1072,5 +1074,6 @@ fn method_cache_slots(state: &RuntimeState) -> Vec<&AtomicU64> {
         &state.method_cache.exception_group_derive,
         &state.method_cache.generic_alias_new,
         &state.method_cache.generic_alias_class_getitem,
+        &state.method_cache.function_descriptor_get,
     ]
 }

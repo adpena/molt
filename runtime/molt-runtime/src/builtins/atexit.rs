@@ -144,7 +144,7 @@ fn atexit_unraisable_message_and_object(
     callback_bits: u64,
     callback_text: &str,
 ) -> (String, u64) {
-    if atexit_target_minor(_py) >= 13 {
+    if atexit_target_minor() >= 13 {
         (
             format!("Exception ignored in atexit callback {callback_text}"),
             MoltObject::none().bits(),
@@ -264,13 +264,10 @@ fn atexit_report_callback_exception(_py: &PyToken<'_>, callback_bits: u64, exc_b
     }
 }
 
-fn atexit_target_minor(_py: &PyToken<'_>) -> i64 {
-    let state = runtime_state(_py);
-    if let Some(info) = state.sys_version_info.lock().unwrap().as_ref()
-        && info.major == 3
-    {
-        return info.minor;
-    }
+fn atexit_target_minor() -> i64 {
+    // Check explicit env-var overrides only.  Do NOT read from
+    // state.sys_version_info — that field is tainted by the host Python
+    // version used to run the compiler.  Default to 12 (molt's target).
     if let Ok(raw) = std::env::var("MOLT_PYTHON_VERSION")
         && let Some((major_raw, minor_raw)) = raw.split_once('.')
         && major_raw.trim() == "3"
