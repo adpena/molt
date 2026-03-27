@@ -3,32 +3,35 @@ use std::sync::OnceLock;
 
 use molt_obj_model::MoltObject;
 
+use super::generators_async::{cancel_future_task, molt_future_new};
 use crate::object::HEADER_FLAG_COROUTINE;
 use crate::object::accessors::resolve_obj_ptr;
-use super::generators_async::{cancel_future_task, molt_future_new};
 use crate::{
     ACTIVE_EXCEPTION_STACK, ASYNCGEN_CONTROL_SIZE, ASYNCGEN_FIRSTITER_OFFSET, ASYNCGEN_GEN_OFFSET,
     ASYNCGEN_OP_ACLOSE, ASYNCGEN_OP_ANEXT, ASYNCGEN_OP_ASEND, ASYNCGEN_OP_ATHROW,
     ASYNCGEN_PENDING_OFFSET, ASYNCGEN_RUNNING_OFFSET, GEN_CLOSED_OFFSET, GEN_CONTROL_SIZE,
-    GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET, GEN_THROW_OFFSET, GEN_YIELD_FROM_OFFSET, HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED, MoltHeader, PtrSlot, TASK_KIND_COROUTINE, TASK_KIND_FUTURE,
-    TASK_KIND_GENERATOR, TYPE_ID_ASYNC_GENERATOR, TYPE_ID_EXCEPTION, TYPE_ID_GENERATOR,
-    TYPE_ID_OBJECT, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_dict_with_pairs,
-    alloc_exception, alloc_object, alloc_tuple, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr, asyncgen_registry,
-    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, call_callable0, call_callable1, call_poll_fn, clear_exception, context_stack_store, context_stack_take, current_task_ptr, dec_ref_bits, exception_clear_reason_set, exception_context_align_depth,
-    exception_context_fallback_pop, exception_context_fallback_push, exception_kind_bits,
-    exception_pending, exception_stack_depth, exception_stack_set_depth,
-    exception_type_bits_from_name, fn_ptr_code_get, generator_context_stack_store,
-    generator_context_stack_take, generator_exception_stack_store, generator_exception_stack_take,
-    generator_raise_active, header_from_obj_ptr, inc_ref_bits,
+    GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET, GEN_THROW_OFFSET, GEN_YIELD_FROM_OFFSET,
+    HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED, MoltHeader, PtrSlot, TASK_KIND_COROUTINE,
+    TASK_KIND_FUTURE, TASK_KIND_GENERATOR, TYPE_ID_ASYNC_GENERATOR, TYPE_ID_EXCEPTION,
+    TYPE_ID_GENERATOR, TYPE_ID_OBJECT, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
+    alloc_dict_with_pairs, alloc_exception, alloc_object, alloc_tuple, async_sleep_poll_fn_addr,
+    asyncgen_poll_fn_addr, asyncgen_registry, attr_lookup_ptr_allow_missing,
+    attr_name_bits_from_bytes, call_callable0, call_callable1, call_poll_fn, clear_exception,
+    context_stack_store, context_stack_take, current_task_ptr, dec_ref_bits,
+    exception_clear_reason_set, exception_context_align_depth, exception_context_fallback_pop,
+    exception_context_fallback_push, exception_kind_bits, exception_pending, exception_stack_depth,
+    exception_stack_set_depth, exception_type_bits_from_name, fn_ptr_code_get,
+    generator_context_stack_store, generator_context_stack_take, generator_exception_stack_store,
+    generator_exception_stack_take, generator_raise_active, header_from_obj_ptr, inc_ref_bits,
     io_wait_poll_fn_addr, is_truthy, issubclass_bits, maybe_ptr_from_bits, missing_bits,
-    molt_exception_clear, molt_exception_kind, molt_exception_last, molt_exception_set_last, molt_is_callable,
-    molt_raise, molt_str_from_obj, obj_from_bits,
-    object_mark_has_ptrs, object_type_id, pending_bits_i64, ptr_from_bits, raise_exception, register_task_token, resolve_task_ptr, runtime_state, seq_vec_ref,
-    set_generator_raise, string_obj_to_owned, task_mark_done, task_waiting_on, to_i64, token_id_from_bits, type_name,
+    molt_exception_clear, molt_exception_kind, molt_exception_last, molt_exception_set_last,
+    molt_is_callable, molt_raise, molt_str_from_obj, obj_from_bits, object_mark_has_ptrs,
+    object_type_id, pending_bits_i64, ptr_from_bits, raise_exception, register_task_token,
+    resolve_task_ptr, runtime_state, seq_vec_ref, set_generator_raise, string_obj_to_owned,
+    task_mark_done, task_waiting_on, to_i64, token_id_from_bits, type_name,
 };
 
 use crate::state::runtime_state::{AsyncGenLocalsEntry, GenLocalsEntry};
-
 
 pub(crate) fn promise_trace_enabled() -> bool {
     static TRACE: OnceLock<bool> = OnceLock::new();
@@ -68,7 +71,6 @@ pub(crate) fn debug_current_task() -> bool {
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_CURRENT_TASK").as_deref() == Ok("1"))
 }
-
 
 unsafe fn generator_slot_ptr(ptr: *mut u8, offset: usize) -> *mut u64 {
     unsafe { ptr.add(offset) as *mut u64 }
@@ -2094,4 +2096,3 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
         })
     }
 }
-

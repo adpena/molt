@@ -1,5 +1,5 @@
-use molt_runtime_core::prelude::*;
 use crate::bridge::*;
+use molt_runtime_core::prelude::*;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};
 
@@ -20,34 +20,34 @@ pub(crate) const PRESET_EXTREME: i64 = 1 << 31;
 
 // ── Constant intrinsics ───────────────────────────────────────────────────────
 pub extern "C" fn molt_lzma_format_auto() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_AUTO) )
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_AUTO))
 }
 pub extern "C" fn molt_lzma_format_xz() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_XZ) )
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_XZ))
 }
 pub extern "C" fn molt_lzma_format_alone() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_ALONE) )
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_ALONE))
 }
 pub extern "C" fn molt_lzma_format_raw() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_RAW) )
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_RAW))
 }
 pub extern "C" fn molt_lzma_check_none() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_NONE) )
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_NONE))
 }
 pub extern "C" fn molt_lzma_check_crc32() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_CRC32) )
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_CRC32))
 }
 pub extern "C" fn molt_lzma_check_crc64() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_CRC64) )
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_CRC64))
 }
 pub extern "C" fn molt_lzma_check_sha256() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_SHA256) )
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_SHA256))
 }
 pub extern "C" fn molt_lzma_preset_default() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, PRESET_DEFAULT) )
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, PRESET_DEFAULT))
 }
 pub extern "C" fn molt_lzma_preset_extreme() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, PRESET_EXTREME) )
+    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, PRESET_EXTREME))
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -331,11 +331,7 @@ pub extern "C" fn molt_lzma_compressor_flush(handle_bits: u64) -> u64 {
             return raise_exception(_py, "lzma.LZMAError", "invalid compressor handle");
         };
         if handle.flushed {
-            return raise_exception(
-                _py,
-                "lzma.LZMAError",
-                "Compressor has already been flushed",
-            );
+            return raise_exception(_py, "lzma.LZMAError", "Compressor has already been flushed");
         }
         handle.flushed = true;
         let input = std::mem::take(&mut handle.buffer);
@@ -791,11 +787,7 @@ pub extern "C" fn molt_lzma_file_close(handle_bits: u64) -> u64 {
                 match result {
                     Ok(compressed) => {
                         if file.write_all(&compressed).is_err() {
-                            return raise_exception(
-                                _py,
-                                "OSError",
-                                "lzma write to file failed",
-                            );
+                            return raise_exception(_py, "OSError", "lzma write to file failed");
                         }
                     }
                     Err(e) => {

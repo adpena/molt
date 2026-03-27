@@ -4,25 +4,19 @@
 //! internal `pub(crate)` function.  The math crate declares matching
 //! `extern "C"` imports and they are resolved at link time.
 
-use crate::*;
 use crate::builtins::classes::class_name_for_error as _class_name_for_error;
 use crate::builtins::containers::list_len as _list_len;
 use crate::builtins::numbers::{
-    bigint_bits as _bigint_bits,
-    bigint_from_f64_trunc as _bigint_from_f64_trunc,
-    bigint_to_inline as _bigint_to_inline,
-    index_bigint_from_obj as _index_bigint_from_obj,
-    index_i64_from_obj as _index_i64_from_obj,
-    to_bigint as _to_bigint,
-    to_f64 as _to_f64,
+    bigint_bits as _bigint_bits, bigint_from_f64_trunc as _bigint_from_f64_trunc,
+    bigint_to_inline as _bigint_to_inline, index_bigint_from_obj as _index_bigint_from_obj,
+    index_i64_from_obj as _index_i64_from_obj, to_bigint as _to_bigint, to_f64 as _to_f64,
 };
 use crate::builtins::type_ops::type_of_bits as _type_of_bits;
 use crate::object::ops::{
-    format_obj as _format_obj,
-    format_obj_str as _format_obj_str,
-    string_obj_to_owned as _string_obj_to_owned,
-    type_name as _type_name,
+    format_obj as _format_obj, format_obj_str as _format_obj_str,
+    string_obj_to_owned as _string_obj_to_owned, type_name as _type_name,
 };
+use crate::*;
 use num_bigint::{BigInt, Sign};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -38,17 +32,18 @@ pub extern "C" fn __molt_math_raise_exception(
     msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let type_name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len)) };
-        let msg = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
+        let type_name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
+        };
+        let msg =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
         raise_exception::<u64>(_py, type_name, msg)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_math_exception_pending() -> i32 {
-    crate::with_gil_entry!(_py, {
-        if exception_pending(_py) { 1 } else { 0 }
-    })
+    crate::with_gil_entry!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +203,9 @@ pub extern "C" fn __molt_math_to_i64(bits: u64, out: *mut i64) -> i32 {
     let obj = obj_from_bits(bits);
     match to_i64(obj) {
         Some(v) => {
-            unsafe { *out = v; }
+            unsafe {
+                *out = v;
+            }
             1
         }
         None => 0,
@@ -220,7 +217,9 @@ pub extern "C" fn __molt_math_to_f64(bits: u64, out: *mut f64) -> i32 {
     let obj = obj_from_bits(bits);
     match _to_f64(obj) {
         Some(v) => {
-            unsafe { *out = v; }
+            unsafe {
+                *out = v;
+            }
             1
         }
         None => 0,
@@ -259,9 +258,7 @@ pub extern "C" fn __molt_math_to_bigint(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_math_int_bits_from_i64(val: i64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        int_bits_from_i64(_py, val)
-    })
+    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, val) })
 }
 
 #[unsafe(no_mangle)]
@@ -341,11 +338,7 @@ pub extern "C" fn __molt_math_bigint_from_f64_trunc(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_math_bigint_bits(
-    sign: i32,
-    data_ptr: *const u8,
-    data_len: usize,
-) -> u64 {
+pub extern "C" fn __molt_math_bigint_bits(sign: i32, data_ptr: *const u8, data_len: usize) -> u64 {
     crate::with_gil_entry!(_py, {
         let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         let sign = match sign {
@@ -384,7 +377,8 @@ pub extern "C" fn __molt_math_index_i64_from_obj(
     err_len: usize,
 ) -> i64 {
     crate::with_gil_entry!(_py, {
-        let err = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
+        let err =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         _index_i64_from_obj(_py, obj_bits, err)
     })
 }
@@ -399,7 +393,8 @@ pub extern "C" fn __molt_math_index_bigint_from_obj(
     out_len: *mut usize,
 ) -> i32 {
     crate::with_gil_entry!(_py, {
-        let err = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
+        let err =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         match _index_bigint_from_obj(_py, obj_bits, err) {
             Some(value) => {
                 let (sign, bytes) = value.to_bytes_be();
@@ -429,9 +424,7 @@ pub extern "C" fn __molt_math_index_bigint_from_obj(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_math_call_callable0(call_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        unsafe { call_callable0(_py, call_bits) }
-    })
+    crate::with_gil_entry!(_py, { unsafe { call_callable0(_py, call_bits) } })
 }
 
 #[unsafe(no_mangle)]
@@ -532,9 +525,7 @@ pub extern "C" fn __molt_math_class_name_for_error(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_math_type_of_bits(val_bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        _type_of_bits(_py, val_bits)
-    })
+    crate::with_gil_entry!(_py, { _type_of_bits(_py, val_bits) })
 }
 
 #[unsafe(no_mangle)]
@@ -607,7 +598,9 @@ pub extern "C" fn __molt_math_dict_get_in_place(
     crate::with_gil_entry!(_py, {
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
             Some(bits) => {
-                unsafe { *out = bits; }
+                unsafe {
+                    *out = bits;
+                }
                 1
             }
             None => 0,
@@ -661,21 +654,23 @@ pub extern "C" fn __molt_math_molt_iter_next(iter_bits: u64, out: *mut u64) -> i
                 0 // StopIteration or error
             } else {
                 // Actual None value — return it.
-                unsafe { *out = result; }
+                unsafe {
+                    *out = result;
+                }
                 1
             }
         })
     } else {
-        unsafe { *out = result; }
+        unsafe {
+            *out = result;
+        }
         1
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_math_raise_not_iterable(bits: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        raise_not_iterable::<u64>(_py, bits)
-    })
+    crate::with_gil_entry!(_py, { raise_not_iterable::<u64>(_py, bits) })
 }
 
 #[unsafe(no_mangle)]

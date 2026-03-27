@@ -115,7 +115,10 @@ mod tests {
     fn test_serialize_roundtrip() {
         let ops = sample_ops();
         let bytes = serialize_ops(&ops);
-        assert!(!bytes.is_empty(), "serialization must produce non-empty bytes");
+        assert!(
+            !bytes.is_empty(),
+            "serialization must produce non-empty bytes"
+        );
 
         let restored = deserialize_ops(&bytes).expect("deserialization must succeed");
         assert_eq!(
@@ -125,7 +128,10 @@ mod tests {
         );
         for (orig, got) in ops.iter().zip(restored.iter()) {
             assert_eq!(orig.kind, got.kind, "op kind must survive round-trip");
-            assert_eq!(orig.value, got.value, "integer value must survive round-trip");
+            assert_eq!(
+                orig.value, got.value,
+                "integer value must survive round-trip"
+            );
             assert_eq!(orig.args, got.args, "args must survive round-trip");
             assert_eq!(orig.out, got.out, "out must survive round-trip");
         }

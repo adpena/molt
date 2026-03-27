@@ -212,10 +212,7 @@ fn find_loops(func: &TirFunction) -> HashMap<BlockId, HashSet<BlockId>> {
             if dominates(&dom, s, *bid) {
                 // Natural loop: collect all nodes between latch and header.
                 let body = natural_loop_body(func, s, *bid);
-                loops
-                    .entry(s)
-                    .or_insert_with(HashSet::new)
-                    .extend(body);
+                loops.entry(s).or_insert_with(HashSet::new).extend(body);
             }
         }
     }
@@ -578,15 +575,12 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             }
         };
 
-        op.attrs
-            .insert("vectorize".into(), AttrValue::Bool(true));
+        op.attrs.insert("vectorize".into(), AttrValue::Bool(true));
         stats.values_changed += 1;
 
         if let Some(red) = info.reduction_op {
-            op.attrs.insert(
-                "reduction".into(),
-                AttrValue::Str(red.as_str().into()),
-            );
+            op.attrs
+                .insert("reduction".into(), AttrValue::Str(red.as_str().into()));
         }
     }
 
@@ -662,10 +656,10 @@ mod tests {
         let exit_id = BlockId(2);
 
         // Values
-        let acc = ValueId(0);   // loop block arg — accumulator
-        let elem = ValueId(1);  // loaded element
-        let acc2 = ValueId(2);  // updated accumulator
-        let init = ValueId(3);  // initial accumulator value
+        let acc = ValueId(0); // loop block arg — accumulator
+        let elem = ValueId(1); // loaded element
+        let acc2 = ValueId(2); // updated accumulator
+        let init = ValueId(3); // initial accumulator value
 
         let mut blocks = HashMap::new();
 
@@ -742,14 +736,17 @@ mod tests {
             next_value: 5,
             next_block: 3,
             attrs: crate::tir::ops::AttrDict::new(),
-        has_exception_handling: false,
+            has_exception_handling: false,
             label_id_map: std::collections::HashMap::new(),
         };
 
         let stats = run(&mut func);
 
         // Loop header should have been annotated.
-        assert!(stats.values_changed > 0, "expected at least one loop annotated");
+        assert!(
+            stats.values_changed > 0,
+            "expected at least one loop annotated"
+        );
 
         let header = &func.blocks[&header_id];
         let for_iter_op = header
@@ -841,7 +838,7 @@ mod tests {
             next_value: 2,
             next_block: 3,
             attrs: crate::tir::ops::AttrDict::new(),
-        has_exception_handling: false,
+            has_exception_handling: false,
             label_id_map: std::collections::HashMap::new(),
         };
 
@@ -940,7 +937,7 @@ mod tests {
             next_value: 3,
             next_block: 3,
             attrs: crate::tir::ops::AttrDict::new(),
-        has_exception_handling: false,
+            has_exception_handling: false,
             label_id_map: std::collections::HashMap::new(),
         };
 

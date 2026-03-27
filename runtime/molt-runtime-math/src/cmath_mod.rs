@@ -4,8 +4,8 @@
 // NaN-boxed float arguments (real, imag) and results are returned as a
 // 2-element tuple of floats (real_bits, imag_bits).
 
-use molt_runtime_core::prelude::*;
 use crate::bridge::*;
+use molt_runtime_core::prelude::*;
 
 // ---------------------------------------------------------------------------
 // Internal: build a complex result tuple (real, imag)

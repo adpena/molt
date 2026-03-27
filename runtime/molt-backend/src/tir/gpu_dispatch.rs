@@ -21,7 +21,9 @@ pub fn create_gpu_device() -> Result<Box<dyn GpuDevice>, GpuError> {
             }
             #[cfg(not(target_os = "macos"))]
             {
-                Err(GpuError::DeviceNotAvailable("Metal is only available on macOS".into()))
+                Err(GpuError::DeviceNotAvailable(
+                    "Metal is only available on macOS".into(),
+                ))
             }
         }
         GpuPlatform::WebGpu => Ok(Box::new(super::gpu_webgpu::WebGpuDevice::new()?)),
@@ -43,8 +45,8 @@ pub fn compile_and_launch(
     block: [u32; 3],
 ) -> Result<(), GpuError> {
     // Delegate to the pipeline for source generation + device creation.
-    let platform = detect_gpu_platform()
-        .ok_or(GpuError::DeviceNotAvailable("No GPU platform".into()))?;
+    let platform =
+        detect_gpu_platform().ok_or(GpuError::DeviceNotAvailable("No GPU platform".into()))?;
 
     let source = match platform {
         GpuPlatform::Metal => super::gpu_msl::generate_msl(kernel),
@@ -74,14 +76,20 @@ mod tests {
     #[cfg(all(target_os = "macos", feature = "gpu-metal"))]
     fn create_gpu_device_returns_metal_on_macos() {
         let device = create_gpu_device();
-        assert!(device.is_ok(), "create_gpu_device should succeed on macOS with gpu-metal");
+        assert!(
+            device.is_ok(),
+            "create_gpu_device should succeed on macOS with gpu-metal"
+        );
     }
 
     #[test]
     #[cfg(all(target_os = "macos", not(feature = "gpu-metal")))]
     fn create_gpu_device_returns_error_without_feature() {
         let device = create_gpu_device();
-        assert!(device.is_err(), "create_gpu_device should fail without gpu-metal feature");
+        assert!(
+            device.is_err(),
+            "create_gpu_device should fail without gpu-metal feature"
+        );
     }
 
     #[test]
@@ -95,7 +103,11 @@ mod tests {
             launch_config: None,
         };
         let result = compile_and_launch(&kernel, [1, 1, 1], [1, 1, 1]);
-        assert!(result.is_ok(), "compile_and_launch should succeed on macOS: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "compile_and_launch should succeed on macOS: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -109,6 +121,9 @@ mod tests {
             launch_config: None,
         };
         let result = compile_and_launch(&kernel, [1, 1, 1], [1, 1, 1]);
-        assert!(result.is_err(), "compile_and_launch should fail without gpu-metal");
+        assert!(
+            result.is_err(),
+            "compile_and_launch should fail without gpu-metal"
+        );
     }
 }

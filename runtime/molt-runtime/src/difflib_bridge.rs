@@ -4,9 +4,9 @@
 //! internal `pub(crate)` function.  The difflib crate declares matching
 //! `extern "C"` imports and they are resolved at link time.
 
-use crate::*;
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
 use crate::object::ops::type_name as _type_name;
+use crate::*;
 
 // ---------------------------------------------------------------------------
 // Exception / error handling
@@ -20,8 +20,11 @@ pub extern "C" fn __molt_difflib_raise_exception(
     msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let type_name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len)) };
-        let msg = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
+        let type_name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
+        };
+        let msg =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
         raise_exception::<u64>(_py, type_name, msg)
     })
 }
@@ -120,7 +123,9 @@ pub extern "C" fn __molt_difflib_to_i64(bits: u64, out: *mut i64) -> i32 {
     let obj = obj_from_bits(bits);
     match to_i64(obj) {
         Some(v) => {
-            unsafe { *out = v; }
+            unsafe {
+                *out = v;
+            }
             1
         }
         None => 0,
@@ -132,7 +137,9 @@ pub extern "C" fn __molt_difflib_to_f64(bits: u64, out: *mut f64) -> i32 {
     let obj = obj_from_bits(bits);
     match to_f64(obj) {
         Some(v) => {
-            unsafe { *out = v; }
+            unsafe {
+                *out = v;
+            }
             1
         }
         None => 0,

@@ -4,10 +4,12 @@
 // NFC/NFD normalization is implemented via Rust's char decomposition tables
 // from the standard library.
 
-use crate::bridge::{alloc_string, int_bits_from_i64, raise_exception, string_obj_to_owned, inc_ref_bits};
+use crate::bridge::{
+    alloc_string, inc_ref_bits, int_bits_from_i64, raise_exception, string_obj_to_owned,
+};
 use molt_obj_model::MoltObject;
-use molt_runtime_core::prelude::*;
 use molt_runtime_core::obj_from_bits;
+use molt_runtime_core::prelude::*;
 
 // ---------------------------------------------------------------------------
 // Unicode version

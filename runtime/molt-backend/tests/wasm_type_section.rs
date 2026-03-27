@@ -184,11 +184,7 @@ fn multi_return_type_33_is_1_to_2() {
     let sigs = extract_type_signatures(&wasm);
     assert!(sigs.len() > 33);
     // Type 33: (i64) -> (i64, i64)
-    assert_eq!(
-        sigs[33],
-        (1, 2),
-        "type 33 should be (i64) -> (i64, i64)"
-    );
+    assert_eq!(sigs[33], (1, 2), "type 33 should be (i64) -> (i64, i64)");
 }
 
 #[test]
@@ -206,11 +202,7 @@ fn multi_return_type_34_is_0_to_2() {
     let sigs = extract_type_signatures(&wasm);
     assert!(sigs.len() > 34);
     // Type 34: () -> (i64, i64)
-    assert_eq!(
-        sigs[34],
-        (0, 2),
-        "type 34 should be () -> (i64, i64)"
-    );
+    assert_eq!(sigs[34], (0, 2), "type 34 should be () -> (i64, i64)");
 }
 
 // -----------------------------------------------------------------------

@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_imports)]
 
-use molt_runtime_core::prelude::*;
 use crate::bridge::*;
+use molt_runtime_core::prelude::*;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -178,11 +178,7 @@ fn quopri_decode_impl(data: &[u8], header: bool) -> Vec<u8> {
     out
 }
 
-fn quopri_expect_bytes_like(
-    _py: &PyToken,
-    bits: u64,
-    arg_name: &str,
-) -> Result<Vec<u8>, u64> {
+fn quopri_expect_bytes_like(_py: &PyToken, bits: u64, arg_name: &str) -> Result<Vec<u8>, u64> {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         let msg = format!("quopri {arg_name} expects bytes-like");
         return Err(raise_exception::<u64>(_py, "TypeError", &msg));
@@ -194,11 +190,7 @@ fn quopri_expect_bytes_like(
     Ok(raw.to_vec())
 }
 
-fn quopri_expect_single_byte(
-    _py: &PyToken,
-    bits: u64,
-    arg_name: &str,
-) -> Result<u8, u64> {
+fn quopri_expect_single_byte(_py: &PyToken, bits: u64, arg_name: &str) -> Result<u8, u64> {
     let bytes = quopri_expect_bytes_like(_py, bits, arg_name)?;
     if bytes.len() != 1 {
         let msg = format!("quopri {arg_name} expects single-byte bytes");
@@ -252,11 +244,7 @@ fn email_quopri_push_body_mapped(byte: u8, out: &mut String) {
     }
 }
 
-fn email_quopri_expect_int_octet(
-    _py: &PyToken,
-    bits: u64,
-    arg_name: &str,
-) -> Result<u8, u64> {
+fn email_quopri_expect_int_octet(_py: &PyToken, bits: u64, arg_name: &str) -> Result<u8, u64> {
     let value = match to_i64(obj_from_bits(bits)) {
         Some(value) => value,
         None => {
@@ -271,11 +259,7 @@ fn email_quopri_expect_int_octet(
     Ok(value as u8)
 }
 
-fn email_quopri_expect_string(
-    _py: &PyToken,
-    bits: u64,
-    arg_name: &str,
-) -> Result<String, u64> {
+fn email_quopri_expect_string(_py: &PyToken, bits: u64, arg_name: &str) -> Result<String, u64> {
     match string_obj_to_owned(obj_from_bits(bits)) {
         Some(value) => Ok(value),
         None => {
@@ -1987,7 +1971,6 @@ pub extern "C" fn molt_email_quoprimime_decode(encoded_bits: u64, eol_bits: u64)
     })
 }
 
-
 // Duplicated from functions.rs for self-containedness
 fn urllib_base64_encode(input: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -1998,8 +1981,16 @@ fn urllib_base64_encode(input: &[u8]) -> String {
     let mut idx = 0usize;
     while idx < input.len() {
         let b0 = input[idx];
-        let b1 = if idx + 1 < input.len() { input[idx + 1] } else { 0 };
-        let b2 = if idx + 2 < input.len() { input[idx + 2] } else { 0 };
+        let b1 = if idx + 1 < input.len() {
+            input[idx + 1]
+        } else {
+            0
+        };
+        let b2 = if idx + 2 < input.len() {
+            input[idx + 2]
+        } else {
+            0
+        };
         let n = ((b0 as u32) << 16) | ((b1 as u32) << 8) | (b2 as u32);
         out.push(TABLE[((n >> 18) & 0x3f) as usize] as char);
         out.push(TABLE[((n >> 12) & 0x3f) as usize] as char);

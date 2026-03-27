@@ -51,8 +51,7 @@ pub unsafe extern "C" fn PyModule_AddObject(
     // objects use molt_object_setattr (exposed via the C header path in
     // include/molt/Python.h).  At the Rust ABI layer we wire through the
     // same mechanism: convert name to a PyObject, then call setattro.
-    let attr_name_ptr =
-        unsafe { crate::api::strings::PyUnicode_FromString(name) };
+    let attr_name_ptr = unsafe { crate::api::strings::PyUnicode_FromString(name) };
     if attr_name_ptr.is_null() {
         return -1;
     }

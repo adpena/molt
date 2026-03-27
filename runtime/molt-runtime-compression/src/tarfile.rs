@@ -18,8 +18,8 @@
 //!
 //! ABI: NaN-boxed u64 in/out.
 
-use molt_runtime_core::prelude::*;
 use crate::bridge::*;
+use molt_runtime_core::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -252,16 +252,16 @@ fn decompress_bzip2(data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn compress_gzip(data: &[u8]) -> Result<Vec<u8>, String> {
-    use flate2::Compression;
     use flate2::write::GzEncoder;
+    use flate2::Compression;
     let mut enc = GzEncoder::new(Vec::new(), Compression::default());
     enc.write_all(data).map_err(|e| e.to_string())?;
     enc.finish().map_err(|e| e.to_string())
 }
 
 fn compress_bzip2(data: &[u8]) -> Result<Vec<u8>, String> {
-    use bzip2::Compression;
     use bzip2::write::BzEncoder;
+    use bzip2::Compression;
     let mut enc = BzEncoder::new(Vec::new(), Compression::default());
     enc.write_all(data).map_err(|e| e.to_string())?;
     enc.finish().map_err(|e| e.to_string())
@@ -653,11 +653,7 @@ pub extern "C" fn molt_tarfile_extract(handle_bits: u64, member_bits: u64, path_
                 );
             }
             if let Err(e) = std::fs::write(&out_path, &data[info.data_offset..end]) {
-                return raise_exception(
-                    _py,
-                    "OSError",
-                    &format!("cannot write '{out_path}': {e}"),
-                );
+                return raise_exception(_py, "OSError", &format!("cannot write '{out_path}': {e}"));
             }
         }
         return_none()
@@ -721,11 +717,7 @@ pub extern "C" fn molt_tarfile_add(handle_bits: u64, name_bits: u64, arcname_bit
         let file_data = match std::fs::read(&fs_name) {
             Ok(d) => d,
             Err(e) => {
-                return raise_exception(
-                    _py,
-                    "OSError",
-                    &format!("cannot read '{fs_name}': {e}"),
-                );
+                return raise_exception(_py, "OSError", &format!("cannot read '{fs_name}': {e}"));
             }
         };
 

@@ -4,8 +4,8 @@
 // timezone key, UTC offset, tzname, and DST offset for a given datetime.
 
 use crate::bridge::{
-    alloc_set_with_entries, alloc_string, int_bits_from_i64, object_type_id,
-    raise_exception, seq_vec_ref, string_obj_to_owned, to_i64,
+    alloc_set_with_entries, alloc_string, int_bits_from_i64, object_type_id, raise_exception,
+    seq_vec_ref, string_obj_to_owned, to_i64,
 };
 use molt_obj_model::MoltObject;
 use molt_runtime_core::prelude::*;

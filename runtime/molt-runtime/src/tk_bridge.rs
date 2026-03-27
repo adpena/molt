@@ -23,11 +23,7 @@ pub extern "C" fn molt_rt_object_type_id(ptr: *mut u8) -> u32 {
 /// out-params.  Caller must NOT free the pointer — it points into the
 /// live Vec<u64> owned by the runtime.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_rt_seq_vec_ref(
-    ptr: *mut u8,
-    out_ptr: *mut *const u64,
-    out_len: *mut usize,
-) {
+pub extern "C" fn molt_rt_seq_vec_ref(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize) {
     if ptr.is_null() {
         unsafe {
             *out_ptr = std::ptr::null();
@@ -46,11 +42,7 @@ pub extern "C" fn molt_rt_seq_vec_ref(
 /// The order vector is the raw key-value interleaved storage: [k0,v0,k1,v1,...].
 /// Caller must NOT free the pointer.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_rt_dict_order(
-    ptr: *mut u8,
-    out_ptr: *mut *const u64,
-    out_len: *mut usize,
-) {
+pub extern "C" fn molt_rt_dict_order(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize) {
     if ptr.is_null() {
         unsafe {
             *out_ptr = std::ptr::null();

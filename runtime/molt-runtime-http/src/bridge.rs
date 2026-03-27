@@ -29,12 +29,7 @@ unsafe extern "C" {
 
 pub fn raise_exception<T: ExceptionSentinel>(_py: &CoreGilToken, type_name: &str, msg: &str) -> T {
     let bits = unsafe {
-        __molt_http_raise_exception(
-            type_name.as_ptr(),
-            type_name.len(),
-            msg.as_ptr(),
-            msg.len(),
-        )
+        __molt_http_raise_exception(type_name.as_ptr(), type_name.len(), msg.as_ptr(), msg.len())
     };
     T::from_bits(bits)
 }
@@ -93,7 +88,11 @@ impl ExceptionSentinel for () {
 
 unsafe extern "C" {
     fn __molt_http_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
-    fn __molt_http_alloc_list_with_capacity(elems_ptr: *const u64, elems_len: usize, cap: usize) -> *mut u8;
+    fn __molt_http_alloc_list_with_capacity(
+        elems_ptr: *const u64,
+        elems_len: usize,
+        cap: usize,
+    ) -> *mut u8;
     fn __molt_http_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8;
     fn __molt_http_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8;
     fn __molt_http_alloc_dict_with_pairs(pairs_ptr: *const u64, pairs_len: usize) -> *mut u8;
@@ -214,7 +213,11 @@ pub unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
     unsafe { &*__molt_http_seq_vec_ptr(ptr) }
 }
 
-pub unsafe fn dict_get_in_place(_py: &CoreGilToken, dict_ptr: *mut u8, key_bits: u64) -> Option<u64> {
+pub unsafe fn dict_get_in_place(
+    _py: &CoreGilToken,
+    dict_ptr: *mut u8,
+    key_bits: u64,
+) -> Option<u64> {
     let mut out: u64 = 0;
     let ok = unsafe { __molt_http_dict_get_in_place(dict_ptr, key_bits, &mut out) };
     if ok != 0 { Some(out) } else { None }
@@ -254,7 +257,11 @@ unsafe extern "C" {
     fn __molt_http_call_callable0(call_bits: u64) -> u64;
     fn __molt_http_call_callable1(call_bits: u64, arg0: u64) -> u64;
     fn __molt_http_call_callable2(call_bits: u64, arg0: u64, arg1: u64) -> u64;
-    fn __molt_http_call_class_init_with_args(class_bits: u64, args_ptr: *const u64, args_len: usize) -> u64;
+    fn __molt_http_call_class_init_with_args(
+        class_bits: u64,
+        args_ptr: *const u64,
+        args_len: usize,
+    ) -> u64;
     fn __molt_http_missing_bits() -> u64;
     fn __molt_http_molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bits: u64) -> u64;
     fn __molt_http_molt_is_callable(bits: u64) -> i32;
@@ -358,7 +365,8 @@ pub struct BufferExport {
 
 unsafe extern "C" {
     fn __molt_http_molt_buffer_export(buffer_bits: u64, export: *mut BufferExport) -> i32;
-    fn __molt_http_bytes_like_slice(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
+    fn __molt_http_bytes_like_slice(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize)
+    -> i32;
 }
 
 pub fn molt_buffer_export(buffer_bits: u64, export: &mut BufferExport) -> bool {
@@ -382,7 +390,12 @@ pub fn bytes_like_slice(bits: u64) -> Option<&'static [u8]> {
 
 unsafe extern "C" {
     fn __molt_http_has_capability(name_ptr: *const u8, name_len: usize) -> i32;
-    fn __molt_http_env_state_get(key_ptr: *const u8, key_len: usize, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
+    fn __molt_http_env_state_get(
+        key_ptr: *const u8,
+        key_len: usize,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+    ) -> i32;
 }
 
 pub fn has_capability(_py: &CoreGilToken, name: &str) -> bool {
@@ -392,7 +405,8 @@ pub fn has_capability(_py: &CoreGilToken, name: &str) -> bool {
 pub fn env_state_get(key: &str) -> Option<String> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_http_env_state_get(key.as_ptr(), key.len(), &mut out_ptr, &mut out_len) };
+    let ok =
+        unsafe { __molt_http_env_state_get(key.as_ptr(), key.len(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
         let boxed =
             unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
@@ -409,8 +423,10 @@ pub fn env_state_get(key: &str) -> Option<String> {
 unsafe extern "C" {
     fn __molt_http_builtin_classes(name_ptr: *const u8, name_len: usize) -> u64;
     fn __molt_http_resolve_global_bits(
-        module_ptr: *const u8, module_len: usize,
-        name_ptr: *const u8, name_len: usize,
+        module_ptr: *const u8,
+        module_len: usize,
+        name_ptr: *const u8,
+        name_len: usize,
         out: *mut u64,
     ) -> i32;
 }
@@ -419,20 +435,22 @@ pub fn builtin_classes(_py: &CoreGilToken, name: &str) -> u64 {
     unsafe { __molt_http_builtin_classes(name.as_ptr(), name.len()) }
 }
 
-pub fn resolve_global_bits(
-    _py: &CoreGilToken,
-    module: &str,
-    name: &str,
-) -> Result<u64, u64> {
+pub fn resolve_global_bits(_py: &CoreGilToken, module: &str, name: &str) -> Result<u64, u64> {
     let mut out: u64 = 0;
     let ok = unsafe {
         __molt_http_resolve_global_bits(
-            module.as_ptr(), module.len(),
-            name.as_ptr(), name.len(),
+            module.as_ptr(),
+            module.len(),
+            name.as_ptr(),
+            name.len(),
             &mut out,
         )
     };
-    if ok != 0 { Ok(out) } else { Err(MoltObject::none().bits()) }
+    if ok != 0 {
+        Ok(out)
+    } else {
+        Err(MoltObject::none().bits())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -451,7 +469,9 @@ pub struct GilReleaseGuard {
 
 impl GilReleaseGuard {
     pub fn new() -> Self {
-        Self { handle: unsafe { __molt_http_gil_release_new() } }
+        Self {
+            handle: unsafe { __molt_http_gil_release_new() },
+        }
     }
 }
 

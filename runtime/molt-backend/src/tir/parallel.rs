@@ -78,7 +78,7 @@ mod tests {
             next_value: 1,
             next_block: 1,
             attrs: AttrDict::new(),
-        has_exception_handling: false,
+            has_exception_handling: false,
             label_id_map: HashMap::new(),
         }
     }
@@ -92,8 +92,14 @@ mod tests {
         let block = TirBlock {
             id: entry_id,
             args: vec![
-                TirValue { id: p0, ty: TirType::I64 },
-                TirValue { id: p1, ty: TirType::I64 },
+                TirValue {
+                    id: p0,
+                    ty: TirType::I64,
+                },
+                TirValue {
+                    id: p1,
+                    ty: TirType::I64,
+                },
             ],
             ops: vec![TirOp {
                 dialect: Dialect::Molt,
@@ -116,7 +122,7 @@ mod tests {
             next_value: 3,
             next_block: 1,
             attrs: AttrDict::new(),
-        has_exception_handling: false,
+            has_exception_handling: false,
             label_id_map: HashMap::new(),
         }
     }

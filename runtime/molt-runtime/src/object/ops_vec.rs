@@ -1,12 +1,11 @@
 //! Vectorized sum/prod/min/max operations.
 //! Extracted from ops.rs for compilation-unit size reduction.
 
+use super::ops::{range_components_i64, range_len_i128};
 use crate::*;
 use molt_obj_model::MoltObject;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
-use super::ops::{range_components_i64, range_len_i128};
-
+use std::sync::atomic::{AtomicU64, Ordering};
 
 fn vec_sum_result(_py: &PyToken<'_>, sum_bits: u64, ok: bool) -> u64 {
     let ok_bits = MoltObject::from_bool(ok).bits();

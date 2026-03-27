@@ -4,10 +4,10 @@
 // Mersenne Twister random module intrinsics, extracted from the monolithic
 // molt-runtime crate.
 
-use molt_runtime_core::prelude::*;
 use crate::bridge::*;
 #[cfg(feature = "crypto")]
 use digest::Digest;
+use molt_runtime_core::prelude::*;
 use num_bigint::{BigInt, BigUint, Sign};
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
@@ -431,9 +431,7 @@ fn seed_bigint_from_bits(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
 
     let seed_bytes: Vec<u8> = unsafe {
         match object_type_id(seed_ptr) {
-            TYPE_ID_STRING => {
-                crate::math::compat_string_bytes(seed_ptr).to_vec()
-            }
+            TYPE_ID_STRING => crate::math::compat_string_bytes(seed_ptr).to_vec(),
             TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => {
                 let Some(slice) = bytes_like_slice(seed_ptr) else {
                     let _ = raise_exception::<u64>(

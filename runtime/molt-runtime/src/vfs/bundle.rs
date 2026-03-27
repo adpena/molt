@@ -57,7 +57,9 @@ impl BundleFs {
             }
             // Security: reject traversal (component-level check)
             if path.split('/').any(|c| c == "..") {
-                return Err(format!("bundle tar contains '..' component in path: {path}"));
+                return Err(format!(
+                    "bundle tar contains '..' component in path: {path}"
+                ));
             }
             // Security: reject absolute paths
             if path.starts_with('/') {

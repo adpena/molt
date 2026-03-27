@@ -2664,7 +2664,10 @@ impl RustBackend {
                 let msg = if op.args.as_ref().map_or(true, |a| a.is_empty()) {
                     "\"Python raise with no argument\"".to_string()
                 } else {
-                    format!("\"Python raise: {{:?}}\", {}", &op.args.as_ref().unwrap()[0])
+                    format!(
+                        "\"Python raise: {{:?}}\", {}",
+                        &op.args.as_ref().unwrap()[0]
+                    )
                 };
                 self.emit_line(&format!("panic!({msg});"));
             }

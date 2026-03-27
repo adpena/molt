@@ -105,8 +105,20 @@ pub extern "C" fn molt_zlib_z_full_flush() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_compressobj_new(level_bits: u64, _method_bits: u64, wbits_bits: u64, _memlevel_bits: u64, _strategy_bits: u64) -> u64 {
-    molt_runtime_compression::zlib::molt_zlib_compressobj_new(level_bits, _method_bits, wbits_bits, _memlevel_bits, _strategy_bits)
+pub extern "C" fn molt_zlib_compressobj_new(
+    level_bits: u64,
+    _method_bits: u64,
+    wbits_bits: u64,
+    _memlevel_bits: u64,
+    _strategy_bits: u64,
+) -> u64 {
+    molt_runtime_compression::zlib::molt_zlib_compressobj_new(
+        level_bits,
+        _method_bits,
+        wbits_bits,
+        _memlevel_bits,
+        _strategy_bits,
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -130,8 +142,16 @@ pub extern "C" fn molt_zlib_decompressobj_new(wbits_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_decompressobj_decompress(handle_bits: u64, data_bits: u64, max_length_bits: u64) -> u64 {
-    molt_runtime_compression::zlib::molt_zlib_decompressobj_decompress(handle_bits, data_bits, max_length_bits)
+pub extern "C" fn molt_zlib_decompressobj_decompress(
+    handle_bits: u64,
+    data_bits: u64,
+    max_length_bits: u64,
+) -> u64 {
+    molt_runtime_compression::zlib::molt_zlib_decompressobj_decompress(
+        handle_bits,
+        data_bits,
+        max_length_bits,
+    )
 }
 
 #[unsafe(no_mangle)]

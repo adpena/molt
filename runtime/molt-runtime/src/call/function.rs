@@ -4,9 +4,9 @@ use crate::{
     HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED, PyToken, TYPE_ID_FUNCTION, TYPE_ID_TUPLE,
     ensure_function_code_bits, frame_stack_pop, frame_stack_push, function_arity,
     function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
-    function_trampoline_ptr, header_from_obj_ptr, intern_static_name, is_truthy,
-    obj_from_bits, object_type_id, profile_hit, raise_exception, recursion_guard_enter,
-    recursion_guard_exit, runtime_state, seq_vec_ref,
+    function_trampoline_ptr, header_from_obj_ptr, intern_static_name, is_truthy, obj_from_bits,
+    object_type_id, profile_hit, raise_exception, recursion_guard_enter, recursion_guard_exit,
+    runtime_state, seq_vec_ref,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -60,6 +60,24 @@ unsafe fn raise_call_arity_mismatch(
     }
 }
 
+#[inline]
+unsafe fn maybe_call_function_obj_trampoline_native(
+    _py: &PyToken<'_>,
+    func_bits: u64,
+    func_ptr: *mut u8,
+    args: &[u64],
+) -> Option<u64> {
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe {
+        if function_trampoline_ptr(func_ptr) != 0 {
+            return Some(call_function_obj_trampoline(_py, func_bits, args));
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = (_py, func_bits, func_ptr, args);
+    None
+}
+
 pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_bits: u64) -> u64 {
     unsafe {
         profile_hit(_py, &CALL_DISPATCH_COUNT);
@@ -73,6 +91,11 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
         let arity = function_arity(func_ptr);
         if arity != 1 {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 1);
+        }
+        if let Some(res) =
+            maybe_call_function_obj_trampoline_native(_py, func_bits, func_ptr, &[arg0_bits])
+        {
+            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
@@ -264,6 +287,10 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
         if arity != 0 {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 0);
         }
+        if let Some(res) = maybe_call_function_obj_trampoline_native(_py, func_bits, func_ptr, &[])
+        {
+            return res;
+        }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
@@ -328,6 +355,14 @@ pub(crate) unsafe fn call_function_obj2(
         let arity = function_arity(func_ptr);
         if arity != 2 {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 2);
+        }
+        if let Some(res) = maybe_call_function_obj_trampoline_native(
+            _py,
+            func_bits,
+            func_ptr,
+            &[arg0_bits, arg1_bits],
+        ) {
+            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
@@ -396,6 +431,14 @@ pub(crate) unsafe fn call_function_obj3(
         let arity = function_arity(func_ptr);
         if arity != 3 {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 3);
+        }
+        if let Some(res) = maybe_call_function_obj_trampoline_native(
+            _py,
+            func_bits,
+            func_ptr,
+            &[arg0_bits, arg1_bits, arg2_bits],
+        ) {
+            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
@@ -1646,9 +1689,7 @@ unsafe fn call_function_obj_trampoline(_py: &PyToken<'_>, func_bits: u64, args: 
                                         padded.push(defaults[i]);
                                     }
                                     // Recurse with the padded args — arity now matches.
-                                    return call_function_obj_trampoline(
-                                        _py, func_bits, &padded,
-                                    );
+                                    return call_function_obj_trampoline(_py, func_bits, &padded);
                                 }
                             }
                         }
@@ -1696,15 +1737,12 @@ unsafe fn call_function_obj_trampoline(_py: &PyToken<'_>, func_bits: u64, args: 
 
 pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, args: &[u64]) -> u64 {
     unsafe {
-        #[cfg(target_arch = "wasm32")]
+        let func_obj = obj_from_bits(func_bits);
+        if let Some(func_ptr) = func_obj.as_ptr()
+            && object_type_id(func_ptr) == TYPE_ID_FUNCTION
+            && function_trampoline_ptr(func_ptr) != 0
         {
-            let func_obj = obj_from_bits(func_bits);
-            if let Some(func_ptr) = func_obj.as_ptr()
-                && object_type_id(func_ptr) == TYPE_ID_FUNCTION
-                && function_trampoline_ptr(func_ptr) != 0
-            {
-                return call_function_obj_trampoline(_py, func_bits, args);
-            }
+            return call_function_obj_trampoline(_py, func_bits, args);
         }
         if function_needs_task_trampoline(_py, func_bits) {
             return call_function_obj_trampoline(_py, func_bits, args);

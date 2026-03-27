@@ -753,9 +753,7 @@ pub extern "C" fn molt_bridge_long_as_long(obj: *mut PyObject) -> std::os::raw::
 
 /// `PyFloat_FromDouble(val)` — create a NaN-boxed float from a C double.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_bridge_float_from_double(
-    val: std::os::raw::c_double,
-) -> *mut PyObject {
+pub extern "C" fn molt_bridge_float_from_double(val: std::os::raw::c_double) -> *mut PyObject {
     let bits = MoltObject::from_float(val).bits();
     bits_to_pyobject(bits)
 }

@@ -207,11 +207,10 @@ impl CompactDict {
                 }
                 None
             }
-            Storage::Large(s) => {
-                s.probe(key, key_hash)
-                    .ok()
-                    .map(|pos| s.values[s.indices[pos] as usize])
-            }
+            Storage::Large(s) => s
+                .probe(key, key_hash)
+                .ok()
+                .map(|pos| s.values[s.indices[pos] as usize]),
         }
     }
 
@@ -558,7 +557,12 @@ mod tests {
         assert_eq!(d.len(), SMALL_CAP + 1);
         // All previously inserted keys still accessible.
         for i in 0..SMALL_CAP as u64 {
-            assert_eq!(d.get(i, h(i)), Some(i), "key {} missing after graduation", i);
+            assert_eq!(
+                d.get(i, h(i)),
+                Some(i),
+                "key {} missing after graduation",
+                i
+            );
         }
         assert_eq!(d.get(100, h(100)), Some(999));
     }
@@ -677,7 +681,12 @@ mod tests {
         // Remaining keys still intact.
         for i in 0..10u64 {
             let expected = if i == 5 { 500 } else { i };
-            assert_eq!(d.get(i, h(i)), Some(expected), "key {} wrong after delete+reinsert", i);
+            assert_eq!(
+                d.get(i, h(i)),
+                Some(expected),
+                "key {} wrong after delete+reinsert",
+                i
+            );
         }
     }
 

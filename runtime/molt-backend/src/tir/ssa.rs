@@ -356,9 +356,7 @@ impl<'a> SsaContext<'a> {
                 // Push onto the variable's definition stack.
                 var_stacks.entry(var.clone()).or_default().push(vid);
                 // Track push.
-                let entry = block_pushed
-                    .iter_mut()
-                    .find(|(v, _)| v == var);
+                let entry = block_pushed.iter_mut().find(|(v, _)| v == var);
                 if let Some((_, c)) = entry {
                     *c += 1;
                 } else {
@@ -383,9 +381,7 @@ impl<'a> SsaContext<'a> {
                         self.fresh_value_typed()
                     };
                     var_stacks.entry(var.clone()).or_default().push(vid);
-                    let entry = block_pushed
-                        .iter_mut()
-                        .find(|(v, _)| v == var);
+                    let entry = block_pushed.iter_mut().find(|(v, _)| v == var);
                     if let Some((_, c)) = entry {
                         *c += 1;
                     } else {
@@ -468,7 +464,9 @@ impl<'a> SsaContext<'a> {
                 // args).  This ensures resolve_var never fails and falls back
                 // to ValueId(0).
                 for var in &self.all_vars.clone() {
-                    local_stacks.entry(var.clone()).or_insert_with(|| vec![undef_vid]);
+                    local_stacks
+                        .entry(var.clone())
+                        .or_insert_with(|| vec![undef_vid]);
                 }
 
                 let op_indices = self.block_info[bid].op_indices.clone();
@@ -509,19 +507,12 @@ impl<'a> SsaContext<'a> {
     }
 
     /// Resolve a variable name to its current SSA ValueId.
-    fn resolve_var(
-        var: &str,
-        var_stacks: &HashMap<String, Vec<ValueId>>,
-    ) -> Option<ValueId> {
+    fn resolve_var(var: &str, var_stacks: &HashMap<String, Vec<ValueId>>) -> Option<ValueId> {
         var_stacks.get(var).and_then(|s| s.last().copied())
     }
 
     /// Translate a single SimpleIR op into a TIR op.
-    fn translate_op(
-        &mut self,
-        op: &OpIR,
-        var_stacks: &HashMap<String, Vec<ValueId>>,
-    ) -> TirOp {
+    fn translate_op(&mut self, op: &OpIR, var_stacks: &HashMap<String, Vec<ValueId>>) -> TirOp {
         // Resolve operands from args.
         // SimpleIR args can be variable names OR inline constants (e.g., "1", "3.14").
         // Variables resolve via var_stacks; constants get a fresh ConstInt/ConstFloat value.
@@ -661,8 +652,11 @@ impl<'a> SsaContext<'a> {
                 OpCode::Import => {
                     attrs.insert("module".into(), AttrValue::Str(v.clone()));
                 }
-                OpCode::ImportFrom | OpCode::LoadAttr | OpCode::StoreAttr
-                | OpCode::DelAttr | OpCode::CallBuiltin => {
+                OpCode::ImportFrom
+                | OpCode::LoadAttr
+                | OpCode::StoreAttr
+                | OpCode::DelAttr
+                | OpCode::CallBuiltin => {
                     attrs.insert("name".into(), AttrValue::Str(v.clone()));
                 }
                 OpCode::CallMethod => {
@@ -689,7 +683,12 @@ impl<'a> SsaContext<'a> {
         // For ops that map to OpCode::Copy as a fallback (unknown ops),
         // preserve the original kind string so the back-conversion can
         // emit the correct SimpleIR op.
-        if opcode == OpCode::Copy && !matches!(op.kind.as_str(), "copy" | "store_var" | "load_var" | "copy_var") {
+        if opcode == OpCode::Copy
+            && !matches!(
+                op.kind.as_str(),
+                "copy" | "store_var" | "load_var" | "copy_var"
+            )
+        {
             attrs.insert("_original_kind".into(), AttrValue::Str(op.kind.clone()));
         }
 
@@ -704,9 +703,18 @@ impl<'a> SsaContext<'a> {
         }
         // Preserve original kind for attr/index ops that have backend-specific
         // variants (get_attr_generic_obj, set_attr_generic_obj, store_index, etc.).
-        if matches!(opcode, OpCode::LoadAttr | OpCode::StoreAttr | OpCode::Index | OpCode::StoreIndex | OpCode::DelIndex | OpCode::DelAttr)
-            && !matches!(op.kind.as_str(), "get_attr" | "set_attr" | "index" | "store_index" | "del_index" | "del_attr")
-        {
+        if matches!(
+            opcode,
+            OpCode::LoadAttr
+                | OpCode::StoreAttr
+                | OpCode::Index
+                | OpCode::StoreIndex
+                | OpCode::DelIndex
+                | OpCode::DelAttr
+        ) && !matches!(
+            op.kind.as_str(),
+            "get_attr" | "set_attr" | "index" | "store_index" | "del_index" | "del_attr"
+        ) {
             attrs.insert("_original_kind".into(), AttrValue::Str(op.kind.clone()));
         }
 
@@ -784,16 +792,13 @@ impl<'a> SsaContext<'a> {
                 // Resolve the condition.
                 let cond = last_op
                     .and_then(|op| {
-                        op.args
-                            .as_ref()
-                            .and_then(|a| a.first())
-                            .and_then(|a| {
-                                if is_variable(a) {
-                                    Self::resolve_var(a, var_stacks)
-                                } else {
-                                    None
-                                }
-                            })
+                        op.args.as_ref().and_then(|a| a.first()).and_then(|a| {
+                            if is_variable(a) {
+                                Self::resolve_var(a, var_stacks)
+                            } else {
+                                None
+                            }
+                        })
                     })
                     .unwrap_or(ValueId(0));
 
@@ -857,9 +862,7 @@ impl<'a> SsaContext<'a> {
     ) -> Vec<ValueId> {
         self.block_arg_vars[target_bid]
             .iter()
-            .map(|var| {
-                Self::resolve_var(var, var_stacks).unwrap_or(ValueId(0))
-            })
+            .map(|var| Self::resolve_var(var, var_stacks).unwrap_or(ValueId(0)))
             .collect()
     }
 
@@ -920,10 +923,22 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "alloc" => OpCode::Alloc,
         "stack_alloc" => OpCode::StackAlloc,
         "free" => OpCode::Free,
-        "get_attr" | "get_attr_generic_ptr" | "get_attr_generic_obj" | "get_attr_name"
-        | "guarded_field_get" | "load" | "load_attr" => OpCode::LoadAttr,
-        "set_attr" | "store_attr" | "set_attr_name" | "set_attr_generic_ptr" | "set_attr_generic_obj"
-        | "guarded_field_set" | "guarded_field_set_init" | "store" | "store_init" => OpCode::StoreAttr,
+        "get_attr"
+        | "get_attr_generic_ptr"
+        | "get_attr_generic_obj"
+        | "get_attr_name"
+        | "guarded_field_get"
+        | "load"
+        | "load_attr" => OpCode::LoadAttr,
+        "set_attr"
+        | "store_attr"
+        | "set_attr_name"
+        | "set_attr_generic_ptr"
+        | "set_attr_generic_obj"
+        | "guarded_field_set"
+        | "guarded_field_set_init"
+        | "store"
+        | "store_init" => OpCode::StoreAttr,
         "del_attr" | "del_attr_generic_ptr" | "del_attr_generic_obj" => OpCode::DelAttr,
         "index" => OpCode::Index,
         "store_index" | "index_set" => OpCode::StoreIndex,
@@ -1071,23 +1086,35 @@ mod tests {
     fn straight_line_no_block_args() {
         // x = 1; y = x + 1
         let ops = vec![
-            op_val_out("const", 1, "x"),      // x = 1
-            op_args_out("add", &["x"], "y"),   // y = x + 1 (simplified)
+            op_val_out("const", 1, "x"),     // x = 1
+            op_args_out("add", &["x"], "y"), // y = x + 1 (simplified)
             op("ret_void"),
         ];
         let cfg = CFG::build(&ops);
         let output = convert_to_ssa(&cfg, &ops);
 
         assert_eq!(output.blocks.len(), 1, "straight-line code = 1 block");
-        assert_eq!(total_block_args(&output), 0, "no join points → no block args");
+        assert_eq!(
+            total_block_args(&output),
+            0,
+            "no join points → no block args"
+        );
 
         // Two ops that define variables → two distinct ValueIds in results.
         let ids = all_value_ids(&output);
-        assert!(ids.len() >= 2, "need at least 2 ValueIds for x and y, got {}", ids.len());
+        assert!(
+            ids.len() >= 2,
+            "need at least 2 ValueIds for x and y, got {}",
+            ids.len()
+        );
 
         // Check all values are typed.
         for id in &ids {
-            assert!(output.types.contains_key(id), "ValueId {:?} should have a type", id);
+            assert!(
+                output.types.contains_key(id),
+                "ValueId {:?} should have a type",
+                id
+            );
         }
     }
 
@@ -1107,13 +1134,13 @@ mod tests {
         //   end_if                 (block 3: join)
         //   ret [x]               (block 3: join)
         let ops = vec![
-            op_val_out("const", 0, "v0"),        // 0
-            op_args("if", &["v0"]),              // 1 — terminates block 0
-            op_val_out("const", 1, "x"),         // 2 — then block
-            op("else"),                          // 3 — else block start
-            op_val_out("const", 2, "x"),         // 4 — else body
-            op("end_if"),                        // 5 — join block
-            op_args("ret", &["x"]),              // 6 — return x
+            op_val_out("const", 0, "v0"), // 0
+            op_args("if", &["v0"]),       // 1 — terminates block 0
+            op_val_out("const", 1, "x"),  // 2 — then block
+            op("else"),                   // 3 — else block start
+            op_val_out("const", 2, "x"),  // 4 — else body
+            op("end_if"),                 // 5 — join block
+            op_args("ret", &["x"]),       // 6 — return x
         ];
         let cfg = CFG::build(&ops);
         let output = convert_to_ssa(&cfg, &ops);
@@ -1122,7 +1149,11 @@ mod tests {
         assert!(output.blocks.len() >= 3, "expected at least 3 blocks");
 
         // Find the join block — it's the one containing op 5 (end_if).
-        let join_bid = cfg.blocks.iter().position(|b| b.start_op <= 5 && b.end_op > 5).unwrap();
+        let join_bid = cfg
+            .blocks
+            .iter()
+            .position(|b| b.start_op <= 5 && b.end_op > 5)
+            .unwrap();
         let join_block = &output.blocks[join_bid];
 
         assert!(
@@ -1148,17 +1179,21 @@ mod tests {
         //   loop_end              (block 2/3: back-edge)
         //   ret_void              (after loop)
         let ops = vec![
-            op_val_out("const", 0, "x"),         // 0
-            op("loop_start"),                    // 1 — loop header
-            op_args_out("add", &["x"], "x"),     // 2 — x = x + 1
-            op("loop_end"),                      // 3 — back-edge
-            op("ret_void"),                      // 4 — after
+            op_val_out("const", 0, "x"),     // 0
+            op("loop_start"),                // 1 — loop header
+            op_args_out("add", &["x"], "x"), // 2 — x = x + 1
+            op("loop_end"),                  // 3 — back-edge
+            op("ret_void"),                  // 4 — after
         ];
         let cfg = CFG::build(&ops);
         let output = convert_to_ssa(&cfg, &ops);
 
         // The loop header block should have a block argument for x.
-        let header_bid = cfg.blocks.iter().position(|b| b.start_op <= 1 && b.end_op > 1).unwrap();
+        let header_bid = cfg
+            .blocks
+            .iter()
+            .position(|b| b.start_op <= 1 && b.end_op > 1)
+            .unwrap();
         let header_block = &output.blocks[header_bid];
 
         assert!(
@@ -1175,21 +1210,25 @@ mod tests {
     fn multiple_variables_at_join() {
         // if c: x = 1; y = 2 else: x = 3; y = 4; use x, y
         let ops = vec![
-            op_val_out("const", 0, "v0"),        // 0
-            op_args("if", &["v0"]),              // 1
-            op_val_out("const", 1, "x"),         // 2 then
-            op_val_out("const", 2, "y"),         // 3 then
-            op("else"),                          // 4 else
-            op_val_out("const", 3, "x"),         // 5 else
-            op_val_out("const", 4, "y"),         // 6 else
-            op("end_if"),                        // 7 join
-            op_args("ret", &["x", "y"]),         // 8
+            op_val_out("const", 0, "v0"), // 0
+            op_args("if", &["v0"]),       // 1
+            op_val_out("const", 1, "x"),  // 2 then
+            op_val_out("const", 2, "y"),  // 3 then
+            op("else"),                   // 4 else
+            op_val_out("const", 3, "x"),  // 5 else
+            op_val_out("const", 4, "y"),  // 6 else
+            op("end_if"),                 // 7 join
+            op_args("ret", &["x", "y"]),  // 8
         ];
         let cfg = CFG::build(&ops);
         let output = convert_to_ssa(&cfg, &ops);
 
         // Find join block.
-        let join_bid = cfg.blocks.iter().position(|b| b.start_op <= 7 && b.end_op > 7).unwrap();
+        let join_bid = cfg
+            .blocks
+            .iter()
+            .position(|b| b.start_op <= 7 && b.end_op > 7)
+            .unwrap();
         let join_block = &output.blocks[join_bid];
 
         assert_eq!(
@@ -1274,11 +1313,8 @@ mod tests {
 
         // For every branch to a block, the number of passed args must match
         // the target block's argument count.
-        let block_map: HashMap<BlockId, &TirBlock> = output
-            .blocks
-            .iter()
-            .map(|b| (b.id, b))
-            .collect();
+        let block_map: HashMap<BlockId, &TirBlock> =
+            output.blocks.iter().map(|b| (b.id, b)).collect();
 
         for block in &output.blocks {
             match &block.terminator {
@@ -1288,7 +1324,10 @@ mod tests {
                             args.len(),
                             target_block.args.len(),
                             "Branch from {} to {} passes {} args but target expects {}",
-                            block.id, target, args.len(), target_block.args.len()
+                            block.id,
+                            target,
+                            args.len(),
+                            target_block.args.len()
                         );
                     }
                 }
@@ -1304,7 +1343,10 @@ mod tests {
                             then_args.len(),
                             tb.args.len(),
                             "CondBranch then from {} to {} passes {} args but target expects {}",
-                            block.id, then_block, then_args.len(), tb.args.len()
+                            block.id,
+                            then_block,
+                            then_args.len(),
+                            tb.args.len()
                         );
                     }
                     if let Some(eb) = block_map.get(else_block) {
@@ -1312,7 +1354,10 @@ mod tests {
                             else_args.len(),
                             eb.args.len(),
                             "CondBranch else from {} to {} passes {} args but target expects {}",
-                            block.id, else_block, else_args.len(), eb.args.len()
+                            block.id,
+                            else_block,
+                            else_args.len(),
+                            eb.args.len()
                         );
                     }
                 }
@@ -1339,7 +1384,8 @@ mod tests {
                 *ty,
                 TirType::DynBox,
                 "ValueId {:?} should be DynBox, got {:?}",
-                vid, ty
+                vid,
+                ty
             );
         }
     }

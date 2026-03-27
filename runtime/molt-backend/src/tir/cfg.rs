@@ -75,10 +75,7 @@ fn is_block_leader(kind: &str) -> bool {
 /// Returns `true` if the op ends a block and the next instruction should start
 /// a new block (even if it's not itself a leader type).
 fn is_block_ender(kind: &str) -> bool {
-    matches!(
-        kind,
-        "loop_start" | "loop_end"
-    )
+    matches!(kind, "loop_start" | "loop_end")
 }
 
 /// Returns `true` if the op is a conditional branch that causes a block split
@@ -196,7 +193,12 @@ fn find_leaders(ops: &[OpIR], label_map: &HashMap<i64, usize>) -> BTreeSet<usize
 /// Build maps for structured if/else/end_if:
 /// - `if` op-index → (`else` op-index or None, `end_if` op-index)
 /// - `else` op-index → `end_if` op-index
-fn build_if_else_maps(ops: &[OpIR]) -> (HashMap<usize, (Option<usize>, usize)>, HashMap<usize, usize>) {
+fn build_if_else_maps(
+    ops: &[OpIR],
+) -> (
+    HashMap<usize, (Option<usize>, usize)>,
+    HashMap<usize, usize>,
+) {
     let mut if_map = HashMap::new();
     let mut else_map = HashMap::new();
     let mut stack: Vec<(usize, Option<usize>)> = Vec::new(); // (if_idx, else_idx)
@@ -658,7 +660,8 @@ impl CFG {
 
         // For loop depth we need to pass successors to the dominator-based
         // detector, but we also use the structural back-edges.
-        let loop_depth = compute_loop_depth(&blocks, &successors, &predecessors, &dominators, entry);
+        let loop_depth =
+            compute_loop_depth(&blocks, &successors, &predecessors, &dominators, entry);
 
         // Compute implicit exception edges from try regions.
         let exception_edges = compute_exception_edges(ops, &blocks, &label_map);
@@ -725,11 +728,7 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn straight_line_single_block() {
-        let ops = vec![
-            op("const"),
-            op("add"),
-            op("ret_void"),
-        ];
+        let ops = vec![op("const"), op("add"), op("ret_void")];
         let cfg = CFG::build(&ops);
         assert_eq!(cfg.blocks.len(), 1);
         assert_eq!(cfg.blocks[0].start_op, 0);
@@ -756,19 +755,23 @@ mod tests {
         // join (end_if):
         //   ret_void
         let ops = vec![
-            op("const"),              // 0  entry
-            op_args("if", &["v0"]),   // 1  entry (ends block, next = then)
-            op("add"),                // 2  then-block
-            op("else"),               // 3  else-block start
-            op("sub"),                // 4  else-block
-            op("end_if"),             // 5  join-block
-            op("ret_void"),           // 6  join-block
+            op("const"),            // 0  entry
+            op_args("if", &["v0"]), // 1  entry (ends block, next = then)
+            op("add"),              // 2  then-block
+            op("else"),             // 3  else-block start
+            op("sub"),              // 4  else-block
+            op("end_if"),           // 5  join-block
+            op("ret_void"),         // 6  join-block
         ];
         let cfg = CFG::build(&ops);
 
         // Blocks: [0..2), [2..3), [3..5), [5..7)
         // Actually let's check what we get.
-        assert!(cfg.blocks.len() >= 3, "expected at least 3 blocks, got {}", cfg.blocks.len());
+        assert!(
+            cfg.blocks.len() >= 3,
+            "expected at least 3 blocks, got {}",
+            cfg.blocks.len()
+        );
 
         // All blocks should have loop_depth 0.
         for &d in &cfg.loop_depth {
@@ -789,16 +792,20 @@ mod tests {
         //   (falls through)
         //   ret_void
         let ops = vec![
-            op("const"),        // 0  entry
-            op("loop_start"),   // 1  header
-            op("add"),          // 2  body
-            op("loop_end"),     // 3  loop_end block
-            op("ret_void"),     // 4  after loop
+            op("const"),      // 0  entry
+            op("loop_start"), // 1  header
+            op("add"),        // 2  body
+            op("loop_end"),   // 3  loop_end block
+            op("ret_void"),   // 4  after loop
         ];
         let cfg = CFG::build(&ops);
 
         // We should have blocks: [0..1), [1..3), [3..4), [4..5)
-        assert!(cfg.blocks.len() >= 3, "expected >=3 blocks, got {}", cfg.blocks.len());
+        assert!(
+            cfg.blocks.len() >= 3,
+            "expected >=3 blocks, got {}",
+            cfg.blocks.len()
+        );
 
         // Find the loop_end block and check it has a back-edge to the header.
         let header_bid = block_containing(&cfg.blocks, 1).expect("header block");
@@ -824,13 +831,13 @@ mod tests {
     fn dominator_tree_if_else() {
         // Block 0 (entry) should dominate all other blocks.
         let ops = vec![
-            op("const"),              // 0
-            op_args("if", &["v0"]),   // 1
-            op("add"),                // 2  then
-            op("else"),               // 3  else
-            op("sub"),                // 4  else body
-            op("end_if"),             // 5  join
-            op("ret_void"),           // 6
+            op("const"),            // 0
+            op_args("if", &["v0"]), // 1
+            op("add"),              // 2  then
+            op("else"),             // 3  else
+            op("sub"),              // 4  else body
+            op("end_if"),           // 5  join
+            op("ret_void"),         // 6
         ];
         let cfg = CFG::build(&ops);
 
@@ -869,11 +876,11 @@ mod tests {
     #[test]
     fn loop_depth_inside_outside() {
         let ops = vec![
-            op("const"),        // 0  outside
-            op("loop_start"),   // 1  loop header
-            op("add"),          // 2  loop body
-            op("loop_end"),     // 3  loop end
-            op("ret_void"),     // 4  outside
+            op("const"),      // 0  outside
+            op("loop_start"), // 1  loop header
+            op("add"),        // 2  loop body
+            op("loop_end"),   // 3  loop end
+            op("ret_void"),   // 4  outside
         ];
         let cfg = CFG::build(&ops);
 
@@ -881,10 +888,16 @@ mod tests {
         let after_bid = block_containing(&cfg.blocks, 4).expect("after loop");
 
         assert_eq!(cfg.loop_depth[entry_bid], 0, "entry should be outside loop");
-        assert_eq!(cfg.loop_depth[after_bid], 0, "after-loop should be outside loop");
+        assert_eq!(
+            cfg.loop_depth[after_bid], 0,
+            "after-loop should be outside loop"
+        );
 
         let header_bid = block_containing(&cfg.blocks, 1).expect("header");
-        assert!(cfg.loop_depth[header_bid] >= 1, "header should be inside loop");
+        assert!(
+            cfg.loop_depth[header_bid] >= 1,
+            "header should be inside loop"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -902,11 +915,11 @@ mod tests {
     #[test]
     fn jump_label_edges() {
         let ops = vec![
-            op("const"),           // 0
-            op_val("jump", 42),    // 1  jump to label 42
-            op("add"),             // 2  unreachable (but still a block)
-            op_val("label", 42),   // 3  target
-            op("ret_void"),        // 4
+            op("const"),         // 0
+            op_val("jump", 42),  // 1  jump to label 42
+            op("add"),           // 2  unreachable (but still a block)
+            op_val("label", 42), // 3  target
+            op("ret_void"),      // 4
         ];
         let cfg = CFG::build(&ops);
 
@@ -935,10 +948,10 @@ mod tests {
         let ops = vec![
             op("const"),                       // 0
             op_args_val("br_if", &["v0"], 10), // 1  cond jump to label 10
-            op("add"),                          // 2  fall-through
-            op("ret_void"),                     // 3
-            op_val("label", 10),                // 4  branch target
-            op("ret_void"),                     // 5
+            op("add"),                         // 2  fall-through
+            op("ret_void"),                    // 3
+            op_val("label", 10),               // 4  branch target
+            op("ret_void"),                    // 5
         ];
         let cfg = CFG::build(&ops);
 
@@ -956,13 +969,13 @@ mod tests {
     #[test]
     fn nested_loop_depth() {
         let ops = vec![
-            op("const"),        // 0  outside
-            op("loop_start"),   // 1  outer header
-            op("loop_start"),   // 2  inner header
-            op("add"),          // 3  inner body
-            op("loop_end"),     // 4  inner end
-            op("loop_end"),     // 5  outer end
-            op("ret_void"),     // 6  outside
+            op("const"),      // 0  outside
+            op("loop_start"), // 1  outer header
+            op("loop_start"), // 2  inner header
+            op("add"),        // 3  inner body
+            op("loop_end"),   // 4  inner end
+            op("loop_end"),   // 5  outer end
+            op("ret_void"),   // 6  outside
         ];
         let cfg = CFG::build(&ops);
 

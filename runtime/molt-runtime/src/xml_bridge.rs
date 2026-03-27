@@ -4,8 +4,8 @@
 //! internal `pub(crate)` function.  The xml crate declares matching
 //! `extern "C"` imports and they are resolved at link time.
 
-use crate::*;
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
+use crate::*;
 
 // ---------------------------------------------------------------------------
 // Exception / error handling
@@ -19,8 +19,11 @@ pub extern "C" fn __molt_xml_raise_exception(
     msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let type_name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len)) };
-        let msg = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
+        let type_name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
+        };
+        let msg =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
         raise_exception::<u64>(_py, type_name, msg)
     })
 }
@@ -107,7 +110,9 @@ pub extern "C" fn __molt_xml_to_i64(bits: u64, out: *mut i64) -> i32 {
     let obj = obj_from_bits(bits);
     match to_i64(obj) {
         Some(v) => {
-            unsafe { *out = v; }
+            unsafe {
+                *out = v;
+            }
             1
         }
         None => 0,
@@ -116,7 +121,5 @@ pub extern "C" fn __molt_xml_to_i64(bits: u64, out: *mut i64) -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_xml_int_bits_from_i64(val: i64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        int_bits_from_i64(_py, val)
-    })
+    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, val) })
 }

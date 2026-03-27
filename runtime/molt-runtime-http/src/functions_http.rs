@@ -1,6 +1,6 @@
 use molt_obj_model::MoltObject;
-use molt_runtime_core::prelude::*;
 use molt_runtime_core::obj_from_bits;
+use molt_runtime_core::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
@@ -10,15 +10,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::bridge::{
     alloc_bytes, alloc_dict_with_pairs, alloc_list_with_capacity, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes, bytes_like_slice,
-    call_callable0, call_callable1, call_callable2, call_class_init_with_args,
-    clear_exception, dec_ref_bits, exception_pending, inc_ref_bits, is_truthy, missing_bits,
+    attr_name_bits_from_bytes, bytes_like_slice, call_callable0, call_callable1, call_callable2,
+    call_class_init_with_args, clear_exception, dec_ref_bits, env_state_get, exception_kind_bits,
+    exception_pending, inc_ref_bits, is_truthy, maybe_ptr_from_bits, missing_bits,
     molt_exception_last, molt_getattr_builtin, molt_is_callable, molt_iter, molt_iter_next,
-    molt_list_insert, object_type_id,
-    raise_exception, seq_vec_ref, string_obj_to_owned,
-    to_i64, to_f64,
-    maybe_ptr_from_bits, exception_kind_bits,
-    env_state_get,
+    molt_list_insert, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_f64,
+    to_i64,
 };
 
 // ---------------------------------------------------------------------------
@@ -452,7 +449,8 @@ fn urllib_urlencode_impl(
             ));
         };
         let item_type = unsafe { object_type_id(item_ptr) };
-        if item_type != crate::bridge::type_id_list() && item_type != crate::bridge::type_id_tuple() {
+        if item_type != crate::bridge::type_id_list() && item_type != crate::bridge::type_id_tuple()
+        {
             return Err(raise_exception::<_>(
                 _py,
                 "TypeError",
@@ -483,7 +481,9 @@ fn urllib_urlencode_impl(
         let mut wrote_pair = false;
         if doseq && let Some(value_ptr) = value_obj.as_ptr() {
             let value_type = unsafe { object_type_id(value_ptr) };
-            if value_type == crate::bridge::type_id_list() || value_type == crate::bridge::type_id_tuple() {
+            if value_type == crate::bridge::type_id_list()
+                || value_type == crate::bridge::type_id_tuple()
+            {
                 let seq = unsafe { seq_vec_ref(value_ptr) };
                 for value_bits in seq.iter().copied() {
                     let value_text = crate::bridge::format_obj_str(_py, obj_from_bits(value_bits));
@@ -516,7 +516,11 @@ fn urllib_error_set_attr(
     !exception_pending(_py)
 }
 
-fn urllib_error_init_args(_py: &molt_runtime_core::CoreGilToken, self_bits: u64, args: &[u64]) -> bool {
+fn urllib_error_init_args(
+    _py: &molt_runtime_core::CoreGilToken,
+    self_bits: u64,
+    args: &[u64],
+) -> bool {
     let args_ptr = alloc_tuple(_py, args);
     if args_ptr.is_null() {
         return false;
@@ -581,7 +585,9 @@ pub(crate) fn urllib_request_attr_optional(
     Ok(Some(value_bits))
 }
 
-fn urllib_request_pending_exception_kind_name(_py: &molt_runtime_core::CoreGilToken) -> Option<String> {
+fn urllib_request_pending_exception_kind_name(
+    _py: &molt_runtime_core::CoreGilToken,
+) -> Option<String> {
     if !exception_pending(_py) {
         return None;
     }
@@ -594,7 +600,11 @@ fn urllib_request_pending_exception_kind_name(_py: &molt_runtime_core::CoreGilTo
     out
 }
 
-fn ctypes_attr_present(_py: &molt_runtime_core::CoreGilToken, obj_bits: u64, name: &[u8]) -> Result<bool, u64> {
+fn ctypes_attr_present(
+    _py: &molt_runtime_core::CoreGilToken,
+    obj_bits: u64,
+    name: &[u8],
+) -> Result<bool, u64> {
     match urllib_request_attr_optional(_py, obj_bits, name)? {
         Some(bits) => {
             dec_ref_bits(_py, bits);
@@ -604,7 +614,10 @@ fn ctypes_attr_present(_py: &molt_runtime_core::CoreGilToken, obj_bits: u64, nam
     }
 }
 
-fn ctypes_is_scalar_ctype(_py: &molt_runtime_core::CoreGilToken, ctype_bits: u64) -> Result<bool, u64> {
+fn ctypes_is_scalar_ctype(
+    _py: &molt_runtime_core::CoreGilToken,
+    ctype_bits: u64,
+) -> Result<bool, u64> {
     let has_size = ctypes_attr_present(_py, ctype_bits, b"_size")?;
     if !has_size {
         return Ok(false);
@@ -614,7 +627,10 @@ fn ctypes_is_scalar_ctype(_py: &molt_runtime_core::CoreGilToken, ctype_bits: u64
     Ok(!has_fields && !has_length)
 }
 
-fn ctypes_sizeof_bits(_py: &molt_runtime_core::CoreGilToken, obj_or_type_bits: u64) -> Result<u64, u64> {
+fn ctypes_sizeof_bits(
+    _py: &molt_runtime_core::CoreGilToken,
+    obj_or_type_bits: u64,
+) -> Result<u64, u64> {
     let Some(size_bits) = urllib_request_attr_optional(_py, obj_or_type_bits, b"_size")? else {
         return Err(raise_exception::<u64>(
             _py,
@@ -632,7 +648,11 @@ fn ctypes_sizeof_bits(_py: &molt_runtime_core::CoreGilToken, obj_or_type_bits: u
     Ok(out)
 }
 
-fn urllib_attr_truthy(_py: &molt_runtime_core::CoreGilToken, obj_bits: u64, name: &[u8]) -> Result<bool, u64> {
+fn urllib_attr_truthy(
+    _py: &molt_runtime_core::CoreGilToken,
+    obj_bits: u64,
+    name: &[u8],
+) -> Result<bool, u64> {
     match urllib_request_attr_optional(_py, obj_bits, name)? {
         Some(bits) => {
             let out = is_truthy(_py, obj_from_bits(bits));
@@ -787,7 +807,10 @@ fn socketserver_extract_bytes(
     Ok(bytes.to_vec())
 }
 
-fn socketserver_extract_request_id(_py: &molt_runtime_core::CoreGilToken, bits: u64) -> Result<u64, u64> {
+fn socketserver_extract_request_id(
+    _py: &molt_runtime_core::CoreGilToken,
+    bits: u64,
+) -> Result<u64, u64> {
     let Some(value) = to_i64(obj_from_bits(bits)) else {
         return Err(raise_exception::<u64>(
             _py,
@@ -1372,7 +1395,10 @@ fn http_server_send_header_impl(
     http_server_write_bytes(_py, handler_bits, line.as_bytes())
 }
 
-fn http_server_end_headers_impl(_py: &molt_runtime_core::CoreGilToken, handler_bits: u64) -> Result<(), u64> {
+fn http_server_end_headers_impl(
+    _py: &molt_runtime_core::CoreGilToken,
+    handler_bits: u64,
+) -> Result<(), u64> {
     http_server_write_bytes(_py, handler_bits, b"\r\n")?;
     http_server_flush(_py, handler_bits)
 }
@@ -1452,9 +1478,7 @@ fn http_server_handle_one_request_impl(
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    if prepare_headers_bits != missing
-        && molt_is_callable(prepare_headers_bits)
-    {
+    if prepare_headers_bits != missing && molt_is_callable(prepare_headers_bits) {
         let _ = unsafe { call_callable0(_py, prepare_headers_bits) };
         dec_ref_bits(_py, prepare_headers_bits);
         if exception_pending(_py) {
@@ -1506,7 +1530,10 @@ fn urllib_request_set_attr(
     !exception_pending(_py)
 }
 
-fn urllib_request_handler_order(_py: &molt_runtime_core::CoreGilToken, handler_bits: u64) -> Result<i64, u64> {
+fn urllib_request_handler_order(
+    _py: &molt_runtime_core::CoreGilToken,
+    handler_bits: u64,
+) -> Result<i64, u64> {
     let Some(order_bits) = urllib_request_attr_optional(_py, handler_bits, b"handler_order")?
     else {
         return Ok(500);
@@ -1550,7 +1577,11 @@ fn urllib_request_ensure_handlers_list(
     Ok(list_bits)
 }
 
-fn urllib_request_set_cursor(_py: &molt_runtime_core::CoreGilToken, opener_bits: u64, cursor: i64) -> bool {
+fn urllib_request_set_cursor(
+    _py: &molt_runtime_core::CoreGilToken,
+    opener_bits: u64,
+    cursor: i64,
+) -> bool {
     urllib_request_set_attr(
         _py,
         opener_bits,
@@ -1559,7 +1590,10 @@ fn urllib_request_set_cursor(_py: &molt_runtime_core::CoreGilToken, opener_bits:
     )
 }
 
-fn urllib_request_get_cursor(_py: &molt_runtime_core::CoreGilToken, opener_bits: u64) -> Result<i64, u64> {
+fn urllib_request_get_cursor(
+    _py: &molt_runtime_core::CoreGilToken,
+    opener_bits: u64,
+) -> Result<i64, u64> {
     let Some(bits) = urllib_request_attr_optional(_py, opener_bits, b"_molt_open_cursor")? else {
         return Ok(0);
     };
@@ -2007,7 +2041,10 @@ fn http_message_drop(_py: &molt_runtime_core::CoreGilToken, handle: i64) {
     }
 }
 
-fn http_message_handle_from_bits(_py: &molt_runtime_core::CoreGilToken, handle_bits: u64) -> Result<i64, u64> {
+fn http_message_handle_from_bits(
+    _py: &molt_runtime_core::CoreGilToken,
+    handle_bits: u64,
+) -> Result<i64, u64> {
     let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
         return Err(raise_exception::<u64>(
             _py,
@@ -2274,7 +2311,10 @@ fn http_cookies_parse_pairs(cookie_header: &str) -> Vec<(String, String)> {
     out
 }
 
-fn http_cookies_attr_text(_py: &molt_runtime_core::CoreGilToken, value_bits: u64) -> Option<String> {
+fn http_cookies_attr_text(
+    _py: &molt_runtime_core::CoreGilToken,
+    value_bits: u64,
+) -> Option<String> {
     if obj_from_bits(value_bits).is_none() {
         return None;
     }
@@ -2282,7 +2322,10 @@ fn http_cookies_attr_text(_py: &molt_runtime_core::CoreGilToken, value_bits: u64
     if text.is_empty() { None } else { Some(text) }
 }
 
-fn http_cookies_expires_text(_py: &molt_runtime_core::CoreGilToken, expires_bits: u64) -> Option<String> {
+fn http_cookies_expires_text(
+    _py: &molt_runtime_core::CoreGilToken,
+    expires_bits: u64,
+) -> Option<String> {
     if obj_from_bits(expires_bits).is_none() {
         return None;
     }
@@ -2374,9 +2417,7 @@ fn urllib_http_extract_headers_mapping(
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    if items_method_bits == missing
-        || !molt_is_callable(items_method_bits)
-    {
+    if items_method_bits == missing || !molt_is_callable(items_method_bits) {
         if items_method_bits != missing {
             dec_ref_bits(_py, items_method_bits);
         }
@@ -2411,7 +2452,8 @@ fn urllib_http_extract_headers_mapping(
             ));
         };
         let item_type = unsafe { object_type_id(item_ptr) };
-        if item_type != crate::bridge::type_id_list() && item_type != crate::bridge::type_id_tuple() {
+        if item_type != crate::bridge::type_id_list() && item_type != crate::bridge::type_id_tuple()
+        {
             dec_ref_bits(_py, item_bits);
             return Err(raise_exception::<u64>(
                 _py,
@@ -2888,9 +2930,7 @@ fn urllib_http_extract_request_headers(
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    if items_method_bits == missing
-        || !molt_is_callable(items_method_bits)
-    {
+    if items_method_bits == missing || !molt_is_callable(items_method_bits) {
         if items_method_bits != missing {
             dec_ref_bits(_py, items_method_bits);
         }
@@ -2925,7 +2965,8 @@ fn urllib_http_extract_request_headers(
             ));
         };
         let item_type = unsafe { object_type_id(item_ptr) };
-        if item_type != crate::bridge::type_id_list() && item_type != crate::bridge::type_id_tuple() {
+        if item_type != crate::bridge::type_id_list() && item_type != crate::bridge::type_id_tuple()
+        {
             dec_ref_bits(_py, item_bits);
             return Err(raise_exception::<u64>(
                 _py,
@@ -2965,7 +3006,8 @@ fn urllib_http_extract_method_and_body(
                     "Request data must be bytes-like",
                 ));
             };
-            let Some(bytes) = (unsafe { bytes_like_slice(MoltObject::from_ptr(ptr).bits()) }) else {
+            let Some(bytes) = (unsafe { bytes_like_slice(MoltObject::from_ptr(ptr).bits()) })
+            else {
                 dec_ref_bits(_py, bits);
                 return Err(raise_exception::<u64>(
                     _py,
@@ -3045,9 +3087,7 @@ fn urllib_http_find_proxy_for_scheme(
             dec_ref_bits(_py, proxies_bits);
             return Err(MoltObject::none().bits());
         }
-        if get_method_bits == missing
-            || !molt_is_callable(get_method_bits)
-        {
+        if get_method_bits == missing || !molt_is_callable(get_method_bits) {
             if get_method_bits != missing {
                 dec_ref_bits(_py, get_method_bits);
             }
@@ -3478,7 +3518,8 @@ fn urllib_http_try_inmemory_dispatch(
             "socketserver dispatch must return bytes-like payload",
         ));
     };
-    let Some(raw_bytes) = (unsafe { bytes_like_slice(MoltObject::from_ptr(response_ptr).bits()) }) else {
+    let Some(raw_bytes) = (unsafe { bytes_like_slice(MoltObject::from_ptr(response_ptr).bits()) })
+    else {
         dec_ref_bits(_py, response_bits);
         return Err(raise_exception::<u64>(
             _py,
@@ -3593,7 +3634,10 @@ fn urllib_request_response_handle_from_bits(
     Ok(handle)
 }
 
-fn urllib_error_class_bits(_py: &molt_runtime_core::CoreGilToken, class_name: &[u8]) -> Result<u64, u64> {
+fn urllib_error_class_bits(
+    _py: &molt_runtime_core::CoreGilToken,
+    class_name: &[u8],
+) -> Result<u64, u64> {
     let module_name_ptr = alloc_string(_py, b"urllib.error");
     if module_name_ptr.is_null() {
         return Err(MoltObject::none().bits());
@@ -3640,7 +3684,9 @@ fn urllib_raise_url_error(_py: &molt_runtime_core::CoreGilToken, reason: &str) -
         return MoltObject::none().bits();
     }
     let reason_bits = MoltObject::from_ptr(reason_ptr).bits();
-    let exc_bits = unsafe { call_class_init_with_args(_py, MoltObject::from_ptr(class_ptr).bits(), &[reason_bits]) };
+    let exc_bits = unsafe {
+        call_class_init_with_args(_py, MoltObject::from_ptr(class_ptr).bits(), &[reason_bits])
+    };
     dec_ref_bits(_py, reason_bits);
     dec_ref_bits(_py, class_bits);
     if exception_pending(_py) {
@@ -4579,9 +4625,7 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        if get_request_bits == missing
-            || !molt_is_callable(get_request_bits)
-        {
+        if get_request_bits == missing || !molt_is_callable(get_request_bits) {
             if get_request_bits != missing {
                 dec_ref_bits(_py, get_request_bits);
             }
@@ -4652,9 +4696,7 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
                 dec_ref_bits(_py, request_tuple_bits);
                 return MoltObject::none().bits();
             }
-            if process_request_bits == missing
-                || !molt_is_callable(process_request_bits)
-            {
+            if process_request_bits == missing || !molt_is_callable(process_request_bits) {
                 if process_request_bits != missing {
                     dec_ref_bits(_py, process_request_bits);
                 }
@@ -4732,9 +4774,7 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
             dec_ref_bits(_py, request_tuple_bits);
             return MoltObject::none().bits();
         }
-        if close_request_bits != missing
-            && molt_is_callable(close_request_bits)
-        {
+        if close_request_bits != missing && molt_is_callable(close_request_bits) {
             let _ = unsafe { call_callable1(_py, close_request_bits, request_bits) };
             dec_ref_bits(_py, close_request_bits);
             if exception_pending(_py) {
@@ -4769,9 +4809,7 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
                 dec_ref_bits(_py, request_tuple_bits);
                 return MoltObject::none().bits();
             }
-            if response_bytes_bits != missing
-                && molt_is_callable(response_bytes_bits)
-            {
+            if response_bytes_bits != missing && molt_is_callable(response_bytes_bits) {
                 let response_bits = unsafe { call_callable0(_py, response_bytes_bits) };
                 dec_ref_bits(_py, response_bytes_bits);
                 if exception_pending(_py) {
@@ -4854,7 +4892,10 @@ pub extern "C" fn molt_socketserver_shutdown(server_bits: u64) -> u64 {
     })
 }
 
-fn http_server_read_request_impl(_py: &molt_runtime_core::CoreGilToken, handler_bits: u64) -> Result<i64, u64> {
+fn http_server_read_request_impl(
+    _py: &molt_runtime_core::CoreGilToken,
+    handler_bits: u64,
+) -> Result<i64, u64> {
     let request_line = http_server_readline(_py, handler_bits, 65537)?;
     if request_line.is_empty() {
         return Ok(0);
@@ -5068,7 +5109,10 @@ pub extern "C" fn molt_http_server_send_response(
         let message = if obj_from_bits(message_bits).is_none() {
             None
         } else {
-            Some(crate::bridge::format_obj_str(_py, obj_from_bits(message_bits)))
+            Some(crate::bridge::format_obj_str(
+                _py,
+                obj_from_bits(message_bits),
+            ))
         };
         match http_server_send_response_impl(_py, handler_bits, code, message) {
             Ok(()) => MoltObject::none().bits(),
@@ -5090,7 +5134,10 @@ pub extern "C" fn molt_http_server_send_response_only(
         let message = if obj_from_bits(message_bits).is_none() {
             None
         } else {
-            Some(crate::bridge::format_obj_str(_py, obj_from_bits(message_bits)))
+            Some(crate::bridge::format_obj_str(
+                _py,
+                obj_from_bits(message_bits),
+            ))
         };
         match http_server_send_response_only_impl(_py, handler_bits, code, message) {
             Ok(()) => MoltObject::none().bits(),
@@ -5138,7 +5185,10 @@ pub extern "C" fn molt_http_server_send_error(
         let message = if obj_from_bits(message_bits).is_none() {
             None
         } else {
-            Some(crate::bridge::format_obj_str(_py, obj_from_bits(message_bits)))
+            Some(crate::bridge::format_obj_str(
+                _py,
+                obj_from_bits(message_bits),
+            ))
         };
         match http_server_send_error_impl(_py, handler_bits, code, message) {
             Ok(()) => MoltObject::none().bits(),
@@ -6495,8 +6545,9 @@ pub extern "C" fn molt_http_message_get(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let needle =
-            http_message_header_key(crate::bridge::format_obj_str(_py, obj_from_bits(name_bits)).as_str());
+        let needle = http_message_header_key(
+            crate::bridge::format_obj_str(_py, obj_from_bits(name_bits)).as_str(),
+        );
         let Some(out) = http_message_with(handle, |message| {
             let Some(idx) = message
                 .index
@@ -6532,8 +6583,9 @@ pub extern "C" fn molt_http_message_get_all(handle_bits: u64, name_bits: u64) ->
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let needle =
-            http_message_header_key(crate::bridge::format_obj_str(_py, obj_from_bits(name_bits)).as_str());
+        let needle = http_message_header_key(
+            crate::bridge::format_obj_str(_py, obj_from_bits(name_bits)).as_str(),
+        );
         let Some(out) = http_message_with(handle, |message| {
             let indices = message
                 .index
@@ -6586,8 +6638,9 @@ pub extern "C" fn molt_http_message_contains(handle_bits: u64, name_bits: u64) -
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let needle =
-            http_message_header_key(crate::bridge::format_obj_str(_py, obj_from_bits(name_bits)).as_str());
+        let needle = http_message_header_key(
+            crate::bridge::format_obj_str(_py, obj_from_bits(name_bits)).as_str(),
+        );
         let Some(found) = http_message_with(handle, |message| message.index.contains_key(&needle))
         else {
             return raise_exception::<_>(_py, "RuntimeError", "http message handle is invalid");
@@ -7156,4 +7209,3 @@ pub extern "C" fn molt_http_client_response_message(handle_bits: u64) -> u64 {
         urllib_response_message_bits(_py, handle)
     })
 }
-

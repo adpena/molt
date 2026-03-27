@@ -89,11 +89,7 @@ fn test_dict_setitemstring_null_dict_returns_error() {
     init();
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let result = unsafe {
-        molt_cpython_abi::api::mapping::PyDict_SetItemString(
-            ptr::null_mut(),
-            c"key".as_ptr(),
-            val,
-        )
+        molt_cpython_abi::api::mapping::PyDict_SetItemString(ptr::null_mut(), c"key".as_ptr(), val)
     };
     assert_eq!(result, -1);
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(val) };
@@ -104,9 +100,8 @@ fn test_dict_setitemstring_null_key_returns_error() {
     init();
     let dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
-    let result = unsafe {
-        molt_cpython_abi::api::mapping::PyDict_SetItemString(dict, ptr::null(), val)
-    };
+    let result =
+        unsafe { molt_cpython_abi::api::mapping::PyDict_SetItemString(dict, ptr::null(), val) };
     assert_eq!(result, -1);
     unsafe {
         molt_cpython_abi::api::refcount::Py_DECREF(val);
@@ -119,11 +114,7 @@ fn test_dict_setitemstring_null_value_returns_error() {
     init();
     let dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
     let result = unsafe {
-        molt_cpython_abi::api::mapping::PyDict_SetItemString(
-            dict,
-            c"key".as_ptr(),
-            ptr::null_mut(),
-        )
+        molt_cpython_abi::api::mapping::PyDict_SetItemString(dict, c"key".as_ptr(), ptr::null_mut())
     };
     assert_eq!(result, -1);
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(dict) };
@@ -146,8 +137,7 @@ fn test_dict_getitem_null_dict_returns_null() {
 fn test_dict_getitem_null_key_returns_null() {
     init();
     let dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
-    let result =
-        unsafe { molt_cpython_abi::api::mapping::PyDict_GetItem(dict, ptr::null_mut()) };
+    let result = unsafe { molt_cpython_abi::api::mapping::PyDict_GetItem(dict, ptr::null_mut()) };
     assert!(result.is_null());
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(dict) };
 }
@@ -155,9 +145,8 @@ fn test_dict_getitem_null_key_returns_null() {
 #[test]
 fn test_dict_getitem_both_null_returns_null() {
     init();
-    let result = unsafe {
-        molt_cpython_abi::api::mapping::PyDict_GetItem(ptr::null_mut(), ptr::null_mut())
-    };
+    let result =
+        unsafe { molt_cpython_abi::api::mapping::PyDict_GetItem(ptr::null_mut(), ptr::null_mut()) };
     assert!(result.is_null());
 }
 
@@ -178,8 +167,7 @@ fn test_dict_getitemstring_null_dict_returns_null() {
 fn test_dict_getitemstring_null_key_returns_null() {
     init();
     let dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
-    let result =
-        unsafe { molt_cpython_abi::api::mapping::PyDict_GetItemString(dict, ptr::null()) };
+    let result = unsafe { molt_cpython_abi::api::mapping::PyDict_GetItemString(dict, ptr::null()) };
     assert!(result.is_null());
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(dict) };
 }
@@ -201,8 +189,7 @@ fn test_dict_delitemstring_null_dict_returns_error() {
 fn test_dict_delitemstring_null_key_returns_error() {
     init();
     let dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
-    let result =
-        unsafe { molt_cpython_abi::api::mapping::PyDict_DelItemString(dict, ptr::null()) };
+    let result = unsafe { molt_cpython_abi::api::mapping::PyDict_DelItemString(dict, ptr::null()) };
     assert_eq!(result, -1);
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(dict) };
 }

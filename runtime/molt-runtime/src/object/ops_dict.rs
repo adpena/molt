@@ -8,10 +8,9 @@ use crate::*;
 use molt_obj_model::MoltObject;
 
 use super::ops::{
-    dict_clear_in_place, dict_del_in_place, dict_find_entry, dict_get_in_place,
-    dict_inc_in_place, dict_inc_prehashed_string_key_in_place, dict_like_bits_from_ptr,
-    dict_rebuild, dict_set_in_place, dict_set_inline_int_in_place, dict_table_capacity,
-    ensure_hashable,
+    dict_clear_in_place, dict_del_in_place, dict_find_entry, dict_get_in_place, dict_inc_in_place,
+    dict_inc_prehashed_string_key_in_place, dict_like_bits_from_ptr, dict_rebuild,
+    dict_set_in_place, dict_set_inline_int_in_place, dict_table_capacity, ensure_hashable,
 };
 
 #[unsafe(no_mangle)]

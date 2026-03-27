@@ -396,9 +396,8 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     ),
     "sorted": BuiltinFuncSpec(
         "molt_sorted_builtin",
-        ("iterable",),
-        kwonly_params=("key", "reverse"),
-        kw_defaults=(ast.Constant(None), ast.Constant(False)),
+        ("iterable", "key", "reverse"),
+        defaults=(ast.Constant(None), ast.Constant(False)),
     ),
     # CPython: dir([object]) uses the caller's locals() when called with no args.
     # Lower as a single-arg runtime call with an explicit MOLT_MISSING sentinel
@@ -9866,6 +9865,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             self._emit_iter_loop(node, iterable, loop_break_flag=loop_break_flag)
 
+    def _prepare_mutable_control_flow_bindings(self, names: set[str]) -> None:
+        if not names:
+            return
+        module_backed: set[str] = set()
+        if self.current_func_name == "molt_main":
+            # Module-scope control-flow bindings already have a canonical mutable
+            # home: the module object. Route loads through MODULE_GET_ATTR instead
+            # of synthesizing one-element list cells just to model loop-carried
+            # mutation. That keeps module lowering canonical and avoids ad hoc
+            # boxed-local indirection for top-level loops.
+            module_backed = {name for name in names if not name.startswith("__molt_")}
+            if module_backed:
+                self.module_global_mutations.update(module_backed)
+        if self.is_async():
+            return
+        for name in sorted(names - module_backed):
+            self._box_local(name)
+
     def _emit_loop_orelse(self, break_name: str, orelse: list[ast.stmt]) -> None:
         break_val = self._load_local_value(break_name)
         if break_val is None:
@@ -17929,58 +17946,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
                 return res
 
-            # ── compile-time intrinsic resolution (Func: path) ──
-            if func_id in {
-                "_require_intrinsic",
-                "require_intrinsic",
-                "_require_builtin_intrinsic",
-                "_intrinsics_require",
-                "load_intrinsic",
-            }:
-                if (
-                    node.args
-                    and isinstance(node.args[0], ast.Constant)
-                    and isinstance(node.args[0].value, str)
-                ):
-                    intrinsic_name = node.args[0].value
-                    arity = _intrinsic_arity(intrinsic_name)
-                    func_val = MoltValue(self.next_var(), type_hint="function")
-                    self.emit(
-                        MoltOp(
-                            kind="BUILTIN_FUNC",
-                            args=[intrinsic_name, arity],
-                            result=func_val,
-                        )
-                    )
-                    param_names = [f"arg{i}" for i in range(arity)]
-                    self._emit_function_metadata(
-                        func_val,
-                        name=intrinsic_name,
-                        qualname=intrinsic_name,
-                        trace_lineno=None,
-                        posonly_params=param_names,
-                        pos_or_kw_params=[],
-                        kwonly_params=[],
-                        vararg=None,
-                        varkw=None,
-                        default_exprs=[],
-                        kw_default_exprs=[],
-                        docstring=None,
-                        module_override="builtins",
-                    )
-                    set_builtin = self._emit_builtin_function(
-                        "_molt_function_set_builtin"
-                    )
-                    builtin_res = MoltValue(self.next_var(), type_hint="None")
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_FUNC",
-                            args=[set_builtin, func_val],
-                            result=builtin_res,
-                        )
-                    )
-                    return func_val
-
             if target_info and str(target_info.type_hint).startswith("Func:"):
                 target_name = target_info.type_hint.split(":")[1]
                 direct_ok = target_name in self.func_default_specs
@@ -19300,65 +19265,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res = MoltValue(self.next_var(), type_hint="memoryview")
                 self.emit(MoltOp(kind="MEMORYVIEW_NEW", args=[arg], result=res))
                 return res
-            # ── compile-time intrinsic resolution ──────────────────────
-            # _require_intrinsic("name", ns) / require_intrinsic("name", ns)
-            # bypass the runtime dict lookup and emit a direct BUILTIN_FUNC
-            # load for the intrinsic name.  This avoids a Cranelift codegen
-            # issue where dict.get() fails in compiled binaries.
-            # ── compile-time intrinsic resolution ──
-            if func_id in {
-                "_require_intrinsic",
-                "require_intrinsic",
-                "_require_builtin_intrinsic",
-                "_intrinsics_require",
-                "load_intrinsic",
-            }:
-                if (
-                    node.args
-                    and isinstance(node.args[0], ast.Constant)
-                    and isinstance(node.args[0].value, str)
-                ):
-                    intrinsic_name = node.args[0].value
-                    arity = _intrinsic_arity(intrinsic_name)
-                    func_val = MoltValue(self.next_var(), type_hint="function")
-                    self.emit(
-                        MoltOp(
-                            kind="BUILTIN_FUNC",
-                            args=[intrinsic_name, arity],
-                            result=func_val,
-                        )
-                    )
-                    # Add function metadata so the call dispatch handles
-                    # positional argument binding correctly.
-                    param_names = [f"arg{i}" for i in range(arity)]
-                    self._emit_function_metadata(
-                        func_val,
-                        name=intrinsic_name,
-                        qualname=intrinsic_name,
-                        trace_lineno=None,
-                        posonly_params=param_names,
-                        pos_or_kw_params=[],
-                        kwonly_params=[],
-                        vararg=None,
-                        varkw=None,
-                        default_exprs=[],
-                        kw_default_exprs=[],
-                        docstring=None,
-                        module_override="builtins",
-                    )
-                    set_builtin = self._emit_builtin_function(
-                        "_molt_function_set_builtin"
-                    )
-                    builtin_res = MoltValue(self.next_var(), type_hint="None")
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_FUNC",
-                            args=[set_builtin, func_val],
-                            result=builtin_res,
-                        )
-                    )
-                    return func_val
-
             if func_id in BUILTIN_FUNC_SPECS:
                 if func_id == "open":
                     needs_bind = True
@@ -22552,9 +22458,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.exact_locals.pop(name, None)
         assigned = self._collect_assigned_names(node.body)
         assigned.update(target_names)
-        for name in sorted(assigned):
-            if not self.is_async():
-                self._box_local(name)
+        self._prepare_mutable_control_flow_bindings(assigned)
         reduction = None
         if not self.is_async() and isinstance(node.target, ast.Name):
             reduction = self._match_indexed_vector_reduction_loop(node)
@@ -23021,15 +22925,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self._store_local_value(index_name, idx_res)
                     return None
             assigned = self._collect_assigned_names(node.body)
-            for name in sorted(assigned):
-                self._box_local(name)
+            self._prepare_mutable_control_flow_bindings(assigned)
             self._emit_counted_while(index_name, bound, body)
             return None
         assigned = self._collect_assigned_names(node.body)
         assigned |= self._collect_namedexpr_names(node.test)
-        for name in sorted(assigned):
-            if not self.is_async():
-                self._box_local(name)
+        self._prepare_mutable_control_flow_bindings(assigned)
         guard_map = self._emit_hoisted_loop_guards(node.body)
 
         def emit_loop_body() -> None:
@@ -26265,9 +26166,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if alias.asname:
                     self._typing_import_aliases.add(alias.asname)
                 # Fall through — typing names have runtime significance.
-            if module_name == "_intrinsics":
-                # _intrinsics is resolved entirely at compile time.
-                continue
             if module_name in self._STUB_IMPORT_MODULES:
                 continue
             bind_name = alias.asname or module_name.split(".")[0]
@@ -26277,10 +26175,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             else:
                 top_name = module_name.split(".")[0]
                 bound_val = self._emit_module_load(top_name)
-            self.locals[bind_name] = bound_val
             self.exact_locals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
                 self.globals[bind_name] = bound_val
+                if bind_name in self.boxed_locals:
+                    self._store_local_value(bind_name, bound_val)
+                else:
+                    self.locals[bind_name] = bound_val
+            else:
+                self._store_local_value(bind_name, bound_val)
             self._emit_module_attr_set(bind_name, bound_val)
             self.imported_modules[bind_name] = module_name
             if self.current_func_name == "molt_main":
@@ -26313,30 +26216,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             # Protocol, Any, cast, etc.) must be loaded from the actual
             # typing module.  Fall through to the normal import path.
             pass
-        if module_name == "_intrinsics":
-            # Two resolution paths for _require_intrinsic calls:
-            #   1. Constant-arg calls (e.g. _require_intrinsic("molt_print"))
-            #      are resolved at compile time in visit_Call → BUILTIN_FUNC.
-            #   2. Variable-arg calls (e.g. _safe_intrinsic(name)) cannot be
-            #      resolved at compile time and need a real runtime binding.
-            # Emit a BUILTIN_FUNC for molt_require_intrinsic_runtime and
-            # bind it to each imported name so both paths work.
-            for alias in node.names:
-                bind_name = alias.asname or alias.name
-                func_val = MoltValue(self.next_var(), type_hint="function")
-                self.emit(
-                    MoltOp(
-                        kind="BUILTIN_FUNC",
-                        # arity=1 must match: extern "C" fn molt_require_intrinsic_runtime(name_bits: u64) -> u64
-                        args=["molt_require_intrinsic_runtime", 1],
-                        result=func_val,
-                    )
-                )
-                self.locals[bind_name] = func_val
-                if self.current_func_name == "molt_main":
-                    self.globals[bind_name] = func_val
-                self._emit_module_attr_set(bind_name, func_val)
-            return None
         if module_name in self._STUB_IMPORT_MODULES:
             return None
         module_val = self._emit_module_load_with_parents(module_name)
@@ -26408,10 +26287,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.imported_names[bind_name] = module_name
                 if self.current_func_name == "molt_main":
                     self.global_imported_names[bind_name] = module_name
-            self.locals[bind_name] = attr_val
             self.exact_locals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
                 self.globals[bind_name] = attr_val
+                if bind_name in self.boxed_locals:
+                    self._store_local_value(bind_name, attr_val)
+                else:
+                    self.locals[bind_name] = attr_val
+            else:
+                self._store_local_value(bind_name, attr_val)
             self._emit_module_attr_set(bind_name, attr_val)
             if self.known_modules:
                 if submodule_name in self.known_modules:

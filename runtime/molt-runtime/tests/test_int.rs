@@ -24,8 +24,8 @@ unsafe extern "C" {
 static INIT: Once = Once::new();
 
 fn init_runtime() {
-    INIT.call_once(|| {
-        unsafe { molt_runtime_init(); }
+    INIT.call_once(|| unsafe {
+        molt_runtime_init();
     });
 }
 
@@ -42,7 +42,9 @@ fn as_int(bits: u64) -> i64 {
 }
 
 fn as_float(bits: u64) -> f64 {
-    MoltObject::from_bits(bits).as_float().expect("expected float")
+    MoltObject::from_bits(bits)
+        .as_float()
+        .expect("expected float")
 }
 
 fn is_true(bits: u64) -> bool {
@@ -72,7 +74,10 @@ fn test_add_zero() {
 #[test]
 fn test_add_large() {
     init_runtime();
-    assert_eq!(as_int(molt_runtime::molt_add(int(1_000_000), int(2_000_000))), 3_000_000);
+    assert_eq!(
+        as_int(molt_runtime::molt_add(int(1_000_000), int(2_000_000))),
+        3_000_000
+    );
 }
 
 // ── Subtraction ─────────────────────────────────────────
@@ -156,19 +161,28 @@ fn test_pow_zero_exponent() {
 #[test]
 fn test_bit_and() {
     init_runtime();
-    assert_eq!(as_int(molt_runtime::molt_bit_and(int(0b1100), int(0b1010))), 0b1000);
+    assert_eq!(
+        as_int(molt_runtime::molt_bit_and(int(0b1100), int(0b1010))),
+        0b1000
+    );
 }
 
 #[test]
 fn test_bit_or() {
     init_runtime();
-    assert_eq!(as_int(molt_runtime::molt_bit_or(int(0b1100), int(0b1010))), 0b1110);
+    assert_eq!(
+        as_int(molt_runtime::molt_bit_or(int(0b1100), int(0b1010))),
+        0b1110
+    );
 }
 
 #[test]
 fn test_bit_xor() {
     init_runtime();
-    assert_eq!(as_int(molt_runtime::molt_bit_xor(int(0b1100), int(0b1010))), 0b0110);
+    assert_eq!(
+        as_int(molt_runtime::molt_bit_xor(int(0b1100), int(0b1010))),
+        0b0110
+    );
 }
 
 #[test]
@@ -188,43 +202,43 @@ fn test_rshift() {
 #[test]
 fn test_lt_true() {
     init_runtime();
-    assert!(is_true(molt_runtime::molt_lt(int(1), int(2)) ));
+    assert!(is_true(molt_runtime::molt_lt(int(1), int(2))));
 }
 
 #[test]
 fn test_lt_false() {
     init_runtime();
-    assert!(!is_true(molt_runtime::molt_lt(int(2), int(1)) ));
+    assert!(!is_true(molt_runtime::molt_lt(int(2), int(1))));
 }
 
 #[test]
 fn test_eq_true() {
     init_runtime();
-    assert!(is_true(molt_runtime::molt_eq(int(42), int(42)) ));
+    assert!(is_true(molt_runtime::molt_eq(int(42), int(42))));
 }
 
 #[test]
 fn test_eq_false() {
     init_runtime();
-    assert!(!is_true(molt_runtime::molt_eq(int(42), int(43)) ));
+    assert!(!is_true(molt_runtime::molt_eq(int(42), int(43))));
 }
 
 #[test]
 fn test_ne_true() {
     init_runtime();
-    assert!(is_true(molt_runtime::molt_ne(int(1), int(2)) ));
+    assert!(is_true(molt_runtime::molt_ne(int(1), int(2))));
 }
 
 #[test]
 fn test_ge_equal() {
     init_runtime();
-    assert!(is_true(molt_runtime::molt_ge(int(5), int(5)) ));
+    assert!(is_true(molt_runtime::molt_ge(int(5), int(5))));
 }
 
 #[test]
 fn test_gt_false_when_equal() {
     init_runtime();
-    assert!(!is_true(molt_runtime::molt_gt(int(5), int(5)) ));
+    assert!(!is_true(molt_runtime::molt_gt(int(5), int(5))));
 }
 
 // ── Mixed int/float ─────────────────────────────────────

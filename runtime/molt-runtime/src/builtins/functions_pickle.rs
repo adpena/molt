@@ -2,15 +2,13 @@ use molt_obj_model::MoltObject;
 use std::collections::HashMap;
 
 use crate::{
-    TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_dict_with_pairs, alloc_list_with_capacity, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes, builtin_classes, bytes_like_slice,
-    call_callable0, call_callable1, call_callable2, call_callable3,
-    clear_exception, dec_ref_bits, dict_get_in_place,
-    exception_pending, format_obj, inc_ref_bits, is_truthy, missing_bits,
-    molt_getattr_builtin, molt_is_callable, molt_iter,
-    obj_from_bits, object_class_bits, object_type_id,
-    raise_exception, seq_vec_ref, string_obj_to_owned,
-    to_i64, type_name, type_of_bits,
+    TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_dict_with_pairs,
+    alloc_list_with_capacity, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
+    builtin_classes, bytes_like_slice, call_callable0, call_callable1, call_callable2,
+    call_callable3, clear_exception, dec_ref_bits, dict_get_in_place, exception_pending,
+    format_obj, inc_ref_bits, is_truthy, missing_bits, molt_getattr_builtin, molt_is_callable,
+    molt_iter, obj_from_bits, object_class_bits, object_type_id, raise_exception, seq_vec_ref,
+    string_obj_to_owned, to_i64, type_name, type_of_bits,
 };
 
 fn alloc_string_bits(_py: &crate::PyToken<'_>, value: &str) -> Option<u64> {

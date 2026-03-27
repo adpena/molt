@@ -41,69 +41,69 @@ mod async_rt;
 mod builtins;
 mod c_api;
 mod call;
+#[cfg(feature = "stdlib_collections")]
+mod collections_bridge;
 mod concurrency;
 mod constants;
 #[cfg(feature = "stdlib_crypto")]
 mod crypto_bridge;
-#[cfg(feature = "stdlib_math")]
-mod math_bridge;
-#[cfg(feature = "stdlib_collections")]
-mod collections_bridge;
-#[cfg(feature = "stdlib_path")]
-mod path_bridge;
-#[cfg(feature = "stdlib_regex")]
-mod regex_bridge;
-#[cfg(feature = "stdlib_text")]
-mod text_bridge;
-#[cfg(feature = "stdlib_serial")]
-mod serial_bridge;
-#[cfg(feature = "stdlib_itertools")]
-mod itertools_bridge;
 #[cfg(feature = "stdlib_difflib")]
 mod difflib_bridge;
 #[cfg(feature = "stdlib_http")]
 mod http_bridge;
-#[cfg(feature = "stdlib_logging_ext")]
-mod logging_bridge;
-#[cfg(feature = "stdlib_stringprep")]
-mod stringprep_bridge;
-#[cfg(feature = "stdlib_xml")]
-mod xml_bridge;
 #[cfg(feature = "stdlib_ipaddress")]
 mod ipaddress_bridge;
+#[cfg(feature = "stdlib_itertools")]
+mod itertools_bridge;
+#[cfg(feature = "stdlib_logging_ext")]
+mod logging_bridge;
+#[cfg(feature = "stdlib_math")]
+mod math_bridge;
+#[cfg(feature = "stdlib_path")]
+mod path_bridge;
+#[cfg(feature = "stdlib_regex")]
+mod regex_bridge;
+#[cfg(feature = "stdlib_serial")]
+mod serial_bridge;
+#[cfg(feature = "stdlib_stringprep")]
+mod stringprep_bridge;
+#[cfg(feature = "stdlib_text")]
+mod text_bridge;
+#[cfg(feature = "stdlib_xml")]
+mod xml_bridge;
 #[cfg(feature = "stdlib_zoneinfo")]
 mod zoneinfo_bridge;
 // Re-export extracted crates so their symbols are available at link time.
-#[cfg(feature = "stdlib_serial")]
-pub use molt_runtime_serial;
-#[cfg(feature = "stdlib_itertools")]
-pub use molt_runtime_itertools;
-#[cfg(feature = "stdlib_crypto")]
-pub use molt_runtime_crypto;
-#[cfg(feature = "stdlib_compression")]
-pub use molt_runtime_compression;
-#[cfg(feature = "stdlib_math")]
-pub use molt_runtime_math;
 #[cfg(feature = "stdlib_collections")]
 pub use molt_runtime_collections;
+#[cfg(feature = "stdlib_compression")]
+pub use molt_runtime_compression;
+#[cfg(feature = "stdlib_crypto")]
+pub use molt_runtime_crypto;
+#[cfg(feature = "stdlib_difflib")]
+pub use molt_runtime_difflib;
+#[cfg(feature = "stdlib_http")]
+pub use molt_runtime_http;
+#[cfg(feature = "stdlib_ipaddress")]
+pub use molt_runtime_ipaddress;
+#[cfg(feature = "stdlib_itertools")]
+pub use molt_runtime_itertools;
+#[cfg(feature = "stdlib_logging_ext")]
+pub use molt_runtime_logging;
+#[cfg(feature = "stdlib_math")]
+pub use molt_runtime_math;
 #[cfg(feature = "stdlib_path")]
 pub use molt_runtime_path;
 #[cfg(feature = "stdlib_regex")]
 pub use molt_runtime_regex;
-#[cfg(feature = "stdlib_text")]
-pub use molt_runtime_text;
-#[cfg(feature = "stdlib_difflib")]
-pub use molt_runtime_difflib;
-#[cfg(feature = "stdlib_logging_ext")]
-pub use molt_runtime_logging;
-#[cfg(feature = "stdlib_http")]
-pub use molt_runtime_http;
+#[cfg(feature = "stdlib_serial")]
+pub use molt_runtime_serial;
 #[cfg(feature = "stdlib_stringprep")]
 pub use molt_runtime_stringprep;
+#[cfg(feature = "stdlib_text")]
+pub use molt_runtime_text;
 #[cfg(feature = "stdlib_xml")]
 pub use molt_runtime_xml;
-#[cfg(feature = "stdlib_ipaddress")]
-pub use molt_runtime_ipaddress;
 #[cfg(feature = "stdlib_zoneinfo")]
 pub use molt_runtime_zoneinfo;
 #[cfg(feature = "stdlib_tk")]
@@ -112,9 +112,9 @@ mod gui;
 mod tk_bridge;
 #[cfg(feature = "stdlib_tk")]
 pub use molt_runtime_tk;
-mod intrinsics;
 #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
 mod cpython_abi_hooks;
+mod intrinsics;
 #[cfg(target_arch = "wasm32")]
 mod libc_compat;
 mod object;
@@ -150,8 +150,6 @@ pub(crate) use crate::state::RuntimeState;
 #[allow(unused_imports)]
 pub(crate) use molt_obj_model::MoltObject;
 
-#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-pub use crate::async_rt::net_stubs::*;
 pub use crate::async_rt::cancellation::*;
 pub(crate) use crate::async_rt::channels::has_capability;
 pub use crate::async_rt::channels::*;
@@ -160,44 +158,39 @@ pub use crate::async_rt::event_loop::*;
 pub use crate::async_rt::generators::*;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) use crate::async_rt::io_poller::IoPoller;
-#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-pub(crate) use crate::async_rt::net_stubs::IoPoller;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub use crate::async_rt::io_poller::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use crate::async_rt::is_block_on_task;
+#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
+pub(crate) use crate::async_rt::net_stubs::IoPoller;
+#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
+pub(crate) use crate::async_rt::net_stubs::io_wait_release_socket;
+#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
+pub use crate::async_rt::net_stubs::*;
 pub use crate::async_rt::process::*;
 pub(crate) use crate::async_rt::scheduler::BLOCK_ON_TASK;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) use crate::async_rt::sockets::io_wait_release_socket;
-#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-pub(crate) use crate::async_rt::net_stubs::io_wait_release_socket;
 pub use crate::async_rt::sockets::*;
 // Socket utilities from sockets_net.rs: only available when networking is compiled in.
-#[cfg(molt_has_net_io)]
-pub use crate::async_rt::sockets::{
-    molt_socket_cmsg_len, molt_socket_cmsg_space,
-    molt_socket_if_indextoname, molt_socket_if_nameindex, molt_socket_if_nametoindex,
-    molt_socket_send_fds, molt_socket_recv_fds,
-    molt_socket_sendmsg_afalg, molt_socket_sethostname,
-};
 #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
 pub use crate::async_rt::net_stubs::{
-    molt_socket_cmsg_len, molt_socket_cmsg_space,
-    molt_socket_if_indextoname, molt_socket_if_nameindex, molt_socket_if_nametoindex,
-    molt_socket_send_fds, molt_socket_recv_fds,
-    molt_socket_sendmsg_afalg, molt_socket_sethostname,
+    molt_socket_cmsg_len, molt_socket_cmsg_space, molt_socket_if_indextoname,
+    molt_socket_if_nameindex, molt_socket_if_nametoindex, molt_socket_recv_fds,
+    molt_socket_send_fds, molt_socket_sendmsg_afalg, molt_socket_sethostname,
+};
+#[cfg(molt_has_net_io)]
+pub use crate::async_rt::sockets::{
+    molt_socket_cmsg_len, molt_socket_cmsg_space, molt_socket_if_indextoname,
+    molt_socket_if_nameindex, molt_socket_if_nametoindex, molt_socket_recv_fds,
+    molt_socket_send_fds, molt_socket_sendmsg_afalg, molt_socket_sethostname,
 };
 
 #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
 pub use crate::async_rt::net_stubs::{
-    molt_socket_getfqdn,
-    molt_socket_gethostbyaddr,
-    molt_socket_gethostbyname,
-    molt_socket_gethostbyname_ex,
-    molt_socket_htonl,
-    molt_socket_htons,
-    molt_socket_ntohl,
+    molt_socket_getfqdn, molt_socket_gethostbyaddr, molt_socket_gethostbyname,
+    molt_socket_gethostbyname_ex, molt_socket_htonl, molt_socket_htons, molt_socket_ntohl,
     molt_socket_ntohs,
 };
 
@@ -230,8 +223,6 @@ pub(crate) use crate::async_rt::{
 pub use crate::builtins::abc::*;
 #[cfg(not(feature = "stdlib_collections"))]
 pub use crate::builtins::argparse::*;
-#[cfg(feature = "stdlib_collections")]
-pub use molt_runtime_collections::argparse::*;
 pub use crate::builtins::array_mod::*;
 #[cfg(feature = "stdlib_ast")]
 pub use crate::builtins::ast::*;
@@ -251,12 +242,8 @@ pub(crate) use crate::builtins::attr::{
 pub use crate::builtins::attributes::*;
 #[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::base64_mod::*;
-#[cfg(feature = "stdlib_serial")]
-pub use molt_runtime_serial::base64_mod::*;
 #[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::binascii::*;
-#[cfg(feature = "stdlib_serial")]
-pub use molt_runtime_serial::binascii::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::bz2::*;
 pub use crate::builtins::callable::*;
@@ -266,25 +253,17 @@ pub(crate) use crate::builtins::classes::{
 };
 #[cfg(not(feature = "stdlib_math"))]
 pub use crate::builtins::cmath_mod::*;
-#[cfg(feature = "stdlib_math")]
-pub use molt_runtime_math::cmath_mod::*;
 pub use crate::builtins::codecs::*;
 pub use crate::builtins::codecs_ext::*;
 #[cfg(not(feature = "stdlib_collections"))]
 pub use crate::builtins::collections_ext::*;
-#[cfg(feature = "stdlib_collections")]
-pub use molt_runtime_collections::collections_ext::*;
 #[cfg(not(feature = "stdlib_math"))]
 pub use crate::builtins::colorsys::*;
-#[cfg(feature = "stdlib_math")]
-pub use molt_runtime_math::colorsys::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::compression_common::*;
 pub use crate::builtins::concurrent::*;
 #[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::configparser::*;
-#[cfg(feature = "stdlib_serial")]
-pub use molt_runtime_serial::configparser::*;
 pub(crate) use crate::builtins::containers::{
     dict_len, dict_method_bits, dict_order, dict_order_ptr, dict_table, dict_table_ptr,
     dict_view_as_set_bits, dict_view_dict_bits, dict_view_entry, dict_view_len,
@@ -309,21 +288,13 @@ pub(crate) use crate::builtins::contextlib::{
 pub use crate::builtins::copy_mod::*;
 #[cfg(not(feature = "stdlib_csv"))]
 pub use crate::builtins::csv::*;
-#[cfg(feature = "stdlib_csv")]
-pub use molt_runtime_serial::csv::*;
 #[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::datetime::*;
-#[cfg(feature = "stdlib_serial")]
-pub use molt_runtime_serial::datetime::*;
 pub use crate::builtins::dbm_dumb::*;
 #[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::decimal::*;
-#[cfg(feature = "stdlib_serial")]
-pub use molt_runtime_serial::decimal::*;
 #[cfg(not(feature = "stdlib_difflib"))]
 pub use crate::builtins::difflib::*;
-#[cfg(feature = "stdlib_difflib")]
-pub use molt_runtime_difflib::difflib::*;
 pub use crate::builtins::enum_ext::*;
 pub(crate) use crate::builtins::exceptions::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, ExceptionSentinel,
@@ -358,27 +329,17 @@ pub use crate::builtins::fcntl::*;
 pub use crate::builtins::fnmatch::*;
 #[cfg(not(feature = "stdlib_math"))]
 pub use crate::builtins::fractions::*;
-#[cfg(feature = "stdlib_math")]
-pub use molt_runtime_math::fractions::*;
 pub use crate::builtins::functions::*;
 #[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::functions_email::*;
-#[cfg(feature = "stdlib_serial")]
-pub use molt_runtime_serial::email::*;
 #[cfg(not(feature = "stdlib_http"))]
 pub use crate::builtins::functions_http::*;
-#[cfg(feature = "stdlib_http")]
-pub use molt_runtime_http::functions_http::*;
 #[cfg(not(feature = "stdlib_http"))]
 pub use crate::builtins::functions_logging::*;
-#[cfg(feature = "stdlib_http")]
-pub use molt_runtime_http::functions_logging::*;
 pub use crate::builtins::functions_pickle::*;
 pub use crate::builtins::functions_stat::*;
 #[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::functions_zipfile::*;
-#[cfg(feature = "stdlib_serial")]
-pub use molt_runtime_serial::zipfile::*;
 pub use crate::builtins::functools::*;
 #[cfg(feature = "stdlib_fs_extra")]
 pub use crate::builtins::glob_mod::*;
@@ -391,8 +352,6 @@ pub use crate::builtins::hashlib::*;
 pub use crate::builtins::hmac::*;
 #[cfg(not(feature = "stdlib_text"))]
 pub use crate::builtins::html::*;
-#[cfg(feature = "stdlib_text")]
-pub use molt_runtime_text::html::*;
 pub use crate::builtins::inspect::*;
 pub use crate::builtins::io::*;
 pub(crate) use crate::builtins::io::{
@@ -401,23 +360,15 @@ pub(crate) use crate::builtins::io::{
 };
 #[cfg(not(feature = "stdlib_ipaddress"))]
 pub use crate::builtins::ipaddress::*;
-#[cfg(feature = "stdlib_ipaddress")]
-pub use molt_runtime_ipaddress::ipaddress::*;
 #[cfg(not(feature = "stdlib_itertools"))]
 pub use crate::builtins::itertools::*;
-#[cfg(feature = "stdlib_itertools")]
-pub use molt_runtime_itertools::itertools::*;
 pub use crate::builtins::json::*;
 #[cfg(not(feature = "stdlib_logging_ext"))]
 pub use crate::builtins::logging_ext::*;
-#[cfg(feature = "stdlib_logging_ext")]
-pub use molt_runtime_logging::logging_ext::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::lzma::*;
 #[cfg(not(feature = "stdlib_math"))]
 pub use crate::builtins::math::*;
-#[cfg(feature = "stdlib_math")]
-pub use molt_runtime_math::math::*;
 pub(crate) use crate::builtins::methods::*;
 pub use crate::builtins::modules::*;
 pub(crate) use crate::builtins::numbers::{
@@ -431,24 +382,16 @@ pub(crate) use crate::builtins::numbers::{
 pub use crate::builtins::operator::*;
 #[cfg(not(feature = "stdlib_path"))]
 pub use crate::builtins::os_ext::*;
-#[cfg(feature = "stdlib_path")]
-pub use molt_runtime_path::os_ext::*;
 #[cfg(not(feature = "stdlib_path"))]
 pub use crate::builtins::pathlib::*;
-#[cfg(feature = "stdlib_path")]
-pub use molt_runtime_path::pathlib::*;
 pub use crate::builtins::platform::*;
 pub use crate::builtins::platform_mod::*;
 pub use crate::builtins::pprint_ext::*;
 pub use crate::builtins::punycode::*;
 #[cfg(not(feature = "stdlib_math"))]
 pub use crate::builtins::random_mod::*;
-#[cfg(feature = "stdlib_math")]
-pub use molt_runtime_math::random_mod::*;
 #[cfg(not(feature = "stdlib_regex"))]
 pub use crate::builtins::regex::*;
-#[cfg(feature = "stdlib_regex")]
-pub use molt_runtime_regex::regex::*;
 #[cfg(feature = "stdlib_crypto")]
 pub use crate::builtins::secrets::*;
 pub use crate::builtins::select::*;
@@ -460,8 +403,6 @@ pub use crate::builtins::ssl::*;
 pub use crate::builtins::string_ext::*;
 #[cfg(not(feature = "stdlib_stringprep"))]
 pub use crate::builtins::stringprep::*;
-#[cfg(feature = "stdlib_stringprep")]
-pub use molt_runtime_stringprep::stringprep::*;
 pub(crate) use crate::builtins::strings::{
     bytes_count_impl, bytes_find_impl, bytes_rfind_impl, bytes_strip_range, replace_bytes_impl,
     replace_bytes_impl_limit, replace_string_impl, rsplit_bytes_to_list_maxsplit,
@@ -472,8 +413,6 @@ pub(crate) use crate::builtins::strings::{
 };
 #[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::structs::*;
-#[cfg(feature = "stdlib_serial")]
-pub use molt_runtime_serial::structs::*;
 pub use crate::builtins::subprocess_ext::*;
 pub use crate::builtins::sys_ext::*;
 #[cfg(feature = "stdlib_compression")]
@@ -489,15 +428,11 @@ pub(crate) use crate::builtins::type_ops::{
 pub use crate::builtins::types::*;
 #[cfg(not(feature = "stdlib_text"))]
 pub use crate::builtins::unicodedata_mod::*;
-#[cfg(feature = "stdlib_text")]
-pub use molt_runtime_text::unicodedata_mod::*;
 pub use crate::builtins::warnings_ext::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::zlib::*;
 #[cfg(not(feature = "stdlib_zoneinfo"))]
 pub use crate::builtins::zoneinfo::*;
-#[cfg(feature = "stdlib_zoneinfo")]
-pub use molt_runtime_zoneinfo::zoneinfo::*;
 #[allow(unused_imports)]
 pub(crate) use crate::call::bind::molt_callargs_push_kw;
 pub(crate) use crate::call::bind::{
@@ -542,14 +477,13 @@ pub(crate) use crate::object::layout::{
     function_code_bits, function_dict_bits, function_fn_ptr, function_name_bits,
     function_set_annotate_bits, function_set_annotations_bits, function_set_closure_bits,
     function_set_code_bits, function_set_dict_bits, function_set_trampoline_ptr,
-    function_trampoline_ptr, generic_alias_args_bits, generic_alias_origin_bits, iter_index,
-    iter_cached_tuple, iter_set_cached_tuple, iter_set_index, iter_target_bits, map_func_bits,
-    map_iters_ptr, module_dict_bits,
-    module_name_bits, property_del_bits, property_get_bits, property_set_bits, range_len_i64,
-    range_start_bits, range_step_bits, range_stop_bits, reversed_index, reversed_set_index,
-    reversed_target_bits, seq_vec, seq_vec_ptr, seq_vec_ref, slice_start_bits, slice_step_bits,
-    slice_stop_bits, staticmethod_func_bits, super_obj_bits, super_type_bits, union_type_args_bits,
-    zip_iters_ptr, zip_set_strict_bits, zip_strict_bits,
+    function_trampoline_ptr, generic_alias_args_bits, generic_alias_origin_bits, iter_cached_tuple,
+    iter_index, iter_set_cached_tuple, iter_set_index, iter_target_bits, map_func_bits,
+    map_iters_ptr, module_dict_bits, module_name_bits, property_del_bits, property_get_bits,
+    property_set_bits, range_len_i64, range_start_bits, range_step_bits, range_stop_bits,
+    reversed_index, reversed_set_index, reversed_target_bits, seq_vec, seq_vec_ptr, seq_vec_ref,
+    slice_start_bits, slice_step_bits, slice_stop_bits, staticmethod_func_bits, super_obj_bits,
+    super_type_bits, union_type_args_bits, zip_iters_ptr, zip_set_strict_bits, zip_strict_bits,
 };
 pub(crate) use crate::object::memoryview::{
     bytes_like_slice, bytes_like_slice_raw, memoryview_bytes_slice, memoryview_bytes_slice_mut,
@@ -560,36 +494,36 @@ pub(crate) use crate::object::memoryview::{
 };
 pub(crate) use crate::object::ops::HashSecret;
 pub use crate::object::ops::*;
-pub use crate::object::ops_vec::*;
-pub use crate::object::ops_slice::*;
-pub use crate::object::ops_memoryview::*;
-pub use crate::object::ops_bytes::*;
-pub use crate::object::ops_dict::*;
-pub use crate::object::ops_heapq::*;
-pub use crate::object::ops_iter::*;
-pub use crate::object::ops_arith::*;
-pub use crate::object::ops_builtins::*;
-pub use crate::object::ops_compare::*;
-pub use crate::object::ops_convert::*;
-pub use crate::object::ops_list::*;
-pub use crate::object::ops_set::*;
-pub use crate::object::ops_string::*;
 #[allow(unused_imports)]
 pub(crate) use crate::object::ops::{
     DecodeTextError, class_break_cycles, decode_bytes_text, decode_string_list, decode_value_list,
     dict_clear_in_place, dict_clear_method, dict_copy_method, dict_del_in_place, dict_find_entry,
     dict_find_entry_kv_in_place, dict_fromkeys_method, dict_get_in_place, dict_get_method,
     dict_items_method, dict_keys_method, dict_pop_method, dict_popitem_method, dict_set_in_place,
-    dict_setdefault_method, dict_table_capacity, dict_update_method,
-    dict_update_set_via_store, dict_values_method, format_obj,
-    format_obj_str, frozenset_from_iter_bits, hash_slice_bits, is_truthy, list_from_iter_bits,
-    obj_eq, set_add_in_place, set_del_in_place, set_find_entry, set_replace_entries,
-    set_table_capacity, tuple_from_isize_slice, tuple_from_iter_bits, type_name,
+    dict_setdefault_method, dict_table_capacity, dict_update_method, dict_update_set_via_store,
+    dict_values_method, format_obj, format_obj_str, frozenset_from_iter_bits, hash_slice_bits,
+    is_truthy, list_from_iter_bits, obj_eq, set_add_in_place, set_del_in_place, set_find_entry,
+    set_replace_entries, set_table_capacity, tuple_from_isize_slice, tuple_from_iter_bits,
+    type_name,
 };
+pub use crate::object::ops_arith::*;
+pub use crate::object::ops_builtins::*;
+pub use crate::object::ops_bytes::*;
+pub use crate::object::ops_compare::*;
+pub use crate::object::ops_convert::*;
+pub use crate::object::ops_dict::*;
 #[allow(unused_imports)]
 pub(crate) use crate::object::ops_dict::{dict_update_apply, dict_update_set_in_place};
+pub use crate::object::ops_heapq::*;
+pub use crate::object::ops_iter::*;
+pub use crate::object::ops_list::*;
+pub use crate::object::ops_memoryview::*;
+pub use crate::object::ops_set::*;
+pub use crate::object::ops_slice::*;
+pub use crate::object::ops_string::*;
 #[allow(unused_imports)]
 pub(crate) use crate::object::ops_string::{utf8_cache_remove, utf8_codepoint_count_cached};
+pub use crate::object::ops_vec::*;
 pub(crate) use crate::object::type_ids::*;
 pub(crate) use crate::object::weakref::weakref_clear_for_ptr;
 pub use crate::object::weakref::{
@@ -623,7 +557,9 @@ pub(crate) use crate::object::{
     object_mark_has_ptrs, object_payload_size, object_set_class_bits, object_type_id,
     pending_bits_i64, ptr_from_bits, string_bytes, string_len,
 };
-pub use crate::object::{MoltHeader, bump_type_version, global_type_version, molt_dec_ref, molt_inc_ref};
+pub use crate::object::{
+    MoltHeader, bump_type_version, global_type_version, molt_dec_ref, molt_inc_ref,
+};
 #[allow(unused_imports)]
 pub(crate) use crate::provenance::{register_ptr, release_ptr, reset_ptr_registry, resolve_ptr};
 pub(crate) use crate::state::cache::{InternedNames, MethodCache, intern_static_name};
@@ -632,11 +568,68 @@ pub(crate) use crate::state::runtime_state::{runtime_state, runtime_state_for_gi
 pub(crate) use crate::state::{
     CONTEXT_STACK, DEFAULT_RECURSION_LIMIT, FRAME_STACK, GIL_DEPTH, PARSE_ARENA, RECURSION_DEPTH,
     RECURSION_LIMIT, REPR_DEPTH, REPR_SET, REPR_STACK, TRACEBACK_SUPPRESS, current_rss_bytes,
-    profile_enabled, profile_hit, profile_hit_bytes, profile_hit_unchecked,
-    recursion_guard_enter, recursion_guard_exit, sample_peak_rss,
-    recursion_limit_get, recursion_limit_set, traceback_suppress_enter, traceback_suppress_exit,
-    traceback_suppressed,
+    profile_enabled, profile_hit, profile_hit_bytes, profile_hit_unchecked, recursion_guard_enter,
+    recursion_guard_exit, recursion_limit_get, recursion_limit_set, sample_peak_rss,
+    traceback_suppress_enter, traceback_suppress_exit, traceback_suppressed,
 };
+#[cfg(feature = "stdlib_collections")]
+pub use molt_runtime_collections::argparse::*;
+#[cfg(feature = "stdlib_collections")]
+pub use molt_runtime_collections::collections_ext::*;
+#[cfg(feature = "stdlib_difflib")]
+pub use molt_runtime_difflib::difflib::*;
+#[cfg(feature = "stdlib_http")]
+pub use molt_runtime_http::functions_http::*;
+#[cfg(feature = "stdlib_http")]
+pub use molt_runtime_http::functions_logging::*;
+#[cfg(feature = "stdlib_ipaddress")]
+pub use molt_runtime_ipaddress::ipaddress::*;
+#[cfg(feature = "stdlib_itertools")]
+pub use molt_runtime_itertools::itertools::*;
+#[cfg(feature = "stdlib_logging_ext")]
+pub use molt_runtime_logging::logging_ext::*;
+#[cfg(feature = "stdlib_math")]
+pub use molt_runtime_math::cmath_mod::*;
+#[cfg(feature = "stdlib_math")]
+pub use molt_runtime_math::colorsys::*;
+#[cfg(feature = "stdlib_math")]
+pub use molt_runtime_math::fractions::*;
+#[cfg(feature = "stdlib_math")]
+pub use molt_runtime_math::math::*;
+#[cfg(feature = "stdlib_math")]
+pub use molt_runtime_math::random_mod::*;
+#[cfg(feature = "stdlib_path")]
+pub use molt_runtime_path::os_ext::*;
+#[cfg(feature = "stdlib_path")]
+pub use molt_runtime_path::pathlib::*;
+#[cfg(feature = "stdlib_regex")]
+pub use molt_runtime_regex::regex::*;
+#[cfg(feature = "stdlib_serial")]
+pub use molt_runtime_serial::base64_mod::*;
+#[cfg(feature = "stdlib_serial")]
+pub use molt_runtime_serial::binascii::*;
+#[cfg(feature = "stdlib_serial")]
+pub use molt_runtime_serial::configparser::*;
+#[cfg(feature = "stdlib_csv")]
+pub use molt_runtime_serial::csv::*;
+#[cfg(feature = "stdlib_serial")]
+pub use molt_runtime_serial::datetime::*;
+#[cfg(feature = "stdlib_serial")]
+pub use molt_runtime_serial::decimal::*;
+#[cfg(feature = "stdlib_serial")]
+pub use molt_runtime_serial::email::*;
+#[cfg(feature = "stdlib_serial")]
+pub use molt_runtime_serial::structs::*;
+#[cfg(feature = "stdlib_serial")]
+pub use molt_runtime_serial::zipfile::*;
+#[cfg(feature = "stdlib_stringprep")]
+pub use molt_runtime_stringprep::stringprep::*;
+#[cfg(feature = "stdlib_text")]
+pub use molt_runtime_text::html::*;
+#[cfg(feature = "stdlib_text")]
+pub use molt_runtime_text::unicodedata_mod::*;
+#[cfg(feature = "stdlib_zoneinfo")]
+pub use molt_runtime_zoneinfo::zoneinfo::*;
 // The extern "C" profiling entrypoints only exist on non-wasm32 targets.
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(unused_imports)]

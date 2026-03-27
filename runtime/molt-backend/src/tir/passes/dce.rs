@@ -85,23 +85,23 @@ fn is_potentially_throwing(opcode: OpCode) -> bool {
     matches!(
         opcode,
         OpCode::Call
-        | OpCode::CallMethod
-        | OpCode::CallBuiltin
-        | OpCode::Raise
-        | OpCode::Index
-        | OpCode::StoreIndex
-        | OpCode::LoadAttr
-        | OpCode::StoreAttr
-        | OpCode::DelAttr
-        | OpCode::DelIndex
-        | OpCode::Import
-        | OpCode::ImportFrom
-        | OpCode::Div
-        | OpCode::FloorDiv
-        | OpCode::Mod
-        | OpCode::GetIter
-        | OpCode::IterNext
-        | OpCode::ForIter
+            | OpCode::CallMethod
+            | OpCode::CallBuiltin
+            | OpCode::Raise
+            | OpCode::Index
+            | OpCode::StoreIndex
+            | OpCode::LoadAttr
+            | OpCode::StoreAttr
+            | OpCode::DelAttr
+            | OpCode::DelIndex
+            | OpCode::Import
+            | OpCode::ImportFrom
+            | OpCode::Div
+            | OpCode::FloorDiv
+            | OpCode::Mod
+            | OpCode::GetIter
+            | OpCode::IterNext
+            | OpCode::ForIter
     )
 }
 
@@ -209,9 +209,7 @@ fn reachable_blocks(func: &TirFunction) -> HashSet<BlockId> {
                     stack.push(*then_block);
                     stack.push(*else_block);
                 }
-                Terminator::Switch {
-                    cases, default, ..
-                } => {
+                Terminator::Switch { cases, default, .. } => {
                     stack.push(*default);
                     for (_, target, _) in cases {
                         stack.push(*target);
@@ -409,7 +407,8 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn unused_arithmetic_removed() {
-        let mut func = TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::None);
+        let mut func =
+            TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::None);
         let p0 = ValueId(0);
         let p1 = ValueId(1);
         let sum = func.fresh_value();

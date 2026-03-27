@@ -4117,11 +4117,7 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                 "module attribute access expects module, got non-pointer (bits=0x{:x}) for attr '{}'",
                 module_bits, attr_name
             );
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                &msg,
-            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
         };
         unsafe {
             if object_type_id(module_ptr) != TYPE_ID_MODULE {
@@ -4141,11 +4137,7 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                     "module attribute access expects module, got type_id={} (bits=0x{:x}) for attr '{}'",
                     type_id, module_bits, attr_name
                 );
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    &msg,
-                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
             }
             let dict_bits = module_dict_bits(module_ptr);
             let dict_obj = obj_from_bits(dict_bits);
@@ -4203,11 +4195,7 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
                 "module get_global expects module, got non-pointer (bits=0x{:x}) for name '{}'",
                 module_bits, name
             );
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                &msg,
-            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
         };
         unsafe {
             if object_type_id(module_ptr) != TYPE_ID_MODULE {
@@ -4221,11 +4209,7 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
                     "module get_global expects module, got type_id={} (bits=0x{:x}) for name '{}'",
                     type_id, module_bits, name
                 );
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    &msg,
-                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
             }
             let dict_bits = module_dict_bits(module_ptr);
             let dict_obj = obj_from_bits(dict_bits);

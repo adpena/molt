@@ -333,8 +333,7 @@ fn write_stderr_line(_py: &PyToken<'_>, text: &str) {
     }
     let none = MoltObject::none().bits();
     let flush = MoltObject::from_bool(true).bits();
-    let out_bits =
-        crate::molt_print_builtin(args_bits, none, none, stderr_bits, flush);
+    let out_bits = crate::molt_print_builtin(args_bits, none, none, stderr_bits, flush);
     if !obj_from_bits(out_bits).is_none() {
         dec_ref_bits(_py, out_bits);
     }

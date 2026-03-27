@@ -84,9 +84,7 @@ pub fn generate_hip(kernel: &GpuKernel) -> String {
     out.push_str(") {\n");
 
     // Thread ID using HIP intrinsics
-    out.push_str(
-        "    int tid = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;\n",
-    );
+    out.push_str("    int tid = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;\n");
 
     // Body: convert TIR ops to HIP C++ statements
     let mut ctx = HipGenContext::new(kernel);
@@ -364,9 +362,18 @@ mod tests {
             "missing hipBlockDim_x in:\n{hip}"
         );
         // Buffer params
-        assert!(hip.contains("* __restrict__ a"), "missing buffer a in:\n{hip}");
-        assert!(hip.contains("* __restrict__ b"), "missing buffer b in:\n{hip}");
-        assert!(hip.contains("* __restrict__ out"), "missing buffer out in:\n{hip}");
+        assert!(
+            hip.contains("* __restrict__ a"),
+            "missing buffer a in:\n{hip}"
+        );
+        assert!(
+            hip.contains("* __restrict__ b"),
+            "missing buffer b in:\n{hip}"
+        );
+        assert!(
+            hip.contains("* __restrict__ out"),
+            "missing buffer out in:\n{hip}"
+        );
     }
 
     /// Test 2: type mapping — I64→long long, F64→double, Bool→bool

@@ -24,12 +24,7 @@ unsafe extern "C" {
 
 pub fn raise_exception<T: ExceptionSentinel>(_py: &CoreGilToken, type_name: &str, msg: &str) -> T {
     let bits = unsafe {
-        __molt_regex_raise_exception(
-            type_name.as_ptr(),
-            type_name.len(),
-            msg.as_ptr(),
-            msg.len(),
-        )
+        __molt_regex_raise_exception(type_name.as_ptr(), type_name.len(), msg.as_ptr(), msg.len())
     };
     T::from_bits(bits)
 }
@@ -164,16 +159,29 @@ unsafe extern "C" {
     fn __molt_regex_dict_get_in_place(dict_ptr: *mut u8, key_bits: u64, out: *mut u64) -> i32;
     fn __molt_regex_dict_set_in_place(dict_ptr: *mut u8, key_bits: u64, val_bits: u64) -> i32;
     fn __molt_regex_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64>;
-    fn __molt_regex_dict_order_clone(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize) -> i32;
+    fn __molt_regex_dict_order_clone(
+        ptr: *mut u8,
+        out_ptr: *mut *const u64,
+        out_len: *mut usize,
+    ) -> i32;
 }
 
-pub unsafe fn dict_get_in_place(_py: &CoreGilToken, dict_ptr: *mut u8, key_bits: u64) -> Option<u64> {
+pub unsafe fn dict_get_in_place(
+    _py: &CoreGilToken,
+    dict_ptr: *mut u8,
+    key_bits: u64,
+) -> Option<u64> {
     let mut out: u64 = 0;
     let ok = unsafe { __molt_regex_dict_get_in_place(dict_ptr, key_bits, &mut out) };
     if ok != 0 { Some(out) } else { None }
 }
 
-pub unsafe fn dict_set_in_place(_py: &CoreGilToken, dict_ptr: *mut u8, key_bits: u64, val_bits: u64) -> bool {
+pub unsafe fn dict_set_in_place(
+    _py: &CoreGilToken,
+    dict_ptr: *mut u8,
+    key_bits: u64,
+    val_bits: u64,
+) -> bool {
     unsafe { __molt_regex_dict_set_in_place(dict_ptr, key_bits, val_bits) != 0 }
 }
 

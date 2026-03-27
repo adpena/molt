@@ -55,17 +55,35 @@ pub extern "C" fn molt_lzma_preset_extreme() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_compress(data_bits: u64, format_bits: u64, check_bits: u64, preset_bits: u64) -> u64 {
-    molt_runtime_compression::lzma::molt_lzma_compress(data_bits, format_bits, check_bits, preset_bits)
+pub extern "C" fn molt_lzma_compress(
+    data_bits: u64,
+    format_bits: u64,
+    check_bits: u64,
+    preset_bits: u64,
+) -> u64 {
+    molt_runtime_compression::lzma::molt_lzma_compress(
+        data_bits,
+        format_bits,
+        check_bits,
+        preset_bits,
+    )
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompress(data_bits: u64, format_bits: u64, _memlimit_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_decompress(
+    data_bits: u64,
+    format_bits: u64,
+    _memlimit_bits: u64,
+) -> u64 {
     molt_runtime_compression::lzma::molt_lzma_decompress(data_bits, format_bits, _memlimit_bits)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_compressor_new(format_bits: u64, check_bits: u64, preset_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_compressor_new(
+    format_bits: u64,
+    check_bits: u64,
+    preset_bits: u64,
+) -> u64 {
     molt_runtime_compression::lzma::molt_lzma_compressor_new(format_bits, check_bits, preset_bits)
 }
 
@@ -90,8 +108,16 @@ pub extern "C" fn molt_lzma_decompressor_new(format_bits: u64, _memlimit_bits: u
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompressor_decompress(handle_bits: u64, data_bits: u64, max_length_bits: u64) -> u64 {
-    molt_runtime_compression::lzma::molt_lzma_decompressor_decompress(handle_bits, data_bits, max_length_bits)
+pub extern "C" fn molt_lzma_decompressor_decompress(
+    handle_bits: u64,
+    data_bits: u64,
+    max_length_bits: u64,
+) -> u64 {
+    molt_runtime_compression::lzma::molt_lzma_decompressor_decompress(
+        handle_bits,
+        data_bits,
+        max_length_bits,
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -115,8 +141,20 @@ pub extern "C" fn molt_lzma_decompressor_drop(handle_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_file_open(filename_bits: u64, mode_bits: u64, format_bits: u64, check_bits: u64, preset_bits: u64) -> u64 {
-    molt_runtime_compression::lzma::molt_lzma_file_open(filename_bits, mode_bits, format_bits, check_bits, preset_bits)
+pub extern "C" fn molt_lzma_file_open(
+    filename_bits: u64,
+    mode_bits: u64,
+    format_bits: u64,
+    check_bits: u64,
+    preset_bits: u64,
+) -> u64 {
+    molt_runtime_compression::lzma::molt_lzma_file_open(
+        filename_bits,
+        mode_bits,
+        format_bits,
+        check_bits,
+        preset_bits,
+    )
 }
 
 #[unsafe(no_mangle)]

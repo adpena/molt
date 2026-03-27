@@ -22,10 +22,7 @@ pub struct TirBlock {
 #[derive(Debug, Clone)]
 pub enum Terminator {
     /// Unconditional branch to a target block, passing arguments.
-    Branch {
-        target: BlockId,
-        args: Vec<ValueId>,
-    },
+    Branch { target: BlockId, args: Vec<ValueId> },
     /// Conditional branch: if `cond` is truthy, go to `then_block`, else `else_block`.
     CondBranch {
         cond: ValueId,

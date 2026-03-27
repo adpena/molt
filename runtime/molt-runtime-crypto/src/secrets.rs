@@ -2,8 +2,8 @@
 //
 // secrets module intrinsics: cryptographically-secure random tokens.
 
-use molt_runtime_core::prelude::*;
 use crate::bridge::*;
+use molt_runtime_core::prelude::*;
 use num_bigint::{BigInt, Sign};
 
 // ---------------------------------------------------------------------------

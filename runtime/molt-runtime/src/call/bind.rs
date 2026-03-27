@@ -1,17 +1,20 @@
+use crate::call::type_policy::{
+    InitArgPolicy, resolved_constructor_init_policy, resolved_new_is_default_object_new,
+};
 use crate::state::tls::FRAME_STACK;
 use crate::{
     ALLOC_BYTES_CALLARGS, BIND_KIND_CAPI_METHOD, BIND_KIND_OPEN, CALL_BIND_IC_HIT_COUNT,
-    CALL_BIND_IC_MISS_COUNT,
-    CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT, FUNC_DEFAULT_DICT_POP, FUNC_DEFAULT_DICT_UPDATE,
-    FUNC_DEFAULT_IO_RAW, FUNC_DEFAULT_IO_TEXT_WRAPPER, FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NEG_ONE,
-    FUNC_DEFAULT_NONE, FUNC_DEFAULT_NONE2, FUNC_DEFAULT_REPLACE_COUNT, FUNC_DEFAULT_ZERO,
-    GEN_CONTROL_SIZE, INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader, MoltObject,
-    PtrDropGuard, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_CODE, TYPE_ID_DATACLASS,
-    TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS,
-    TYPE_ID_LIST, TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE,
-    alloc_class_obj, alloc_dict_with_pairs, alloc_exception_from_class_bits,
-    alloc_instance_for_class, alloc_object, alloc_string, alloc_tuple, apply_class_slots_layout,
-    attr_lookup_ptr, attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, bits_from_ptr,
+    CALL_BIND_IC_MISS_COUNT, CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT, FUNC_DEFAULT_DICT_POP,
+    FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_IO_RAW, FUNC_DEFAULT_IO_TEXT_WRAPPER,
+    FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NEG_ONE, FUNC_DEFAULT_NONE, FUNC_DEFAULT_NONE2,
+    FUNC_DEFAULT_REPLACE_COUNT, FUNC_DEFAULT_ZERO, GEN_CONTROL_SIZE,
+    INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader, MoltObject, PtrDropGuard, PyToken,
+    TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_CODE, TYPE_ID_DATACLASS, TYPE_ID_DICT,
+    TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_LIST,
+    TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj,
+    alloc_dict_with_pairs, alloc_exception_from_class_bits, alloc_instance_for_class, alloc_object,
+    alloc_string, alloc_tuple, apply_class_slots_layout, attr_lookup_ptr,
+    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, bits_from_ptr,
     bound_method_func_bits, bound_method_self_bits, builtin_classes, call_callable0,
     call_callable1, call_class_init_with_args, call_function_obj_vec, class_attr_lookup,
     class_attr_lookup_raw_mro, class_dict_bits, class_name_bits, class_name_for_error,
@@ -564,13 +567,16 @@ unsafe fn call_type_with_builder(
             }
             return call_class_init_with_args(_py, call_ptr, &[]);
         }
-        let mut default_new = false;
+        let mut resolved_new_bits = None;
         let is_exc_subclass = issubclass_bits(class_bits, builtins.base_exception);
         {
             #[cfg(debug_assertions)]
             {
                 let class_name = class_name_for_error(class_bits);
-                eprintln!("[DEBUG] call_type_with_builder: class={} bits={:#x} is_exc_subclass={}", class_name, class_bits, is_exc_subclass);
+                eprintln!(
+                    "[DEBUG] call_type_with_builder: class={} bits={:#x} is_exc_subclass={}",
+                    class_name, class_bits, is_exc_subclass
+                );
             }
         }
         let inst_bits = if is_exc_subclass {
@@ -587,11 +593,16 @@ unsafe fn call_type_with_builder(
                         TYPE_ID_FUNCTION => Some(new_ptr),
                         TYPE_ID_BOUND_METHOD => {
                             let inner = bound_method_func_bits(new_ptr);
-                            obj_from_bits(inner).as_ptr().filter(|p| object_type_id(*p) == TYPE_ID_FUNCTION)
+                            obj_from_bits(inner)
+                                .as_ptr()
+                                .filter(|p| object_type_id(*p) == TYPE_ID_FUNCTION)
                         }
                         _ => None,
                     };
-                    func_ptr.is_some_and(|fp| function_fn_ptr(fp) == fn_addr!(crate::builtins::exceptions::molt_exception_new_bound))
+                    func_ptr.is_some_and(|fp| {
+                        function_fn_ptr(fp)
+                            == fn_addr!(crate::builtins::exceptions::molt_exception_new_bound)
+                    })
                 } else {
                     false
                 };
@@ -603,7 +614,9 @@ unsafe fn call_type_with_builder(
                 let inst_bits = if default_new {
                     let args_bits = if builder_ptr.is_null() {
                         let tp = alloc_tuple(_py, &[]);
-                        if tp.is_null() { return MoltObject::none().bits(); }
+                        if tp.is_null() {
+                            return MoltObject::none().bits();
+                        }
                         MoltObject::from_ptr(tp).bits()
                     } else {
                         let ap = callargs_ptr(builder_ptr);
@@ -612,12 +625,16 @@ unsafe fn call_type_with_builder(
                         } else {
                             alloc_tuple(_py, &(*ap).pos)
                         };
-                        if tp.is_null() { return MoltObject::none().bits(); }
+                        if tp.is_null() {
+                            return MoltObject::none().bits();
+                        }
                         MoltObject::from_ptr(tp).bits()
                     };
                     let exc_ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
                     dec_ref_bits(_py, args_bits);
-                    if exc_ptr.is_null() { return MoltObject::none().bits(); }
+                    if exc_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
                     MoltObject::from_ptr(exc_ptr).bits()
                 } else {
                     // Custom __new__: forward all args including keywords.
@@ -647,7 +664,8 @@ unsafe fn call_type_with_builder(
                                 .iter()
                                 .zip((*args_ptr).kw_values.iter())
                             {
-                                let _ = molt_callargs_push_kw(new_builder_bits, name_bits, val_bits);
+                                let _ =
+                                    molt_callargs_push_kw(new_builder_bits, name_bits, val_bits);
                             }
                         }
                     }
@@ -689,41 +707,9 @@ unsafe fn call_type_with_builder(
         } else {
             let new_name_bits =
                 intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
-            if let Some(dict_ptr) = obj_from_bits(class_dict_bits(call_ptr)).as_ptr()
-                && object_type_id(dict_ptr) == TYPE_ID_DICT
-            {
-                if let Some(val_bits) = dict_get_in_place(_py, dict_ptr, new_name_bits) {
-                    if let Some(val_ptr) = obj_from_bits(val_bits).as_ptr() {
-                        let val_func_bits = if object_type_id(val_ptr) == TYPE_ID_BOUND_METHOD {
-                            bound_method_func_bits(val_ptr)
-                        } else {
-                            val_bits
-                        };
-                        if let Some(val_func_ptr) = obj_from_bits(val_func_bits).as_ptr()
-                            && object_type_id(val_func_ptr) == TYPE_ID_FUNCTION
-                            && function_fn_ptr(val_func_ptr) == fn_addr!(molt_object_new_bound)
-                        {
-                            default_new = true;
-                        }
-                    }
-                } else {
-                    default_new = true;
-                }
-            }
             if let Some(new_bits) = class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits) {
-                if let Some(new_ptr) = obj_from_bits(new_bits).as_ptr() {
-                    let new_func_bits = if object_type_id(new_ptr) == TYPE_ID_BOUND_METHOD {
-                        bound_method_func_bits(new_ptr)
-                    } else {
-                        new_bits
-                    };
-                    if let Some(new_func_ptr) = obj_from_bits(new_func_bits).as_ptr()
-                        && object_type_id(new_func_ptr) == TYPE_ID_FUNCTION
-                        && function_fn_ptr(new_func_ptr) == fn_addr!(molt_object_new_bound)
-                    {
-                        default_new = true;
-                    }
-                }
+                resolved_new_bits = Some(new_bits);
+                let default_new = resolved_new_is_default_object_new(resolved_new_bits);
                 if default_new {
                     if let Some(inst_bits) = alloc_dataclass_for_class(_py, call_ptr) {
                         if exception_pending(_py) {
@@ -824,26 +810,26 @@ unsafe fn call_type_with_builder(
         let Some(init_bits) = class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits) else {
             return inst_bits;
         };
-        if default_new && !builder_ptr.is_null() {
-            let args_ptr = callargs_ptr(builder_ptr);
-            if !args_ptr.is_null()
-                && (!(*args_ptr).pos.is_empty() || !(*args_ptr).kw_names.is_empty())
-                && let Some(init_ptr) = obj_from_bits(init_bits).as_ptr()
-            {
-                let init_func_bits = if object_type_id(init_ptr) == TYPE_ID_BOUND_METHOD {
-                    bound_method_func_bits(init_ptr)
-                } else {
-                    init_bits
-                };
-                if let Some(init_func_ptr) = obj_from_bits(init_func_bits).as_ptr()
-                    && object_type_id(init_func_ptr) == TYPE_ID_FUNCTION
-                    && function_fn_ptr(init_func_ptr) == fn_addr!(molt_object_init)
+        let init_policy = if is_exc_subclass {
+            InitArgPolicy::ForwardArgs
+        } else {
+            resolved_constructor_init_policy(resolved_new_bits, Some(init_bits))
+        };
+        match init_policy {
+            InitArgPolicy::RejectConstructorArgs if !builder_ptr.is_null() => {
+                let args_ptr = callargs_ptr(builder_ptr);
+                if !args_ptr.is_null()
+                    && (!(*args_ptr).pos.is_empty() || !(*args_ptr).kw_names.is_empty())
                 {
                     let class_name = class_name_for_error(class_bits);
                     let msg = format!("{class_name}() takes no arguments");
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
             }
+            InitArgPolicy::RejectConstructorArgs | InitArgPolicy::SkipObjectInit => {
+                return inst_bits;
+            }
+            InitArgPolicy::ForwardArgs => {}
         }
         if builder_ptr.is_null() {
             return inst_bits;
@@ -1208,10 +1194,8 @@ pub extern "C" fn molt_callargs_new(pos_capacity_bits: u64, kw_capacity_bits: u6
                 + pos_capacity * std::mem::size_of::<u64>()
                 + kw_capacity * std::mem::size_of::<u64>() * 2
                 + kw_capacity * std::mem::size_of::<String>();
-            ALLOC_BYTES_CALLARGS.fetch_add(
-                callargs_bytes as u64,
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            ALLOC_BYTES_CALLARGS
+                .fetch_add(callargs_bytes as u64, std::sync::atomic::Ordering::Relaxed);
             let args_ptr = Box::into_raw(args);
             *(ptr as *mut *mut CallArgs) = args_ptr;
         }
@@ -1692,6 +1676,15 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                                 "molt call_bind args pos_len={} kw_len={} first_pos={:?} second_pos={:?}",
                                 pos_len, kw_len, first_pos, second_pos,
                             );
+                            if let Some(bits) = first_pos {
+                                eprintln!(
+                                    "molt call_bind args first_pos_bits=0x{bits:x} first_pos_type={}",
+                                    type_name(_py, obj_from_bits(bits)),
+                                );
+                                if let Some(s) = string_obj_to_owned(obj_from_bits(bits)) {
+                                    eprintln!("molt call_bind args first_pos_str={}", s);
+                                }
+                            }
                             if let Some(bits) = second_pos
                                 && let Some(s) = string_obj_to_owned(obj_from_bits(bits))
                             {
@@ -1978,12 +1971,22 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                     let fname = func_name_bits
                         .and_then(|b| string_obj_to_owned(obj_from_bits(b)))
                         .unwrap_or_else(|| "?".to_string());
-                    let arg_names_strs: Vec<String> = arg_names.iter().map(|&b| {
-                        string_obj_to_owned(obj_from_bits(b)).unwrap_or_else(|| format!("<raw:{:x}>", b))
-                    }).collect();
+                    let arg_names_strs: Vec<String> = arg_names
+                        .iter()
+                        .map(|&b| {
+                            string_obj_to_owned(obj_from_bits(b))
+                                .unwrap_or_else(|| format!("<raw:{:x}>", b))
+                        })
+                        .collect();
                     let msg = format!(
                         "too many positional arguments for {}(): got {} positional, expected {} (arg_names={:?}, kwonly={}, vararg={}, varkw={})",
-                        fname, args.pos.len(), total_pos, arg_names_strs, kwonly_names.len(), has_vararg, has_varkw,
+                        fname,
+                        args.pos.len(),
+                        total_pos,
+                        arg_names_strs,
+                        kwonly_names.len(),
+                        has_vararg,
+                        has_varkw,
                     );
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
@@ -2692,7 +2695,9 @@ unsafe fn bind_builtin_call(
             let func_name = crate::type_name(_py, molt_obj_model::MoltObject::from_bits(func_bits));
             eprintln!(
                 "[bind] missing required arguments: func={} pos_given={} missing={}",
-                func_name, args.pos.len(), missing,
+                func_name,
+                args.pos.len(),
+                missing,
             );
         }
         raise_exception::<_>(_py, "TypeError", "missing required arguments")

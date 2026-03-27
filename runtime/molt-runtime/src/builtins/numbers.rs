@@ -390,9 +390,7 @@ pub(crate) fn float_pair_from_obj(
     if let (Some(lf), Some(rf)) = (to_f64(lhs), to_f64(rhs)) {
         return Some((lf, rf));
     }
-    if bigint_ptr_from_bits(lhs.bits()).is_some()
-        || bigint_ptr_from_bits(rhs.bits()).is_some() 
-    {
+    if bigint_ptr_from_bits(lhs.bits()).is_some() || bigint_ptr_from_bits(rhs.bits()).is_some() {
         return raise_exception::<Option<(f64, f64)>>(
             _py,
             "OverflowError",

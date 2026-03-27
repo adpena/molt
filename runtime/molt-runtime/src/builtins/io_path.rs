@@ -3,37 +3,31 @@
 //! Split from io.rs to reduce file size. Contains all `molt_path_*`,
 //! `molt_glob*`, `molt_os_*`, and `molt_getcwd` extern functions.
 
-
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
+#[cfg(unix)]
+use super::io::{
+    PathFlavor, alloc_path_list_bits, alloc_string_list_bits, bytes_sequence_from_bits,
+    bytes_slice_from_bits, collect_bytes_like, create_symlink_path, dup_fd,
+    filesystem_encode_errors, filesystem_encoding, fspath_bits_with_flavor,
+    glob_dir_fd_arg_from_bits, glob_escape_text, glob_has_magic_text, glob_matches_text,
+    glob_translate_text, path_abspath_text, path_as_uri_text, path_basename_text,
+    path_compare_text, path_dirname_text, path_expandvars_text, path_expandvars_with_lookup,
+    path_from_bits, path_glob_matches, path_isabs_text, path_join_many_text, path_join_raw,
+    path_join_text, path_match_text, path_name_text, path_normpath_text, path_parents_text,
+    path_parts_text, path_relative_to_text, path_relpath_text, path_resolve_text, path_sep_char,
+    path_sequence_from_bits, path_splitext_text, path_splitroot_text, path_stem_text,
+    path_str_arg_from_bits, path_string_from_bits, path_string_with_flavor_from_bits,
+    path_suffix_text, path_suffixes_text, raise_io_error_for_glob, raw_from_bytes_text,
+};
 use crate::PyToken;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 use crate::randomness::fill_os_random;
 use crate::*;
-use std::io::ErrorKind;
 use std::collections::HashMap;
-#[cfg(unix)]
-
-use super::io::{
-    alloc_path_list_bits, alloc_string_list_bits, bytes_sequence_from_bits,
-    bytes_slice_from_bits, collect_bytes_like, create_symlink_path, dup_fd,
-    filesystem_encode_errors, filesystem_encoding, fspath_bits_with_flavor,
-    glob_dir_fd_arg_from_bits, glob_escape_text,
-    glob_has_magic_text, glob_matches_text, glob_translate_text,
-    path_abspath_text, path_as_uri_text, path_basename_text,
-    path_compare_text, path_dirname_text, path_expandvars_text,
-    path_expandvars_with_lookup, path_from_bits, path_glob_matches,
-    path_isabs_text, path_join_many_text, path_join_raw, path_join_text,
-    path_match_text, path_name_text, path_normpath_text, path_parents_text,
-    path_parts_text, path_relative_to_text, path_relpath_text,
-    path_resolve_text, path_sep_char, path_sequence_from_bits,
-    path_splitext_text, path_splitroot_text, path_stem_text,
-    path_str_arg_from_bits, path_string_from_bits,
-    path_string_with_flavor_from_bits, path_suffix_text, path_suffixes_text,
-    raise_io_error_for_glob, raw_from_bytes_text, PathFlavor,
-};
+use std::io::ErrorKind;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_path_exists(path_bits: u64) -> u64 {

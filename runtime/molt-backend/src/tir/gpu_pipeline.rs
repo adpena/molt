@@ -7,7 +7,7 @@
 
 use super::gpu::GpuKernel;
 use super::gpu_msl::generate_msl;
-use super::gpu_runtime::{detect_gpu_platform, GpuDevice, GpuError, GpuPlatform};
+use super::gpu_runtime::{GpuDevice, GpuError, GpuPlatform, detect_gpu_platform};
 
 /// Execute a GPU kernel with the given input data and return the output.
 ///
@@ -30,8 +30,8 @@ pub fn execute_gpu_kernel(
     block: [u32; 3],
 ) -> Result<Vec<u8>, GpuError> {
     // 1. Detect best GPU platform
-    let platform = detect_gpu_platform()
-        .ok_or(GpuError::DeviceNotAvailable("No GPU available".into()))?;
+    let platform =
+        detect_gpu_platform().ok_or(GpuError::DeviceNotAvailable("No GPU available".into()))?;
 
     // 2. Generate shader source for the platform
     let source = generate_source(kernel, platform)?;
@@ -299,9 +299,7 @@ mod tests {
 
         // Interpret output bytes as f32
         assert_eq!(result.len(), output_size);
-        let out: &[f32] = unsafe {
-            std::slice::from_raw_parts(result.as_ptr() as *const f32, n)
-        };
+        let out: &[f32] = unsafe { std::slice::from_raw_parts(result.as_ptr() as *const f32, n) };
         assert_eq!(out, &[11.0, 22.0, 33.0, 44.0]);
     }
 
@@ -312,6 +310,9 @@ mod tests {
     fn pipeline_returns_error_without_metal_feature() {
         let kernel = make_vector_add_kernel();
         let result = execute_gpu_kernel(&kernel, &[], 0, [1, 1, 1], [1, 1, 1]);
-        assert!(result.is_err(), "Pipeline should fail without gpu-metal feature");
+        assert!(
+            result.is_err(),
+            "Pipeline should fail without gpu-metal feature"
+        );
     }
 }

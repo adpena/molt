@@ -57,7 +57,7 @@ impl SnapshotHeader {
 
     /// Compute SHA-256 integrity hash of the canonical JSON (excluding integrity_hash).
     fn compute_integrity_hash(&self) -> String {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let canonical = serde_json::json!({
             "snapshot_version": self.snapshot_version,
             "abi_version": self.abi_version,

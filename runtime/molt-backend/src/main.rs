@@ -1,12 +1,12 @@
-#[cfg(feature = "luau-backend")]
-use molt_backend::luau::LuauBackend;
 #[cfg(feature = "native-backend")]
 use molt_backend::SimpleBackend;
-use molt_backend::{SimpleIR, OpIR};
+#[cfg(feature = "luau-backend")]
+use molt_backend::luau::LuauBackend;
 #[cfg(feature = "rust-backend")]
 use molt_backend::rust::RustBackend;
 #[cfg(feature = "wasm-backend")]
 use molt_backend::wasm::{WasmBackend, WasmCompileOptions};
+use molt_backend::{OpIR, SimpleIR};
 use serde_json::Value as JsonValue;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -184,7 +184,9 @@ impl DaemonRequest {
         if let Some(JsonValue::Object(env_map)) = obj.get("env") {
             for (key, val) in env_map {
                 if let Some(s) = val.as_str() {
-                    unsafe { std::env::set_var(key, s); }
+                    unsafe {
+                        std::env::set_var(key, s);
+                    }
                 }
             }
         }
@@ -873,7 +875,9 @@ fn main() -> io::Result<()> {
     // operand connections for Copy-mapped ops (loops, fields, exception stack).
     // Re-enable with MOLT_TIR_OPT=1 for testing TIR passes.
     if std::env::var("MOLT_TIR_OPT").is_err() {
-        unsafe { std::env::set_var("MOLT_TIR_OPT", "0"); }
+        unsafe {
+            std::env::set_var("MOLT_TIR_OPT", "0");
+        }
     }
 
     // Hard memory guard: set rlimit on virtual memory to prevent OOM
@@ -901,7 +905,7 @@ fn main() -> io::Result<()> {
             }
         }
     }
-    
+
     // Windows memory guard: use job objects to limit working set.
     // Less effective than Unix RLIMIT_AS but prevents unbounded growth.
     #[cfg(windows)]
@@ -995,8 +999,12 @@ fn main() -> io::Result<()> {
         if ir_format == "msgpack" {
             // msgpack binary format — deserialize directly via serde
             if let Some(ir_path) = ir_file_path {
-                let file = std::fs::File::open(ir_path)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?;
+                let file = std::fs::File::open(ir_path).map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("failed to open IR file '{}': {}", ir_path, e),
+                    )
+                })?;
                 let reader = io::BufReader::new(file);
                 match rmp_serde::from_read(reader) {
                     Ok(ir) => ir,
@@ -1027,8 +1035,12 @@ fn main() -> io::Result<()> {
             #[cfg(feature = "cbor")]
             {
                 if let Some(ir_path) = ir_file_path {
-                    let file = std::fs::File::open(ir_path)
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?;
+                    let file = std::fs::File::open(ir_path).map_err(|e| {
+                        io::Error::new(
+                            io::ErrorKind::Other,
+                            format!("failed to open IR file '{}': {}", ir_path, e),
+                        )
+                    })?;
                     let reader = io::BufReader::new(file);
                     match ciborium::de::from_reader(reader) {
                         Ok(ir) => ir,
@@ -1041,7 +1053,10 @@ fn main() -> io::Result<()> {
                     let mut buf = Vec::new();
                     io::stdin().read_to_end(&mut buf)?;
                     match ciborium::de::from_reader::<SimpleIR, _>(&buf[..]) {
-                        Ok(ir) => { drop(buf); ir },
+                        Ok(ir) => {
+                            drop(buf);
+                            ir
+                        }
                         Err(err) => {
                             eprintln!("invalid CBOR IR: {err}");
                             std::process::exit(1);
@@ -1052,8 +1067,12 @@ fn main() -> io::Result<()> {
         } else if ir_format == "ndjson" {
             // NDJSON streaming format — one function per line
             if let Some(ir_path) = ir_file_path {
-                let file = std::fs::File::open(ir_path)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?;
+                let file = std::fs::File::open(ir_path).map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("failed to open IR file '{}': {}", ir_path, e),
+                    )
+                })?;
                 let reader = io::BufReader::new(file);
                 match SimpleIR::from_ndjson_reader(reader) {
                     Ok(ir) => ir,
@@ -1074,8 +1093,12 @@ fn main() -> io::Result<()> {
             }
         } else if let Some(ir_path) = ir_file_path {
             // Stream JSON directly from file — never holds raw JSON string in memory.
-            let file = std::fs::File::open(ir_path)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to open IR file '{}': {}", ir_path, e)))?;
+            let file = std::fs::File::open(ir_path).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("failed to open IR file '{}': {}", ir_path, e),
+                )
+            })?;
             let reader = io::BufReader::with_capacity(1 << 20, file);
             match serde_json::from_reader::<_, SimpleIR>(reader) {
                 Ok(ir) => ir,
@@ -1208,8 +1231,8 @@ fn main() -> io::Result<()> {
             // subsequent builds skip them entirely.  User functions always
             // recompile.  This reduces builds from ~5min to ~3sec.
             let stdlib_obj_path = std::env::var("MOLT_STDLIB_OBJ").ok();
-            let entry_module = std::env::var("MOLT_ENTRY_MODULE")
-                .unwrap_or_else(|_| "__main__".to_string());
+            let entry_module =
+                std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
 
             if let Some(ref stdlib_path) = stdlib_obj_path {
                 let stdlib_path = std::path::Path::new(stdlib_path);
@@ -1227,18 +1250,22 @@ fn main() -> io::Result<()> {
                 } else {
                     // First build — compile stdlib separately, cache it
                     let _total = ir.functions.len();
-                    let user_funcs: Vec<_> = ir.functions.iter()
+                    let user_funcs: Vec<_> = ir
+                        .functions
+                        .iter()
                         .filter(|f| is_user_owned_symbol(&f.name, &entry_module))
                         .map(|f| f.name.clone())
                         .collect();
-                    let user_func_set: std::collections::BTreeSet<_> = user_funcs.iter().cloned().collect();
+                    let user_func_set: std::collections::BTreeSet<_> =
+                        user_funcs.iter().cloned().collect();
                     let all_funcs: Vec<_> = ir.functions.drain(..).collect();
                     let (user_remaining, mut stdlib_funcs): (Vec<_>, Vec<_>) = all_funcs
                         .into_iter()
                         .partition(|f| user_func_set.contains(&f.name));
                     // Deduplicate stdlib functions by name (keep first occurrence).
                     {
-                        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+                        let mut seen: std::collections::BTreeSet<String> =
+                            std::collections::BTreeSet::new();
                         stdlib_funcs.retain(|f| seen.insert(f.name.clone()));
                     }
                     // Compile stdlib
@@ -1269,8 +1296,11 @@ fn main() -> io::Result<()> {
                         // Batched stdlib compilation
                         let all_stdlib_names: std::collections::BTreeSet<String> =
                             stdlib_funcs.iter().map(|f| f.name.clone()).collect();
+                        let stdlib_module_context =
+                            SimpleBackend::build_module_context(&stdlib_funcs);
                         let mut stdlib_remaining = stdlib_funcs;
-                        let stdlib_total_batches = (stdlib_remaining.len() + stdlib_batch_size - 1) / stdlib_batch_size;
+                        let stdlib_total_batches =
+                            (stdlib_remaining.len() + stdlib_batch_size - 1) / stdlib_batch_size;
                         let mut stdlib_batch_paths: Vec<std::path::PathBuf> = Vec::new();
                         let stdlib_tmp_dir = std::env::temp_dir()
                             .join(format!("molt_stdlib_batch_{}", std::process::id()));
@@ -1282,7 +1312,9 @@ fn main() -> io::Result<()> {
                             let batch_funcs: Vec<_> = stdlib_remaining.drain(..take).collect();
                             eprintln!(
                                 "MOLT_BACKEND: stdlib batch {}/{} ({} functions)",
-                                stdlib_batch_idx + 1, stdlib_total_batches, batch_funcs.len()
+                                stdlib_batch_idx + 1,
+                                stdlib_total_batches,
+                                batch_funcs.len()
                             );
                             let batch_ir = SimpleIR {
                                 functions: batch_funcs,
@@ -1291,8 +1323,10 @@ fn main() -> io::Result<()> {
                             let mut batch_backend = SimpleBackend::new_with_target(target_triple);
                             batch_backend.skip_ir_passes = true;
                             batch_backend.external_function_names = all_stdlib_names.clone();
+                            batch_backend.set_module_context(stdlib_module_context.clone());
                             let batch_bytes = batch_backend.compile(batch_ir);
-                            let batch_path = stdlib_tmp_dir.join(format!("batch_{stdlib_batch_idx}.o"));
+                            let batch_path =
+                                stdlib_tmp_dir.join(format!("batch_{stdlib_batch_idx}.o"));
                             std::fs::write(&batch_path, &batch_bytes)
                                 .expect("write stdlib batch .o");
                             stdlib_batch_paths.push(batch_path);
@@ -1304,8 +1338,8 @@ fn main() -> io::Result<()> {
                             std::fs::copy(&stdlib_batch_paths[0], stdlib_path)
                                 .expect("copy single stdlib batch");
                         } else {
-                            let linker = std::env::var("MOLT_LINKER")
-                                .unwrap_or_else(|_| "ld".to_string());
+                            let linker =
+                                std::env::var("MOLT_LINKER").unwrap_or_else(|_| "ld".to_string());
                             let status = std::process::Command::new(&linker)
                                 .arg("-r")
                                 .args(stdlib_batch_paths.iter().map(|p| p.as_os_str()))
@@ -1344,7 +1378,8 @@ fn main() -> io::Result<()> {
             // first (largest) definition; duplicates cause "duplicate symbol"
             // errors during ld -r batched compilation.
             {
-                let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+                let mut seen: std::collections::BTreeSet<String> =
+                    std::collections::BTreeSet::new();
                 ir.functions.retain(|f| seen.insert(f.name.clone()));
             }
 
@@ -1359,26 +1394,24 @@ fn main() -> io::Result<()> {
                 let backend = SimpleBackend::new_with_target(target_triple);
                 let obj_bytes = backend.compile(ir);
                 file.write_all(&obj_bytes)?;
-                eprintln!(
-                    "Successfully compiled to output.o ({func_count} functions)"
-                );
+                eprintln!("Successfully compiled to output.o ({func_count} functions)");
             } else {
                 // Large IR: split into batches, compile each independently,
                 // then merge with ld -r (partial link).  This prevents OOM
                 // when compiling 1000+ stdlib functions into one ObjectModule.
-                let mut all_functions: Vec<_> = ir.functions
-                    .into_iter()
-                    .collect();
+                let mut all_functions: Vec<_> = ir.functions.into_iter().collect();
                 let profile = ir.profile;
                 let total_batches = (all_functions.len() + batch_size - 1) / batch_size;
                 let mut batch_paths: Vec<std::path::PathBuf> = Vec::new();
-                let tmp_dir = std::env::temp_dir().join(format!("molt_batch_{}", std::process::id()));
+                let tmp_dir =
+                    std::env::temp_dir().join(format!("molt_batch_{}", std::process::id()));
                 let _ = std::fs::create_dir_all(&tmp_dir);
 
                 let mut batch_idx = 0usize;
                 // Pre-collect all function names for cross-batch import resolution.
                 let all_func_names: std::collections::BTreeSet<String> =
                     all_functions.iter().map(|f| f.name.clone()).collect();
+                let module_context = SimpleBackend::build_module_context(&all_functions);
 
                 while !all_functions.is_empty() {
                     let remaining = all_functions.len();
@@ -1400,6 +1433,7 @@ fn main() -> io::Result<()> {
                     // full IR above. Each batch only does Cranelift codegen.
                     backend.skip_ir_passes = true;
                     backend.external_function_names = all_func_names.clone();
+                    backend.set_module_context(module_context.clone());
                     let obj_bytes = backend.compile(batch_ir);
 
                     let batch_path = tmp_dir.join(format!("batch_{batch_idx}.o"));

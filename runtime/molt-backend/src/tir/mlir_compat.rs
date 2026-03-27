@@ -16,18 +16,30 @@ use super::values::ValueId;
 /// Serialize a TIR function to MLIR textual format.
 pub fn to_mlir_text(func: &TirFunction) -> String {
     let mut out = String::with_capacity(4096);
-    let params: Vec<String> = func.param_types.iter().enumerate()
+    let params: Vec<String> = func
+        .param_types
+        .iter()
+        .enumerate()
         .map(|(i, ty)| format!("%arg{}: {}", i, mlir_type(ty)))
         .collect();
     let ret = mlir_type(&func.return_type);
-    writeln!(out, "func.func @{}({}) -> {} {{", func.name, params.join(", "), ret).unwrap();
+    writeln!(
+        out,
+        "func.func @{}({}) -> {} {{",
+        func.name,
+        params.join(", "),
+        ret
+    )
+    .unwrap();
 
     let mut block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
     block_ids.sort_by_key(|b| b.0);
 
     for bid in &block_ids {
         let block = &func.blocks[bid];
-        let args: Vec<String> = block.args.iter()
+        let args: Vec<String> = block
+            .args
+            .iter()
             .map(|a| format!("%{}: {}", a.id.0, mlir_type(&a.ty)))
             .collect();
         if args.is_empty() {
@@ -44,30 +56,57 @@ pub fn to_mlir_text(func: &TirFunction) -> String {
             if results.is_empty() {
                 writeln!(out, "  \"{d}.{o}\"({}) : () -> ()", operands.join(", ")).unwrap();
             } else {
-                writeln!(out, "  {} = \"{d}.{o}\"({}) : ({}) -> ({})",
-                    results.join(", "), operands.join(", "),
+                writeln!(
+                    out,
+                    "  {} = \"{d}.{o}\"({}) : ({}) -> ({})",
+                    results.join(", "),
+                    operands.join(", "),
                     vec!["i64"; operands.len()].join(", "),
-                    vec!["i64"; results.len()].join(", ")).unwrap();
+                    vec!["i64"; results.len()].join(", ")
+                )
+                .unwrap();
             }
         }
 
         match &block.terminator {
             Terminator::Return { values } => {
                 let v: Vec<String> = values.iter().map(|v| format!("%{}", v.0)).collect();
-                if v.is_empty() { writeln!(out, "  return").unwrap(); }
-                else { writeln!(out, "  return {} : {ret}", v.join(", ")).unwrap(); }
+                if v.is_empty() {
+                    writeln!(out, "  return").unwrap();
+                } else {
+                    writeln!(out, "  return {} : {ret}", v.join(", ")).unwrap();
+                }
             }
             Terminator::Branch { target, args } => {
                 let a: Vec<String> = args.iter().map(|v| format!("%{}", v.0)).collect();
                 writeln!(out, "  br ^bb{}({})", target.0, a.join(", ")).unwrap();
             }
-            Terminator::CondBranch { cond, then_block, then_args, else_block, else_args } => {
+            Terminator::CondBranch {
+                cond,
+                then_block,
+                then_args,
+                else_block,
+                else_args,
+            } => {
                 let ta: Vec<String> = then_args.iter().map(|v| format!("%{}", v.0)).collect();
                 let ea: Vec<String> = else_args.iter().map(|v| format!("%{}", v.0)).collect();
-                writeln!(out, "  cond_br %{}, ^bb{}({}), ^bb{}({})",
-                    cond.0, then_block.0, ta.join(", "), else_block.0, ea.join(", ")).unwrap();
+                writeln!(
+                    out,
+                    "  cond_br %{}, ^bb{}({}), ^bb{}({})",
+                    cond.0,
+                    then_block.0,
+                    ta.join(", "),
+                    else_block.0,
+                    ea.join(", ")
+                )
+                .unwrap();
             }
-            Terminator::Switch { value, cases, default, default_args } => {
+            Terminator::Switch {
+                value,
+                cases,
+                default,
+                default_args,
+            } => {
                 let da: Vec<String> = default_args.iter().map(|v| format!("%{}", v.0)).collect();
                 write!(out, "  switch %{} [", value.0).unwrap();
                 for (val, target, args) in cases {
@@ -76,7 +115,9 @@ pub fn to_mlir_text(func: &TirFunction) -> String {
                 }
                 writeln!(out, "default: ^bb{}({})]", default.0, da.join(", ")).unwrap();
             }
-            Terminator::Unreachable => { writeln!(out, "  \"molt.unreachable\"() : () -> ()").unwrap(); }
+            Terminator::Unreachable => {
+                writeln!(out, "  \"molt.unreachable\"() : () -> ()").unwrap();
+            }
         }
     }
     writeln!(out, "}}").unwrap();
@@ -87,7 +128,10 @@ pub fn to_mlir_text(func: &TirFunction) -> String {
 pub fn validate_mlir_compat(func: &TirFunction) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
     if !func.blocks.contains_key(&func.entry_block) {
-        errors.push(format!("entry block ^bb{} does not exist", func.entry_block.0));
+        errors.push(format!(
+            "entry block ^bb{} does not exist",
+            func.entry_block.0
+        ));
     }
     let mut defined: HashSet<ValueId> = HashSet::new();
     for (bid, block) in &func.blocks {
@@ -109,7 +153,11 @@ pub fn validate_mlir_compat(func: &TirFunction) -> Result<(), Vec<String>> {
             }
         }
     }
-    if errors.is_empty() { Ok(()) } else { Err(errors) }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 /// MLIR ODS dialect specification for the molt dialect.
@@ -128,10 +176,15 @@ def MoltGpu_ThreadIdOp : MoltGpu_Op<"thread_id", [Pure]> { let results = (outs I
 fn terminator_targets(term: &Terminator) -> Vec<BlockId> {
     match term {
         Terminator::Branch { target, .. } => vec![*target],
-        Terminator::CondBranch { then_block, else_block, .. } => vec![*then_block, *else_block],
+        Terminator::CondBranch {
+            then_block,
+            else_block,
+            ..
+        } => vec![*then_block, *else_block],
         Terminator::Switch { cases, default, .. } => {
             let mut t: Vec<BlockId> = cases.iter().map(|(_, b, _)| *b).collect();
-            t.push(*default); t
+            t.push(*default);
+            t
         }
         _ => vec![],
     }
@@ -150,38 +203,91 @@ fn mlir_type(ty: &TirType) -> &'static str {
 }
 
 fn mlir_dialect(d: &Dialect) -> &'static str {
-    match d { Dialect::Molt => "molt", Dialect::Scf => "scf", Dialect::Gpu => "molt.gpu", Dialect::Par => "molt.par", Dialect::Simd => "molt.simd" }
+    match d {
+        Dialect::Molt => "molt",
+        Dialect::Scf => "scf",
+        Dialect::Gpu => "molt.gpu",
+        Dialect::Par => "molt.par",
+        Dialect::Simd => "molt.simd",
+    }
 }
 
 fn mlir_opcode(op: &OpCode) -> &'static str {
     match op {
-        OpCode::Add => "add", OpCode::Sub => "sub", OpCode::Mul => "mul",
-        OpCode::Div => "div", OpCode::FloorDiv => "floordiv", OpCode::Mod => "mod",
-        OpCode::Pow => "pow", OpCode::Neg => "neg", OpCode::Pos => "pos",
-        OpCode::Eq => "eq", OpCode::Ne => "ne", OpCode::Lt => "lt",
-        OpCode::Le => "le", OpCode::Gt => "gt", OpCode::Ge => "ge",
-        OpCode::Is => "is", OpCode::IsNot => "is_not", OpCode::In => "in", OpCode::NotIn => "not_in",
-        OpCode::BitAnd => "bit_and", OpCode::BitOr => "bit_or", OpCode::BitXor => "bit_xor",
-        OpCode::BitNot => "bit_not", OpCode::Shl => "shl", OpCode::Shr => "shr",
-        OpCode::And => "and", OpCode::Or => "or", OpCode::Not => "not",
-        OpCode::Alloc => "alloc", OpCode::StackAlloc => "stack_alloc", OpCode::Free => "free",
-        OpCode::LoadAttr => "load_attr", OpCode::StoreAttr => "store_attr", OpCode::DelAttr => "del_attr",
-        OpCode::Index => "index", OpCode::StoreIndex => "store_index", OpCode::DelIndex => "del_index",
-        OpCode::Call => "call", OpCode::CallMethod => "call_method", OpCode::CallBuiltin => "call_builtin",
-        OpCode::BoxVal => "box", OpCode::UnboxVal => "unbox", OpCode::TypeGuard => "type_guard",
-        OpCode::IncRef => "inc_ref", OpCode::DecRef => "dec_ref",
-        OpCode::BuildList => "build_list", OpCode::BuildDict => "build_dict",
-        OpCode::BuildTuple => "build_tuple", OpCode::BuildSet => "build_set", OpCode::BuildSlice => "build_slice",
-        OpCode::GetIter => "get_iter", OpCode::IterNext => "iter_next", OpCode::ForIter => "for_iter",
-        OpCode::Yield => "yield", OpCode::YieldFrom => "yield_from",
-        OpCode::Raise => "raise", OpCode::CheckException => "check_exception",
-        OpCode::TryStart => "try_start", OpCode::TryEnd => "try_end",
-        OpCode::StateBlockStart => "state_block_start", OpCode::StateBlockEnd => "state_block_end",
-        OpCode::ConstInt => "const_int", OpCode::ConstFloat => "const_float",
-        OpCode::ConstStr => "const_str", OpCode::ConstBool => "const_bool",
-        OpCode::ConstNone => "const_none", OpCode::ConstBytes => "const_bytes",
-        OpCode::Copy => "copy", OpCode::Import => "import", OpCode::ImportFrom => "import_from",
-        OpCode::ScfIf => "if", OpCode::ScfFor => "for", OpCode::ScfWhile => "while", OpCode::ScfYield => "yield",
+        OpCode::Add => "add",
+        OpCode::Sub => "sub",
+        OpCode::Mul => "mul",
+        OpCode::Div => "div",
+        OpCode::FloorDiv => "floordiv",
+        OpCode::Mod => "mod",
+        OpCode::Pow => "pow",
+        OpCode::Neg => "neg",
+        OpCode::Pos => "pos",
+        OpCode::Eq => "eq",
+        OpCode::Ne => "ne",
+        OpCode::Lt => "lt",
+        OpCode::Le => "le",
+        OpCode::Gt => "gt",
+        OpCode::Ge => "ge",
+        OpCode::Is => "is",
+        OpCode::IsNot => "is_not",
+        OpCode::In => "in",
+        OpCode::NotIn => "not_in",
+        OpCode::BitAnd => "bit_and",
+        OpCode::BitOr => "bit_or",
+        OpCode::BitXor => "bit_xor",
+        OpCode::BitNot => "bit_not",
+        OpCode::Shl => "shl",
+        OpCode::Shr => "shr",
+        OpCode::And => "and",
+        OpCode::Or => "or",
+        OpCode::Not => "not",
+        OpCode::Alloc => "alloc",
+        OpCode::StackAlloc => "stack_alloc",
+        OpCode::Free => "free",
+        OpCode::LoadAttr => "load_attr",
+        OpCode::StoreAttr => "store_attr",
+        OpCode::DelAttr => "del_attr",
+        OpCode::Index => "index",
+        OpCode::StoreIndex => "store_index",
+        OpCode::DelIndex => "del_index",
+        OpCode::Call => "call",
+        OpCode::CallMethod => "call_method",
+        OpCode::CallBuiltin => "call_builtin",
+        OpCode::BoxVal => "box",
+        OpCode::UnboxVal => "unbox",
+        OpCode::TypeGuard => "type_guard",
+        OpCode::IncRef => "inc_ref",
+        OpCode::DecRef => "dec_ref",
+        OpCode::BuildList => "build_list",
+        OpCode::BuildDict => "build_dict",
+        OpCode::BuildTuple => "build_tuple",
+        OpCode::BuildSet => "build_set",
+        OpCode::BuildSlice => "build_slice",
+        OpCode::GetIter => "get_iter",
+        OpCode::IterNext => "iter_next",
+        OpCode::ForIter => "for_iter",
+        OpCode::Yield => "yield",
+        OpCode::YieldFrom => "yield_from",
+        OpCode::Raise => "raise",
+        OpCode::CheckException => "check_exception",
+        OpCode::TryStart => "try_start",
+        OpCode::TryEnd => "try_end",
+        OpCode::StateBlockStart => "state_block_start",
+        OpCode::StateBlockEnd => "state_block_end",
+        OpCode::ConstInt => "const_int",
+        OpCode::ConstFloat => "const_float",
+        OpCode::ConstStr => "const_str",
+        OpCode::ConstBool => "const_bool",
+        OpCode::ConstNone => "const_none",
+        OpCode::ConstBytes => "const_bytes",
+        OpCode::Copy => "copy",
+        OpCode::Import => "import",
+        OpCode::ImportFrom => "import_from",
+        OpCode::ScfIf => "if",
+        OpCode::ScfFor => "for",
+        OpCode::ScfWhile => "while",
+        OpCode::ScfYield => "yield",
         OpCode::Deopt => "deopt",
     }
 }
@@ -193,13 +299,17 @@ mod tests {
     use crate::tir::ops::{AttrDict, TirOp};
 
     fn make_add_func() -> TirFunction {
-        let mut func = TirFunction::new("add".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut func =
+            TirFunction::new("add".into(), vec![TirType::I64, TirType::I64], TirType::I64);
         let v2 = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
-            dialect: Dialect::Molt, opcode: OpCode::Add,
-            operands: vec![ValueId(0), ValueId(1)], results: vec![v2],
-            attrs: AttrDict::new(), source_span: None,
+            dialect: Dialect::Molt,
+            opcode: OpCode::Add,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![v2],
+            attrs: AttrDict::new(),
+            source_span: None,
         });
         entry.terminator = Terminator::Return { values: vec![v2] };
         func
@@ -235,9 +345,12 @@ mod tests {
         let mut f = make_add_func();
         let entry = f.blocks.get_mut(&f.entry_block).unwrap();
         entry.ops.push(TirOp {
-            dialect: Dialect::Molt, opcode: OpCode::ConstInt,
-            operands: vec![], results: vec![ValueId(0)],
-            attrs: AttrDict::new(), source_span: None,
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![ValueId(0)],
+            attrs: AttrDict::new(),
+            source_span: None,
         });
         assert!(validate_mlir_compat(&f).is_err());
     }
@@ -257,18 +370,44 @@ mod tests {
         let v1 = f.fresh_value();
         let v2 = f.fresh_value();
         f.blocks.get_mut(&f.entry_block).unwrap().terminator = Terminator::CondBranch {
-            cond: ValueId(0), then_block: tb, then_args: vec![], else_block: eb, else_args: vec![],
+            cond: ValueId(0),
+            then_block: tb,
+            then_args: vec![],
+            else_block: eb,
+            else_args: vec![],
         };
-        f.blocks.insert(tb, TirBlock {
-            id: tb, args: vec![], terminator: Terminator::Return { values: vec![v1] },
-            ops: vec![TirOp { dialect: Dialect::Molt, opcode: OpCode::ConstInt,
-                operands: vec![], results: vec![v1], attrs: AttrDict::new(), source_span: None }],
-        });
-        f.blocks.insert(eb, TirBlock {
-            id: eb, args: vec![], terminator: Terminator::Return { values: vec![v2] },
-            ops: vec![TirOp { dialect: Dialect::Molt, opcode: OpCode::ConstInt,
-                operands: vec![], results: vec![v2], attrs: AttrDict::new(), source_span: None }],
-        });
+        f.blocks.insert(
+            tb,
+            TirBlock {
+                id: tb,
+                args: vec![],
+                terminator: Terminator::Return { values: vec![v1] },
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstInt,
+                    operands: vec![],
+                    results: vec![v1],
+                    attrs: AttrDict::new(),
+                    source_span: None,
+                }],
+            },
+        );
+        f.blocks.insert(
+            eb,
+            TirBlock {
+                id: eb,
+                args: vec![],
+                terminator: Terminator::Return { values: vec![v2] },
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstInt,
+                    operands: vec![],
+                    results: vec![v2],
+                    attrs: AttrDict::new(),
+                    source_span: None,
+                }],
+            },
+        );
         let text = to_mlir_text(&f);
         assert!(text.contains("cond_br"));
         assert!(text.contains("^bb1"));

@@ -7,11 +7,11 @@ use super::functions_http::urllib_request_attr_optional;
 use super::functions_pickle::pickle_resolve_global_bits;
 use crate::object::type_ids::TYPE_ID_TUPLE;
 use crate::{
-    alloc_string, attr_name_bits_from_bytes, builtin_classes, call_callable0, call_callable1,
-    call_class_init_with_args, clear_exception, dec_ref_bits, dict_get_in_place,
-    exception_pending, inc_ref_bits, missing_bits, molt_getattr_builtin, obj_from_bits,
-    object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_f64, to_i64,
-    TYPE_ID_DICT, TYPE_ID_LIST,
+    TYPE_ID_DICT, TYPE_ID_LIST, alloc_string, attr_name_bits_from_bytes, builtin_classes,
+    call_callable0, call_callable1, call_class_init_with_args, clear_exception, dec_ref_bits,
+    dict_get_in_place, exception_pending, inc_ref_bits, missing_bits, molt_getattr_builtin,
+    obj_from_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_f64,
+    to_i64,
 };
 
 #[unsafe(no_mangle)]

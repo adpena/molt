@@ -129,11 +129,7 @@ fn lower_ops(ops: &[OpIR], ctx: &mut LowerCtx) -> Vec<LuauStmt> {
             "const_str" | "string_const" => {
                 let out = out_var(op);
                 let s = op.s_value.as_deref().unwrap_or("").to_string();
-                stmts.push(LuauStmt::Local(
-                    out,
-                    None,
-                    LuauExpr::Lit(LuauLit::Str(s)),
-                ));
+                stmts.push(LuauStmt::Local(out, None, LuauExpr::Lit(LuauLit::Str(s))));
             }
             "const_bool" | "bool_const" => {
                 let out = out_var(op);
@@ -344,10 +340,7 @@ fn lower_ops(ops: &[OpIR], ctx: &mut LowerCtx) -> Vec<LuauStmt> {
                 }
 
                 let body = lower_ops(&body_ops, ctx);
-                stmts.push(LuauStmt::While(
-                    LuauExpr::Lit(LuauLit::Bool(true)),
-                    body,
-                ));
+                stmts.push(LuauStmt::While(LuauExpr::Lit(LuauLit::Bool(true)), body));
                 i = j;
                 continue;
             }
@@ -558,9 +551,7 @@ fn lower_ops(ops: &[OpIR], ctx: &mut LowerCtx) -> Vec<LuauStmt> {
                                         vec![key.clone()],
                                     )),
                                     LuauBinOp::Eq,
-                                    Box::new(LuauExpr::Lit(LuauLit::Str(
-                                        "number".to_string(),
-                                    ))),
+                                    Box::new(LuauExpr::Lit(LuauLit::Str("number".to_string()))),
                                 )),
                                 Box::new(LuauExpr::BinOp(
                                     Box::new(key.clone()),

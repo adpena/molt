@@ -26,6 +26,9 @@ pub fn bump_type_version() -> u64 {
     GLOBAL_TYPE_VERSION.fetch_add(1, AtomicOrdering::Relaxed) + 1
 }
 
+pub(crate) mod accessors;
+pub(crate) mod buffer2d;
+pub(crate) mod builders;
 #[allow(dead_code)]
 pub mod deopt;
 #[allow(dead_code)]
@@ -34,31 +37,28 @@ pub mod dict_compact;
 pub mod gil;
 #[allow(dead_code)]
 pub mod inline_cache;
-#[allow(dead_code)]
-pub mod nursery;
-pub(crate) mod accessors;
-pub(crate) mod buffer2d;
-pub(crate) mod builders;
 pub(crate) mod layout;
 pub(crate) mod memoryview;
+#[allow(dead_code)]
+pub mod nursery;
 pub(crate) mod ops;
-pub(crate) mod ops_bytes;
-pub(crate) mod ops_dict;
 pub(crate) mod ops_arith;
 pub(crate) mod ops_builtins;
+pub(crate) mod ops_bytes;
 pub(crate) mod ops_compare;
 pub(crate) mod ops_convert;
+pub(crate) mod ops_dict;
 pub(crate) mod ops_encoding;
 pub(crate) mod ops_format;
 pub(crate) mod ops_hash;
-pub(crate) mod ops_list;
 pub(crate) mod ops_heapq;
 pub(crate) mod ops_iter;
+pub(crate) mod ops_list;
+pub(crate) mod ops_memoryview;
 pub(crate) mod ops_set;
+pub(crate) mod ops_slice;
 pub(crate) mod ops_string;
 pub(crate) mod ops_vec;
-pub(crate) mod ops_slice;
-pub(crate) mod ops_memoryview;
 pub(crate) mod refcount;
 #[allow(dead_code)]
 pub mod string_intern;
@@ -74,14 +74,12 @@ use refcount::MoltRefCount;
 pub(crate) use type_ids::*;
 
 use crate::async_rt::poll::ws_wait_poll_fn_addr;
-use crate::builtins::{
-    functools::functools_drop_instance,
-    operator::operator_drop_instance, types::types_drop_instance,
-};
 #[cfg(not(feature = "stdlib_itertools"))]
 use crate::builtins::itertools::itertools_drop_instance;
-#[cfg(feature = "stdlib_itertools")]
-use molt_runtime_itertools::itertools::itertools_drop_instance;
+use crate::builtins::{
+    functools::functools_drop_instance, operator::operator_drop_instance,
+    types::types_drop_instance,
+};
 use crate::provenance::{register_ptr, release_ptr, resolve_ptr};
 use crate::{
     ALLOC_BYTES_DICT, ALLOC_BYTES_LIST, ALLOC_BYTES_STRING, ALLOC_BYTES_TOTAL, ALLOC_BYTES_TUPLE,
@@ -133,14 +131,15 @@ use crate::{
     generator_context_stack_drop, generator_exception_stack_drop, generic_alias_args_bits,
     generic_alias_origin_bits, io_wait_poll_fn_addr, io_wait_release_socket, issubclass_bits,
     iter_cached_tuple, iter_target_bits, map_func_bits, map_iters_ptr, module_dict_bits,
-    module_name_bits,
-    process_poll_fn_addr, profile_hit, profile_hit_bytes, property_del_bits, property_get_bits,
-    property_set_bits,
-    range_start_bits, range_step_bits, range_stop_bits, reversed_target_bits, runtime_state,
-    seq_vec_ptr, set_order_ptr, set_table_ptr, slice_start_bits, slice_step_bits, slice_stop_bits,
-    staticmethod_func_bits, task_cancel_message_clear, thread_poll_fn_addr, union_type_args_bits,
-    utf8_cache_remove, weakref_clear_for_ptr, ws_wait_release, zip_iters_ptr, zip_strict_bits,
+    module_name_bits, process_poll_fn_addr, profile_hit, profile_hit_bytes, property_del_bits,
+    property_get_bits, property_set_bits, range_start_bits, range_step_bits, range_stop_bits,
+    reversed_target_bits, runtime_state, seq_vec_ptr, set_order_ptr, set_table_ptr,
+    slice_start_bits, slice_step_bits, slice_stop_bits, staticmethod_func_bits,
+    task_cancel_message_clear, thread_poll_fn_addr, union_type_args_bits, utf8_cache_remove,
+    weakref_clear_for_ptr, ws_wait_release, zip_iters_ptr, zip_strict_bits,
 };
+#[cfg(feature = "stdlib_itertools")]
+use molt_runtime_itertools::itertools::itertools_drop_instance;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{process_task_drop, thread_task_drop};
@@ -256,11 +255,11 @@ fn debug_alloc_object_type() -> Option<u32> {
 
 #[repr(C)]
 pub struct MoltHeader {
-    pub type_id: u32,                // 4 bytes
-    pub ref_count: MoltRefCount,     // 4 bytes
-    pub flags: u32,                  // 4 bytes (bits 0-16 used)
-    pub size_class: u16,             // 2 bytes — index into SIZE_CLASS_TABLE
-    pub cold_idx: u16,               // 2 bytes — index into COLD_HEADER_SLAB (0 = none)
+    pub type_id: u32,            // 4 bytes
+    pub ref_count: MoltRefCount, // 4 bytes
+    pub flags: u32,              // 4 bytes (bits 0-16 used)
+    pub size_class: u16,         // 2 bytes — index into SIZE_CLASS_TABLE
+    pub cold_idx: u16,           // 2 bytes — index into COLD_HEADER_SLAB (0 = none)
 }
 // Total: 16 bytes (down from 40). poll_fn, state, extended_size live in MoltColdHeader.
 
@@ -1297,7 +1296,8 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
         debug_assert!(
             type_id > 0 && type_id <= 255,
             "inc_ref_ptr: invalid type_id {} at ptr {:?} — likely use-after-free",
-            type_id, ptr
+            type_id,
+            ptr
         );
         if ((*header_ptr).flags & HEADER_FLAG_IMMORTAL) != 0 {
             return;
@@ -1485,14 +1485,12 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     ptr as usize, header.type_id
                 );
             }
-            if header.type_id == TYPE_ID_FUNCTION
-                && {
-                    static TRACE: OnceLock<bool> = OnceLock::new();
-                    *TRACE.get_or_init(|| {
-                        std::env::var("MOLT_TRACE_DECREF_ZERO_FUNCTION").as_deref() == Ok("1")
-                    })
-                }
-            {
+            if header.type_id == TYPE_ID_FUNCTION && {
+                static TRACE: OnceLock<bool> = OnceLock::new();
+                *TRACE.get_or_init(|| {
+                    std::env::var("MOLT_TRACE_DECREF_ZERO_FUNCTION").as_deref() == Ok("1")
+                })
+            } {
                 // Debug-only: cached builtin function objects must not be freed while still cached.
                 // When they do hit zero, capture a backtrace to identify the incorrect owner.
                 let freed_fn_ptr = crate::function_fn_ptr(ptr);

@@ -74,9 +74,7 @@ impl ClassHierarchy {
     /// would disagree, but the TIR operates under a closed-world assumption for
     /// registered modules).
     pub fn is_leaf_class(&self, class_name: &str) -> bool {
-        self.children
-            .get(class_name)
-            .map_or(true, |c| c.is_empty())
+        self.children.get(class_name).map_or(true, |c| c.is_empty())
     }
 
     /// For a method call on a known receiver type, returns the fully-qualified
@@ -173,7 +171,8 @@ pub fn run(func: &mut TirFunction, hierarchy: &ClassHierarchy) -> PassStats {
             // Rewrite CallMethod → Call with concrete callee.
             op.opcode = OpCode::Call;
             op.dialect = Dialect::Molt;
-            op.attrs.insert("callee".to_string(), AttrValue::Str(resolved));
+            op.attrs
+                .insert("callee".to_string(), AttrValue::Str(resolved));
             // Remove the virtual-dispatch attrs to keep the op clean.
             op.attrs.remove("method");
             op.attrs.remove("receiver_type");
@@ -211,10 +210,7 @@ mod tests {
         let mut attrs = AttrDict::new();
         attrs.insert("method".into(), AttrValue::Str(method.to_string()));
         if let Some(cls) = receiver_type {
-            attrs.insert(
-                "receiver_type".into(),
-                AttrValue::Str(cls.to_string()),
-            );
+            attrs.insert("receiver_type".into(), AttrValue::Str(cls.to_string()));
         }
         TirOp {
             dialect: Dialect::Molt,
@@ -399,7 +395,7 @@ mod tests {
 
         let ops = get_entry_ops(&func);
         assert_eq!(ops[0].opcode, OpCode::CallMethod); // A — not devirtualized
-        assert_eq!(ops[1].opcode, OpCode::Call);       // B — devirtualized
+        assert_eq!(ops[1].opcode, OpCode::Call); // B — devirtualized
         assert_eq!(
             ops[1].attrs.get("callee"),
             Some(&AttrValue::Str("A_act".to_string()))

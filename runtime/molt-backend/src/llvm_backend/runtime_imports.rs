@@ -4,9 +4,9 @@
 //! and related modules. All use the NaN-boxed u64 ABI.
 
 #[cfg(feature = "llvm")]
-use inkwell::module::Module;
-#[cfg(feature = "llvm")]
 use inkwell::context::Context;
+#[cfg(feature = "llvm")]
+use inkwell::module::Module;
 
 /// Declare all runtime functions that lowered code may call.
 ///
@@ -105,8 +105,7 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
             get_ty,
             Some(inkwell::module::Linkage::External),
         );
-        let set_ty =
-            i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false);
+        let set_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false);
         module.add_function(
             "molt_set_attr_name",
             set_ty,
@@ -139,8 +138,7 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
             get_ty,
             Some(inkwell::module::Linkage::External),
         );
-        let set_ty =
-            i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false);
+        let set_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false);
         module.add_function(
             "molt_setitem_method",
             set_ty,
@@ -157,10 +155,7 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
     // ── Slice ──
     // molt_slice_new(start: u64, stop: u64, step: u64) -> u64
     {
-        let fn_ty = i64_ty.fn_type(
-            &[i64_ty.into(), i64_ty.into(), i64_ty.into()],
-            false,
-        );
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false);
         module.add_function(
             "molt_slice_new",
             fn_ty,
@@ -259,10 +254,7 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
     // ── Method / Builtin call ──
     // molt_call_method(receiver: u64, name: u64, args_builder: u64) -> u64
     {
-        let fn_ty = i64_ty.fn_type(
-            &[i64_ty.into(), i64_ty.into(), i64_ty.into()],
-            false,
-        );
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false);
         module.add_function(
             "molt_call_method",
             fn_ty,
@@ -347,10 +339,7 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
     }
     // molt_dict_set(dict: u64, key: u64, val: u64) -> u64
     {
-        let fn_ty = i64_ty.fn_type(
-            &[i64_ty.into(), i64_ty.into(), i64_ty.into()],
-            false,
-        );
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false);
         module.add_function(
             "molt_dict_set",
             fn_ty,
@@ -418,10 +407,7 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
     // These are called when SCF ops survive lowering (not yet fully desugared).
     // molt_scf_if(cond: u64, then_fn: u64, else_fn: u64) -> u64
     {
-        let fn_ty = i64_ty.fn_type(
-            &[i64_ty.into(), i64_ty.into(), i64_ty.into()],
-            false,
-        );
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false);
         module.add_function(
             "molt_scf_if",
             fn_ty,

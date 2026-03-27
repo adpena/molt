@@ -2,8 +2,8 @@
 // Fraction arithmetic intrinsics using BigInt numerator/denominator.
 // Always stores in lowest terms with denominator > 0.
 
-use molt_runtime_core::prelude::*;
 use crate::bridge::*;
+use molt_runtime_core::prelude::*;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};

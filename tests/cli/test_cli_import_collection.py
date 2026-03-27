@@ -504,9 +504,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     monkeypatch.setattr(
         cli,
         "_run_native_link_command",
-        lambda **kwargs: subprocess.CompletedProcess(
-            kwargs["link_cmd"], 0, "", ""
-        ),
+        lambda **kwargs: subprocess.CompletedProcess(kwargs["link_cmd"], 0, "", ""),
     )
 
     first, first_error = cli._prepare_native_link(
@@ -867,8 +865,12 @@ def test_shared_module_resolution_cache_reuses_import_scans(
         return original_collect(*args, **kwargs)
 
     monkeypatch.setattr(cli, "_collect_imports", wrapped_collect)
-    monkeypatch.setattr(cli, "_read_persisted_import_scan", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli, "_read_persisted_module_graph", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli, "_read_persisted_import_scan", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        cli, "_read_persisted_module_graph", lambda *args, **kwargs: None
+    )
 
     cache = cli._ModuleResolutionCache()
     graph, _ = cli._discover_module_graph(
@@ -940,6 +942,54 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
     )
     assert "pkg.helper" in explicit_imports
     assert "pkg" in graph
+
+
+def test_discover_module_graph_skips_persisted_caches_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entry = tmp_path / "pkg" / "__init__.py"
+    entry.parent.mkdir()
+    entry.write_text("import pkg.helper\n")
+    helper = entry.parent / "helper.py"
+    helper.write_text("VALUE = 1\n")
+
+    stdlib_root = cli._stdlib_root_path()
+    module_roots = [tmp_path.resolve()]
+    roots = module_roots + [stdlib_root]
+    stdlib_allowlist = cli._stdlib_allowlist()
+
+    graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        tmp_path,
+        stdlib_allowlist,
+    )
+    assert "pkg.helper" in explicit_imports
+    assert graph["pkg.helper"] == helper
+
+    def fail_persisted_graph(*args: object, **kwargs: object) -> None:
+        raise AssertionError("unexpected persisted module-graph cache read")
+
+    def fail_persisted_imports(*args: object, **kwargs: object) -> None:
+        raise AssertionError("unexpected persisted import-scan cache read")
+
+    monkeypatch.setattr(cli, "_read_persisted_module_graph", fail_persisted_graph)
+    monkeypatch.setattr(cli, "_read_persisted_import_scan", fail_persisted_imports)
+
+    graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        tmp_path,
+        stdlib_allowlist,
+        cache_enabled=False,
+    )
+
+    assert "pkg.helper" in explicit_imports
+    assert graph["pkg.helper"] == helper
 
 
 def test_discover_module_graph_reuses_persisted_graph_cache(
@@ -1590,7 +1640,7 @@ def test_verify_cargo_lock_uses_workspace_member_manifests_only(
 ) -> None:
     root_manifest = tmp_path / "Cargo.toml"
     root_manifest.write_text(
-        '[workspace]\n'
+        "[workspace]\n"
         'members = ["runtime/molt-runtime", "runtime/molt-backend"]\n'
         'resolver = "2"\n'
     )
@@ -1666,31 +1716,36 @@ def test_backend_source_paths_are_cached(tmp_path: Path) -> None:
     assert info.currsize >= 1
 
 
-def test_backend_source_paths_are_feature_aware(tmp_path: Path) -> None:
+def test_backend_source_paths_are_feature_aware() -> None:
     native_paths = {
-        path.relative_to(tmp_path).as_posix()
-        for path in cli._backend_source_paths(tmp_path, ())
+        path.relative_to(ROOT).as_posix() for path in cli._backend_source_paths(ROOT, ())
     }
     wasm_paths = {
-        path.relative_to(tmp_path).as_posix()
-        for path in cli._backend_source_paths(tmp_path, ("wasm-backend",))
+        path.relative_to(ROOT).as_posix()
+        for path in cli._backend_source_paths(ROOT, ("wasm-backend",))
     }
     rust_paths = {
-        path.relative_to(tmp_path).as_posix()
-        for path in cli._backend_source_paths(tmp_path, ("rust-backend",))
+        path.relative_to(ROOT).as_posix()
+        for path in cli._backend_source_paths(ROOT, ("rust-backend",))
     }
 
     assert "runtime/molt-backend/src/luau.rs" not in native_paths
     assert "runtime/molt-backend/src/rust.rs" not in native_paths
     assert "runtime/molt-backend/src/wasm.rs" not in native_paths
+    assert "runtime/molt-backend/src/passes.rs" in native_paths
+    assert "runtime/molt-backend/src/native_backend/function_compiler.rs" in native_paths
 
     assert "runtime/molt-backend/src/wasm.rs" in wasm_paths
     assert "runtime/molt-backend/src/rust.rs" not in wasm_paths
     assert "runtime/molt-backend/src/luau.rs" not in wasm_paths
+    assert "runtime/molt-backend/src/passes.rs" in wasm_paths
+    assert "runtime/molt-backend/src/native_backend/function_compiler.rs" not in wasm_paths
 
     assert "runtime/molt-backend/src/rust.rs" in rust_paths
     assert "runtime/molt-backend/src/wasm.rs" not in rust_paths
     assert "runtime/molt-backend/src/luau.rs" not in rust_paths
+    assert "runtime/molt-backend/src/passes.rs" in rust_paths
+    assert "runtime/molt-backend/src/native_backend/function_compiler.rs" not in rust_paths
 
 
 def test_backend_bin_path_is_cached(
@@ -2168,6 +2223,64 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
     assert cached_path_stat is not None
 
 
+def test_load_module_analysis_invalidates_on_frontend_cache_epoch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "pkg.py"
+    module_path.write_text("import warnings\nVALUE = 1\n")
+    cache = cli._ModuleResolutionCache()
+
+    monkeypatch.setattr(cli, "_frontend_cache_epoch", lambda: "epoch-a")
+    cli._load_module_analysis(
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        include_nested=True,
+        source=None,
+        logical_source_path=str(module_path),
+        resolution_cache=cache,
+        project_root=tmp_path,
+    )
+
+    parse_calls = 0
+    original_parse = cache.parse_module_ast
+
+    def wrapped_parse(*args: object, **kwargs: object) -> ast.AST:
+        nonlocal parse_calls
+        parse_calls += 1
+        return original_parse(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "_frontend_cache_epoch", lambda: "epoch-b")
+    monkeypatch.setattr(cache, "parse_module_ast", wrapped_parse)
+    (
+        tree,
+        imports,
+        func_defaults,
+        cached_source,
+        cache_hit,
+        interface_changed,
+        cached_path_stat,
+    ) = cli._load_module_analysis(
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        include_nested=True,
+        source=None,
+        logical_source_path=str(module_path),
+        resolution_cache=cache,
+        project_root=tmp_path,
+    )
+
+    assert tree is not None
+    assert imports == ("warnings",)
+    assert func_defaults == {}
+    assert cached_source is not None
+    assert cache_hit is False
+    assert interface_changed is True
+    assert cached_path_stat is not None
+    assert parse_calls == 1
+
+
 def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2428,6 +2541,44 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
     assert second["functions"][0]["ops"][0]["value"] == 1
 
 
+def test_persisted_module_lowering_invalidates_on_frontend_cache_epoch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "pkg.py"
+    module_path.write_text("x = 1\n")
+    context_digest = cli._module_lowering_context_digest({"module": "pkg", "v": 1})
+    assert context_digest is not None
+
+    monkeypatch.setattr(cli, "_frontend_cache_epoch", lambda: "epoch-a")
+    cli._write_persisted_module_lowering(
+        tmp_path,
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        context_digest=context_digest,
+        result={
+            "functions": [],
+            "func_code_ids": {},
+            "local_class_names": [],
+            "local_classes": {},
+            "midend_policy_outcomes_by_function": {},
+            "midend_pass_stats_by_function": {},
+            "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
+        },
+    )
+
+    monkeypatch.setattr(cli, "_frontend_cache_epoch", lambda: "epoch-b")
+    cached = cli._read_persisted_module_lowering(
+        tmp_path,
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        context_digest=context_digest,
+    )
+
+    assert cached is None
+
+
 def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2509,6 +2660,63 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     assert cached_results == {"alpha": {"module": "alpha", "kind": "cached"}}
     assert context_digest_by_module == {"alpha": "digest"}
     assert context_payload_calls == 1
+
+
+def test_prepare_frontend_parallel_batch_skips_cache_reads_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "alpha.py"
+    module_path.write_text("VALUE = 1\n")
+    module_graph_metadata = cli._build_module_graph_metadata(
+        {"alpha": module_path},
+        generated_module_source_paths={},
+        entry_module="__main__",
+        namespace_module_names=set(),
+    )
+
+    monkeypatch.setattr(
+        cli,
+        "_load_cached_module_lowering_result",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unexpected cached module lowering read")
+        ),
+    )
+
+    cached_results, worker_payloads, context_digest_by_module, batch_error = (
+        cli._prepare_frontend_parallel_batch(
+            ["alpha"],
+            module_graph={"alpha": module_path},
+            module_sources={},
+            project_root=tmp_path,
+            known_classes_snapshot={},
+            module_resolution_cache=cli._ModuleResolutionCache(),
+            parse_codec="json",
+            type_hint_policy="ignore",
+            fallback_policy="error",
+            type_facts=None,
+            enable_phi=True,
+            known_modules={"alpha"},
+            stdlib_allowlist=set(),
+            known_func_defaults={},
+            module_deps={"alpha": set()},
+            module_chunk_max_ops=0,
+            optimization_profile="dev",
+            pgo_hot_function_names=set(),
+            known_modules_sorted=("alpha",),
+            stdlib_allowlist_sorted=(),
+            pgo_hot_function_names_sorted=(),
+            module_dep_closures={"alpha": frozenset({"alpha"})},
+            module_graph_metadata=module_graph_metadata,
+            module_chunking=False,
+            dirty_lowering_modules=set(),
+            cache_enabled=False,
+        )
+    )
+
+    assert batch_error is None
+    assert cached_results == {}
+    assert len(worker_payloads) == 1
+    assert context_digest_by_module == {}
 
 
 def test_load_cached_module_lowering_result_reuses_single_module_stat(
@@ -3196,7 +3404,10 @@ def test_scoped_lowering_input_view_reuses_precomputed_bundle() -> None:
         pgo_hot_function_names_sorted=("main::hot",),
     )
 
-    assert scoped_view.known_modules is scoped_lowering_inputs.known_modules_by_module["main"]
+    assert (
+        scoped_view.known_modules
+        is scoped_lowering_inputs.known_modules_by_module["main"]
+    )
     assert (
         scoped_view.known_func_defaults
         is scoped_lowering_inputs.known_func_defaults_by_module["main"]
@@ -5133,11 +5344,17 @@ def test_start_backend_daemon_leaves_warming_process_running(
     class _FakePopen:
         pid = 4321
 
-    monkeypatch.setattr(cli, "_backend_daemon_pid_path", lambda *args, **kwargs: pid_path)
-    monkeypatch.setattr(cli, "_backend_daemon_log_path", lambda *args, **kwargs: log_path)
+    monkeypatch.setattr(
+        cli, "_backend_daemon_pid_path", lambda *args, **kwargs: pid_path
+    )
+    monkeypatch.setattr(
+        cli, "_backend_daemon_log_path", lambda *args, **kwargs: log_path
+    )
     monkeypatch.setattr(cli, "_read_backend_daemon_pid", lambda *args, **kwargs: None)
 
-    def fake_wait_until_ready(*args: object, **kwargs: object) -> tuple[bool, dict[str, object] | None]:
+    def fake_wait_until_ready(
+        *args: object, **kwargs: object
+    ) -> tuple[bool, dict[str, object] | None]:
         del args
         wait_timeouts.append(cast(float | None, kwargs.get("ready_timeout")))
         return False, None
@@ -5200,7 +5417,9 @@ def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_h
             cache_hit_tier="module",
         )
 
-    monkeypatch.setattr(cli, "_prepare_backend_cache_setup", fake_prepare_backend_cache_setup)
+    monkeypatch.setattr(
+        cli, "_prepare_backend_cache_setup", fake_prepare_backend_cache_setup
+    )
     monkeypatch.setattr(
         cli,
         "_ensure_runtime_lib_ready",
@@ -5263,7 +5482,9 @@ def test_prepare_backend_setup_keeps_runtime_lib_ready_check_for_native_cache_mi
             cache_hit_tier=None,
         )
 
-    monkeypatch.setattr(cli, "_prepare_backend_cache_setup", fake_prepare_backend_cache_setup)
+    monkeypatch.setattr(
+        cli, "_prepare_backend_cache_setup", fake_prepare_backend_cache_setup
+    )
     monkeypatch.setattr(
         cli,
         "_ensure_runtime_lib_ready",
@@ -5312,7 +5533,9 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
         seen_features.append(cast(tuple[str, ...], kwargs["backend_features"]))
         return dict(fingerprint)
 
-    def fake_run_cargo(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_run_cargo(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         del kwargs
         build_cmds.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -5358,7 +5581,9 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
         seen_features.append(cast(tuple[str, ...], kwargs["backend_features"]))
         return dict(fingerprint)
 
-    def fake_run_cargo(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_run_cargo(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         del kwargs
         build_cmds.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -5782,9 +6007,7 @@ def test_compare_uses_build_profile_flag_for_nested_build(
 
     seen_cmds: list[list[str]] = []
 
-    def fake_run_command_timed(
-        cmd: list[str], **kwargs: object
-    ) -> cli._TimedResult:
+    def fake_run_command_timed(cmd: list[str], **kwargs: object) -> cli._TimedResult:
         del kwargs
         seen_cmds.append(list(cmd))
         if len(seen_cmds) == 1:

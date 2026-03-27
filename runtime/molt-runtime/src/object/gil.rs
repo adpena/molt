@@ -27,8 +27,7 @@ impl ObjectLock {
 
 /// Global flag: when true, @par functions execute without GIL.
 /// Set by the parallel execution runtime before launching worker threads.
-static GIL_RELEASED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static GIL_RELEASED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Check if the GIL is currently released (parallel mode active).
 #[inline(always)]

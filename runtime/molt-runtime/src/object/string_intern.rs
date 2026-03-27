@@ -125,7 +125,10 @@ mod tests {
         let a = intern("__init__");
         let b = intern("__init__");
         // Same pointer — pointer equality holds.
-        assert!(std::ptr::eq(a, b), "intern must return the same pointer for equal strings");
+        assert!(
+            std::ptr::eq(a, b),
+            "intern must return the same pointer for equal strings"
+        );
     }
 
     #[test]

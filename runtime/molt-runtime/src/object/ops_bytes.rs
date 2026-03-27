@@ -2490,7 +2490,6 @@ pub extern "C" fn molt_bytes_replace(
     })
 }
 
-
 fn bytes_hex_sep_from_bits(_py: &PyToken<'_>, sep_bits: u64) -> Result<Option<String>, u64> {
     if sep_bits == 0 || obj_from_bits(sep_bits).is_none() {
         return Ok(None);
@@ -2841,7 +2840,6 @@ where
         MoltObject::from_bool(f(hay_bytes)).bits()
     }
 }
-
 
 fn bytes_ascii_islower(bytes: &[u8]) -> bool {
     if bytes.is_empty() {

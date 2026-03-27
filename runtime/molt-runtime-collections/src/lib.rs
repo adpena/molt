@@ -10,5 +10,5 @@
 /// FFI bridge to molt-runtime internal functions (resolved at link time).
 pub mod bridge;
 
-pub mod collections_ext;
 pub mod argparse;
+pub mod collections_ext;

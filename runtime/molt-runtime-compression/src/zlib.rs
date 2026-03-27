@@ -1,9 +1,9 @@
 #![allow(dead_code, unused_imports)]
-use molt_runtime_core::prelude::*;
 use crate::bridge::*;
-use flate2::Compression;
 use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
 use flate2::write::{DeflateEncoder, ZlibEncoder};
+use flate2::Compression;
+use molt_runtime_core::prelude::*;
 use std::io::{Read, Write};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -37,11 +37,7 @@ fn zlib_compression_from_level(_py: &PyToken, level_bits: u64) -> Result<Compres
         return Err(MoltObject::none().bits());
     }
     if !(-1..=9).contains(&val) {
-        return Err(raise_exception(
-            _py,
-            "ValueError",
-            "Bad compression level",
-        ));
+        return Err(raise_exception(_py, "ValueError", "Bad compression level"));
     }
     if val == -1 {
         Ok(Compression::default())
@@ -577,11 +573,7 @@ pub extern "C" fn molt_zlib_compressobj_compress(handle_bits: u64, data_bits: u6
             CompressorInner::Zlib(ref mut enc) => enc.write_all(data).is_ok(),
             CompressorInner::Gzip(ref mut enc) => enc.write_all(data).is_ok(),
             CompressorInner::Finished => {
-                return raise_exception(
-                    _py,
-                    "error",
-                    "zlib.error: compressor has been flushed",
-                );
+                return raise_exception(_py, "error", "zlib.error: compressor has been flushed");
             }
         };
         if !write_ok {

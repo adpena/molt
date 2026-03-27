@@ -2,12 +2,12 @@
 // molt-lang-cpython-abi.  Suppress the dead-code warnings for those stubs.
 #![allow(dead_code, non_snake_case, unused_imports)]
 
-mod molt_api;
 mod cpython_compat;
+mod molt_api;
 
 // Re-export all public C-API symbols so external references remain unchanged.
-pub use molt_api::*;
 pub use cpython_compat::*;
+pub use molt_api::*;
 
 use crate::builtins::exceptions::molt_exception_new_from_class;
 use crate::concurrency::gil::{gil_held, release_runtime_gil};
@@ -669,7 +669,6 @@ fn len_bits_to_i64(_py: &PyToken<'_>, len_bits: u64) -> i64 {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests;

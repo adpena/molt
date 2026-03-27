@@ -1,7 +1,7 @@
 //! Hash functions — extracted from ops.rs.
 
-use crate::*;
 use crate::randomness::{fill_os_random, os_random_supported};
+use crate::*;
 use molt_obj_model::MoltObject;
 use num_bigint::{BigInt, Sign};
 use num_integer::Integer;

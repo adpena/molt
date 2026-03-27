@@ -1,10 +1,10 @@
-use molt_runtime_core::prelude::*;
 use crate::bridge::*;
 use blake2b_simd::{Params as Blake2bParams, State as Blake2bState};
 use blake2s_simd::{Params as Blake2sParams, State as Blake2sState};
 use digest::{Digest, ExtendableOutput, Update, XofReader};
 use md4::Md4;
 use md5::Md5;
+use molt_runtime_core::prelude::*;
 use num_traits::ToPrimitive;
 use ripemd::Ripemd160;
 use sha1::Sha1;
@@ -423,11 +423,7 @@ fn parse_blake2_options(
     Ok(opts)
 }
 
-pub fn build_hash_handle(
-    _py: &PyToken,
-    name: &str,
-    options_bits: u64,
-) -> Result<HashHandle, u64> {
+pub fn build_hash_handle(_py: &PyToken, name: &str, options_bits: u64) -> Result<HashHandle, u64> {
     let normalized = normalize_hash_name(name);
     match normalized.as_str() {
         "md4" => Ok(HashHandle {

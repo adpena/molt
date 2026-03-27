@@ -1,15 +1,15 @@
 //\! List, tuple, and bisect operations — extracted from ops.rs.
 
-use crate::*;
-use molt_obj_model::MoltObject;
-use num_traits::{Signed, ToPrimitive};
-use std::cmp::Ordering;
 use super::ops::{eq_bool_from_bits, is_truthy};
 use super::ops_arith::repeat_sequence;
 use super::ops_compare::{
     CompareBoolOutcome, CompareOp, CompareOutcome, compare_builtin_bool, compare_objects,
     compare_type_error, rich_compare_bool,
 };
+use crate::*;
+use molt_obj_model::MoltObject;
+use num_traits::{Signed, ToPrimitive};
+use std::cmp::Ordering;
 
 struct SortItem {
     key_bits: u64,
@@ -536,9 +536,7 @@ pub extern "C" fn molt_list_mul_method(list_bits: u64, count_bits: u64) -> u64 {
     })
 }
 
-
 // heapq operations moved to ops_heapq.rs
-
 
 fn bisect_len_from_obj(_py: &PyToken<'_>, obj: MoltObject) -> Option<i64> {
     if let Some(ptr) = obj.as_ptr() {
@@ -1094,4 +1092,3 @@ pub extern "C" fn molt_tuple_index_range(
         MoltObject::none().bits()
     })
 }
-

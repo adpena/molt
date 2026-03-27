@@ -183,14 +183,20 @@ static GIL_VTABLE: AtomicPtr<GilVtable> = AtomicPtr::new(std::ptr::null_mut());
 
 /// Initialize the GIL vtable. Called once by molt-runtime at startup.
 pub fn set_gil_vtable(vtable: &'static GilVtable) {
-    GIL_VTABLE.store(vtable as *const GilVtable as *mut GilVtable, Ordering::Release);
+    GIL_VTABLE.store(
+        vtable as *const GilVtable as *mut GilVtable,
+        Ordering::Release,
+    );
 }
 
 /// Acquire the GIL via the vtable. Panics if vtable not initialized.
 #[inline]
 pub fn core_gil_acquire() -> u64 {
     let ptr = GIL_VTABLE.load(Ordering::Acquire);
-    assert!(!ptr.is_null(), "GIL vtable not initialized — call molt_runtime_init() first");
+    assert!(
+        !ptr.is_null(),
+        "GIL vtable not initialized — call molt_runtime_init() first"
+    );
     unsafe { ((*ptr).acquire)() }
 }
 
@@ -211,7 +217,9 @@ pub struct CoreGilGuard {
 impl CoreGilGuard {
     #[inline]
     pub fn new() -> Self {
-        Self { guard_token: core_gil_acquire() }
+        Self {
+            guard_token: core_gil_acquire(),
+        }
     }
 
     #[inline]
@@ -596,20 +604,19 @@ pub fn rt_bytes_as_slice(bytes_bits: u64) -> Option<&'static [u8]> {
 /// helpers, and safe wrappers over the runtime FFI.
 pub mod prelude {
     pub use crate::type_ids::*;
-    pub use crate::{
-        bits_from_ptr, obj_from_bits, ptr_from_bits,
-        CoreGilGuard, CoreGilToken, GilReleaseGuard, MoltObject, PyToken,
-    };
-    pub use crate::with_gil_entry;
     pub use crate::with_core_gil;
+    pub use crate::with_gil_entry;
+    pub use crate::{
+        bits_from_ptr, obj_from_bits, ptr_from_bits, CoreGilGuard, CoreGilToken, GilReleaseGuard,
+        MoltObject, PyToken,
+    };
 
     // Safe runtime wrappers
     pub use crate::{
-        rt_bytes_as_slice, rt_bytes_from, rt_dec_ref, rt_dict,
-        rt_exception_clear, rt_exception_pending, rt_exception_pending_fast,
-        rt_float, rt_inc_ref, rt_int, rt_is_truthy, rt_list, rt_none,
-        rt_raise, rt_raise_str, rt_repr, rt_str, rt_string_as_bytes,
-        rt_string_from, rt_string_from_bytes, rt_tuple,
+        rt_bytes_as_slice, rt_bytes_from, rt_dec_ref, rt_dict, rt_exception_clear,
+        rt_exception_pending, rt_exception_pending_fast, rt_float, rt_inc_ref, rt_int,
+        rt_is_truthy, rt_list, rt_none, rt_raise, rt_raise_str, rt_repr, rt_str,
+        rt_string_as_bytes, rt_string_from, rt_string_from_bytes, rt_tuple,
     };
 }
 
@@ -674,11 +681,13 @@ pub struct RuntimeVtable {
     pub int_bits_from_bigint: unsafe extern "C" fn(i32, *const u8, usize) -> u64,
     pub bigint_ptr_from_bits: unsafe extern "C" fn(u64) -> *mut u8,
     pub bigint_ref: unsafe extern "C" fn(*mut u8, *mut i32, *mut *const u8, *mut usize) -> i32,
-    pub bigint_from_f64_trunc: unsafe extern "C" fn(f64, *mut i32, *mut *const u8, *mut usize) -> i32,
+    pub bigint_from_f64_trunc:
+        unsafe extern "C" fn(f64, *mut i32, *mut *const u8, *mut usize) -> i32,
     pub bigint_bits: unsafe extern "C" fn(i32, *const u8, usize) -> u64,
     pub bigint_to_inline: unsafe extern "C" fn(i32, *const u8, usize) -> u64,
     pub index_i64_from_obj: unsafe extern "C" fn(u64, *const u8, usize) -> i64,
-    pub index_bigint_from_obj: unsafe extern "C" fn(u64, *const u8, usize, *mut i32, *mut *const u8, *mut usize) -> i32,
+    pub index_bigint_from_obj:
+        unsafe extern "C" fn(u64, *const u8, usize, *mut i32, *mut *const u8, *mut usize) -> i32,
 
     // --- Callable / protocol ---
     pub call_callable0: unsafe extern "C" fn(u64) -> u64,

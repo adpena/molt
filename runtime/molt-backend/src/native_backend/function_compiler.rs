@@ -4,12 +4,30 @@ use super::*;
 static EMPTY_VEC_STRING: Vec<String> = Vec::new();
 
 #[cfg(feature = "native-backend")]
+fn loop_start_has_index_prelude(ops: &[OpIR], start_idx: usize) -> bool {
+    let mut scan_idx = start_idx + 1;
+    while let Some(next) = ops.get(scan_idx) {
+        let kind = next.kind.as_str();
+        if kind == "loop_index_start" {
+            return true;
+        }
+        if kind.starts_with("const") {
+            scan_idx += 1;
+            continue;
+        }
+        return false;
+    }
+    false
+}
+
+#[cfg(feature = "native-backend")]
 struct FunctionPreanalysis {
     has_ret: bool,
     stateful: bool,
     has_store: bool,
     var_names: Vec<String>,
     last_use: BTreeMap<String, usize>,
+    alias_roots: BTreeMap<String, String>,
     if_to_end_if: BTreeMap<usize, usize>,
     if_to_else: BTreeMap<usize, usize>,
     else_to_end_if: BTreeMap<usize, usize>,
@@ -83,12 +101,46 @@ fn import_func_ref(
 }
 
 #[cfg(feature = "native-backend")]
-fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
+fn preanalyze_alias_source<'a>(
+    op: &'a OpIR,
+    return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
+) -> Option<&'a str> {
+    match op.kind.as_str() {
+        "copy" | "copy_var" | "box" | "unbox" | "cast" | "widen" | "identity_alias" => op
+            .args
+            .as_ref()
+            .and_then(|args| args.first())
+            .map(String::as_str),
+        "load_var" => op.var.as_deref().or_else(|| {
+            op.args
+                .as_ref()
+                .and_then(|args| args.first())
+                .map(String::as_str)
+        }),
+        "call" => {
+            let callee = op.s_value.as_ref()?;
+            let crate::passes::ReturnAliasSummary::Param(param_idx) =
+                *return_alias_summaries.get(callee)?;
+            op.args
+                .as_ref()
+                .and_then(|args| args.get(param_idx))
+                .map(String::as_str)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(feature = "native-backend")]
+fn preanalyze_function_ir(
+    func_ir: &FunctionIR,
+    return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
+) -> FunctionPreanalysis {
     let mut has_ret = false;
     let mut stateful = false;
     let mut has_store = false;
     let mut var_names: BTreeSet<String> = BTreeSet::new();
     let mut last_use = BTreeMap::new();
+    let mut alias_roots = BTreeMap::new();
     let mut if_to_end_if = BTreeMap::new();
     let mut if_to_else = BTreeMap::new();
     let mut else_to_end_if = BTreeMap::new();
@@ -102,6 +154,7 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
     for name in &func_ir.params {
         if name != "none" {
             var_names.insert(name.clone());
+            alias_roots.insert(name.clone(), name.clone());
         }
     }
 
@@ -118,6 +171,17 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
             && out != "none"
         {
             var_names.insert(out.clone());
+            if let Some(src) = preanalyze_alias_source(op, return_alias_summaries) {
+                let root = alias_roots
+                    .get(src)
+                    .cloned()
+                    .unwrap_or_else(|| src.to_string());
+                alias_roots.insert(out.clone(), root);
+            } else {
+                alias_roots
+                    .entry(out.clone())
+                    .or_insert_with(|| out.clone());
+            }
             if op.kind == "const_str" || op.kind == "const_bytes" {
                 var_names.insert(format!("{}_ptr", out));
                 var_names.insert(format!("{}_len", out));
@@ -208,13 +272,11 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
         for (idx, op) in func_ir.ops.iter().enumerate() {
             match op.kind.as_str() {
                 "loop_start" => {
-                    // Only push if the next op is NOT loop_index_start.
-                    // Indexed loops emit LOOP_START + LOOP_INDEX_START;
-                    // the LOOP_INDEX_START is the real loop opener.
-                    let indexed_follows = func_ir
-                        .ops
-                        .get(idx + 1)
-                        .is_some_and(|next| next.kind == "loop_index_start");
+                    // Indexed loops may materialize loop-invariant constants
+                    // between LOOP_START and LOOP_INDEX_START. Treat that
+                    // whole prelude as part of the indexed-loop opener so we
+                    // do not push a duplicate plain loop frame.
+                    let indexed_follows = loop_start_has_index_prelude(&func_ir.ops, idx);
                     if !indexed_follows {
                         loop_stack_post.push(idx);
                     }
@@ -255,6 +317,38 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
         }
     }
 
+    // Post-pass: alias-equivalent SSA names must share the latest use.
+    // Helper wrappers commonly return an input unchanged, and direct-call
+    // alias summaries propagate that identity into the caller. If we only
+    // track textual uses per SSA name, cleanup sites such as
+    // `check_exception` can decref an earlier alias before a later alias
+    // reaches the function return.
+    {
+        let mut max_last_use_by_root: BTreeMap<String, usize> = BTreeMap::new();
+        for (name, root) in &alias_roots {
+            let Some(last) = last_use.get(name).copied() else {
+                continue;
+            };
+            max_last_use_by_root
+                .entry(root.clone())
+                .and_modify(|slot| {
+                    if *slot < last {
+                        *slot = last;
+                    }
+                })
+                .or_insert(last);
+        }
+        for (name, root) in &alias_roots {
+            let Some(group_last) = max_last_use_by_root.get(root).copied() else {
+                continue;
+            };
+            let entry = last_use.entry(name.clone()).or_insert(group_last);
+            if *entry < group_last {
+                *entry = group_last;
+            }
+        }
+    }
+
     let mut var_names: Vec<String> = var_names.into_iter().collect();
     var_names.sort();
     let function_exception_label_id = label_positions
@@ -270,6 +364,7 @@ fn preanalyze_function_ir(func_ir: &FunctionIR) -> FunctionPreanalysis {
         has_store,
         var_names,
         last_use,
+        alias_roots,
         if_to_end_if,
         if_to_else,
         else_to_end_if,
@@ -289,20 +384,26 @@ impl SimpleBackend {
         task_kinds: &BTreeMap<String, TrampolineKind>,
         task_closure_sizes: &BTreeMap<String, i64>,
         defined_functions: &BTreeSet<String>,
+        module_known_functions: &BTreeSet<String>,
         closure_functions: &BTreeSet<String>,
+        return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
         emit_traces: bool,
         leaf_functions: &BTreeSet<String>,
+        known_function_arities: &BTreeMap<String, usize>,
     ) {
         self.compile_func_inner(
             func_ir,
             task_kinds,
             task_closure_sizes,
             defined_functions,
+            module_known_functions,
             closure_functions,
+            return_alias_summaries,
             emit_traces,
             false,
             &BTreeSet::new(),
             leaf_functions,
+            known_function_arities,
         );
     }
 
@@ -316,11 +417,14 @@ impl SimpleBackend {
         task_kinds: &BTreeMap<String, TrampolineKind>,
         task_closure_sizes: &BTreeMap<String, i64>,
         defined_functions: &BTreeSet<String>,
+        module_known_functions: &BTreeSet<String>,
         closure_functions: &BTreeSet<String>,
+        return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
         emit_traces: bool,
         _raw_int_mode: bool,
         _typed_int_functions: &BTreeSet<String>,
         leaf_functions: &BTreeSet<String>,
+        known_function_arities: &BTreeMap<String, usize>,
     ) {
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
@@ -330,16 +434,18 @@ impl SimpleBackend {
             has_store,
             var_names,
             last_use,
+            alias_roots,
             if_to_end_if,
             if_to_else,
             else_to_end_if,
             state_ids,
             resume_states,
             function_exception_label_id,
-            exception_label_ids,
+            exception_label_ids: _exception_label_ids,
             const_int_map: _const_int_map,
-        } = preanalyze_function_ir(&func_ir);
-        let (rc_skip_inc, rc_skip_dec) = crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use);
+        } = preanalyze_function_ir(&func_ir, return_alias_summaries);
+        let (rc_skip_inc, rc_skip_dec) =
+            crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use);
 
         if has_ret {
             self.ctx
@@ -374,6 +480,9 @@ impl SimpleBackend {
         }
         let trace_ops = should_trace_ops(&func_ir.name);
         let trace_stride = trace_ops.as_ref().map(|cfg| cfg.stride);
+        let debug_loop_cfg = std::env::var("MOLT_DEBUG_LOOP_CFG")
+            .ok()
+            .filter(|raw| raw == "1" || func_ir.name.contains(raw));
         let mut trace_name_var: Option<Variable> = None;
         let mut trace_len_var: Option<Variable> = None;
         let mut trace_func: Option<FuncRef> = None;
@@ -384,8 +493,10 @@ impl SimpleBackend {
         let mut trace_data: Option<(cranelift_module::DataId, i64)> = None;
         let mut tracked_vars = Vec::new();
         let mut tracked_obj_vars = Vec::new();
-        let mut tracked_vars_set: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut tracked_obj_vars_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut tracked_vars_set: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut tracked_obj_vars_set: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let mut entry_vars: BTreeMap<String, Value> = BTreeMap::new();
         let mut state_blocks = BTreeMap::new();
         let mut import_refs: BTreeMap<&'static str, FuncRef> = BTreeMap::new();
@@ -403,12 +514,11 @@ impl SimpleBackend {
         let mut loop_depth: i32 = 0;
         let mut block_tracked_obj: BTreeMap<Block, Vec<String>> = BTreeMap::new();
         let mut block_tracked_ptr: BTreeMap<Block, Vec<String>> = BTreeMap::new();
-        let mut already_decrefed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        let mut already_decrefed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         // Global dedup set: tracks which variable names have already been
         // dec_ref'd by any cleanup site. Prevents double-free when tracked
         // values are cloned to multiple blocks by if/check_exception/br_if.
-        let mut already_decrefed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut already_decrefed: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
 
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
@@ -609,7 +719,9 @@ impl SimpleBackend {
         {
             let none_val = builder.ins().iconst(types::I64, box_none());
             for (name, var) in &vars {
-                if param_name_set.contains(name.as_str()) { continue; }
+                if param_name_set.contains(name.as_str()) {
+                    continue;
+                }
                 builder.def_var(*var, none_val);
             }
         }
@@ -626,11 +738,10 @@ impl SimpleBackend {
         // 2. Implementation
         let ops = &func_ir.ops;
         let mut skip_ops: BTreeSet<usize> = BTreeSet::new();
-        // Stack-eligible tuples: when escape analysis marks a tuple_new as
-        // stack_eligible, we keep its element Values in this map instead of
-        // emitting runtime list-builder calls.  Index ops that reference a
-        // stack tuple resolve the element at compile time.
-        let mut stack_tuples: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+        // Scalarized tuples: keep element SSA Values in a side table so
+        // `len`/`index` can fold without touching the runtime. The tuple
+        // object itself must still use the canonical runtime layout.
+        let mut scalarized_tuples: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         for op_idx in 0..ops.len() {
             if skip_ops.contains(&op_idx) {
                 continue;
@@ -696,7 +807,9 @@ impl SimpleBackend {
                     if val >= INLINE_MIN && val <= INLINE_MAX {
                         let boxed = box_int(val);
                         let iconst = builder.ins().iconst(types::I64, boxed);
-                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, iconst); }
+                        if let Some(out__) = op.out {
+                            def_var_named(&mut builder, &vars, out__, iconst);
+                        }
                     } else {
                         // Value exceeds 47-bit signed inline range — use bigint path.
                         let s = val.to_string();
@@ -707,11 +820,19 @@ impl SimpleBackend {
                             &mut self.next_data_id,
                             bytes,
                         );
-                        let Some(out_name) = op.out else { continue; };
+                        let Some(out_name) = op.out else {
+                            continue;
+                        };
                         let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                         let ptr = builder.ins().symbol_value(types::I64, global_ptr);
                         let len = builder.ins().iconst(types::I64, bytes.len() as i64);
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bigint_from_str", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_bigint_from_str",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[ptr, len]);
                         let res = builder.inst_results(call)[0];
@@ -721,7 +842,9 @@ impl SimpleBackend {
                 }
                 "const_bigint" => {
                     let s = op.s_value.as_ref().expect("BigInt string not found");
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     let bytes = s.as_bytes();
                     let data_id = Self::intern_data_segment(
                         &mut self.module,
@@ -733,7 +856,13 @@ impl SimpleBackend {
                     let ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let len = builder.ins().iconst(types::I64, bytes.len() as i64);
 
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bigint_from_str", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bigint_from_str",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[ptr, len]);
                     let res = builder.inst_results(call)[0];
@@ -744,38 +873,62 @@ impl SimpleBackend {
                     let val = op.value.unwrap_or(0);
                     let boxed = box_bool(val);
                     let iconst = builder.ins().iconst(types::I64, boxed);
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, iconst); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, iconst);
+                    }
                 }
                 "const_none" => {
                     let iconst = builder.ins().iconst(types::I64, box_none());
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, iconst); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, iconst);
+                    }
                 }
                 "const_not_implemented" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_not_implemented", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_not_implemented",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "const_ellipsis" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_ellipsis", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_ellipsis",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "const_float" => {
                     let val = op.f_value.expect("Float value not found");
                     let boxed = box_float(val);
                     let iconst = builder.ins().iconst(types::I64, boxed);
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, iconst); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, iconst);
+                    }
                 }
                 "const_str" => {
                     let bytes = op
                         .bytes
                         .as_deref()
                         .unwrap_or_else(|| op.s_value.as_deref().unwrap_or("").as_bytes());
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     let data_id = Self::intern_data_segment(
                         &mut self.module,
                         &mut self.data_pool,
@@ -790,7 +943,13 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, format!("{}_ptr", out_name), ptr);
                     def_var_named(&mut builder, &vars, format!("{}_len", out_name), len);
 
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_from_bytes", &[types::I64, types::I64, types::I64], &[types::I32]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_from_bytes",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I32],
+                    );
                     let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         8,
@@ -807,7 +966,9 @@ impl SimpleBackend {
                 }
                 "const_bytes" => {
                     let bytes = op.bytes.as_ref().expect("Bytes not found");
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     let data_id = Self::intern_data_segment(
                         &mut self.module,
                         &mut self.data_pool,
@@ -822,7 +983,13 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, format!("{}_ptr", out_name), ptr);
                     def_var_named(&mut builder, &vars, format!("{}_len", out_name), len);
 
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytes_from_bytes", &[types::I64, types::I64, types::I64], &[types::I32]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytes_from_bytes",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I32],
+                    );
                     let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         8,
@@ -849,10 +1016,15 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
-                    } else if op.fast_int.unwrap_or(false)
-                        || op.type_hint.as_deref() == Some("int")
+                    } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
                     {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_add", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_add",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         // Guard: both operands must be inline ints (not bigint pointers).
                         // fast_int assumes NaN-boxed inline ints, but bigints are heap-
@@ -866,7 +1038,9 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
-                        builder.ins().brif(both_inline, guard_fast_block, &[], slow_block, &[]);
+                        builder
+                            .ins()
+                            .brif(both_inline, guard_fast_block, &[], slow_block, &[]);
 
                         builder.switch_to_block(guard_fast_block);
                         builder.seal_block(guard_fast_block);
@@ -895,13 +1069,20 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_add", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_add",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -946,9 +1127,7 @@ impl SimpleBackend {
 
                         builder.switch_to_block(call_block);
                         builder.seal_block(call_block);
-                        emit_mixed_int_float_op(
-                            &mut builder, *lhs, *rhs, &nbc, 0, merge_block,
-                        );
+                        emit_mixed_int_float_op(&mut builder, *lhs, *rhs, &nbc, 0, merge_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
@@ -957,7 +1136,9 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "inplace_add" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -970,10 +1151,15 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
-                    } else if op.fast_int.unwrap_or(false)
-                        || op.type_hint.as_deref() == Some("int")
+                    } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
                     {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_inplace_add", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_inplace_add",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -1004,13 +1190,20 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_inplace_add", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_inplace_add",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -1054,9 +1247,7 @@ impl SimpleBackend {
 
                         builder.switch_to_block(call_block);
                         builder.seal_block(call_block);
-                        emit_mixed_int_float_op(
-                            &mut builder, *lhs, *rhs, &nbc, 0, merge_block,
-                        );
+                        emit_mixed_int_float_op(&mut builder, *lhs, *rhs, &nbc, 0, merge_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
@@ -1065,27 +1256,45 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_sum_int" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_sum_int", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_sum_int",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_sum_int_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_sum_int_trusted", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_sum_int_trusted",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_sum_int_range" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -1093,11 +1302,19 @@ impl SimpleBackend {
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
                         var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_sum_int_range", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_sum_int_range",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_sum_int_range_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -1105,51 +1322,91 @@ impl SimpleBackend {
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
                         var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_sum_int_range_trusted", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_sum_int_range_trusted",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_sum_int_range_iter" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_sum_int_range_iter", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_sum_int_range_iter",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_sum_int_range_iter_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_sum_int_range_iter_trusted", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_sum_int_range_iter_trusted",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_sum_float" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_sum_float", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_sum_float",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_sum_float_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_sum_float_trusted", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_sum_float_trusted",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_sum_float_range" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -1157,11 +1414,19 @@ impl SimpleBackend {
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
                         var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_sum_float_range", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_sum_float_range",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_sum_float_range_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -1169,51 +1434,91 @@ impl SimpleBackend {
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
                         var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_sum_float_range_trusted", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_sum_float_range_trusted",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_sum_float_range_iter" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_sum_float_range_iter", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_sum_float_range_iter",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_sum_float_range_iter_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_sum_float_range_iter_trusted", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_sum_float_range_iter_trusted",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_prod_int" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_prod_int", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_prod_int",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_prod_int_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_prod_int_trusted", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_prod_int_trusted",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_prod_int_range" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -1221,11 +1526,19 @@ impl SimpleBackend {
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
                         var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_prod_int_range", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_prod_int_range",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_prod_int_range_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -1233,31 +1546,55 @@ impl SimpleBackend {
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
                         var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_prod_int_range_trusted", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_prod_int_range_trusted",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_min_int" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_min_int", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_min_int",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_min_int_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_min_int_trusted", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_min_int_trusted",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_min_int_range" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -1265,11 +1602,19 @@ impl SimpleBackend {
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
                         var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_min_int_range", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_min_int_range",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_min_int_range_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -1277,31 +1622,55 @@ impl SimpleBackend {
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
                         var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_min_int_range_trusted", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_min_int_range_trusted",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_max_int" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_max_int", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_max_int",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_max_int_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let seq = var_get(&mut builder, &vars, &args[0]).expect("Seq arg not found");
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_max_int_trusted", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_max_int_trusted",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_max_int_range" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -1309,11 +1678,19 @@ impl SimpleBackend {
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
                         var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_max_int_range", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_max_int_range",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "vec_max_int_range_trusted" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -1321,11 +1698,19 @@ impl SimpleBackend {
                     let acc = var_get(&mut builder, &vars, &args[1]).expect("Acc arg not found");
                     let start =
                         var_get(&mut builder, &vars, &args[2]).expect("Start arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_vec_max_int_range_trusted", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_vec_max_int_range_trusted",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*seq, *acc, *start]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "sub" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -1342,11 +1727,16 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
-                    } else if op.fast_int.unwrap_or(false)
-                        || op.type_hint.as_deref() == Some("int")
+                    } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
                     {
                         // Inline isub with overflow check + BigInt fallback.
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_sub", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_sub",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -1377,7 +1767,8 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -1403,7 +1794,13 @@ impl SimpleBackend {
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_sub", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_sub",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
@@ -1423,9 +1820,7 @@ impl SimpleBackend {
 
                         builder.switch_to_block(call_block);
                         builder.seal_block(call_block);
-                        emit_mixed_int_float_op(
-                            &mut builder, *lhs, *rhs, &nbc, 1, merge_block,
-                        );
+                        emit_mixed_int_float_op(&mut builder, *lhs, *rhs, &nbc, 1, merge_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
@@ -1434,7 +1829,9 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "inplace_sub" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -1451,11 +1848,16 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
-                    } else if op.fast_int.unwrap_or(false)
-                        || op.type_hint.as_deref() == Some("int")
+                    } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
                     {
                         // Inline isub with overflow check + BigInt fallback.
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_sub", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_sub",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -1486,7 +1888,8 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -1512,7 +1915,13 @@ impl SimpleBackend {
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_inplace_sub", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_inplace_sub",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
@@ -1532,9 +1941,7 @@ impl SimpleBackend {
 
                         builder.switch_to_block(call_block);
                         builder.seal_block(call_block);
-                        emit_mixed_int_float_op(
-                            &mut builder, *lhs, *rhs, &nbc, 1, merge_block,
-                        );
+                        emit_mixed_int_float_op(&mut builder, *lhs, *rhs, &nbc, 1, merge_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
@@ -1543,7 +1950,9 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "mul" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -1556,10 +1965,15 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
-                    } else if op.fast_int.unwrap_or(false)
-                        || op.type_hint.as_deref() == Some("int")
+                    } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
                     {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_mul", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_mul",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -1570,9 +1984,7 @@ impl SimpleBackend {
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, prod, &nbc);
-                        builder
-                            .ins()
-                            .brif(fits, fast_block, &[], slow_block, &[]);
+                        builder.ins().brif(fits, fast_block, &[], slow_block, &[]);
 
                         builder.switch_to_block(fast_block);
                         builder.seal_block(fast_block);
@@ -1588,13 +2000,20 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_mul", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_mul",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -1637,9 +2056,7 @@ impl SimpleBackend {
 
                         builder.switch_to_block(call_block);
                         builder.seal_block(call_block);
-                        emit_mixed_int_float_op(
-                            &mut builder, *lhs, *rhs, &nbc, 2, merge_block,
-                        );
+                        emit_mixed_int_float_op(&mut builder, *lhs, *rhs, &nbc, 2, merge_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
@@ -1648,7 +2065,9 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "inplace_mul" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -1661,10 +2080,15 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
-                    } else if op.fast_int.unwrap_or(false)
-                        || op.type_hint.as_deref() == Some("int")
+                    } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
                     {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_inplace_mul", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_inplace_mul",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -1675,9 +2099,7 @@ impl SimpleBackend {
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, prod, &nbc);
-                        builder
-                            .ins()
-                            .brif(fits, fast_block, &[], slow_block, &[]);
+                        builder.ins().brif(fits, fast_block, &[], slow_block, &[]);
 
                         builder.switch_to_block(fast_block);
                         builder.seal_block(fast_block);
@@ -1693,13 +2115,20 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_inplace_mul", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_inplace_mul",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -1742,9 +2171,7 @@ impl SimpleBackend {
 
                         builder.switch_to_block(call_block);
                         builder.seal_block(call_block);
-                        emit_mixed_int_float_op(
-                            &mut builder, *lhs, *rhs, &nbc, 2, merge_block,
-                        );
+                        emit_mixed_int_float_op(&mut builder, *lhs, *rhs, &nbc, 2, merge_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
@@ -1753,14 +2180,22 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bit_or" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bit_or", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_bit_or",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -1790,13 +2225,20 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bit_or", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_bit_or",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -1830,14 +2272,22 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "inplace_bit_or" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_inplace_bit_or", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_inplace_bit_or",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -1867,13 +2317,20 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_inplace_bit_or", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_inplace_bit_or",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -1907,14 +2364,22 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bit_and" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bit_and", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_bit_and",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -1944,13 +2409,20 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bit_and", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_bit_and",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -1984,14 +2456,22 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "inplace_bit_and" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_inplace_bit_and", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_inplace_bit_and",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -2021,13 +2501,20 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_inplace_bit_and", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_inplace_bit_and",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -2061,14 +2548,22 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bit_xor" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bit_xor", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_bit_xor",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -2098,13 +2593,20 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bit_xor", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_bit_xor",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -2138,14 +2640,22 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "inplace_bit_xor" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_inplace_bit_xor", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_inplace_bit_xor",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -2175,13 +2685,20 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_inplace_bit_xor", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_inplace_bit_xor",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -2215,14 +2732,22 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "lshift" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_lshift", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_lshift",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let range_block = builder.create_block();
                         let fast_block = builder.create_block();
@@ -2275,7 +2800,13 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_lshift", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_lshift",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let int_block = builder.create_block();
                         let range_block = builder.create_block();
@@ -2289,7 +2820,8 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         builder
                             .ins()
                             .brif(both_int, int_block, &[], slow_block, &[]);
@@ -2338,14 +2870,22 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "rshift" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_rshift", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_rshift",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -2385,7 +2925,13 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_rshift", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_rshift",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let int_block = builder.create_block();
                         let fast_block = builder.create_block();
@@ -2397,7 +2943,8 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         builder
                             .ins()
                             .brif(both_int, int_block, &[], slow_block, &[]);
@@ -2435,17 +2982,27 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "matmul" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_matmul", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_matmul",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "div" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -2460,7 +3017,13 @@ impl SimpleBackend {
                     } else if op.fast_int.unwrap_or(false) {
                         // Python true division: int / int always returns float.
                         // Convert to f64 and do fdiv.
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_div", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_div",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -2505,13 +3068,20 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_div", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_div",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let int_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -2568,14 +3138,22 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "floordiv" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_floordiv", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_floordiv",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -2628,13 +3206,20 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_floordiv", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_floordiv",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let int_block = builder.create_block();
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -2690,14 +3275,22 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "mod" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_int.unwrap_or(false) {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_mod", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_mod",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -2744,13 +3337,20 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_mod", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_mod",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let (lhs_xored, lhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let int_block = builder.create_block();
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -2800,7 +3400,9 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "floor_div" | "binop_floor_div" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -2810,9 +3412,14 @@ impl SimpleBackend {
                         // Python floor_div: divide and floor towards negative infinity.
                         // sdiv truncates towards zero; we adjust when signs differ and
                         // there is a remainder.
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_floordiv", &[types::I64, types::I64], &[types::I64]);
-                        let local_callee =
-                            self.module.declare_func_in_func(callee, builder.func);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_floordiv",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -2822,8 +3429,7 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let zero = builder.ins().iconst(types::I64, 0);
-                        let rhs_nonzero =
-                            builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
+                        let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
                         builder
                             .ins()
                             .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
@@ -2833,16 +3439,9 @@ impl SimpleBackend {
                         let quot = builder.ins().sdiv(lhs_val, rhs_val);
                         let rem = builder.ins().srem(lhs_val, rhs_val);
                         // Adjust: if rem != 0 and signs of lhs/rhs differ, subtract 1.
-                        let rem_nonzero =
-                            builder.ins().icmp(IntCC::NotEqual, rem, zero);
-                        let lhs_neg =
-                            builder
-                                .ins()
-                                .icmp(IntCC::SignedLessThan, lhs_val, zero);
-                        let rhs_neg =
-                            builder
-                                .ins()
-                                .icmp(IntCC::SignedLessThan, rhs_val, zero);
+                        let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
+                        let lhs_neg = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, zero);
+                        let rhs_neg = builder.ins().icmp(IntCC::SignedLessThan, rhs_val, zero);
                         let sign_diff = builder.ins().bxor(lhs_neg, rhs_neg);
                         let adjust = builder.ins().band(rem_nonzero, sign_diff);
                         let one = builder.ins().iconst(types::I64, 1);
@@ -2869,13 +3468,20 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_floordiv", &[types::I64, types::I64], &[types::I64]);
-                        let local_callee =
-                            self.module.declare_func_in_func(callee, builder.func);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_floordiv",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         builder.inst_results(call)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "pow" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -2884,9 +3490,14 @@ impl SimpleBackend {
                     let res = if op.fast_int.unwrap_or(false) {
                         // Inline pow for small non-negative exponents (0, 1, 2).
                         // Exponent >= 3 or negative falls back to runtime.
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_pow", &[types::I64, types::I64], &[types::I64]);
-                        let local_callee =
-                            self.module.declare_func_in_func(callee, builder.func);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_pow",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
 
                         let exp0_block = builder.create_block();
                         let exp1_block = builder.create_block();
@@ -2901,8 +3512,7 @@ impl SimpleBackend {
                         let exp_val = unbox_int(&mut builder, *rhs, &nbc);
 
                         // Check exp == 0
-                        let is_zero =
-                            builder.ins().icmp_imm(IntCC::Equal, exp_val, 0);
+                        let is_zero = builder.ins().icmp_imm(IntCC::Equal, exp_val, 0);
                         builder
                             .ins()
                             .brif(is_zero, exp0_block, &[], exp1_block, &[]);
@@ -2917,8 +3527,7 @@ impl SimpleBackend {
                         // Check exp == 1 → result is base (return lhs as-is)
                         builder.switch_to_block(exp1_block);
                         builder.seal_block(exp1_block);
-                        let is_one =
-                            builder.ins().icmp_imm(IntCC::Equal, exp_val, 1);
+                        let is_one = builder.ins().icmp_imm(IntCC::Equal, exp_val, 1);
                         let exp1_ret_block = builder.create_block();
                         builder
                             .ins()
@@ -2931,8 +3540,7 @@ impl SimpleBackend {
                         // Check exp == 2
                         builder.switch_to_block(exp2_block);
                         builder.seal_block(exp2_block);
-                        let is_two =
-                            builder.ins().icmp_imm(IntCC::Equal, exp_val, 2);
+                        let is_two = builder.ins().icmp_imm(IntCC::Equal, exp_val, 2);
                         builder
                             .ins()
                             .brif(is_two, exp2_fast_block, &[], slow_block, &[]);
@@ -2942,14 +3550,7 @@ impl SimpleBackend {
                         builder.seal_block(exp2_fast_block);
                         let (sq, fits) = imul_checked_inline(&mut builder, base_val, base_val);
                         let sq_res = box_int_value(&mut builder, sq, &nbc);
-                        brif_block(
-                            &mut builder,
-                            fits,
-                            merge_block,
-                            &[sq_res],
-                            slow_block,
-                            &[],
-                        );
+                        brif_block(&mut builder, fits, merge_block, &[sq_res], slow_block, &[]);
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
@@ -2961,24 +3562,39 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_pow", &[types::I64, types::I64], &[types::I64]);
-                        let local_callee =
-                            self.module.declare_func_in_func(callee, builder.func);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_pow",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         builder.inst_results(call)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "pow_mod" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let modulus = var_get(&mut builder, &vars, &args[2]).expect("Mod not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_pow_mod", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_pow_mod",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs, *modulus]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "round" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -2987,31 +3603,49 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[1]).expect("Round ndigits not found");
                     let has_ndigits = var_get(&mut builder, &vars, &args[2])
                         .expect("Round ndigits flag not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_round", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_round",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*val, *ndigits, *has_ndigits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "trunc" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Trunc arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_trunc", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_trunc",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "len" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Stack-tuple fast path: length is known at compile time.
-                    if let Some(elems) = stack_tuples.get(&args[0]) {
+                    if let Some(elems) = scalarized_tuples.get(&args[0]) {
                         let len_boxed = builder
                             .ins()
                             .iconst(types::I64, box_int(elems.len() as i64));
-                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, len_boxed); }
+                        if let Some(out__) = op.out {
+                            def_var_named(&mut builder, &vars, out__, len_boxed);
+                        }
                     } else if matches!(op.type_hint.as_deref(), Some("list") | Some("tuple")) {
                         // Inline fast path for list/tuple: read len from the
                         // underlying Vec<u64> without calling into the runtime.
@@ -3019,14 +3653,13 @@ impl SimpleBackend {
                         //   vec_ptr  = *(raw_ptr as *mut *mut Vec<u64>)  // first field of payload
                         //   len      = *(vec_ptr + 8)                   // Vec.len (second field)
                         //   result   = box_int(len)
-                        let val = var_get(&mut builder, &vars, &args[0]).expect("Len arg not found");
+                        let val =
+                            var_get(&mut builder, &vars, &args[0]).expect("Len arg not found");
                         let raw_ptr = unbox_ptr_value(&mut builder, *val, &nbc);
-                        let vec_ptr = builder.ins().load(
-                            types::I64,
-                            MemFlags::trusted(),
-                            raw_ptr,
-                            0,
-                        );
+                        let vec_ptr =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlags::trusted(), raw_ptr, 0);
                         let len_val = builder.ins().load(
                             types::I64,
                             MemFlags::trusted(),
@@ -3034,45 +3667,82 @@ impl SimpleBackend {
                             8, // offset to Vec::len (after the data pointer)
                         );
                         let res = box_int_value(&mut builder, len_val, &nbc);
-                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                        if let Some(out__) = op.out {
+                            def_var_named(&mut builder, &vars, out__, res);
+                        }
                     } else {
-                        let val = var_get(&mut builder, &vars, &args[0]).expect("Len arg not found");
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_len", &[types::I64], &[types::I64]);
+                        let val =
+                            var_get(&mut builder, &vars, &args[0]).expect("Len arg not found");
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_len",
+                            &[types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*val]);
                         let res = builder.inst_results(call)[0];
-                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                        if let Some(out__) = op.out {
+                            def_var_named(&mut builder, &vars, out__, res);
+                        }
                     }
                 }
                 "id" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Id arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_id", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_id",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "ord" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Ord arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_ord", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_ord",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "chr" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Chr arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_chr", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_chr",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "callargs_new" => {
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     let zero = builder.ins().iconst(types::I64, 0);
                     let local_callee = import_func_ref(
                         &mut self.module,
@@ -3090,15 +3760,29 @@ impl SimpleBackend {
                 "list_new" => {
                     let empty_args: Vec<String> = Vec::new();
                     let args = op.args.as_ref().unwrap_or(&empty_args);
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     let size = builder.ins().iconst(types::I64, box_int(args.len() as i64));
 
-                    let new_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_list_builder_new", &[types::I64], &[types::I64]);
+                    let new_callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_builder_new",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let new_local = self.module.declare_func_in_func(new_callee, builder.func);
                     let new_call = builder.ins().call(new_local, &[size]);
                     let builder_ptr = builder.inst_results(new_call)[0];
 
-                    let append_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_list_builder_append", &[types::I64, types::I64], &[]);
+                    let append_callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_builder_append",
+                        &[types::I64, types::I64],
+                        &[],
+                    );
                     let append_local = self
                         .module
                         .declare_func_in_func(append_callee, builder.func);
@@ -3113,7 +3797,13 @@ impl SimpleBackend {
                         builder.ins().call(append_local, &[builder_ptr, *val]);
                     }
 
-                    let finish_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_list_builder_finish", &[types::I64], &[types::I64]);
+                    let finish_callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_builder_finish",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let finish_local = self
                         .module
                         .declare_func_in_func(finish_callee, builder.func);
@@ -3146,7 +3836,13 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[1]).expect("Callargs name not found");
                     let val =
                         var_get(&mut builder, &vars, &args[2]).expect("Callargs value not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_callargs_push_kw", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_callargs_push_kw",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder
                         .ins()
@@ -3158,7 +3854,13 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Callargs builder not found");
                     let iterable = var_get(&mut builder, &vars, &args[1])
                         .expect("Callargs iterable not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_callargs_expand_star", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_callargs_expand_star",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*builder_ptr, *iterable]);
                 }
@@ -3168,7 +3870,13 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Callargs builder not found");
                     let mapping =
                         var_get(&mut builder, &vars, &args[1]).expect("Callargs mapping not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_callargs_expand_kwstar", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_callargs_expand_kwstar",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*builder_ptr, *mapping]);
                 }
@@ -3180,11 +3888,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[1]).expect("Range stop not found");
                     let step =
                         var_get(&mut builder, &vars, &args[2]).expect("Range step not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_range_new", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_range_new",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*start, *stop, *step]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "list_from_range" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -3194,130 +3910,81 @@ impl SimpleBackend {
                         .expect("List-from-range stop not found");
                     let step = var_get(&mut builder, &vars, &args[2])
                         .expect("List-from-range step not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_list_from_range", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_from_range",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*start, *stop, *step]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "tuple_new" => {
                     let empty_args: Vec<String> = Vec::new();
                     let args = op.args.as_ref().unwrap_or(&empty_args);
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
 
                     if op.stack_eligible == Some(true) && args.len() <= 4 {
-                        // Stack-eligible fast path: allocate tuple on the
-                        // Cranelift stack frame instead of calling the runtime
-                        // heap allocator.  Layout mirrors MoltHeader (40 bytes)
-                        // followed by n packed i64 element slots.
-                        //
-                        // The element Values are also kept in `stack_tuples`
-                        // so that `index` and `len` ops can resolve them at
-                        // compile time without any memory loads.
-                        let n = args.len();
-                        let slot_bytes = (HEADER_SIZE_BYTES as usize) + n * 8;
-                        let slot = builder.create_sized_stack_slot(StackSlotData::new(
-                            StackSlotKind::ExplicitSlot,
-                            slot_bytes as u32,
-                            3, // align_shift: 2^3 = 8-byte alignment
-                        ));
-                        // Data pointer = slot base + HEADER_SIZE_BYTES.
-                        // All header fields are addressed via negative offsets
-                        // from data_ptr, matching the runtime MoltHeader layout.
-                        let data_ptr = builder.ins().stack_addr(
-                            types::I64,
-                            slot,
-                            HEADER_SIZE_BYTES,
-                        );
-
-                        // Initialize header fields (offsets relative to data_ptr).
-                        // type_id (u32 at -16)
-                        let type_id_val = builder.ins().iconst(types::I32, 206); // TYPE_ID_TUPLE
-                        builder.ins().store(
-                            MemFlags::trusted(),
-                            type_id_val,
-                            data_ptr,
-                            -HEADER_SIZE_BYTES,
-                        );
-                        // ref_count (u32 at -12) — set to u32::MAX (immortal)
-                        // so the runtime never frees the stack memory.
-                        let rc_val = builder.ins().iconst(types::I32, u32::MAX as i64);
-                        builder.ins().store(
-                            MemFlags::trusted(),
-                            rc_val,
-                            data_ptr,
-                            HEADER_REFCOUNT_OFFSET,
-                        );
-                        // flags (u32 at -8) — set HEADER_FLAG_IMMORTAL
-                        let flags_val = builder
-                            .ins()
-                            .iconst(types::I32, HEADER_FLAG_IMMORTAL as i64);
-                        builder.ins().store(
-                            MemFlags::trusted(),
-                            flags_val,
-                            data_ptr,
-                            HEADER_FLAGS_OFFSET,
-                        );
-                        // size_class (u16 at -4) and cold_idx (u16 at -2)
-                        // are left as zero: stack tuples have no cold header
-                        // and zero size_class means "oversized" (exact size
-                        // irrelevant since the slot is never freed).
-                        //
-                        // NOTE: The old 40-byte header had poll_fn at -32,
-                        // state at -24, and extended_size at -16.  Those
-                        // fields were moved to MoltColdHeader; writing them
-                        // here would corrupt adjacent stack slots and—
-                        // critically—overwrite the type_id we just stored
-                        // (the -16 store clobbered type_id with the byte
-                        // size, making tuples appear as type_id 32/48/etc.).
-
-                        // Store elements and collect Values for stack_tuples.
-                        let mut elems: Vec<Value> = Vec::with_capacity(n);
-                        for (i, name) in args.iter().enumerate() {
-                            let val = var_get(&mut builder, &vars, name)
-                                .expect("Stack tuple elem not found");
-                            elems.push(*val);
-                            builder.ins().store(
-                                MemFlags::trusted(),
-                                *val,
-                                data_ptr,
-                                (i * 8) as i32,
-                            );
-                        }
-                        stack_tuples.insert(out_name.to_string(), elems);
-
-                        // Box the data pointer as a NaN-boxed pointer so the
-                        // variable holds a usable value (not a zero sentinel).
-                        let boxed = box_ptr_value(&mut builder, data_ptr, &nbc);
-                        def_var_named(&mut builder, &vars, out_name, boxed);
-                    } else {
-                        let size = builder.ins().iconst(types::I64, box_int(args.len() as i64));
-
-                        let new_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_list_builder_new", &[types::I64], &[types::I64]);
-                        let new_local = self.module.declare_func_in_func(new_callee, builder.func);
-                        let new_call = builder.ins().call(new_local, &[size]);
-                        let builder_ptr = builder.inst_results(new_call)[0];
-
-                        let append_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_list_builder_append", &[types::I64, types::I64], &[]);
-                        let append_local = self
-                            .module
-                            .declare_func_in_func(append_callee, builder.func);
+                        let mut elems: Vec<Value> = Vec::with_capacity(args.len());
                         for name in args {
-                            let val = var_get(&mut builder, &vars, name).expect("Tuple elem not found");
-                            // Inc-ref each element so the builder owns its own
-                            // reference.
-                            emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj, &nbc);
-                            builder.ins().call(append_local, &[builder_ptr, *val]);
+                            let val =
+                                var_get(&mut builder, &vars, name).expect("Tuple elem not found");
+                            elems.push(*val);
                         }
-
-                        let finish_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_tuple_builder_finish", &[types::I64], &[types::I64]);
-                        let finish_local = self
-                            .module
-                            .declare_func_in_func(finish_callee, builder.func);
-                        let finish_call = builder.ins().call(finish_local, &[builder_ptr]);
-                        let tuple_bits = builder.inst_results(finish_call)[0];
-                        def_var_named(&mut builder, &vars, out_name, tuple_bits);
+                        scalarized_tuples.insert(out_name.to_string(), elems);
                     }
+
+                    let size = builder.ins().iconst(types::I64, box_int(args.len() as i64));
+
+                    let new_callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_builder_new",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let new_local = self.module.declare_func_in_func(new_callee, builder.func);
+                    let new_call = builder.ins().call(new_local, &[size]);
+                    let builder_ptr = builder.inst_results(new_call)[0];
+
+                    let append_callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_builder_append",
+                        &[types::I64, types::I64],
+                        &[],
+                    );
+                    let append_local = self
+                        .module
+                        .declare_func_in_func(append_callee, builder.func);
+                    for name in args {
+                        let val = var_get(&mut builder, &vars, name).expect("Tuple elem not found");
+                        // Inc-ref each element so the builder owns its own
+                        // reference.
+                        emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj, &nbc);
+                        builder.ins().call(append_local, &[builder_ptr, *val]);
+                    }
+
+                    let finish_callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_tuple_builder_finish",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let finish_local = self
+                        .module
+                        .declare_func_in_func(finish_callee, builder.func);
+                    let finish_call = builder.ins().call(finish_local, &[builder_ptr]);
+                    let tuple_bits = builder.inst_results(finish_call)[0];
+                    def_var_named(&mut builder, &vars, out_name, tuple_bits);
                 }
                 "unpack_sequence" => {
                     // Outlined sequence unpacking: args[0] is the sequence,
@@ -3337,8 +4004,7 @@ impl SimpleBackend {
                     ));
                     let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
 
-                    let expected_val =
-                        builder.ins().iconst(types::I64, expected_count as i64);
+                    let expected_val = builder.ins().iconst(types::I64, expected_count as i64);
 
                     // Call molt_unpack_sequence(seq_bits, expected_count, output_ptr) -> u64
                     let unpack_local = import_func_ref(
@@ -3367,33 +4033,57 @@ impl SimpleBackend {
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let val = var_get(&mut builder, &vars, &args[1])
                         .expect("List append value not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_list_append", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_append",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "list_pop" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let idx =
                         var_get(&mut builder, &vars, &args[1]).expect("List pop index not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_list_pop", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_pop",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *idx]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "list_extend" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let other = var_get(&mut builder, &vars, &args[1])
                         .expect("List extend iterable not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_list_extend", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_extend",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *other]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "list_insert" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -3402,71 +4092,127 @@ impl SimpleBackend {
                         .expect("List insert index not found");
                     let val = var_get(&mut builder, &vars, &args[2])
                         .expect("List insert value not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_list_insert", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_insert",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *idx, *val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "list_remove" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let val = var_get(&mut builder, &vars, &args[1])
                         .expect("List remove value not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_list_remove", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_remove",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "list_clear" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_list_clear", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_clear",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "list_copy" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_list_copy", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_copy",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "list_reverse" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_list_reverse", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_reverse",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "list_count" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let val =
                         var_get(&mut builder, &vars, &args[1]).expect("List count value not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_list_count", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_count",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "list_index" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let val =
                         var_get(&mut builder, &vars, &args[1]).expect("List index value not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_list_index", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_index",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list, *val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "list_index_range" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -3477,36 +4223,66 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[2]).expect("List index start not found");
                     let stop =
                         var_get(&mut builder, &vars, &args[3]).expect("List index stop not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_list_index_range", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_index_range",
+                        &[types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*list, *val, *start, *stop]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "tuple_from_list" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let list =
                         var_get(&mut builder, &vars, &args[0]).expect("Tuple source not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_tuple_from_list", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_tuple_from_list",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*list]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dict_new" => {
                     let empty_args: Vec<String> = Vec::new();
                     let args = op.args.as_ref().unwrap_or(&empty_args);
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     let size = builder.ins().iconst(types::I64, (args.len() / 2) as i64);
 
-                    let new_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_new", &[types::I64], &[types::I64]);
+                    let new_callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_new",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let new_local = self.module.declare_func_in_func(new_callee, builder.func);
                     let new_call = builder.ins().call(new_local, &[size]);
                     let dict_bits = builder.inst_results(new_call)[0];
 
-                    let set_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_set", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let set_callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_set",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let set_local = self.module.declare_func_in_func(set_callee, builder.func);
                     let mut current = dict_bits;
                     for pair in args.chunks(2) {
@@ -3523,25 +4299,47 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj =
                         var_get(&mut builder, &vars, &args[0]).expect("Dict source not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_from_obj", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_from_obj",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "set_new" => {
                     let empty_args: Vec<String> = Vec::new();
                     let args = op.args.as_ref().unwrap_or(&empty_args);
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     let size = builder.ins().iconst(types::I64, args.len() as i64);
 
-                    let new_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_set_new", &[types::I64], &[types::I64]);
+                    let new_callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_set_new",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let new_local = self.module.declare_func_in_func(new_callee, builder.func);
                     let new_call = builder.ins().call(new_local, &[size]);
                     let set_bits = builder.inst_results(new_call)[0];
 
                     if !args.is_empty() {
-                        let add_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_set_add", &[types::I64, types::I64], &[types::I64]);
+                        let add_callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_set_add",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let add_local = self.module.declare_func_in_func(add_callee, builder.func);
                         for name in args {
                             let val = var_get(&mut builder, &vars, name).unwrap_or_else(|| {
@@ -3556,16 +4354,30 @@ impl SimpleBackend {
                 "frozenset_new" => {
                     let empty_args: Vec<String> = Vec::new();
                     let args = op.args.as_ref().unwrap_or(&empty_args);
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     let size = builder.ins().iconst(types::I64, args.len() as i64);
 
-                    let new_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_frozenset_new", &[types::I64], &[types::I64]);
+                    let new_callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_frozenset_new",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let new_local = self.module.declare_func_in_func(new_callee, builder.func);
                     let new_call = builder.ins().call(new_local, &[size]);
                     let set_bits = builder.inst_results(new_call)[0];
 
                     if !args.is_empty() {
-                        let add_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_frozenset_add", &[types::I64, types::I64], &[types::I64]);
+                        let add_callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_frozenset_add",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let add_local = self.module.declare_func_in_func(add_callee, builder.func);
                         for name in args {
                             let val = var_get(&mut builder, &vars, name).unwrap_or_else(|| {
@@ -3583,11 +4395,19 @@ impl SimpleBackend {
                     let key = var_get(&mut builder, &vars, &args[1]).expect("Dict key not found");
                     let default =
                         var_get(&mut builder, &vars, &args[2]).expect("Dict default not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_get", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_get",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *key, *default]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dict_inc" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -3595,11 +4415,19 @@ impl SimpleBackend {
                     let key = var_get(&mut builder, &vars, &args[1]).expect("Dict key not found");
                     let delta = var_get(&mut builder, &vars, &args[2])
                         .expect("Dict increment value not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_inc", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_inc",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *key, *delta]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dict_str_int_inc" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -3607,22 +4435,38 @@ impl SimpleBackend {
                     let key = var_get(&mut builder, &vars, &args[1]).expect("Dict key not found");
                     let delta = var_get(&mut builder, &vars, &args[2])
                         .expect("Dict increment value not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_str_int_inc", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_str_int_inc",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *key, *delta]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_split_ws_dict_inc" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let line = var_get(&mut builder, &vars, &args[0]).expect("Line not found");
                     let dict = var_get(&mut builder, &vars, &args[1]).expect("Dict not found");
                     let delta = var_get(&mut builder, &vars, &args[2]).expect("Delta not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_split_ws_dict_inc", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_split_ws_dict_inc",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*line, *dict, *delta]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "taq_ingest_line" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -3630,13 +4474,21 @@ impl SimpleBackend {
                     let line = var_get(&mut builder, &vars, &args[1]).expect("Line not found");
                     let bucket_size =
                         var_get(&mut builder, &vars, &args[2]).expect("Bucket size not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_taq_ingest_line", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_taq_ingest_line",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*dict, *line, *bucket_size]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_split_sep_dict_inc" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -3644,13 +4496,21 @@ impl SimpleBackend {
                     let sep = var_get(&mut builder, &vars, &args[1]).expect("Separator not found");
                     let dict = var_get(&mut builder, &vars, &args[2]).expect("Dict not found");
                     let delta = var_get(&mut builder, &vars, &args[3]).expect("Delta not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_split_sep_dict_inc", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_split_sep_dict_inc",
+                        &[types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*line, *sep, *dict, *delta]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dict_pop" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -3660,13 +4520,21 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[2]).expect("Dict default not found");
                     let has_default = var_get(&mut builder, &vars, &args[3])
                         .expect("Dict default flag not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_pop", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_pop",
+                        &[types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*dict, *key, *default, *has_default]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dict_setdefault" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -3674,81 +4542,145 @@ impl SimpleBackend {
                     let key = var_get(&mut builder, &vars, &args[1]).expect("Dict key not found");
                     let default =
                         var_get(&mut builder, &vars, &args[2]).expect("Dict default not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_setdefault", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_setdefault",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *key, *default]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dict_setdefault_empty_list" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let key = var_get(&mut builder, &vars, &args[1]).expect("Dict key not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_setdefault_empty_list", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_setdefault_empty_list",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *key]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dict_update" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let other = var_get(&mut builder, &vars, &args[1])
                         .expect("Dict update iterable not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_update", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_update",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *other]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dict_clear" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_clear", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_clear",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dict_copy" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_copy", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_copy",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dict_popitem" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_popitem", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_popitem",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dict_update_kwstar" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
                     let other = var_get(&mut builder, &vars, &args[1])
                         .expect("Dict update mapping not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_update_kwstar", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_update_kwstar",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict, *other]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "set_add" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
                     let key_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Set key not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_set_add", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_set_add",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *key_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "frozenset_add" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -3756,145 +4688,257 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Frozenset not found");
                     let key_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Frozenset key not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_frozenset_add", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_frozenset_add",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *key_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "set_discard" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
                     let key_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Set key not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_set_discard", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_set_discard",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *key_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "set_remove" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
                     let key_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Set key not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_set_remove", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_set_remove",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *key_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "set_pop" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_set_pop", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_set_pop",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "set_update" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
                     let other_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Set update arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_set_update", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_set_update",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *other_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "set_intersection_update" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
                     let other_bits = var_get(&mut builder, &vars, &args[1])
                         .expect("Set intersection update arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_set_intersection_update", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_set_intersection_update",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *other_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "set_difference_update" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
                     let other_bits = var_get(&mut builder, &vars, &args[1])
                         .expect("Set difference update arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_set_difference_update", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_set_difference_update",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *other_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "set_symdiff_update" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let set_bits = var_get(&mut builder, &vars, &args[0]).expect("Set not found");
                     let other_bits = var_get(&mut builder, &vars, &args[1])
                         .expect("Set symdiff update arg not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_set_symdiff_update", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_set_symdiff_update",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*set_bits, *other_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dict_keys" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_keys", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_keys",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dict_values" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_values", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_values",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dict_items" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let dict = var_get(&mut builder, &vars, &args[0]).expect("Dict not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_items", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_items",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*dict]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "tuple_count" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let tuple = var_get(&mut builder, &vars, &args[0]).expect("Tuple not found");
                     let val = var_get(&mut builder, &vars, &args[1])
                         .expect("Tuple count value not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_tuple_count", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_tuple_count",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*tuple, *val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "tuple_index" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let tuple = var_get(&mut builder, &vars, &args[0]).expect("Tuple not found");
                     let val = var_get(&mut builder, &vars, &args[1])
                         .expect("Tuple index value not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_tuple_index", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_tuple_index",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*tuple, *val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "iter" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj =
                         var_get(&mut builder, &vars, &args[0]).expect("Iter source not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_iter_checked", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_iter_checked",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "enumerate" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -3904,23 +4948,39 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[1]).expect("Enumerate start not found");
                     let has_start = var_get(&mut builder, &vars, &args[2])
                         .expect("Enumerate has_start not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_enumerate", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_enumerate",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*iterable, *start, *has_start]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "aiter" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0])
                         .expect("Async iter source not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_aiter", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_aiter",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "iter_next" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -3951,7 +5011,9 @@ impl SimpleBackend {
                                     // backwards for a const op that defined the arg.
                                     let idx_var = &pargs[1];
                                     // Find the const op that produced idx_var.
-                                    if let Some(const_val) = Self::resolve_const_int(ops, peek, idx_var) {
+                                    if let Some(const_val) =
+                                        Self::resolve_const_int(ops, peek, idx_var)
+                                    {
                                         if const_val == 1 && done_idx.is_none() {
                                             done_idx = Some(peek);
                                         } else if const_val == 0 && val_idx.is_none() {
@@ -3974,13 +5036,22 @@ impl SimpleBackend {
                         let val_ptr = builder.ins().stack_addr(types::I64, val_slot, 0);
 
                         // Call molt_iter_next_unboxed(iter, &value_out) → done_flag (MoltObject bool)
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_iter_next_unboxed", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_iter_next_unboxed",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*iter, val_ptr]);
                         let done_bits = builder.inst_results(call)[0];
 
                         // Load the value from the stack slot.
-                        let loaded_val = builder.ins().load(types::I64, MemFlags::trusted(), val_ptr, 0);
+                        let loaded_val =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlags::trusted(), val_ptr, 0);
 
                         // The done_bits is the MoltObject bool that index(pair,1) would return.
                         let done_out = ops[di].out.clone().unwrap();
@@ -3999,7 +5070,13 @@ impl SimpleBackend {
                         skip_ops.insert(vi);
                     } else {
                         // === Fallback: original boxed path ===
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_iter_next", &[types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_iter_next",
+                            &[types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*iter]);
                         let res = builder.inst_results(call)[0];
@@ -4010,39 +5087,71 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let iter =
                         var_get(&mut builder, &vars, &args[0]).expect("Async iter not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_anext", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_anext",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*iter]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "asyncgen_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let gen_obj =
                         var_get(&mut builder, &vars, &args[0]).expect("Generator not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_asyncgen_new", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_asyncgen_new",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*gen_obj]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "asyncgen_shutdown" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_asyncgen_shutdown", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_asyncgen_shutdown",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "gen_send" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let gen_obj =
                         var_get(&mut builder, &vars, &args[0]).expect("Generator not found");
                     let val = var_get(&mut builder, &vars, &args[1]).expect("Send value not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_generator_send", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_generator_send",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*gen_obj, *val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "gen_throw" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4050,53 +5159,93 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Generator not found");
                     let val =
                         var_get(&mut builder, &vars, &args[1]).expect("Throw value not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_generator_throw", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_generator_throw",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*gen_obj, *val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "gen_close" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let gen_obj =
                         var_get(&mut builder, &vars, &args[0]).expect("Generator not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_generator_close", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_generator_close",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*gen_obj]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "is_generator" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Obj not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_is_generator", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_is_generator",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "is_bound_method" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Obj not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_is_bound_method", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_is_bound_method",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "is_callable" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Obj not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_is_callable", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_is_callable",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "index" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Stack-tuple fast path: resolve element at compile time.
-                    let stack_resolved = stack_tuples.get(&args[0]).and_then(|elems| {
+                    let stack_resolved = scalarized_tuples.get(&args[0]).and_then(|elems| {
                         Self::resolve_const_int(ops, op_idx, &args[1]).and_then(|ci| {
                             let ui = ci as usize;
                             elems.get(ui).copied()
@@ -4107,7 +5256,9 @@ impl SimpleBackend {
                         // to keep refcount correct since the tuple itself was
                         // never heap-allocated.
                         emit_inc_ref_obj(&mut builder, elem_val, local_inc_ref_obj, &nbc);
-                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, elem_val); }
+                        if let Some(out__) = op.out {
+                            def_var_named(&mut builder, &vars, out__, elem_val);
+                        }
                     } else {
                         let obj = var_get(&mut builder, &vars, &args[0]).expect("Obj not found");
                         let idx = var_get(&mut builder, &vars, &args[1]).expect("Index not found");
@@ -4129,7 +5280,9 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*obj, *idx]);
                         let res = builder.inst_results(call)[0];
-                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                        if let Some(out__) = op.out {
+                            def_var_named(&mut builder, &vars, out__, res);
+                        }
                     }
                 }
                 "store_index" => {
@@ -4143,11 +5296,19 @@ impl SimpleBackend {
                     let val = var_get(&mut builder, &vars, &args[2]).unwrap_or_else(|| {
                         panic!("Value not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_store_index", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_store_index",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *idx, *val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dict_set" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4160,13 +5321,21 @@ impl SimpleBackend {
                     let val_bits = var_get(&mut builder, &vars, &args[2]).unwrap_or_else(|| {
                         panic!("Value not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_set", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_set",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dict_update_missing" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4179,13 +5348,21 @@ impl SimpleBackend {
                     let val_bits = var_get(&mut builder, &vars, &args[2]).unwrap_or_else(|| {
                         panic!("Value not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dict_update_missing", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dict_update_missing",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "del_index" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4195,11 +5372,19 @@ impl SimpleBackend {
                     let idx = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
                         panic!("Index not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_del_index", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_del_index",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *idx]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4208,11 +5393,19 @@ impl SimpleBackend {
                     let start =
                         var_get(&mut builder, &vars, &args[1]).expect("Slice start not found");
                     let end = var_get(&mut builder, &vars, &args[2]).expect("Slice end not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_slice", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_slice",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*target, *start, *end]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "slice_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4222,11 +5415,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[1]).expect("Slice stop not found");
                     let step =
                         var_get(&mut builder, &vars, &args[2]).expect("Slice step not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_slice_new", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_slice_new",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*start, *stop, *step]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytes_find" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4234,11 +5435,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Find haystack not found");
                     let needle =
                         var_get(&mut builder, &vars, &args[1]).expect("Find needle not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytes_find", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytes_find",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytes_find_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4253,14 +5462,29 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[4]).expect("Find has_start not found");
                     let has_end =
                         var_get(&mut builder, &vars, &args[5]).expect("Find has_end not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytes_find_slice", &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytes_find_slice",
+                        &[
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                        ],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytearray_find" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4268,11 +5492,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Find haystack not found");
                     let needle =
                         var_get(&mut builder, &vars, &args[1]).expect("Find needle not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytearray_find", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytearray_find",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytearray_find_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4287,14 +5519,29 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[4]).expect("Find has_start not found");
                     let has_end =
                         var_get(&mut builder, &vars, &args[5]).expect("Find has_end not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytearray_find_slice", &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytearray_find_slice",
+                        &[
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                        ],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_find" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4302,11 +5549,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Find haystack not found");
                     let needle =
                         var_get(&mut builder, &vars, &args[1]).expect("Find needle not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_find", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_find",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_find_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4321,14 +5576,29 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[4]).expect("Find has_start not found");
                     let has_end =
                         var_get(&mut builder, &vars, &args[5]).expect("Find has_end not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_find_slice", &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_find_slice",
+                        &[
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                        ],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_format" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4336,11 +5606,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Format value not found");
                     let spec =
                         var_get(&mut builder, &vars, &args[1]).expect("Format spec not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_format_builtin", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_format_builtin",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val, *spec]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_startswith" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4348,11 +5626,19 @@ impl SimpleBackend {
                         .expect("Startswith haystack not found");
                     let needle = var_get(&mut builder, &vars, &args[1])
                         .expect("Startswith needle not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_startswith", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_startswith",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_startswith_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4368,14 +5654,29 @@ impl SimpleBackend {
                         .expect("Startswith has_start not found");
                     let has_end = var_get(&mut builder, &vars, &args[5])
                         .expect("Startswith has_end not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_startswith_slice", &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_startswith_slice",
+                        &[
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                        ],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytes_startswith" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4383,11 +5684,19 @@ impl SimpleBackend {
                         .expect("Startswith haystack not found");
                     let needle = var_get(&mut builder, &vars, &args[1])
                         .expect("Startswith needle not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytes_startswith", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytes_startswith",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytes_startswith_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4403,14 +5712,29 @@ impl SimpleBackend {
                         .expect("Startswith has_start not found");
                     let has_end = var_get(&mut builder, &vars, &args[5])
                         .expect("Startswith has_end not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytes_startswith_slice", &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytes_startswith_slice",
+                        &[
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                        ],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytearray_startswith" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4418,11 +5742,19 @@ impl SimpleBackend {
                         .expect("Startswith haystack not found");
                     let needle = var_get(&mut builder, &vars, &args[1])
                         .expect("Startswith needle not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytearray_startswith", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytearray_startswith",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytearray_startswith_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4438,14 +5770,29 @@ impl SimpleBackend {
                         .expect("Startswith has_start not found");
                     let has_end = var_get(&mut builder, &vars, &args[5])
                         .expect("Startswith has_end not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytearray_startswith_slice", &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytearray_startswith_slice",
+                        &[
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                        ],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_endswith" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4453,11 +5800,19 @@ impl SimpleBackend {
                         .expect("Endswith haystack not found");
                     let needle =
                         var_get(&mut builder, &vars, &args[1]).expect("Endswith needle not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_endswith", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_endswith",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_endswith_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4473,14 +5828,29 @@ impl SimpleBackend {
                         .expect("Endswith has_start not found");
                     let has_end =
                         var_get(&mut builder, &vars, &args[5]).expect("Endswith has_end not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_endswith_slice", &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_endswith_slice",
+                        &[
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                        ],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytes_endswith" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4488,11 +5858,19 @@ impl SimpleBackend {
                         .expect("Endswith haystack not found");
                     let needle =
                         var_get(&mut builder, &vars, &args[1]).expect("Endswith needle not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytes_endswith", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytes_endswith",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytes_endswith_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4508,14 +5886,29 @@ impl SimpleBackend {
                         .expect("Endswith has_start not found");
                     let has_end =
                         var_get(&mut builder, &vars, &args[5]).expect("Endswith has_end not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytes_endswith_slice", &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytes_endswith_slice",
+                        &[
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                        ],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytearray_endswith" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4523,11 +5916,19 @@ impl SimpleBackend {
                         .expect("Endswith haystack not found");
                     let needle =
                         var_get(&mut builder, &vars, &args[1]).expect("Endswith needle not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytearray_endswith", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytearray_endswith",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytearray_endswith_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4543,14 +5944,29 @@ impl SimpleBackend {
                         .expect("Endswith has_start not found");
                     let has_end =
                         var_get(&mut builder, &vars, &args[5]).expect("Endswith has_end not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytearray_endswith_slice", &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytearray_endswith_slice",
+                        &[
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                        ],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_count" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4558,11 +5974,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Count haystack not found");
                     let needle =
                         var_get(&mut builder, &vars, &args[1]).expect("Count needle not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_count", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_count",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytes_count" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4570,11 +5994,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Count haystack not found");
                     let needle =
                         var_get(&mut builder, &vars, &args[1]).expect("Count needle not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytes_count", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytes_count",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytearray_count" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4582,11 +6014,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Count haystack not found");
                     let needle =
                         var_get(&mut builder, &vars, &args[1]).expect("Count needle not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytearray_count", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytearray_count",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_count_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4601,14 +6041,29 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[4]).expect("Count has_start not found");
                     let has_end =
                         var_get(&mut builder, &vars, &args[5]).expect("Count has_end not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_count_slice", &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_count_slice",
+                        &[
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                        ],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytes_count_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4623,14 +6078,29 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[4]).expect("Count has_start not found");
                     let has_end =
                         var_get(&mut builder, &vars, &args[5]).expect("Count has_end not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytes_count_slice", &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytes_count_slice",
+                        &[
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                        ],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytearray_count_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4645,25 +6115,48 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[4]).expect("Count has_start not found");
                     let has_end =
                         var_get(&mut builder, &vars, &args[5]).expect("Count has_end not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytearray_count_slice", &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytearray_count_slice",
+                        &[
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                        ],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
                         &[*hay, *needle, *start, *end, *has_start, *has_end],
                     );
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "env_get" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let key = var_get(&mut builder, &vars, &args[0]).expect("Env key not found");
                     let default =
                         var_get(&mut builder, &vars, &args[1]).expect("Env default not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_env_get", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_env_get",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*key, *default]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_join" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4671,11 +6164,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Join separator not found");
                     let items =
                         var_get(&mut builder, &vars, &args[1]).expect("Join items not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_join", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_join",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*sep, *items]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_split" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4683,11 +6184,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Split haystack not found");
                     let needle =
                         var_get(&mut builder, &vars, &args[1]).expect("Split needle not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_split", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_split",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_split_max" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4697,13 +6206,21 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[1]).expect("Split needle not found");
                     let maxsplit =
                         var_get(&mut builder, &vars, &args[2]).expect("Split maxsplit not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_split_max", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_split_max",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*hay, *needle, *maxsplit]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "statistics_mean_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4717,13 +6234,21 @@ impl SimpleBackend {
                         .expect("Statistics mean slice has_start not found");
                     let has_end = var_get(&mut builder, &vars, &args[4])
                         .expect("Statistics mean slice has_end not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_statistics_mean_slice", &[types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_statistics_mean_slice",
+                        &[types::I64, types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*seq, *start, *end, *has_start, *has_end]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "statistics_stdev_slice" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4737,43 +6262,75 @@ impl SimpleBackend {
                         .expect("Statistics stdev slice has_start not found");
                     let has_end = var_get(&mut builder, &vars, &args[4])
                         .expect("Statistics stdev slice has_end not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_statistics_stdev_slice", &[types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_statistics_stdev_slice",
+                        &[types::I64, types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*seq, *start, *end, *has_start, *has_end]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_lower" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Lower string not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_lower", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_lower",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_upper" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay =
                         var_get(&mut builder, &vars, &args[0]).expect("Upper string not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_upper", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_upper",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_capitalize" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let hay = var_get(&mut builder, &vars, &args[0])
                         .expect("Capitalize string not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_capitalize", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_capitalize",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_strip" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4781,11 +6338,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Strip string not found");
                     let chars =
                         var_get(&mut builder, &vars, &args[1]).expect("Strip chars not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_strip", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_strip",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *chars]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_lstrip" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4793,11 +6358,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Lstrip string not found");
                     let chars =
                         var_get(&mut builder, &vars, &args[1]).expect("Lstrip chars not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_lstrip", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_lstrip",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *chars]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_rstrip" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4805,11 +6378,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Rstrip string not found");
                     let chars =
                         var_get(&mut builder, &vars, &args[1]).expect("Rstrip chars not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_rstrip", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_rstrip",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *chars]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_replace" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4821,13 +6402,21 @@ impl SimpleBackend {
                         .expect("Replace replacement not found");
                     let count =
                         var_get(&mut builder, &vars, &args[3]).expect("Replace count not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_replace", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_replace",
+                        &[types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*hay, *needle, *replacement, *count]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytes_split" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4835,11 +6424,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Split haystack not found");
                     let needle =
                         var_get(&mut builder, &vars, &args[1]).expect("Split needle not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytes_split", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytes_split",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytes_split_max" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4849,13 +6446,21 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[1]).expect("Split needle not found");
                     let maxsplit =
                         var_get(&mut builder, &vars, &args[2]).expect("Split maxsplit not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytes_split_max", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytes_split_max",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*hay, *needle, *maxsplit]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytearray_split" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4863,11 +6468,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Split haystack not found");
                     let needle =
                         var_get(&mut builder, &vars, &args[1]).expect("Split needle not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytearray_split", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytearray_split",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*hay, *needle]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytearray_split_max" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4877,13 +6490,21 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[1]).expect("Split needle not found");
                     let maxsplit =
                         var_get(&mut builder, &vars, &args[2]).expect("Split maxsplit not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytearray_split_max", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytearray_split_max",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*hay, *needle, *maxsplit]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytes_replace" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4895,13 +6516,21 @@ impl SimpleBackend {
                         .expect("Replace replacement not found");
                     let count =
                         var_get(&mut builder, &vars, &args[3]).expect("Replace count not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytes_replace", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytes_replace",
+                        &[types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*hay, *needle, *replacement, *count]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytearray_replace" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4913,23 +6542,39 @@ impl SimpleBackend {
                         .expect("Replace replacement not found");
                     let count =
                         var_get(&mut builder, &vars, &args[3]).expect("Replace count not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytearray_replace", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytearray_replace",
+                        &[types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*hay, *needle, *replacement, *count]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytes_from_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src =
                         var_get(&mut builder, &vars, &args[0]).expect("Bytes source not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytes_from_obj", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytes_from_obj",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytes_from_str" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4939,23 +6584,39 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[1]).expect("Bytes encoding not found");
                     let errors =
                         var_get(&mut builder, &vars, &args[2]).expect("Bytes errors not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytes_from_str", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytes_from_str",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*src, *encoding, *errors]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytearray_from_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src =
                         var_get(&mut builder, &vars, &args[0]).expect("Bytearray source not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytearray_from_obj", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytearray_from_obj",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bytearray_from_str" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4965,23 +6626,39 @@ impl SimpleBackend {
                         .expect("Bytearray encoding not found");
                     let errors =
                         var_get(&mut builder, &vars, &args[2]).expect("Bytearray errors not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bytearray_from_str", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bytearray_from_str",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*src, *encoding, *errors]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "float_from_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src =
                         var_get(&mut builder, &vars, &args[0]).expect("Float source not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_float_from_obj", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_float_from_obj",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "int_from_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -4989,11 +6666,19 @@ impl SimpleBackend {
                     let base = var_get(&mut builder, &vars, &args[1]).expect("Int base not found");
                     let has_base =
                         var_get(&mut builder, &vars, &args[2]).expect("Int base flag not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_int_from_obj", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_int_from_obj",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val, *base, *has_base]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "complex_from_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5003,41 +6688,73 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[1]).expect("Complex imag not found");
                     let has_imag =
                         var_get(&mut builder, &vars, &args[2]).expect("Complex flag not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_complex_from_obj", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_complex_from_obj",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val, *imag, *has_imag]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "intarray_from_seq" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src =
                         var_get(&mut builder, &vars, &args[0]).expect("Intarray source not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_intarray_from_seq", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_intarray_from_seq",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "memoryview_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src = var_get(&mut builder, &vars, &args[0])
                         .expect("Memoryview source not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_memoryview_new", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_memoryview_new",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "memoryview_tobytes" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src =
                         var_get(&mut builder, &vars, &args[0]).expect("Memoryview value not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_memoryview_tobytes", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_memoryview_tobytes",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "memoryview_cast" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5049,13 +6766,21 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[2]).expect("Memoryview shape not found");
                     let has_shape = var_get(&mut builder, &vars, &args[3])
                         .expect("Memoryview shape flag not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_memoryview_cast", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_memoryview_cast",
+                        &[types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*view, *format, *shape, *has_shape]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "buffer2d_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5065,11 +6790,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[1]).expect("Buffer2D cols not found");
                     let init =
                         var_get(&mut builder, &vars, &args[2]).expect("Buffer2D init not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_buffer2d_new", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_buffer2d_new",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*rows, *cols, *init]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "buffer2d_get" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5078,11 +6811,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[1]).expect("Buffer2D row not found");
                     let col =
                         var_get(&mut builder, &vars, &args[2]).expect("Buffer2D col not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_buffer2d_get", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_buffer2d_get",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*buf, *row, *col]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "buffer2d_set" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5093,11 +6834,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[2]).expect("Buffer2D col not found");
                     let val =
                         var_get(&mut builder, &vars, &args[3]).expect("Buffer2D val not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_buffer2d_set", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_buffer2d_set",
+                        &[types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*buf, *row, *col, *val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "buffer2d_matmul" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5105,40 +6854,72 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Buffer2D lhs not found");
                     let rhs =
                         var_get(&mut builder, &vars, &args[1]).expect("Buffer2D rhs not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_buffer2d_matmul", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_buffer2d_matmul",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "str_from_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src = var_get(&mut builder, &vars, &args[0]).expect("Str source not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_str_from_obj", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_str_from_obj",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "repr_from_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src =
                         var_get(&mut builder, &vars, &args[0]).expect("Repr source not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_repr_from_obj", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_repr_from_obj",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "ascii_from_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let src =
                         var_get(&mut builder, &vars, &args[0]).expect("Ascii source not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_ascii_from_obj", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_ascii_from_obj",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*src]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dataclass_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5150,13 +6931,21 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[2]).expect("Dataclass values not found");
                     let flags =
                         var_get(&mut builder, &vars, &args[3]).expect("Dataclass flags not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dataclass_new", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dataclass_new",
+                        &[types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*name, *fields, *values, *flags]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dataclass_get" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5164,11 +6953,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Dataclass object not found");
                     let idx =
                         var_get(&mut builder, &vars, &args[1]).expect("Dataclass index not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dataclass_get", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dataclass_get",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *idx]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dataclass_set" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5178,11 +6975,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[1]).expect("Dataclass index not found");
                     let val =
                         var_get(&mut builder, &vars, &args[2]).expect("Dataclass value not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dataclass_set", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dataclass_set",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *idx, *val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "dataclass_set_class" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5190,11 +6995,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Dataclass object not found");
                     let class_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Class not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_dataclass_set_class", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dataclass_set_class",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "lt" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5215,7 +7028,8 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -5233,7 +7047,13 @@ impl SimpleBackend {
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_lt", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_lt",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
@@ -5261,7 +7081,9 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "le" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5285,7 +7107,8 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -5306,7 +7129,13 @@ impl SimpleBackend {
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_le", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_le",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
@@ -5334,7 +7163,9 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "gt" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5357,7 +7188,8 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -5377,7 +7209,13 @@ impl SimpleBackend {
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_gt", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_gt",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
@@ -5405,7 +7243,9 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "ge" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5431,7 +7271,8 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -5452,7 +7293,13 @@ impl SimpleBackend {
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_ge", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_ge",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
@@ -5482,7 +7329,9 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "eq" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5504,7 +7353,8 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -5522,7 +7372,13 @@ impl SimpleBackend {
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_eq", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_eq",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
@@ -5532,7 +7388,9 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "ne" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5554,7 +7412,8 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -5572,7 +7431,13 @@ impl SimpleBackend {
 
                         builder.switch_to_block(slow_block);
                         builder.seal_block(slow_block);
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_ne", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_ne",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
@@ -5582,37 +7447,63 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "string_eq" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     // Use the fast path: pointer-identity check before byte scan.
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_string_eq_fast", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_string_eq_fast",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "is" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_is", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_is",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "not" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_not", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_not",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "neg" | "unary_neg" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5620,9 +7511,14 @@ impl SimpleBackend {
                     let res = if op.fast_int.unwrap_or(false) {
                         // -x == 0 - x; overflow only when x == INT_MIN of the
                         // inline payload range.
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_neg", &[types::I64], &[types::I64]);
-                        let local_callee =
-                            self.module.declare_func_in_func(callee, builder.func);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_neg",
+                            &[types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -5652,22 +7548,34 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_neg", &[types::I64], &[types::I64]);
-                        let local_callee =
-                            self.module.declare_func_in_func(callee, builder.func);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_neg",
+                            &[types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*val]);
                         builder.inst_results(call)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "abs" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
                     let res = if op.fast_int.unwrap_or(false) {
                         // abs(x): select(x < 0, -x, x) with overflow check for INT_MIN.
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_abs_builtin", &[types::I64], &[types::I64]);
-                        let local_callee =
-                            self.module.declare_func_in_func(callee, builder.func);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_abs_builtin",
+                            &[types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -5676,10 +7584,7 @@ impl SimpleBackend {
 
                         let int_val = unbox_int(&mut builder, *val, &nbc);
                         let zero = builder.ins().iconst(types::I64, 0);
-                        let is_neg =
-                            builder
-                                .ins()
-                                .icmp(IntCC::SignedLessThan, int_val, zero);
+                        let is_neg = builder.ins().icmp(IntCC::SignedLessThan, int_val, zero);
                         let negated = builder.ins().isub(zero, int_val);
                         let abs_val = builder.ins().select(is_neg, negated, int_val);
                         let fits_inline = int_value_fits_inline(&mut builder, abs_val);
@@ -5702,13 +7607,20 @@ impl SimpleBackend {
                         builder.seal_block(merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_abs_builtin", &[types::I64], &[types::I64]);
-                        let local_callee =
-                            self.module.declare_func_in_func(callee, builder.func);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_abs_builtin",
+                            &[types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*val]);
                         builder.inst_results(call)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "invert" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5721,13 +7633,20 @@ impl SimpleBackend {
                         let inverted = builder.ins().bxor(int_val, minus_one);
                         box_int_value(&mut builder, inverted, &nbc)
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_invert", &[types::I64], &[types::I64]);
-                        let local_callee =
-                            self.module.declare_func_in_func(callee, builder.func);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_invert",
+                            &[types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*val]);
                         builder.inst_results(call)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bool" | "cast_bool" | "builtin_bool" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5736,25 +7655,37 @@ impl SimpleBackend {
                         // For known ints, bool(x) is simply x != 0.
                         let int_val = unbox_int(&mut builder, *val, &nbc);
                         let zero = builder.ins().iconst(types::I64, 0);
-                        let is_nonzero =
-                            builder.ins().icmp(IntCC::NotEqual, int_val, zero);
+                        let is_nonzero = builder.ins().icmp(IntCC::NotEqual, int_val, zero);
                         box_bool_value(&mut builder, is_nonzero, &nbc)
                     } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_is_truthy", &[types::I64], &[types::I64]);
-                        let local_callee =
-                            self.module.declare_func_in_func(callee, builder.func);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_is_truthy",
+                            &[types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*val]);
                         let truthy = builder.inst_results(call)[0];
                         let cond = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
                         box_bool_value(&mut builder, cond, &nbc)
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "and" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let truthy = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_is_truthy", &[types::I64], &[types::I64]);
+                    let truthy = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_is_truthy",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let truthy_ref = self.module.declare_func_in_func(truthy, builder.func);
                     let lhs_call = builder.ins().call(truthy_ref, &[*lhs]);
                     let lhs_val = builder.inst_results(lhs_call)[0];
@@ -5766,13 +7697,21 @@ impl SimpleBackend {
                     // result to prevent a use-after-free when the input's refcount
                     // reaches zero before the output is consumed.
                     emit_inc_ref_obj(&mut builder, res, local_inc_ref_obj, &nbc);
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "or" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let truthy = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_is_truthy", &[types::I64], &[types::I64]);
+                    let truthy = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_is_truthy",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let truthy_ref = self.module.declare_func_in_func(truthy, builder.func);
                     let lhs_call = builder.ins().call(truthy_ref, &[*lhs]);
                     let lhs_val = builder.inst_results(lhs_call)[0];
@@ -5780,7 +7719,9 @@ impl SimpleBackend {
                     let res = builder.ins().select(cond, *lhs, *rhs);
                     // Same aliasing hazard as `and` — see comment above.
                     emit_inc_ref_obj(&mut builder, res, local_inc_ref_obj, &nbc);
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "contains" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5805,7 +7746,9 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*container, *item]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "print" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5815,12 +7758,24 @@ impl SimpleBackend {
                         builder.ins().iconst(types::I64, box_none())
                     };
 
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_print_obj", &[types::I64], &[]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_print_obj",
+                        &[types::I64],
+                        &[],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[val]);
                 }
                 "print_newline" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_print_newline", &[], &[]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_print_newline",
+                        &[],
+                        &[],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[]);
                 }
@@ -5832,7 +7787,13 @@ impl SimpleBackend {
                             .or_else(|| var_get(&mut builder, &vars, arg_name))
                             .expect("String ptr not found");
 
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_json_parse_scalar", &[types::I64, types::I64, types::I64], &[types::I32]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_json_parse_scalar",
+                            &[types::I64, types::I64, types::I64],
+                            &[types::I32],
+                        );
                         let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
                             8,
@@ -5861,7 +7822,13 @@ impl SimpleBackend {
                         builder.seal_block(err_block);
                         let arg_bits =
                             var_get(&mut builder, &vars, arg_name).expect("String arg not found");
-                        let err_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_json_parse_scalar_obj", &[types::I64], &[types::I64]);
+                        let err_callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_json_parse_scalar_obj",
+                            &[types::I64],
+                            &[types::I64],
+                        );
                         let err_local = self.module.declare_func_in_func(err_callee, builder.func);
                         let err_call = builder.ins().call(err_local, &[*arg_bits]);
                         let err_res = builder.inst_results(err_call)[0];
@@ -5870,15 +7837,25 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         builder.seal_block(merge_block);
                         let res = builder.block_params(merge_block)[0];
-                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                        if let Some(out__) = op.out {
+                            def_var_named(&mut builder, &vars, out__, res);
+                        }
                     } else {
                         let arg_bits =
                             var_get(&mut builder, &vars, arg_name).expect("String arg not found");
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_json_parse_scalar_obj", &[types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_json_parse_scalar_obj",
+                            &[types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*arg_bits]);
                         let res = builder.inst_results(call)[0];
-                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                        if let Some(out__) = op.out {
+                            def_var_named(&mut builder, &vars, out__, res);
+                        }
                     }
                 }
                 "msgpack_parse" => {
@@ -5889,7 +7866,13 @@ impl SimpleBackend {
                             .or_else(|| var_get(&mut builder, &vars, arg_name))
                             .expect("Bytes ptr not found");
 
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_msgpack_parse_scalar", &[types::I64, types::I64, types::I64], &[types::I32]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_msgpack_parse_scalar",
+                            &[types::I64, types::I64, types::I64],
+                            &[types::I32],
+                        );
                         let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
                             8,
@@ -5918,7 +7901,13 @@ impl SimpleBackend {
                         builder.seal_block(err_block);
                         let arg_bits =
                             var_get(&mut builder, &vars, arg_name).expect("Bytes arg not found");
-                        let err_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_msgpack_parse_scalar_obj", &[types::I64], &[types::I64]);
+                        let err_callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_msgpack_parse_scalar_obj",
+                            &[types::I64],
+                            &[types::I64],
+                        );
                         let err_local = self.module.declare_func_in_func(err_callee, builder.func);
                         let err_call = builder.ins().call(err_local, &[*arg_bits]);
                         let err_res = builder.inst_results(err_call)[0];
@@ -5927,15 +7916,25 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         builder.seal_block(merge_block);
                         let res = builder.block_params(merge_block)[0];
-                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                        if let Some(out__) = op.out {
+                            def_var_named(&mut builder, &vars, out__, res);
+                        }
                     } else {
                         let arg_bits =
                             var_get(&mut builder, &vars, arg_name).expect("Bytes arg not found");
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_msgpack_parse_scalar_obj", &[types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_msgpack_parse_scalar_obj",
+                            &[types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*arg_bits]);
                         let res = builder.inst_results(call)[0];
-                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                        if let Some(out__) = op.out {
+                            def_var_named(&mut builder, &vars, out__, res);
+                        }
                     }
                 }
                 "cbor_parse" => {
@@ -5946,7 +7945,13 @@ impl SimpleBackend {
                             .or_else(|| var_get(&mut builder, &vars, arg_name))
                             .expect("Bytes ptr not found");
 
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_cbor_parse_scalar", &[types::I64, types::I64, types::I64], &[types::I32]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_cbor_parse_scalar",
+                            &[types::I64, types::I64, types::I64],
+                            &[types::I32],
+                        );
                         let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
                             StackSlotKind::ExplicitSlot,
                             8,
@@ -5975,7 +7980,13 @@ impl SimpleBackend {
                         builder.seal_block(err_block);
                         let arg_bits =
                             var_get(&mut builder, &vars, arg_name).expect("Bytes arg not found");
-                        let err_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_cbor_parse_scalar_obj", &[types::I64], &[types::I64]);
+                        let err_callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_cbor_parse_scalar_obj",
+                            &[types::I64],
+                            &[types::I64],
+                        );
                         let err_local = self.module.declare_func_in_func(err_callee, builder.func);
                         let err_call = builder.ins().call(err_local, &[*arg_bits]);
                         let err_res = builder.inst_results(err_call)[0];
@@ -5984,25 +7995,43 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         builder.seal_block(merge_block);
                         let res = builder.block_params(merge_block)[0];
-                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                        if let Some(out__) = op.out {
+                            def_var_named(&mut builder, &vars, out__, res);
+                        }
                     } else {
                         let arg_bits =
                             var_get(&mut builder, &vars, arg_name).expect("Bytes arg not found");
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_cbor_parse_scalar_obj", &[types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_cbor_parse_scalar_obj",
+                            &[types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*arg_bits]);
                         let res = builder.inst_results(call)[0];
-                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                        if let Some(out__) = op.out {
+                            def_var_named(&mut builder, &vars, out__, res);
+                        }
                     }
                 }
                 "block_on" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let task = var_get(&mut builder, &vars, &args[0]).expect("Task not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_block_on", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_block_on",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*task]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "state_switch" => {
                     let self_ptr = builder.block_params(entry_block)[0];
@@ -6069,9 +8098,17 @@ impl SimpleBackend {
                         &[types::I64, types::I64],
                         &[],
                     );
-                    builder.ins().call(set_state_ref, &[self_ptr, pending_state_id]);
+                    builder
+                        .ins()
+                        .call(set_state_ref, &[self_ptr, pending_state_id]);
 
-                    let poll_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_future_poll", &[types::I64], &[types::I64]);
+                    let poll_callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_future_poll",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_poll = self.module.declare_func_in_func(poll_callee, builder.func);
                     let poll_call = builder.ins().call(local_poll, &[*future]);
                     let res = builder.inst_results(poll_call)[0];
@@ -6095,7 +8132,13 @@ impl SimpleBackend {
 
                     switch_to_block_tracking(&mut builder, pending_path, &mut is_block_filled);
                     builder.seal_block(pending_path);
-                    let sleep_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_sleep_register", &[types::I64, types::I64], &[types::I64]);
+                    let sleep_callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_sleep_register",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_sleep = self.module.declare_func_in_func(sleep_callee, builder.func);
                     builder.ins().call(local_sleep, &[self_ptr, future_ptr]);
                     reachable_blocks.insert(master_return_block);
@@ -6105,18 +8148,31 @@ impl SimpleBackend {
                     builder.seal_block(ready_path);
                     if let Some(bits) = slot_bits {
                         let offset = unbox_int(&mut builder, bits, &nbc);
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_closure_store", &[types::I64, types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_closure_store",
+                            &[types::I64, types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         builder.ins().call(local_callee, &[self_ptr, offset, res]);
                     }
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
                     let set_state_ref2 = import_func_ref(
-                        &mut self.module, &mut self.import_ids, &mut builder, &mut import_refs,
-                        "molt_obj_set_state", &[types::I64, types::I64], &[],
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_obj_set_state",
+                        &[types::I64, types::I64],
+                        &[],
                     );
                     builder.ins().call(set_state_ref2, &[self_ptr, state_val]);
                     if args.len() <= 1 {
-                        if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                        if let Some(out__) = op.out {
+                            def_var_named(&mut builder, &vars, out__, res);
+                        }
                     }
                     jump_block(&mut builder, next_block, &[]);
 
@@ -6132,8 +8188,13 @@ impl SimpleBackend {
 
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
                     let set_state_yield = import_func_ref(
-                        &mut self.module, &mut self.import_ids, &mut builder, &mut import_refs,
-                        "molt_obj_set_state", &[types::I64, types::I64], &[],
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_obj_set_state",
+                        &[types::I64, types::I64],
+                        &[],
                     );
                     builder.ins().call(set_state_yield, &[self_ptr, state_val]);
 
@@ -6167,12 +8228,25 @@ impl SimpleBackend {
 
                     let pending_state_id = unbox_int(&mut builder, pending_state_bits, &nbc);
                     let set_state_csend1 = import_func_ref(
-                        &mut self.module, &mut self.import_ids, &mut builder, &mut import_refs,
-                        "molt_obj_set_state", &[types::I64, types::I64], &[],
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_obj_set_state",
+                        &[types::I64, types::I64],
+                        &[],
                     );
-                    builder.ins().call(set_state_csend1, &[self_ptr, pending_state_id]);
+                    builder
+                        .ins()
+                        .call(set_state_csend1, &[self_ptr, pending_state_id]);
 
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_chan_send", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_chan_send",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*chan, *val]);
                     let res = builder.inst_results(call)[0];
@@ -6199,11 +8273,18 @@ impl SimpleBackend {
                     switch_to_block_tracking(&mut builder, ready_path, &mut is_block_filled);
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
                     let set_state_csend2 = import_func_ref(
-                        &mut self.module, &mut self.import_ids, &mut builder, &mut import_refs,
-                        "molt_obj_set_state", &[types::I64, types::I64], &[],
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_obj_set_state",
+                        &[types::I64, types::I64],
+                        &[],
                     );
                     builder.ins().call(set_state_csend2, &[self_ptr, state_val]);
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                     reachable_blocks.insert(next_block);
                     jump_block(&mut builder, next_block, &[]);
 
@@ -6224,12 +8305,25 @@ impl SimpleBackend {
 
                     let pending_state_id = unbox_int(&mut builder, pending_state_bits, &nbc);
                     let set_state_crecv1 = import_func_ref(
-                        &mut self.module, &mut self.import_ids, &mut builder, &mut import_refs,
-                        "molt_obj_set_state", &[types::I64, types::I64], &[],
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_obj_set_state",
+                        &[types::I64, types::I64],
+                        &[],
                     );
-                    builder.ins().call(set_state_crecv1, &[self_ptr, pending_state_id]);
+                    builder
+                        .ins()
+                        .call(set_state_crecv1, &[self_ptr, pending_state_id]);
 
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_chan_recv", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_chan_recv",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*chan]);
                     let res = builder.inst_results(call)[0];
@@ -6256,11 +8350,18 @@ impl SimpleBackend {
                     switch_to_block_tracking(&mut builder, ready_path, &mut is_block_filled);
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
                     let set_state_crecv2 = import_func_ref(
-                        &mut self.module, &mut self.import_ids, &mut builder, &mut import_refs,
-                        "molt_obj_set_state", &[types::I64, types::I64], &[],
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        "molt_obj_set_state",
+                        &[types::I64, types::I64],
+                        &[],
                     );
                     builder.ins().call(set_state_crecv2, &[self_ptr, state_val]);
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                     reachable_blocks.insert(next_block);
                     jump_block(&mut builder, next_block, &[]);
 
@@ -6274,16 +8375,30 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let capacity =
                         var_get(&mut builder, &vars, &args[0]).expect("Capacity not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_chan_new", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_chan_new",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*capacity]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "chan_drop" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let chan = var_get(&mut builder, &vars, &args[0]).expect("Chan not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_chan_drop", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_chan_drop",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*chan]);
                     let _ = builder.inst_results(call)[0];
@@ -6291,7 +8406,13 @@ impl SimpleBackend {
                 "spawn" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let task = var_get(&mut builder, &vars, &args[0]).expect("Task not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_spawn", &[types::I64], &[]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_spawn",
+                        &[types::I64],
+                        &[],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*task]);
                 }
@@ -6299,37 +8420,69 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let parent =
                         var_get(&mut builder, &vars, &args[0]).expect("Parent token not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_cancel_token_new", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_cancel_token_new",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*parent]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "cancel_token_clone" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let token = var_get(&mut builder, &vars, &args[0]).expect("Token not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_cancel_token_clone", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_cancel_token_clone",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*token]);
                 }
                 "cancel_token_drop" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let token = var_get(&mut builder, &vars, &args[0]).expect("Token not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_cancel_token_drop", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_cancel_token_drop",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*token]);
                 }
                 "cancel_token_cancel" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let token = var_get(&mut builder, &vars, &args[0]).expect("Token not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_cancel_token_cancel", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_cancel_token_cancel",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*token]);
                 }
                 "future_cancel" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let future = var_get(&mut builder, &vars, &args[0]).expect("Future not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_future_cancel", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_future_cancel",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*future]);
                 }
@@ -6338,29 +8491,55 @@ impl SimpleBackend {
                     let future = var_get(&mut builder, &vars, &args[0]).expect("Future not found");
                     let msg =
                         var_get(&mut builder, &vars, &args[1]).expect("Cancel message not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_future_cancel_msg", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_future_cancel_msg",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*future, *msg]);
                 }
                 "future_cancel_clear" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let future = var_get(&mut builder, &vars, &args[0]).expect("Future not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_future_cancel_clear", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_future_cancel_clear",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*future]);
                 }
                 "promise_new" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_promise_new", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_promise_new",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "promise_set_result" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let future = var_get(&mut builder, &vars, &args[0]).expect("Promise not found");
                     let result = var_get(&mut builder, &vars, &args[1]).expect("Result not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_promise_set_result", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_promise_set_result",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*future, *result]);
                 }
@@ -6368,7 +8547,13 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let future = var_get(&mut builder, &vars, &args[0]).expect("Promise not found");
                     let exc = var_get(&mut builder, &vars, &args[1]).expect("Exception not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_promise_set_exception", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_promise_set_exception",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*future, *exc]);
                 }
@@ -6379,61 +8564,115 @@ impl SimpleBackend {
                     let call_args = var_get(&mut builder, &vars, &args[1]).expect("Args not found");
                     let call_kwargs =
                         var_get(&mut builder, &vars, &args[2]).expect("Kwargs not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_thread_submit", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_thread_submit",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*callable, *call_args, *call_kwargs]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "task_register_token_owned" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let task = var_get(&mut builder, &vars, &args[0]).expect("Task not found");
                     let token = var_get(&mut builder, &vars, &args[1]).expect("Token not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_task_register_token_owned", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_task_register_token_owned",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*task, *token]);
                 }
                 "cancel_token_is_cancelled" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let token = var_get(&mut builder, &vars, &args[0]).expect("Token not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_cancel_token_is_cancelled", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_cancel_token_is_cancelled",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*token]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "cancel_token_set_current" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let token = var_get(&mut builder, &vars, &args[0]).expect("Token not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_cancel_token_set_current", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_cancel_token_set_current",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*token]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "cancel_token_get_current" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_cancel_token_get_current", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_cancel_token_get_current",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "cancelled" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_cancelled", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_cancelled",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "cancel_current" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_cancel_current", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_cancel_current",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[]);
                 }
                 "call_async" => {
-                    let Some(poll_func_name) = op.s_value.as_ref() else { continue; };
+                    let Some(poll_func_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     if poll_func_name == "molt_async_sleep" {
                         let arg_names = op.args.as_deref().unwrap_or(&[]);
                         let delay_val = arg_names
@@ -6444,11 +8683,19 @@ impl SimpleBackend {
                             .get(1)
                             .map(|name| *var_get(&mut builder, &vars, name).expect("Arg not found"))
                             .unwrap_or_else(|| builder.ins().iconst(types::I64, box_none()));
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_async_sleep_new", &[types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_async_sleep_new",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[delay_val, result_val]);
                         let res = builder.inst_results(call)[0];
-                        let Some(out_name) = op.out else { continue; };
+                        let Some(out_name) = op.out else {
+                            continue;
+                        };
                         def_var_named(&mut builder, &vars, out_name, res);
                     } else {
                         let args = op.args.as_deref();
@@ -6465,7 +8712,13 @@ impl SimpleBackend {
                             self.module.declare_func_in_func(poll_func_id, builder.func);
                         let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
 
-                        let task_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_task_new", &[types::I64, types::I64, types::I64], &[types::I64]);
+                        let task_callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_task_new",
+                            &[types::I64, types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let task_local =
                             self.module.declare_func_in_func(task_callee, builder.func);
                         let kind_val = builder.ins().iconst(types::I64, TASK_KIND_FUTURE);
@@ -6488,12 +8741,16 @@ impl SimpleBackend {
                                 emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj, &nbc);
                             }
                         }
-                        let Some(out_name) = op.out else { continue; };
+                        let Some(out_name) = op.out else {
+                            continue;
+                        };
                         def_var_named(&mut builder, &vars, out_name, obj);
                     }
                 }
                 "builtin_func" => {
-                    let Some(func_name) = op.s_value.as_ref() else { continue; };
+                    let Some(func_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     let arity = op.value.unwrap_or(0);
                     let mut func_sig = self.module.make_signature();
                     for _ in 0..arity {
@@ -6517,7 +8774,8 @@ impl SimpleBackend {
                                 )
                             })
                     };
-                    self.declared_func_arities.insert(func_name.clone(), arity as usize);
+                    self.declared_func_arities
+                        .insert(func_name.clone(), arity as usize);
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
                     let tramp_id = Self::ensure_trampoline(
@@ -6536,16 +8794,26 @@ impl SimpleBackend {
                     let tramp_addr = builder.ins().func_addr(types::I64, tramp_ref);
                     let arity_val = builder.ins().iconst(types::I64, arity);
 
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_func_new_builtin", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_func_new_builtin",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[func_addr, tramp_addr, arity_val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "func_new" => {
-                    let Some(func_name) = op.s_value.as_ref() else { continue; };
+                    let Some(func_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     let arity = op.value.unwrap_or(0);
                     let kind = if func_name.ends_with("_poll") {
                         task_kinds
@@ -6569,7 +8837,8 @@ impl SimpleBackend {
                         }
                     }
                     func_sig.returns.push(AbiParam::new(types::I64));
-                    self.declared_func_arities.insert(func_name.clone(), func_sig.params.len());
+                    self.declared_func_arities
+                        .insert(func_name.clone(), func_sig.params.len());
                     // func_new references an existing function. If the symbol is
                     // already declared in this module (same or different sig),
                     // reuse the existing FuncId. This avoids __ov disambiguation
@@ -6584,10 +8853,7 @@ impl SimpleBackend {
                         self.module
                             .declare_function(&actual_name, Linkage::Import, &func_sig)
                             .unwrap_or_else(|e| {
-                                panic!(
-                                    "func_new: failed to declare '{}': {:?}",
-                                    actual_name, e
-                                )
+                                panic!("func_new: failed to declare '{}': {:?}", actual_name, e)
                             })
                     };
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
@@ -6608,16 +8874,26 @@ impl SimpleBackend {
                     let tramp_addr = builder.ins().func_addr(types::I64, tramp_ref);
                     let arity_val = builder.ins().iconst(types::I64, arity);
 
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_func_new", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_func_new",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[func_addr, tramp_addr, arity_val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "func_new_closure" => {
-                    let Some(func_name) = op.s_value.as_ref() else { continue; };
+                    let Some(func_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     let arity = op.value.unwrap_or(0);
                     let kind = if func_name.ends_with("_poll") {
                         task_kinds
@@ -6649,7 +8925,8 @@ impl SimpleBackend {
                         }
                     }
                     func_sig.returns.push(AbiParam::new(types::I64));
-                    self.declared_func_arities.insert(func_name.clone(), func_sig.params.len());
+                    self.declared_func_arities
+                        .insert(func_name.clone(), func_sig.params.len());
                     let mut actual_closure_name = func_name.clone();
                     // Use Export linkage only when the closure target is
                     // defined in this compilation unit; otherwise Import
@@ -6664,16 +8941,16 @@ impl SimpleBackend {
                     {
                         id
                     } else {
-                        match self
-                            .module
-                            .declare_function(&actual_closure_name, closure_linkage, &func_sig)
-                        {
+                        match self.module.declare_function(
+                            &actual_closure_name,
+                            closure_linkage,
+                            &func_sig,
+                        ) {
                             Ok(id) => id,
                             Err(_) => {
                                 let mut suffix = 1u32;
                                 loop {
-                                    actual_closure_name =
-                                        format!("{}__ov{}", func_name, suffix);
+                                    actual_closure_name = format!("{}__ov{}", func_name, suffix);
                                     match self.module.declare_function(
                                         &actual_closure_name,
                                         closure_linkage,
@@ -6704,7 +8981,13 @@ impl SimpleBackend {
                     let tramp_addr = builder.ins().func_addr(types::I64, tramp_ref);
                     let arity_val = builder.ins().iconst(types::I64, arity);
 
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_func_new_closure", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_func_new_closure",
+                        &[types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
@@ -6715,7 +8998,9 @@ impl SimpleBackend {
                     if let Some(out_name) = op.out.as_ref() {
                         local_closure_envs.insert(func_name.clone(), out_name.clone());
                     }
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "code_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -6734,7 +9019,22 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[6]).expect("posonly not found");
                     let kwonlyargcount_bits =
                         var_get(&mut builder, &vars, &args[7]).expect("kwonly not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_code_new", &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_code_new",
+                        &[
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                        ],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
@@ -6750,7 +9050,9 @@ impl SimpleBackend {
                         ],
                     );
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "code_slot_set" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -6758,7 +9060,13 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("code bits not found");
                     let code_id = op.value.unwrap_or(0);
                     let code_id_val = builder.ins().iconst(types::I64, code_id);
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_code_slot_set", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_code_slot_set",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[code_id_val, *code_bits]);
                 }
@@ -6798,7 +9106,13 @@ impl SimpleBackend {
                     };
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_fn_ptr_code_set", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_fn_ptr_code_set",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[func_addr, *code_bits]);
                 }
@@ -6838,7 +9152,13 @@ impl SimpleBackend {
                     };
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_asyncgen_locals_register", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_asyncgen_locals_register",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder
                         .ins()
@@ -6890,7 +9210,13 @@ impl SimpleBackend {
                     };
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_gen_locals_register", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_gen_locals_register",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder
                         .ins()
@@ -6899,7 +9225,13 @@ impl SimpleBackend {
                 "code_slots_init" => {
                     let count = op.value.unwrap_or(0);
                     let count_val = builder.ins().iconst(types::I64, count);
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_code_slots_init", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_code_slots_init",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[count_val]);
                 }
@@ -6907,14 +9239,26 @@ impl SimpleBackend {
                     if emit_traces {
                         let code_id = op.value.unwrap_or(0);
                         let code_id_val = builder.ins().iconst(types::I64, code_id);
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_trace_enter_slot", &[types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_trace_enter_slot",
+                            &[types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let _ = builder.ins().call(local_callee, &[code_id_val]);
                     }
                 }
                 "trace_exit" => {
                     if emit_traces {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_trace_exit", &[], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_trace_exit",
+                            &[],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let _ = builder.ins().call(local_callee, &[]);
                     }
@@ -6925,14 +9269,26 @@ impl SimpleBackend {
                         .first()
                         .map(|name| *var_get(&mut builder, &vars, name).expect("Arg not found"))
                         .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_frame_locals_set", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_frame_locals_set",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[dict_bits]);
                 }
                 "line" => {
                     let line = op.value.unwrap_or(0);
                     let line_val = builder.ins().iconst(types::I64, line);
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_trace_set_line", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_trace_set_line",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[line_val]);
                     if !is_block_filled && let Some(block) = builder.current_block() {
@@ -6942,9 +9298,13 @@ impl SimpleBackend {
                                 // Use entry_vars (definition-time Value) for dec_ref,
                                 // not var_get (current SSA Value). If the variable was
                                 // redefined, var_get returns the WRONG object.
-                                let val = entry_vars.get(&name).copied()
+                                let val = entry_vars
+                                    .get(&name)
+                                    .copied()
                                     .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
-                                let Some(val) = val else { continue; };
+                                let Some(val) = val else {
+                                    continue;
+                                };
                                 builder.ins().call(local_dec_ref_obj, &[val]);
                                 // Remove from entry_vars so exception-handler
                                 // and function-return cleanup paths do not
@@ -6955,9 +9315,13 @@ impl SimpleBackend {
                         if let Some(names) = block_tracked_ptr.get_mut(&block) {
                             let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
                             for name in cleanup {
-                                let val = entry_vars.get(&name).copied()
+                                let val = entry_vars
+                                    .get(&name)
+                                    .copied()
                                     .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
-                                let Some(val) = val else { continue; };
+                                let Some(val) = val else {
+                                    continue;
+                                };
                                 builder.ins().call(local_dec_ref_obj, &[val]);
                                 entry_vars.remove(&name);
                             }
@@ -6965,34 +9329,60 @@ impl SimpleBackend {
                     }
                 }
                 "missing" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_missing", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_missing",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "function_closure_bits" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let func_bits = var_get(&mut builder, &vars, &args[0]).expect("Func not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_function_closure_bits", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_function_closure_bits",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*func_bits]);
                     let res = builder.inst_results(call)[0];
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bound_method_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let func_bits = var_get(&mut builder, &vars, &args[0]).expect("Func not found");
                     let self_bits = var_get(&mut builder, &vars, &args[1]).expect("Self not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bound_method_new", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bound_method_new",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*func_bits, *self_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "call" => {
-                    let Some(target_name) = op.s_value.as_ref() else { continue; };
+                    let Some(target_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let mut args = Vec::new();
                     for name in args_names {
@@ -7027,12 +9417,22 @@ impl SimpleBackend {
                         .expect("call requires an active block");
                     let mut origin_obj_live =
                         block_tracked_obj.remove(&origin_block).unwrap_or_default();
-                    let origin_obj_cleanup =
-                        drain_cleanup_tracked_dedup(&mut origin_obj_live, &last_use, op_idx, None, Some(&mut already_decrefed));
+                    let origin_obj_cleanup = drain_cleanup_tracked_dedup(
+                        &mut origin_obj_live,
+                        &last_use,
+                        op_idx,
+                        None,
+                        Some(&mut already_decrefed),
+                    );
                     let mut origin_ptr_live =
                         block_tracked_ptr.remove(&origin_block).unwrap_or_default();
-                    let origin_ptr_cleanup =
-                        drain_cleanup_tracked_dedup(&mut origin_ptr_live, &last_use, op_idx, None, Some(&mut already_decrefed));
+                    let origin_ptr_cleanup = drain_cleanup_tracked_dedup(
+                        &mut origin_ptr_live,
+                        &last_use,
+                        op_idx,
+                        None,
+                        Some(&mut already_decrefed),
+                    );
                     if std::env::var("MOLT_DEBUG_CALL_CLEANUP").as_deref() == Ok("1")
                         && std::env::var("MOLT_DEBUG_FUNC_FILTER")
                             .ok()
@@ -7086,6 +9486,7 @@ impl SimpleBackend {
                         .declared_func_arities
                         .get(target_name.as_str())
                         .copied()
+                        .or_else(|| known_function_arities.get(target_name.as_str()).copied())
                         .unwrap_or(args.len());
                     let mut target_sig = self.module.make_signature();
                     for _ in 0..sig_arity {
@@ -7097,58 +9498,62 @@ impl SimpleBackend {
                     } else {
                         Linkage::Import
                     };
-                    let callee = match self
-                        .module
-                        .declare_function(target_name, linkage, &target_sig)
-                    {
-                        Ok(id) => id,
-                        Err(_) => {
-                            // Function was already declared with a different signature
-                            // (e.g., @typing.overload stubs vs real implementation).
-                            // Look up the existing declaration instead of panicking.
-                            self.module
-                                .declare_function(target_name, linkage, &{
-                                    let mut s = self.module.make_signature();
-                                    // Use args.len() as fallback — the runtime dispatch
-                                    // (molt_guarded_call) handles arity mismatch.
-                                    for _ in 0..args.len() {
-                                        s.params.push(AbiParam::new(types::I64));
-                                    }
-                                    s.returns.push(AbiParam::new(types::I64));
-                                    s
-                                })
-                                .unwrap_or_else(|_| {
-                                    // Both arities failed — use the existing func ID
-                                    // by looking it up through get_name
-                                    self.module.get_name(target_name)
-                                        .and_then(|name_id| {
-                                            if let cranelift_module::FuncOrDataId::Func(fid) = name_id {
-                                                Some(fid)
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .expect("function must have been declared")
-                                })
-                        }
-                    };
+                    let callee =
+                        match self
+                            .module
+                            .declare_function(target_name, linkage, &target_sig)
+                        {
+                            Ok(id) => id,
+                            Err(_) => {
+                                // Function was already declared with a different signature
+                                // (e.g., @typing.overload stubs vs real implementation).
+                                // Look up the existing declaration instead of panicking.
+                                self.module
+                                    .declare_function(target_name, linkage, &{
+                                        let mut s = self.module.make_signature();
+                                        // Use args.len() as fallback — the runtime dispatch
+                                        // (molt_guarded_call) handles arity mismatch.
+                                        for _ in 0..args.len() {
+                                            s.params.push(AbiParam::new(types::I64));
+                                        }
+                                        s.returns.push(AbiParam::new(types::I64));
+                                        s
+                                    })
+                                    .unwrap_or_else(|_| {
+                                        // Both arities failed — use the existing func ID
+                                        // by looking it up through get_name
+                                        self.module
+                                            .get_name(target_name)
+                                            .and_then(|name_id| {
+                                                if let cranelift_module::FuncOrDataId::Func(fid) =
+                                                    name_id
+                                                {
+                                                    Some(fid)
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                            .expect("function must have been declared")
+                                    })
+                            }
+                        };
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
 
                     // --- Fast path: direct call for known defined non-closure functions ---
                     // When the target is a defined function in this module (not a closure),
                     // emit a direct Cranelift call with a lightweight recursion guard.
                     // This avoids: arg spill/reload, match-on-arity dispatch, indirect call.
-                    let use_direct_call = defined_functions.contains(target_name)
+                    let use_direct_call = module_known_functions.contains(target_name)
                         && !closure_functions.contains(target_name.as_str())
                         && args.len() == sig_arity
                         && !emit_traces;
 
                     if std::env::var("MOLT_DEBUG_DIRECT_CALL").is_ok() {
                         eprintln!(
-                            "call {} -> direct={} (defined={} closure={} arity_match={} traces={})",
+                            "call {} -> direct={} (module_known={} closure={} arity_match={} traces={})",
                             target_name,
                             use_direct_call,
-                            defined_functions.contains(target_name),
+                            module_known_functions.contains(target_name),
                             closure_functions.contains(target_name.as_str()),
                             args.len() == sig_arity,
                             emit_traces,
@@ -7264,6 +9669,12 @@ impl SimpleBackend {
                         );
                         builder.inst_results(gc_call)[0]
                     };
+                    if let Some(crate::passes::ReturnAliasSummary::Param(param_idx)) =
+                        return_alias_summaries.get(target_name)
+                        && *param_idx < args.len()
+                    {
+                        emit_inc_ref_obj(&mut builder, res, local_inc_ref_obj, &nbc);
+                    }
 
                     // Tracked-value cleanup (stays inline — varies per site).
                     // Re-attach surviving tracked values to the current block.
@@ -7288,15 +9699,23 @@ impl SimpleBackend {
                         // Use entry_vars (definition-time Value) for dec_ref,
                         // not var_get (current SSA Value). If the variable was
                         // redefined, var_get returns the WRONG object.
-                        let val = entry_vars.get(name).copied()
+                        let val = entry_vars
+                            .get(name)
+                            .copied()
                             .or_else(|| var_get(&mut builder, &vars, name).map(|v| *v));
-                        let Some(val) = val else { continue; };
+                        let Some(val) = val else {
+                            continue;
+                        };
                         builder.ins().call(local_dec_ref_obj, &[val]);
                     }
                     for name in &origin_ptr_cleanup {
-                        let val = entry_vars.get(name).copied()
+                        let val = entry_vars
+                            .get(name)
+                            .copied()
                             .or_else(|| var_get(&mut builder, &vars, name).map(|v| *v));
-                        let Some(val) = val else { continue; };
+                        let Some(val) = val else {
+                            continue;
+                        };
                         builder.ins().call(local_dec_ref_obj, &[val]);
                     }
                     for val in &arg_cleanup {
@@ -7327,10 +9746,14 @@ impl SimpleBackend {
                         tracked_vars_set.remove(name);
                         entry_vars.remove(name);
                     }
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "call_internal" => {
-                    let Some(target_name) = op.s_value.as_ref() else { continue; };
+                    let Some(target_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let mut args = Vec::new();
                     for name in args_names {
@@ -7374,7 +9797,15 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &args);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(crate::passes::ReturnAliasSummary::Param(param_idx)) =
+                        return_alias_summaries.get(target_name)
+                        && *param_idx < args.len()
+                    {
+                        emit_inc_ref_obj(&mut builder, res, local_inc_ref_obj, &nbc);
+                    }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "inc_ref" | "borrow" => {
                     if !rc_skip_inc.contains(&op_idx) {
@@ -7403,15 +9834,11 @@ impl SimpleBackend {
                     }
                 }
                 "dec_ref" | "release" => {
-                    let args_names =
-                        op.args.as_ref().expect("dec_ref/release args missing");
+                    let args_names = op.args.as_ref().expect("dec_ref/release args missing");
                     let src_name = args_names
                         .first()
                         .expect("dec_ref/release requires one source arg");
-                    // Skip dec_ref for stack-allocated tuples — their memory
-                    // is freed automatically when the stack frame unwinds.
-                    let is_stack_tuple = stack_tuples.contains_key(src_name.as_str());
-                    if is_stack_tuple || rc_skip_inc.contains(&op_idx) {
+                    if rc_skip_inc.contains(&op_idx) {
                         // No runtime call needed.  Still define the output
                         // variable so downstream SSA reads succeed.
                         if let Some(out_name) = op.out.as_ref()
@@ -7465,7 +9892,9 @@ impl SimpleBackend {
                     }
                 }
                 "call_guarded" => {
-                    let Some(target_name) = op.s_value.as_ref() else { continue; };
+                    let Some(target_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let callee_bits =
                         var_get(&mut builder, &vars, &args_names[0]).expect("Callee not found");
@@ -7480,7 +9909,13 @@ impl SimpleBackend {
                     {
                         let func_obj_bits = *var_get(&mut builder, &vars, func_obj_var)
                             .expect("Closure func obj not found for direct call");
-                        let extract_fn = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_function_closure_bits", &[types::I64], &[types::I64]);
+                        let extract_fn = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_function_closure_bits",
+                            &[types::I64],
+                            &[types::I64],
+                        );
                         let extract_local =
                             self.module.declare_func_in_func(extract_fn, builder.func);
                         let extract_call = builder.ins().call(extract_local, &[func_obj_bits]);
@@ -7494,6 +9929,7 @@ impl SimpleBackend {
                         .declared_func_arities
                         .get(target_name.as_str())
                         .copied()
+                        .or_else(|| known_function_arities.get(target_name.as_str()).copied())
                         .unwrap_or(args.len());
                     let mut sig = self.module.make_signature();
                     for _ in 0..sig_arity {
@@ -7506,14 +9942,12 @@ impl SimpleBackend {
                         Linkage::Import
                     };
 
-                    let callee = match self
-                        .module
-                        .declare_function(target_name, linkage, &sig)
-                    {
+                    let callee = match self.module.declare_function(target_name, linkage, &sig) {
                         Ok(id) => id,
                         Err(_) => {
                             // Signature mismatch — reuse existing declaration
-                            self.module.get_name(target_name)
+                            self.module
+                                .get_name(target_name)
                                 .and_then(|name_id| {
                                     if let cranelift_module::FuncOrDataId::Func(fid) = name_id {
                                         Some(fid)
@@ -7735,7 +10169,9 @@ impl SimpleBackend {
                     builder.switch_to_block(merge_block);
                     builder.seal_block(merge_block);
                     let res = builder.block_params(merge_block)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "call_func" => {
                     // Inline probe fast-path: for 0–3 positional args with no tracing,
@@ -7785,46 +10221,95 @@ impl SimpleBackend {
                         let shift16 = builder.ins().iconst(types::I64, 16);
                         let shifted = builder.ins().ishl(raw_ptr, shift16);
                         let ptr_val = builder.ins().sshr(shifted, shift16);
-                        let type_id = builder.ins().load(
-                            types::I32, MemFlags::trusted(), ptr_val, -16i32,
-                        );
+                        let type_id =
+                            builder
+                                .ins()
+                                .load(types::I32, MemFlags::trusted(), ptr_val, -16i32);
                         let expected_type = builder.ins().iconst(types::I32, 221);
                         let type_ok = builder.ins().icmp(IntCC::Equal, type_id, expected_type);
                         let closure_check_block = builder.create_block();
-                        brif_block(&mut builder, type_ok, closure_check_block, &[], slow_block, &[]);
+                        brif_block(
+                            &mut builder,
+                            type_ok,
+                            closure_check_block,
+                            &[],
+                            slow_block,
+                            &[],
+                        );
 
                         // Step 3: Check closure_bits == 0 (at ptr+24)
                         builder.switch_to_block(closure_check_block);
                         builder.seal_block(closure_check_block);
-                        let closure_bits_v = builder.ins().load(
-                            types::I64, MemFlags::trusted(), ptr_val, 24i32,
-                        );
+                        let closure_bits_v =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlags::trusted(), ptr_val, 24i32);
                         let zero = builder.ins().iconst(types::I64, 0);
                         let no_closure = builder.ins().icmp(IntCC::Equal, closure_bits_v, zero);
-                        let arity_check_block = builder.create_block();
-                        brif_block(&mut builder, no_closure, arity_check_block, &[], slow_block, &[]);
+                        let trampoline_check_block = builder.create_block();
+                        brif_block(
+                            &mut builder,
+                            no_closure,
+                            trampoline_check_block,
+                            &[],
+                            slow_block,
+                            &[],
+                        );
 
-                        // Step 4: Check arity (at ptr+8)
+                        // Step 4: Reject trampoline-backed functions. Those are
+                        // lowered through the canonical runtime trampoline path
+                        // rather than a raw fn_ptr call.
+                        builder.switch_to_block(trampoline_check_block);
+                        builder.seal_block(trampoline_check_block);
+                        let tramp_ptr_v =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlags::trusted(), ptr_val, 40i32);
+                        let no_trampoline = builder.ins().icmp(IntCC::Equal, tramp_ptr_v, zero);
+                        let arity_check_block = builder.create_block();
+                        brif_block(
+                            &mut builder,
+                            no_trampoline,
+                            arity_check_block,
+                            &[],
+                            slow_block,
+                            &[],
+                        );
+
+                        // Step 5: Check arity (at ptr+8)
                         builder.switch_to_block(arity_check_block);
                         builder.seal_block(arity_check_block);
-                        let arity = builder.ins().load(
-                            types::I64, MemFlags::trusted(), ptr_val, 8i32,
-                        );
+                        let arity =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlags::trusted(), ptr_val, 8i32);
                         let expected_arity = builder.ins().iconst(types::I64, nargs as i64);
                         let arity_ok = builder.ins().icmp(IntCC::Equal, arity, expected_arity);
                         let direct_call_block = builder.create_block();
-                        brif_block(&mut builder, arity_ok, direct_call_block, &[], slow_block, &[]);
+                        brif_block(
+                            &mut builder,
+                            arity_ok,
+                            direct_call_block,
+                            &[],
+                            slow_block,
+                            &[],
+                        );
 
-                        // Step 5: Load fn_ptr (at ptr+0), recursion guard, call_indirect
+                        // Step 6: Load fn_ptr (at ptr+0), recursion guard, call_indirect
                         builder.switch_to_block(direct_call_block);
                         builder.seal_block(direct_call_block);
-                        let fn_ptr_v = builder.ins().load(
-                            types::I64, MemFlags::trusted(), ptr_val, 0i32,
-                        );
+                        let fn_ptr_v =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlags::trusted(), ptr_val, 0i32);
                         let guard_enter = import_func_ref(
-                            &mut self.module, &mut self.import_ids, &mut builder,
-                            &mut import_refs, "molt_recursion_enter_fast",
-                            &[], &[types::I64],
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            "molt_recursion_enter_fast",
+                            &[],
+                            &[types::I64],
                         );
                         let enter_call = builder.ins().call(guard_enter, &[]);
                         let guard_ok = builder.inst_results(enter_call)[0];
@@ -7832,15 +10317,26 @@ impl SimpleBackend {
                         let is_guard_ok = builder.ins().icmp(IntCC::NotEqual, guard_ok, guard_zero);
                         let call_block = builder.create_block();
                         let guard_fail_block = builder.create_block();
-                        brif_block(&mut builder, is_guard_ok, call_block, &[], guard_fail_block, &[]);
+                        brif_block(
+                            &mut builder,
+                            is_guard_ok,
+                            call_block,
+                            &[],
+                            guard_fail_block,
+                            &[],
+                        );
 
                         // Guard fail: raise RecursionError (cold)
                         builder.switch_to_block(guard_fail_block);
                         builder.seal_block(guard_fail_block);
                         let raise_ref = import_func_ref(
-                            &mut self.module, &mut self.import_ids, &mut builder,
-                            &mut import_refs, "molt_raise_recursion_error",
-                            &[], &[types::I64],
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            "molt_raise_recursion_error",
+                            &[],
+                            &[types::I64],
                         );
                         let raise_call = builder.ins().call(raise_ref, &[]);
                         let err_val = builder.inst_results(raise_call)[0];
@@ -7858,9 +10354,13 @@ impl SimpleBackend {
                         let indirect_call = builder.ins().call_indirect(sig_ref, fn_ptr_v, &args);
                         let direct_res = builder.inst_results(indirect_call)[0];
                         let guard_exit = import_func_ref(
-                            &mut self.module, &mut self.import_ids, &mut builder,
-                            &mut import_refs, "molt_recursion_exit_fast",
-                            &[], &[],
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            "molt_recursion_exit_fast",
+                            &[],
+                            &[],
                         );
                         builder.ins().call(guard_exit, &[]);
                         jump_block(&mut builder, merge_block, &[direct_res]);
@@ -7880,8 +10380,13 @@ impl SimpleBackend {
                             param_types.push(types::I64);
                         }
                         let fast_ref = import_func_ref(
-                            &mut self.module, &mut self.import_ids, &mut builder,
-                            &mut import_refs, fast_name, &param_types, &[types::I64],
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            fast_name,
+                            &param_types,
+                            &[types::I64],
                         );
                         let mut slow_call_args = Vec::with_capacity(nargs + 1);
                         slow_call_args.push(*func_bits);
@@ -7902,14 +10407,18 @@ impl SimpleBackend {
                             3, // align_shift: 2^3 = 8-byte alignment
                         ));
                         for (i, arg) in args.iter().enumerate() {
-                            builder
-                                .ins()
-                                .stack_store(*arg, args_slot, (i * 8) as i32);
+                            builder.ins().stack_store(*arg, args_slot, (i * 8) as i32);
                         }
                         let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
                         let nargs_val = builder.ins().iconst(types::I64, nargs as i64);
                         let code_id_val = builder.ins().iconst(types::I64, code_id);
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_call_func_dispatch", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_call_func_dispatch",
+                            &[types::I64, types::I64, types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(
                             local_callee,
@@ -7917,7 +10426,9 @@ impl SimpleBackend {
                         );
                         builder.inst_results(call)[0]
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "invoke_ffi" => {
                     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -7976,14 +10487,22 @@ impl SimpleBackend {
                         .ins()
                         .iconst(types::I64, box_bool(if bridge_lane { 1 } else { 0 }));
 
-                    let invoke_fn = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_invoke_ffi_ic", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let invoke_fn = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_invoke_ffi_ic",
+                        &[types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let invoke_local = self.module.declare_func_in_func(invoke_fn, builder.func);
                     let invoke_call = builder.ins().call(
                         invoke_local,
                         &[site_bits, *func_bits, callargs_ptr, require_bridge_cap],
                     );
                     let res = builder.inst_results(invoke_call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "call_bind" | "call_indirect" => {
                     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -8035,7 +10554,9 @@ impl SimpleBackend {
                         .ins()
                         .call(local_callee, &[site_bits, *func_bits, *builder_ptr]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
 
                     // `molt_call_bind*` consumes the CallArgs builder pointer and decrefs it
                     // internally (see `PtrDropGuard` in runtime). The backend's lifetime tracking
@@ -8123,27 +10644,45 @@ impl SimpleBackend {
                         .ins()
                         .call(call_bind_local, &[site_bits, *method_bits, callargs_ptr]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "module_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let name_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module name not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_module_new", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_module_new",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*name_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "class_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let name_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Class name not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_class_new", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_class_new",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*name_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 // Outlined class definition via molt_guarded_class_def
                 "class_def" => {
@@ -8194,58 +10733,111 @@ impl SimpleBackend {
                     let layout_size_val = builder.ins().iconst(types::I64, layout_size);
                     let layout_version_val = builder.ins().iconst(types::I64, layout_version);
                     let flags_val = builder.ins().iconst(types::I64, flags);
-                    let cd_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_guarded_class_def", &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
-                    let cd_local =
-                        self.module.declare_func_in_func(cd_callee, builder.func);
+                    let cd_callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_guarded_class_def",
+                        &[
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                        ],
+                        &[types::I64],
+                    );
+                    let cd_local = self.module.declare_func_in_func(cd_callee, builder.func);
                     let cd_call = builder.ins().call(
                         cd_local,
                         &[
-                            *name_bits, bases_ptr, nbases_val,
-                            attrs_ptr, nattrs_val,
-                            layout_size_val, layout_version_val, flags_val,
+                            *name_bits,
+                            bases_ptr,
+                            nbases_val,
+                            attrs_ptr,
+                            nattrs_val,
+                            layout_size_val,
+                            layout_version_val,
+                            flags_val,
                         ],
                     );
                     let res = builder.inst_results(cd_call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "builtin_type" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let tag_bits = var_get(&mut builder, &vars, &args[0]).expect("Tag not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_builtin_type", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_builtin_type",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*tag_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "type_of" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Object not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_type_of", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_type_of",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "is_native_awaitable" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Object not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_is_native_awaitable", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_is_native_awaitable",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "class_layout_version" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let class_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Class not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_class_layout_version", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_class_layout_version",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*class_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "class_set_layout_version" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -8253,7 +10845,13 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let version_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Version not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_class_set_layout_version", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_class_set_layout_version",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
@@ -8271,11 +10869,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let class_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Class not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_isinstance", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_isinstance",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj_bits, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "issubclass" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -8283,18 +10889,34 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Subclass not found");
                     let class_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Class not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_issubclass", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_issubclass",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*sub_bits, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "object_new" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_object_new", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_object_new",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "class_set_base" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -8302,50 +10924,90 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let base_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Base class not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_class_set_base", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_class_set_base",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*class_bits, *base_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "class_apply_set_name" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let class_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Class not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_class_apply_set_name", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_class_apply_set_name",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*class_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "super_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let type_bits = var_get(&mut builder, &vars, &args[0]).expect("Type not found");
                     let obj_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Object not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_super_new", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_super_new",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*type_bits, *obj_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "classmethod_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let func_bits = var_get(&mut builder, &vars, &args[0]).expect("Func not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_classmethod_new", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_classmethod_new",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*func_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "staticmethod_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let func_bits = var_get(&mut builder, &vars, &args[0]).expect("Func not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_staticmethod_new", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_staticmethod_new",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*func_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "property_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -8353,13 +11015,21 @@ impl SimpleBackend {
                     let setter = var_get(&mut builder, &vars, &args[1]).expect("Setter not found");
                     let deleter =
                         var_get(&mut builder, &vars, &args[2]).expect("Deleter not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_property_new", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_property_new",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*getter, *setter, *deleter]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "object_set_class" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -8368,27 +11038,49 @@ impl SimpleBackend {
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj_bits, &nbc);
                     let class_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Class not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_object_set_class", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_object_set_class",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[obj_ptr, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "module_cache_get" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let name_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module name not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_module_cache_get", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_module_cache_get",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*name_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "module_import" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let name_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module name not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_module_import", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_module_import",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*name_bits]);
                     let res = builder.inst_results(call)[0];
@@ -8396,7 +11088,9 @@ impl SimpleBackend {
                     // inc_ref to ensure the caller owns it and dec_ref at last_use
                     // doesn't free a module still in sys.modules.
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "module_cache_set" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -8404,7 +11098,13 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Module name not found");
                     let module_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Module not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_module_cache_set", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_module_cache_set",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder
                         .ins()
@@ -8414,7 +11114,13 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let name_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module name not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_module_cache_del", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_module_cache_del",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*name_bits]);
                 }
@@ -8432,33 +11138,55 @@ impl SimpleBackend {
                             func_ir.name, op_idx, op.args
                         )
                     });
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_module_get_attr", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_module_get_attr",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*module_bits, *attr_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "module_get_global" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let module_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module not found");
                     let attr_bits = var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_module_get_global", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_module_get_global",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*module_bits, *attr_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "module_del_global" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let module_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module not found");
                     let attr_bits = var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_module_del_global", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_module_del_global",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
@@ -8475,13 +11203,21 @@ impl SimpleBackend {
                     let module_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module not found");
                     let attr_bits = var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_module_get_name", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_module_get_name",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*module_bits, *attr_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "module_set_attr" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -8494,7 +11230,13 @@ impl SimpleBackend {
                             func_ir.name, op_idx
                         )
                     });
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_module_set_attr", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_module_set_attr",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder
                         .ins()
@@ -8506,7 +11248,13 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Module not found");
                     let dst_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Module not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_module_import_star", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_module_import_star",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*src_bits, *dst_bits]);
                 }
@@ -8514,83 +11262,161 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let payload =
                         var_get(&mut builder, &vars, &args[0]).expect("Payload not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_context_null", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_context_null",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*payload]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "context_enter" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let ctx = var_get(&mut builder, &vars, &args[0]).expect("Context not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_context_enter", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_context_enter",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*ctx]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "context_exit" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let ctx = var_get(&mut builder, &vars, &args[0]).expect("Context not found");
                     let exc = var_get(&mut builder, &vars, &args[1]).expect("Exception not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_context_exit", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_context_exit",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*ctx, *exc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "context_closing" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let payload =
                         var_get(&mut builder, &vars, &args[0]).expect("Payload not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_context_closing", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_context_closing",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*payload]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "context_unwind" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_context_unwind", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_context_unwind",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "context_depth" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_context_depth", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_context_depth",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "context_unwind_to" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let depth = var_get(&mut builder, &vars, &args[0]).expect("Depth not found");
                     let exc = var_get(&mut builder, &vars, &args[1]).expect("Exception not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_context_unwind_to", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_context_unwind_to",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*depth, *exc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "exception_push" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_push", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_push",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "exception_pop" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_pop", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_pop",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "exception_stack_clear" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_stack_clear", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_stack_clear",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     if let Some(out_name) = op.out {
@@ -8599,24 +11425,46 @@ impl SimpleBackend {
                     }
                 }
                 "exception_stack_depth" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_stack_depth", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_stack_depth",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "exception_stack_enter" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_stack_enter", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_stack_enter",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "exception_stack_exit" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let prev = var_get(&mut builder, &vars, &args[0])
                         .expect("exception baseline not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_stack_exit", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_stack_exit",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*prev]);
                     if let Some(out_name) = op.out.as_ref()
@@ -8630,7 +11478,13 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let depth =
                         var_get(&mut builder, &vars, &args[0]).expect("exception depth not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_stack_set_depth", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_stack_set_depth",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*depth]);
                     if let Some(out_name) = op.out.as_ref()
@@ -8641,154 +11495,288 @@ impl SimpleBackend {
                     }
                 }
                 "exception_last" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_last", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_last",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "getargv" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_getargv", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_getargv",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "getframe" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let depth = var_get(&mut builder, &vars, &args[0]).expect("depth not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_getframe", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_getframe",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*depth]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "sys_executable" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_sys_executable", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_sys_executable",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "exception_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let kind = var_get(&mut builder, &vars, &args[0]).expect("Kind not found");
                     let args_bits = var_get(&mut builder, &vars, &args[1]).expect("Args not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_new", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_new",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*kind, *args_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "exception_new_from_class" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let class_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let args_bits = var_get(&mut builder, &vars, &args[1]).expect("Args not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_new_from_class", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_new_from_class",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*class_bits, *args_bits]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "exceptiongroup_match" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let matcher =
                         var_get(&mut builder, &vars, &args[1]).expect("Matcher not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exceptiongroup_match", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exceptiongroup_match",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc, *matcher]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "exceptiongroup_combine" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let items =
                         var_get(&mut builder, &vars, &args[0]).expect("Exception list not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exceptiongroup_combine", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exceptiongroup_combine",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*items]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "exception_clear" => {
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_clear", &[], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_clear",
+                        &[],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "exception_kind" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_kind", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_kind",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "exception_class" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let kind =
                         var_get(&mut builder, &vars, &args[0]).expect("Exception kind not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_class", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_class",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*kind]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "exception_message" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_message", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_message",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "exception_set_cause" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let cause = var_get(&mut builder, &vars, &args[1]).expect("Cause not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_set_cause", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_set_cause",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc, *cause]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "exception_set_last" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_set_last", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_set_last",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "exception_set_value" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
                     let value = var_get(&mut builder, &vars, &args[1]).expect("Value not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_set_value", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_set_value",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc, *value]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "exception_context_set" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_exception_context_set", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_context_set",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "raise" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let exc = var_get(&mut builder, &vars, &args[0]).expect("Exception not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_raise", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_raise",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*exc]);
                     let res = builder.inst_results(call)[0];
@@ -8833,26 +11821,45 @@ impl SimpleBackend {
                             eprintln!("check_exception {} op={}", func_ir.name, op_idx,);
                         }
                     }
-                    let mut scrubbed_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+                    let mut scrubbed_names: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
                     if !carry_obj.is_empty() {
-                        let cleanup =
-                            drain_cleanup_tracked_dedup(&mut carry_obj, &last_use, op_idx, None, Some(&mut already_decrefed));
+                        let cleanup = drain_cleanup_tracked_dedup(
+                            &mut carry_obj,
+                            &last_use,
+                            op_idx,
+                            None,
+                            Some(&mut already_decrefed),
+                        );
                         for name in cleanup {
-                            let val = entry_vars.get(&name).copied()
+                            let val = entry_vars
+                                .get(&name)
+                                .copied()
                                 .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
-                            let Some(val) = val else { continue; };
+                            let Some(val) = val else {
+                                continue;
+                            };
                             builder.ins().call(local_dec_ref_obj, &[val]);
                             entry_vars.remove(&name);
                             scrubbed_names.insert(name);
                         }
                     }
                     if !carry_ptr.is_empty() {
-                        let cleanup =
-                            drain_cleanup_tracked_dedup(&mut carry_ptr, &last_use, op_idx, None, Some(&mut already_decrefed));
+                        let cleanup = drain_cleanup_tracked_dedup(
+                            &mut carry_ptr,
+                            &last_use,
+                            op_idx,
+                            None,
+                            Some(&mut already_decrefed),
+                        );
                         for name in cleanup {
-                            let val = entry_vars.get(&name).copied()
+                            let val = entry_vars
+                                .get(&name)
+                                .copied()
                                 .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
-                            let Some(val) = val else { continue; };
+                            let Some(val) = val else {
+                                continue;
+                            };
                             builder.ins().call(local_dec_ref_obj, &[val]);
                             entry_vars.remove(&name);
                             scrubbed_names.insert(name);
@@ -8888,33 +11895,43 @@ impl SimpleBackend {
                     } else if let Some(fn_ref) = exc_flag_ptr_fn {
                         // Stateful path: fetch pointer once per block, cache it.
                         let current_block = builder.current_block().unwrap();
-                        let ptr = if let Some(&cached) = exc_flag_ptr_block_cache.get(&current_block) {
-                            cached
-                        } else {
-                            let call = builder.ins().call(fn_ref, &[]);
-                            let ptr = builder.inst_results(call)[0];
-                            exc_flag_ptr_block_cache.insert(current_block, ptr);
-                            ptr
-                        };
+                        let ptr =
+                            if let Some(&cached) = exc_flag_ptr_block_cache.get(&current_block) {
+                                cached
+                            } else {
+                                let call = builder.ins().call(fn_ref, &[]);
+                                let ptr = builder.inst_results(call)[0];
+                                exc_flag_ptr_block_cache.insert(current_block, ptr);
+                                ptr
+                            };
                         Some(ptr)
                     } else {
                         None
                     };
                     if let Some(flag_ptr) = flag_ptr_val {
                         // Fast path: inline byte load from flag address
-                        let pending_byte = builder.ins().load(
-                            types::I8,
-                            MemFlags::trusted(),
-                            flag_ptr,
-                            0,
-                        );
+                        let pending_byte =
+                            builder
+                                .ins()
+                                .load(types::I8, MemFlags::trusted(), flag_ptr, 0);
                         let pending_i64 = builder.ins().uextend(types::I64, pending_byte);
                         let is_pending = builder.ins().icmp_imm(IntCC::NotEqual, pending_i64, 0);
                         // On positive read, validate with full function before branching
                         let validate_block = builder.create_block();
                         reachable_blocks.insert(validate_block);
-                        brif_block(&mut builder, is_pending, validate_block, &[], fallthrough, &[]);
-                        switch_to_block_tracking(&mut builder, validate_block, &mut is_block_filled);
+                        brif_block(
+                            &mut builder,
+                            is_pending,
+                            validate_block,
+                            &[],
+                            fallthrough,
+                            &[],
+                        );
+                        switch_to_block_tracking(
+                            &mut builder,
+                            validate_block,
+                            &mut is_block_filled,
+                        );
                         let call = builder.ins().call(local_exc_pending_fast, &[]);
                         let confirmed = builder.inst_results(call)[0];
                         let cond2 = builder.ins().icmp_imm(IntCC::NotEqual, confirmed, 0);
@@ -8963,63 +11980,117 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let path = var_get(&mut builder, &vars, &args[0]).expect("Path not found");
                     let mode = var_get(&mut builder, &vars, &args[1]).expect("Mode not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_file_open", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_file_open",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*path, *mode]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "file_read" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let handle = var_get(&mut builder, &vars, &args[0]).expect("Handle not found");
                     let size = var_get(&mut builder, &vars, &args[1]).expect("Size not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_file_read", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_file_read",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*handle, *size]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "file_write" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let handle = var_get(&mut builder, &vars, &args[0]).expect("Handle not found");
                     let data = var_get(&mut builder, &vars, &args[1]).expect("Data not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_file_write", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_file_write",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*handle, *data]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "file_close" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let handle = var_get(&mut builder, &vars, &args[0]).expect("Handle not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_file_close", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_file_close",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*handle]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "file_flush" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let handle = var_get(&mut builder, &vars, &args[0]).expect("Handle not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_file_flush", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_file_flush",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*handle]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "bridge_unavailable" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let msg = var_get(&mut builder, &vars, &args[0]).expect("Message not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_bridge_unavailable", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_bridge_unavailable",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*msg]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "if" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_is_truthy", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_is_truthy",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*cond]);
                     let truthy = builder.inst_results(call)[0];
@@ -9031,8 +12102,13 @@ impl SimpleBackend {
                         .current_block()
                         .expect("if requires an active block");
                     let mut carry_obj = block_tracked_obj.remove(&origin_block).unwrap_or_default();
-                    let cleanup_obj =
-                        drain_cleanup_tracked_dedup(&mut carry_obj, &last_use, op_idx, None, Some(&mut already_decrefed));
+                    let cleanup_obj = drain_cleanup_tracked_dedup(
+                        &mut carry_obj,
+                        &last_use,
+                        op_idx,
+                        None,
+                        Some(&mut already_decrefed),
+                    );
                     for name in cleanup_obj {
                         let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
                             panic!(
@@ -9043,8 +12119,13 @@ impl SimpleBackend {
                         builder.ins().call(local_dec_ref_obj, &[*val]);
                     }
                     let mut carry_ptr = block_tracked_ptr.remove(&origin_block).unwrap_or_default();
-                    let cleanup_ptr =
-                        drain_cleanup_tracked_dedup(&mut carry_ptr, &last_use, op_idx, None, Some(&mut already_decrefed));
+                    let cleanup_ptr = drain_cleanup_tracked_dedup(
+                        &mut carry_ptr,
+                        &last_use,
+                        op_idx,
+                        None,
+                        Some(&mut already_decrefed),
+                    );
                     for name in cleanup_ptr {
                         let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
                             panic!(
@@ -9209,8 +12290,13 @@ impl SimpleBackend {
                         if let Some(block) = builder.current_block() {
                             let mut carry_obj =
                                 block_tracked_obj.remove(&block).unwrap_or_default();
-                            let cleanup =
-                                drain_cleanup_tracked_dedup(&mut carry_obj, &last_use, op_idx, None, Some(&mut already_decrefed));
+                            let cleanup = drain_cleanup_tracked_dedup(
+                                &mut carry_obj,
+                                &last_use,
+                                op_idx,
+                                None,
+                                Some(&mut already_decrefed),
+                            );
                             for name in cleanup {
                                 let val =
                                     var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
@@ -9230,8 +12316,13 @@ impl SimpleBackend {
 
                             let mut carry_ptr =
                                 block_tracked_ptr.remove(&block).unwrap_or_default();
-                            let cleanup =
-                                drain_cleanup_tracked_dedup(&mut carry_ptr, &last_use, op_idx, None, Some(&mut already_decrefed));
+                            let cleanup = drain_cleanup_tracked_dedup(
+                                &mut carry_ptr,
+                                &last_use,
+                                op_idx,
+                                None,
+                                Some(&mut already_decrefed),
+                            );
                             for name in cleanup {
                                 let val =
                                     var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
@@ -9313,8 +12404,13 @@ impl SimpleBackend {
                             if let Some(block) = builder.current_block() {
                                 let mut carry_obj =
                                     block_tracked_obj.remove(&block).unwrap_or_default();
-                                let cleanup =
-                                    drain_cleanup_tracked_dedup(&mut carry_obj, &last_use, op_idx, None, Some(&mut already_decrefed));
+                                let cleanup = drain_cleanup_tracked_dedup(
+                                    &mut carry_obj,
+                                    &last_use,
+                                    op_idx,
+                                    None,
+                                    Some(&mut already_decrefed),
+                                );
                                 for name in cleanup {
                                     let val =
                                         var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
@@ -9334,8 +12430,13 @@ impl SimpleBackend {
 
                                 let mut carry_ptr =
                                     block_tracked_ptr.remove(&block).unwrap_or_default();
-                                let cleanup =
-                                    drain_cleanup_tracked_dedup(&mut carry_ptr, &last_use, op_idx, None, Some(&mut already_decrefed));
+                                let cleanup = drain_cleanup_tracked_dedup(
+                                    &mut carry_ptr,
+                                    &last_use,
+                                    op_idx,
+                                    None,
+                                    Some(&mut already_decrefed),
+                                );
                                 for name in cleanup {
                                     let val =
                                         var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
@@ -9388,8 +12489,13 @@ impl SimpleBackend {
                             if let Some(block) = builder.current_block() {
                                 let mut carry_obj =
                                     block_tracked_obj.remove(&block).unwrap_or_default();
-                                let cleanup =
-                                    drain_cleanup_tracked_dedup(&mut carry_obj, &last_use, op_idx, None, Some(&mut already_decrefed));
+                                let cleanup = drain_cleanup_tracked_dedup(
+                                    &mut carry_obj,
+                                    &last_use,
+                                    op_idx,
+                                    None,
+                                    Some(&mut already_decrefed),
+                                );
                                 for name in cleanup {
                                     let val =
                                         var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
@@ -9409,8 +12515,13 @@ impl SimpleBackend {
 
                                 let mut carry_ptr =
                                     block_tracked_ptr.remove(&block).unwrap_or_default();
-                                let cleanup =
-                                    drain_cleanup_tracked_dedup(&mut carry_ptr, &last_use, op_idx, None, Some(&mut already_decrefed));
+                                let cleanup = drain_cleanup_tracked_dedup(
+                                    &mut carry_ptr,
+                                    &last_use,
+                                    op_idx,
+                                    None,
+                                    Some(&mut already_decrefed),
+                                );
                                 for name in cleanup {
                                     let val =
                                         var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
@@ -9466,8 +12577,13 @@ impl SimpleBackend {
                             if let Some(block) = builder.current_block() {
                                 let mut carry_obj =
                                     block_tracked_obj.remove(&block).unwrap_or_default();
-                                let cleanup =
-                                    drain_cleanup_tracked_dedup(&mut carry_obj, &last_use, op_idx, None, Some(&mut already_decrefed));
+                                let cleanup = drain_cleanup_tracked_dedup(
+                                    &mut carry_obj,
+                                    &last_use,
+                                    op_idx,
+                                    None,
+                                    Some(&mut already_decrefed),
+                                );
                                 for name in cleanup {
                                     let val =
                                         var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
@@ -9487,8 +12603,13 @@ impl SimpleBackend {
 
                                 let mut carry_ptr =
                                     block_tracked_ptr.remove(&block).unwrap_or_default();
-                                let cleanup =
-                                    drain_cleanup_tracked_dedup(&mut carry_ptr, &last_use, op_idx, None, Some(&mut already_decrefed));
+                                let cleanup = drain_cleanup_tracked_dedup(
+                                    &mut carry_ptr,
+                                    &last_use,
+                                    op_idx,
+                                    None,
+                                    Some(&mut already_decrefed),
+                                );
                                 for name in cleanup {
                                     let val =
                                         var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
@@ -9564,13 +12685,11 @@ impl SimpleBackend {
                     }
                 }
                 "loop_start" => {
-                    let indexed_loop_follows = func_ir
-                        .ops
-                        .get(op_idx + 1)
-                        .is_some_and(|next| next.kind == "loop_index_start");
+                    let indexed_loop_follows = loop_start_has_index_prelude(&func_ir.ops, op_idx);
                     if indexed_loop_follows {
-                        // Indexed loops are emitted as LOOP_START + LOOP_INDEX_START.
-                        // LOOP_INDEX_START owns the loop frame and IV block param.
+                        // Indexed loops may carry a constant-materialization
+                        // prelude between LOOP_START and LOOP_INDEX_START.
+                        // LOOP_INDEX_START owns the real loop frame and IV.
                         continue;
                     }
                     let loop_block = builder.create_block();
@@ -9594,7 +12713,9 @@ impl SimpleBackend {
                     loop_depth += 1;
                 }
                 "loop_index_start" => {
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     if !is_block_filled {
                         let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
 
@@ -9603,19 +12724,33 @@ impl SimpleBackend {
                         // store_var + jump to a state label.  In that case the
                         // back-edge bypasses any dedicated loop block we create.
                         // Scope-aware: skip over inner loops by tracking depth.
-                        let has_structured_backedge = {
+                        let (has_structured_backedge, contains_nested_loop) = {
                             let mut depth = 0i32;
-                            let mut found = false;
+                            let mut found_backedge = false;
+                            let mut nested_loop = false;
                             for i in (op_idx + 1)..ops.len() {
                                 match ops[i].kind.as_str() {
-                                    "loop_start" | "loop_index_start" => depth += 1,
-                                    "loop_end" if depth > 0 => { depth -= 1; }
-                                    "loop_end" => { found = true; break; }
-                                    "loop_continue" if depth == 0 => { found = true; break; }
+                                    "loop_start" | "loop_index_start" => {
+                                        if depth == 0 {
+                                            nested_loop = true;
+                                        }
+                                        depth += 1;
+                                    }
+                                    "loop_end" if depth > 0 => {
+                                        depth -= 1;
+                                    }
+                                    "loop_end" => {
+                                        found_backedge = true;
+                                        break;
+                                    }
+                                    "loop_continue" if depth == 0 => {
+                                        found_backedge = true;
+                                        break;
+                                    }
                                     _ => {}
                                 }
                             }
-                            found
+                            (found_backedge, nested_loop)
                         };
 
                         // Try to find the phi variable for the counter via
@@ -9628,7 +12763,9 @@ impl SimpleBackend {
                                     next_out = ops[fwd].out.as_deref();
                                     break;
                                 }
-                                if ops[fwd].kind == "loop_end" { break; }
+                                if ops[fwd].kind == "loop_end" {
+                                    break;
+                                }
                             }
                             // Step 2: find store_var _bb*_arg* that stores it
                             let mut arg_name: Option<String> = None;
@@ -9637,7 +12774,8 @@ impl SimpleBackend {
                                     let f = &ops[fwd];
                                     if f.kind == "store_var" {
                                         if let (Some(v), Some(a)) = (&f.var, &f.args) {
-                                            if v.starts_with("_bb") && v.contains("_arg")
+                                            if v.starts_with("_bb")
+                                                && v.contains("_arg")
                                                 && a.first().map(|s| s.as_str()) == Some(next)
                                             {
                                                 arg_name = Some(v.clone());
@@ -9645,15 +12783,16 @@ impl SimpleBackend {
                                             }
                                         }
                                     }
-                                    if f.kind == "loop_end" { break; }
+                                    if f.kind == "loop_end" {
+                                        break;
+                                    }
                                 }
                             }
                             // Step 3: backward-scan for load_var of that arg
                             if let Some(ref an) = arg_name {
                                 for bwd in (0..op_idx).rev() {
                                     let b = &ops[bwd];
-                                    if b.kind == "load_var"
-                                        && b.var.as_deref() == Some(an.as_str())
+                                    if b.kind == "load_var" && b.var.as_deref() == Some(an.as_str())
                                     {
                                         if let Some(ref out) = b.out {
                                             if let Some(v) = var_get(&mut builder, &vars, out) {
@@ -9666,15 +12805,38 @@ impl SimpleBackend {
                             None
                         };
 
-                        if !has_structured_backedge && phi_value.is_some() {
+                        let allow_linearized_loop = !has_structured_backedge
+                            && phi_value.is_some()
+                            && loop_depth == 0
+                            && !contains_nested_loop;
+                        if debug_loop_cfg.is_some() {
+                            eprintln!(
+                                "LOOP_CFG {} op{} loop_index_start filled={} depth={} linearized={} structured_backedge={} nested_loop={} phi={}",
+                                func_ir.name,
+                                op_idx,
+                                is_block_filled,
+                                loop_depth,
+                                allow_linearized_loop,
+                                has_structured_backedge,
+                                contains_nested_loop,
+                                phi_value.is_some(),
+                            );
+                        }
+                        if allow_linearized_loop {
                             // Linearized loop: define counter directly from the
                             // phi variable.  The back-edge flows through
                             // store_var/load_var on the state label block, so
                             // SSA resolution handles the counter update.
-                            // Do NOT increment loop_depth — we are not creating
-                            // a real loop block, so nested loops should not see
-                            // elevated depth (which triggers preheader creation).
-                            def_var_named(&mut builder, &vars, out_name.clone(), phi_value.unwrap());
+                            // This is only sound for top-level indexed loops
+                            // without nested loop bodies. Nested loops require
+                            // a structured frame so loop_depth and CFG sealing
+                            // remain coherent.
+                            def_var_named(
+                                &mut builder,
+                                &vars,
+                                out_name.clone(),
+                                phi_value.unwrap(),
+                            );
                             let dummy = builder.create_block();
                             loop_stack.push(LoopFrame {
                                 loop_block: dummy,
@@ -9722,6 +12884,12 @@ impl SimpleBackend {
                             index_name: Some(out_name),
                             next_index: None,
                         });
+                        if debug_loop_cfg.is_some() {
+                            eprintln!(
+                                "LOOP_CFG {} op{} structured_loop loop={:?} body={:?} after={:?}",
+                                func_ir.name, op_idx, loop_block, body_block, after_block
+                            );
+                        }
                         loop_depth += 1;
                     } else {
                         let loop_block = builder.create_block();
@@ -9736,6 +12904,17 @@ impl SimpleBackend {
                             index_name: Some(out_name),
                             next_index: None,
                         });
+                        if debug_loop_cfg.is_some() {
+                            eprintln!(
+                                "LOOP_CFG {} op{} fallback_loop filled={} loop={:?} body={:?} after={:?}",
+                                func_ir.name,
+                                op_idx,
+                                is_block_filled,
+                                loop_block,
+                                body_block,
+                                after_block
+                            );
+                        }
                         loop_depth += 1;
                     }
                 }
@@ -9743,161 +12922,237 @@ impl SimpleBackend {
                     if loop_stack.is_empty() {
                         is_block_filled = true;
                     } else {
-                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let cond =
-                        var_get(&mut builder, &vars, &args[0]).expect("Loop break cond not found");
-                    let frame = loop_stack.last().unwrap();
-                    let current_block = builder
-                        .current_block()
-                        .expect("loop_break_if_true requires an active block");
-                    let mut carry_obj_lb = block_tracked_obj.remove(&current_block).unwrap_or_default();
-                    let tracked_obj_snapshot = drain_cleanup_tracked_dedup(&mut carry_obj_lb, &last_use, op_idx, None, Some(&mut already_decrefed));
-                    let mut carry_ptr_lb = block_tracked_ptr.remove(&current_block).unwrap_or_default();
-                    let tracked_ptr_snapshot = drain_cleanup_tracked_dedup(&mut carry_ptr_lb, &last_use, op_idx, None, Some(&mut already_decrefed));
-                    // Fast path: extract bool payload directly for NaN-boxed
-                    // booleans from fast_int comparisons (mirrors loop_break_if_false).
-                    let prev_is_fast_bool = op_idx > 0 && {
-                        let prev = &func_ir.ops[op_idx - 1];
-                        prev.fast_int.unwrap_or(false)
-                            && matches!(
-                                prev.kind.as_str(),
-                                "lt" | "le" | "gt" | "ge" | "eq" | "ne"
-                            )
-                    };
-                    let cond_bool = if prev_is_fast_bool {
-                        let one = builder.ins().iconst(types::I64, 1);
-                        let payload = builder.ins().band(*cond, one);
-                        builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
-                    } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_is_truthy", &[types::I64], &[types::I64]);
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let call = builder.ins().call(local_callee, &[*cond]);
-                        let truthy = builder.inst_results(call)[0];
-                        builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0)
-                    };
-                    let cleanup_block = builder.create_block();
-                    if let Some(current_block) = builder.current_block() {
-                        builder.insert_block_after(cleanup_block, current_block);
-                    }
-                    reachable_blocks.insert(cleanup_block);
-                    reachable_blocks.insert(frame.body_block);
-                    builder
-                        .ins()
-                        .brif(cond_bool, cleanup_block, &[], frame.body_block, &[]);
-                    switch_to_block_tracking(&mut builder, cleanup_block, &mut is_block_filled);
-                    builder.seal_block(cleanup_block);
-                    for name in tracked_obj_snapshot {
-                        let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                            panic!(
-                                "Tracked obj var not found in {} op {}: {}",
-                                func_ir.name, op_idx, name
-                            )
-                        });
-                        builder.ins().call(local_dec_ref_obj, &[*val]);
-                    }
-                    for name in tracked_ptr_snapshot {
-                        let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                            panic!(
-                                "Tracked ptr var not found in {} op {}: {}",
-                                func_ir.name, op_idx, name
-                            )
-                        });
-                        builder.ins().call(local_dec_ref_obj, &[*val]);
-                    }
-                    reachable_blocks.insert(frame.after_block);
-                    jump_block(&mut builder, frame.after_block, &[]);
-                    switch_to_block_tracking(&mut builder, frame.body_block, &mut is_block_filled);
-                    // Seal body_block now — its only predecessor is the brif above.
-                    if sealed_blocks.insert(frame.body_block) {
-                        builder.seal_block(frame.body_block);
-                    }
-                    propagate_tracked_to_branches(&mut block_tracked_obj, &[frame.body_block, frame.after_block], carry_obj_lb);
-                    propagate_tracked_to_branches(&mut block_tracked_ptr, &[frame.body_block, frame.after_block], carry_ptr_lb);
+                        let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                        let cond = var_get(&mut builder, &vars, &args[0])
+                            .expect("Loop break cond not found");
+                        let frame = loop_stack.last().unwrap();
+                        let current_block = builder
+                            .current_block()
+                            .expect("loop_break_if_true requires an active block");
+                        let mut carry_obj_lb =
+                            block_tracked_obj.remove(&current_block).unwrap_or_default();
+                        let tracked_obj_snapshot = drain_cleanup_tracked_dedup(
+                            &mut carry_obj_lb,
+                            &last_use,
+                            op_idx,
+                            None,
+                            Some(&mut already_decrefed),
+                        );
+                        let mut carry_ptr_lb =
+                            block_tracked_ptr.remove(&current_block).unwrap_or_default();
+                        let tracked_ptr_snapshot = drain_cleanup_tracked_dedup(
+                            &mut carry_ptr_lb,
+                            &last_use,
+                            op_idx,
+                            None,
+                            Some(&mut already_decrefed),
+                        );
+                        // Fast path: extract bool payload directly for NaN-boxed
+                        // booleans from fast_int comparisons (mirrors loop_break_if_false).
+                        let prev_is_fast_bool = op_idx > 0 && {
+                            let prev = &func_ir.ops[op_idx - 1];
+                            prev.fast_int.unwrap_or(false)
+                                && matches!(
+                                    prev.kind.as_str(),
+                                    "lt" | "le" | "gt" | "ge" | "eq" | "ne"
+                                )
+                        };
+                        let cond_bool = if prev_is_fast_bool {
+                            let one = builder.ins().iconst(types::I64, 1);
+                            let payload = builder.ins().band(*cond, one);
+                            builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
+                        } else {
+                            let callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_is_truthy",
+                                &[types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee =
+                                self.module.declare_func_in_func(callee, builder.func);
+                            let call = builder.ins().call(local_callee, &[*cond]);
+                            let truthy = builder.inst_results(call)[0];
+                            builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0)
+                        };
+                        let cleanup_block = builder.create_block();
+                        if let Some(current_block) = builder.current_block() {
+                            builder.insert_block_after(cleanup_block, current_block);
+                        }
+                        reachable_blocks.insert(cleanup_block);
+                        reachable_blocks.insert(frame.body_block);
+                        builder
+                            .ins()
+                            .brif(cond_bool, cleanup_block, &[], frame.body_block, &[]);
+                        switch_to_block_tracking(&mut builder, cleanup_block, &mut is_block_filled);
+                        builder.seal_block(cleanup_block);
+                        for name in tracked_obj_snapshot {
+                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                                panic!(
+                                    "Tracked obj var not found in {} op {}: {}",
+                                    func_ir.name, op_idx, name
+                                )
+                            });
+                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                        }
+                        for name in tracked_ptr_snapshot {
+                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                                panic!(
+                                    "Tracked ptr var not found in {} op {}: {}",
+                                    func_ir.name, op_idx, name
+                                )
+                            });
+                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                        }
+                        reachable_blocks.insert(frame.after_block);
+                        jump_block(&mut builder, frame.after_block, &[]);
+                        switch_to_block_tracking(
+                            &mut builder,
+                            frame.body_block,
+                            &mut is_block_filled,
+                        );
+                        // Seal body_block now — its only predecessor is the brif above.
+                        if sealed_blocks.insert(frame.body_block) {
+                            builder.seal_block(frame.body_block);
+                        }
+                        propagate_tracked_to_branches(
+                            &mut block_tracked_obj,
+                            &[frame.body_block, frame.after_block],
+                            carry_obj_lb,
+                        );
+                        propagate_tracked_to_branches(
+                            &mut block_tracked_ptr,
+                            &[frame.body_block, frame.after_block],
+                            carry_ptr_lb,
+                        );
                     }
                 }
                 "loop_break_if_false" => {
                     if loop_stack.is_empty() {
                         is_block_filled = true;
                     } else {
-                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let cond =
-                        var_get(&mut builder, &vars, &args[0]).expect("Loop break cond not found");
-                    let frame = loop_stack.last().unwrap();
-                    let current_block = builder
-                        .current_block()
-                        .expect("loop_break_if_false requires an active block");
-                    let mut carry_obj_lb = block_tracked_obj.remove(&current_block).unwrap_or_default();
-                    let tracked_obj_snapshot = drain_cleanup_tracked_dedup(&mut carry_obj_lb, &last_use, op_idx, None, Some(&mut already_decrefed));
-                    let mut carry_ptr_lb = block_tracked_ptr.remove(&current_block).unwrap_or_default();
-                    let tracked_ptr_snapshot = drain_cleanup_tracked_dedup(&mut carry_ptr_lb, &last_use, op_idx, None, Some(&mut already_decrefed));
-                    // Fast path: when the condition is a NaN-boxed bool from a
-                    // fast_int comparison (lt/le/gt/ge/eq/ne), extract the bool
-                    // payload directly instead of calling molt_is_truthy.  This
-                    // eliminates a runtime call per loop iteration AND avoids
-                    // inserting extra Cranelift blocks between the loop header
-                    // and body — keeping SSA variable propagation clean so the
-                    // loop induction variable is correctly threaded through the
-                    // back-edge.
-                    let prev_is_fast_bool = op_idx > 0 && {
-                        let prev = &func_ir.ops[op_idx - 1];
-                        prev.fast_int.unwrap_or(false)
-                            && matches!(
-                                prev.kind.as_str(),
-                                "lt" | "le" | "gt" | "ge" | "eq" | "ne"
-                            )
-                    };
-                    let cond_bool = if prev_is_fast_bool {
-                        // Condition is QNAN|TAG_BOOL|{0,1}: low bit is the bool.
-                        let one = builder.ins().iconst(types::I64, 1);
-                        let payload = builder.ins().band(*cond, one);
-                        builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
-                    } else {
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_is_truthy", &[types::I64], &[types::I64]);
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let call = builder.ins().call(local_callee, &[*cond]);
-                        let truthy = builder.inst_results(call)[0];
-                        builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0)
-                    };
-                    let cleanup_block = builder.create_block();
-                    if let Some(current_block) = builder.current_block() {
-                        builder.insert_block_after(cleanup_block, current_block);
-                    }
-                    reachable_blocks.insert(frame.body_block);
-                    reachable_blocks.insert(cleanup_block);
-                    builder
-                        .ins()
-                        .brif(cond_bool, frame.body_block, &[], cleanup_block, &[]);
-                    switch_to_block_tracking(&mut builder, cleanup_block, &mut is_block_filled);
-                    builder.seal_block(cleanup_block);
-                    for name in tracked_obj_snapshot {
-                        let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                            panic!(
-                                "Tracked obj var not found in {} op {}: {}",
-                                func_ir.name, op_idx, name
-                            )
-                        });
-                        builder.ins().call(local_dec_ref_obj, &[*val]);
-                    }
-                    for name in tracked_ptr_snapshot {
-                        let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                            panic!(
-                                "Tracked ptr var not found in {} op {}: {}",
-                                func_ir.name, op_idx, name
-                            )
-                        });
-                        builder.ins().call(local_dec_ref_obj, &[*val]);
-                    }
-                    reachable_blocks.insert(frame.after_block);
-                    jump_block(&mut builder, frame.after_block, &[]);
-                    switch_to_block_tracking(&mut builder, frame.body_block, &mut is_block_filled);
-                    // Seal body_block now — its only predecessor is the brif
-                    // above.  Early sealing helps Cranelift resolve SSA variables
-                    // (especially the loop induction variable) immediately.
-                    if sealed_blocks.insert(frame.body_block) {
-                        builder.seal_block(frame.body_block);
-                    }
-                    propagate_tracked_to_branches(&mut block_tracked_obj, &[frame.body_block, frame.after_block], carry_obj_lb);
-                    propagate_tracked_to_branches(&mut block_tracked_ptr, &[frame.body_block, frame.after_block], carry_ptr_lb);
+                        let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                        let cond = var_get(&mut builder, &vars, &args[0])
+                            .expect("Loop break cond not found");
+                        let frame = loop_stack.last().unwrap();
+                        if debug_loop_cfg.is_some() {
+                            eprintln!(
+                                "LOOP_CFG {} op{} loop_break_if_false loop={:?} body={:?} after={:?}",
+                                func_ir.name,
+                                op_idx,
+                                frame.loop_block,
+                                frame.body_block,
+                                frame.after_block
+                            );
+                        }
+                        let current_block = builder
+                            .current_block()
+                            .expect("loop_break_if_false requires an active block");
+                        let mut carry_obj_lb =
+                            block_tracked_obj.remove(&current_block).unwrap_or_default();
+                        let tracked_obj_snapshot = drain_cleanup_tracked_dedup(
+                            &mut carry_obj_lb,
+                            &last_use,
+                            op_idx,
+                            None,
+                            Some(&mut already_decrefed),
+                        );
+                        let mut carry_ptr_lb =
+                            block_tracked_ptr.remove(&current_block).unwrap_or_default();
+                        let tracked_ptr_snapshot = drain_cleanup_tracked_dedup(
+                            &mut carry_ptr_lb,
+                            &last_use,
+                            op_idx,
+                            None,
+                            Some(&mut already_decrefed),
+                        );
+                        // Fast path: when the condition is a NaN-boxed bool from a
+                        // fast_int comparison (lt/le/gt/ge/eq/ne), extract the bool
+                        // payload directly instead of calling molt_is_truthy.  This
+                        // eliminates a runtime call per loop iteration AND avoids
+                        // inserting extra Cranelift blocks between the loop header
+                        // and body — keeping SSA variable propagation clean so the
+                        // loop induction variable is correctly threaded through the
+                        // back-edge.
+                        let prev_is_fast_bool = op_idx > 0 && {
+                            let prev = &func_ir.ops[op_idx - 1];
+                            prev.fast_int.unwrap_or(false)
+                                && matches!(
+                                    prev.kind.as_str(),
+                                    "lt" | "le" | "gt" | "ge" | "eq" | "ne"
+                                )
+                        };
+                        let cond_bool = if prev_is_fast_bool {
+                            // Condition is QNAN|TAG_BOOL|{0,1}: low bit is the bool.
+                            let one = builder.ins().iconst(types::I64, 1);
+                            let payload = builder.ins().band(*cond, one);
+                            builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
+                        } else {
+                            let callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_is_truthy",
+                                &[types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee =
+                                self.module.declare_func_in_func(callee, builder.func);
+                            let call = builder.ins().call(local_callee, &[*cond]);
+                            let truthy = builder.inst_results(call)[0];
+                            builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0)
+                        };
+                        let cleanup_block = builder.create_block();
+                        if let Some(current_block) = builder.current_block() {
+                            builder.insert_block_after(cleanup_block, current_block);
+                        }
+                        reachable_blocks.insert(frame.body_block);
+                        reachable_blocks.insert(cleanup_block);
+                        builder
+                            .ins()
+                            .brif(cond_bool, frame.body_block, &[], cleanup_block, &[]);
+                        switch_to_block_tracking(&mut builder, cleanup_block, &mut is_block_filled);
+                        builder.seal_block(cleanup_block);
+                        for name in tracked_obj_snapshot {
+                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                                panic!(
+                                    "Tracked obj var not found in {} op {}: {}",
+                                    func_ir.name, op_idx, name
+                                )
+                            });
+                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                        }
+                        for name in tracked_ptr_snapshot {
+                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
+                                panic!(
+                                    "Tracked ptr var not found in {} op {}: {}",
+                                    func_ir.name, op_idx, name
+                                )
+                            });
+                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                        }
+                        reachable_blocks.insert(frame.after_block);
+                        jump_block(&mut builder, frame.after_block, &[]);
+                        switch_to_block_tracking(
+                            &mut builder,
+                            frame.body_block,
+                            &mut is_block_filled,
+                        );
+                        // Seal body_block now — its only predecessor is the brif
+                        // above.  Early sealing helps Cranelift resolve SSA variables
+                        // (especially the loop induction variable) immediately.
+                        if sealed_blocks.insert(frame.body_block) {
+                            builder.seal_block(frame.body_block);
+                        }
+                        propagate_tracked_to_branches(
+                            &mut block_tracked_obj,
+                            &[frame.body_block, frame.after_block],
+                            carry_obj_lb,
+                        );
+                        propagate_tracked_to_branches(
+                            &mut block_tracked_ptr,
+                            &[frame.body_block, frame.after_block],
+                            carry_ptr_lb,
+                        );
                     }
                 }
                 "loop_break" => {
@@ -9906,34 +13161,42 @@ impl SimpleBackend {
                         // that sits after the loop boundary — treat as dead.
                         is_block_filled = true;
                     } else {
-                    let frame = loop_stack.last().unwrap();
-                    let current_block = builder
-                        .current_block()
-                        .expect("loop_break requires an active block");
-                    if let Some(names) = block_tracked_obj.get_mut(&current_block) {
-                        let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                        for name in cleanup {
-                            // Use entry_vars (definition-time Value) for dec_ref,
-                            // not var_get (current SSA Value). If the variable was
-                            // redefined, var_get returns the WRONG object.
-                            let val = entry_vars.get(&name).copied()
-                                .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
-                            let Some(val) = val else { continue; };
-                            builder.ins().call(local_dec_ref_obj, &[val]);
+                        let frame = loop_stack.last().unwrap();
+                        let current_block = builder
+                            .current_block()
+                            .expect("loop_break requires an active block");
+                        if let Some(names) = block_tracked_obj.get_mut(&current_block) {
+                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                            for name in cleanup {
+                                // Use entry_vars (definition-time Value) for dec_ref,
+                                // not var_get (current SSA Value). If the variable was
+                                // redefined, var_get returns the WRONG object.
+                                let val = entry_vars
+                                    .get(&name)
+                                    .copied()
+                                    .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                                let Some(val) = val else {
+                                    continue;
+                                };
+                                builder.ins().call(local_dec_ref_obj, &[val]);
+                            }
                         }
-                    }
-                    if let Some(names) = block_tracked_ptr.get_mut(&current_block) {
-                        let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                        for name in cleanup {
-                            let val = entry_vars.get(&name).copied()
-                                .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
-                            let Some(val) = val else { continue; };
-                            builder.ins().call(local_dec_ref_obj, &[val]);
+                        if let Some(names) = block_tracked_ptr.get_mut(&current_block) {
+                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                            for name in cleanup {
+                                let val = entry_vars
+                                    .get(&name)
+                                    .copied()
+                                    .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                                let Some(val) = val else {
+                                    continue;
+                                };
+                                builder.ins().call(local_dec_ref_obj, &[val]);
+                            }
                         }
-                    }
-                    reachable_blocks.insert(frame.after_block);
-                    jump_block(&mut builder, frame.after_block, &[]);
-                    is_block_filled = true;
+                        reachable_blocks.insert(frame.after_block);
+                        jump_block(&mut builder, frame.after_block, &[]);
+                        is_block_filled = true;
                     }
                 }
                 "loop_index_next" => {
@@ -9941,12 +13204,16 @@ impl SimpleBackend {
                     let next_idx =
                         var_get(&mut builder, &vars, &args[0]).expect("Loop index next not found");
                     if loop_stack.is_empty() {
-                        let Some(out_name) = op.out else { continue; };
+                        let Some(out_name) = op.out else {
+                            continue;
+                        };
                         def_var_named(&mut builder, &vars, out_name, *next_idx);
                     } else {
                         let frame = loop_stack.last_mut().unwrap();
                         frame.next_index = Some(*next_idx);
-                        let Some(out_name) = op.out else { continue; };
+                        let Some(out_name) = op.out else {
+                            continue;
+                        };
                         def_var_named(&mut builder, &vars, out_name, *next_idx);
                     }
                 }
@@ -9958,41 +13225,49 @@ impl SimpleBackend {
                         // as filled so subsequent ops are dead code.
                         is_block_filled = true;
                     } else {
-                    let frame = loop_stack.last_mut().unwrap();
-                    let current_block = builder
-                        .current_block()
-                        .expect("loop_continue requires an active block");
-                    if let Some(names) = block_tracked_obj.get_mut(&current_block) {
-                        let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                        for name in cleanup {
-                            // Use entry_vars (definition-time Value) for dec_ref,
-                            // not var_get (current SSA Value). If the variable was
-                            // redefined, var_get returns the WRONG object.
-                            let val = entry_vars.get(&name).copied()
-                                .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
-                            let Some(val) = val else { continue; };
-                            builder.ins().call(local_dec_ref_obj, &[val]);
+                        let frame = loop_stack.last_mut().unwrap();
+                        let current_block = builder
+                            .current_block()
+                            .expect("loop_continue requires an active block");
+                        if let Some(names) = block_tracked_obj.get_mut(&current_block) {
+                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                            for name in cleanup {
+                                // Use entry_vars (definition-time Value) for dec_ref,
+                                // not var_get (current SSA Value). If the variable was
+                                // redefined, var_get returns the WRONG object.
+                                let val = entry_vars
+                                    .get(&name)
+                                    .copied()
+                                    .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                                let Some(val) = val else {
+                                    continue;
+                                };
+                                builder.ins().call(local_dec_ref_obj, &[val]);
+                            }
                         }
-                    }
-                    if let Some(names) = block_tracked_ptr.get_mut(&current_block) {
-                        let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
-                        for name in cleanup {
-                            let val = entry_vars.get(&name).copied()
-                                .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
-                            let Some(val) = val else { continue; };
-                            builder.ins().call(local_dec_ref_obj, &[val]);
+                        if let Some(names) = block_tracked_ptr.get_mut(&current_block) {
+                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                            for name in cleanup {
+                                let val = entry_vars
+                                    .get(&name)
+                                    .copied()
+                                    .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
+                                let Some(val) = val else {
+                                    continue;
+                                };
+                                builder.ins().call(local_dec_ref_obj, &[val]);
+                            }
                         }
-                    }
-                    reachable_blocks.insert(frame.loop_block);
-                    // Step 3: def_var the counter with incremented value,
-                    // then jump with no explicit args.  SSA carries the phi.
-                    if let Some(next_idx) = frame.next_index.take() {
-                        if let Some(name) = frame.index_name.as_ref() {
-                            def_var_named(&mut builder, &vars, name, next_idx);
+                        reachable_blocks.insert(frame.loop_block);
+                        // Step 3: def_var the counter with incremented value,
+                        // then jump with no explicit args.  SSA carries the phi.
+                        if let Some(next_idx) = frame.next_index.take() {
+                            if let Some(name) = frame.index_name.as_ref() {
+                                def_var_named(&mut builder, &vars, name, next_idx);
+                            }
                         }
-                    }
-                    jump_block(&mut builder, frame.loop_block, &[]);
-                    is_block_filled = true;
+                        jump_block(&mut builder, frame.loop_block, &[]);
+                        is_block_filled = true;
                     }
                 }
                 "loop_end" => {
@@ -10000,45 +13275,71 @@ impl SimpleBackend {
                         // Orphan loop_end from a duplicated exception
                         // handler path — skip silently.
                     } else {
-                    let mut frame = loop_stack.pop().unwrap();
-                    loop_depth -= 1;
-                    if !is_block_filled {
-                        ensure_block_in_layout(&mut builder, frame.loop_block);
-                        reachable_blocks.insert(frame.loop_block);
-                        if let Some(next_idx) = frame.next_index.take() {
-                            if let Some(name) = frame.index_name.as_ref() {
-                                def_var_named(&mut builder, &vars, name, next_idx);
+                        let mut frame = loop_stack.pop().unwrap();
+                        if debug_loop_cfg.is_some() {
+                            eprintln!(
+                                "LOOP_CFG {} op{} loop_end loop={:?} body={:?} after={:?} reachable_after={} filled={}",
+                                func_ir.name,
+                                op_idx,
+                                frame.loop_block,
+                                frame.body_block,
+                                frame.after_block,
+                                reachable_blocks.contains(&frame.after_block),
+                                is_block_filled,
+                            );
+                        }
+                        loop_depth -= 1;
+                        if !is_block_filled {
+                            ensure_block_in_layout(&mut builder, frame.loop_block);
+                            reachable_blocks.insert(frame.loop_block);
+                            if let Some(next_idx) = frame.next_index.take() {
+                                if let Some(name) = frame.index_name.as_ref() {
+                                    def_var_named(&mut builder, &vars, name, next_idx);
+                                }
                             }
+                            jump_block(&mut builder, frame.loop_block, &[]);
                         }
-                        jump_block(&mut builder, frame.loop_block, &[]);
-                    }
-                    if builder.func.layout.is_block_inserted(frame.loop_block) {
-                        builder.seal_block(frame.loop_block);
-                    }
-                    if reachable_blocks.contains(&frame.after_block) {
-                        ensure_block_in_layout(&mut builder, frame.after_block);
-                        switch_to_block_tracking(
-                            &mut builder,
-                            frame.after_block,
-                            &mut is_block_filled,
-                        );
-                        if builder.func.layout.is_block_inserted(frame.after_block) {
-                            builder.seal_block(frame.after_block);
+                        if builder.func.layout.is_block_inserted(frame.loop_block) {
+                            builder.seal_block(frame.loop_block);
                         }
-                    } else {
-                        is_block_filled = true;
-                    }
+                        if reachable_blocks.contains(&frame.after_block) {
+                            ensure_block_in_layout(&mut builder, frame.after_block);
+                            if debug_loop_cfg.is_some() {
+                                eprintln!(
+                                    "LOOP_CFG {} op{} switch_after {:?}",
+                                    func_ir.name, op_idx, frame.after_block
+                                );
+                            }
+                            switch_to_block_tracking(
+                                &mut builder,
+                                frame.after_block,
+                                &mut is_block_filled,
+                            );
+                            if builder.func.layout.is_block_inserted(frame.after_block) {
+                                builder.seal_block(frame.after_block);
+                            }
+                        } else {
+                            is_block_filled = true;
+                        }
                     }
                 }
                 "alloc" => {
                     let size = op.value.unwrap_or(0);
                     let iconst = builder.ins().iconst(types::I64, size);
 
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_alloc", &[types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_alloc",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[iconst]);
                     let res = builder.inst_results(call)[0];
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "alloc_class" => {
@@ -10048,11 +13349,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let iconst = builder.ins().iconst(types::I64, size);
 
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_alloc_class", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_alloc_class",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[iconst, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "alloc_class_trusted" => {
@@ -10062,11 +13371,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let iconst = builder.ins().iconst(types::I64, size);
 
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_alloc_class_trusted", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_alloc_class_trusted",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[iconst, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "alloc_class_static" => {
@@ -10076,11 +13393,19 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let iconst = builder.ins().iconst(types::I64, size);
 
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_alloc_class_static", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_alloc_class_static",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[iconst, *class_bits]);
                     let res = builder.inst_results(call)[0];
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "alloc_task" => {
@@ -10094,7 +13419,9 @@ impl SimpleBackend {
                     };
                     let size = builder.ins().iconst(types::I64, closure_size);
 
-                    let Some(poll_func_name) = op.s_value.as_ref() else { continue; };
+                    let Some(poll_func_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     let mut poll_sig = self.module.make_signature();
                     poll_sig.params.push(AbiParam::new(types::I64));
                     poll_sig.returns.push(AbiParam::new(types::I64));
@@ -10112,7 +13439,13 @@ impl SimpleBackend {
                         self.module.declare_func_in_func(poll_func_id, builder.func);
                     let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
 
-                    let task_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_task_new", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let task_callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_task_new",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let task_local = self.module.declare_func_in_func(task_callee, builder.func);
                     let kind_val = builder.ins().iconst(types::I64, kind_bits);
                     let call = builder.ins().call(task_local, &[poll_addr, size, kind_val]);
@@ -10126,22 +13459,41 @@ impl SimpleBackend {
                             builder
                                 .ins()
                                 .store(MemFlags::trusted(), *arg_val, obj_ptr, offset);
-                            emit_maybe_ref_adjust_v2(&mut builder, *arg_val, local_inc_ref_obj, &nbc);
+                            emit_maybe_ref_adjust_v2(
+                                &mut builder,
+                                *arg_val,
+                                local_inc_ref_obj,
+                                &nbc,
+                            );
                         }
                     }
                     if matches!(task_kind, "future" | "coroutine") {
-                        let get_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_cancel_token_get_current", &[], &[types::I64]);
+                        let get_callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_cancel_token_get_current",
+                            &[],
+                            &[types::I64],
+                        );
                         let get_local = self.module.declare_func_in_func(get_callee, builder.func);
                         let get_call = builder.ins().call(get_local, &[]);
                         let current_token = builder.inst_results(get_call)[0];
 
-                        let reg_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_task_register_token_owned", &[types::I64, types::I64], &[types::I64]);
+                        let reg_callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_task_register_token_owned",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let reg_local = self.module.declare_func_in_func(reg_callee, builder.func);
                         builder.ins().call(reg_local, &[obj, current_token]);
                     }
 
                     output_is_ptr = false;
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     def_var_named(&mut builder, &vars, out_name, obj);
                 }
                 "store" => {
@@ -10174,7 +13526,13 @@ impl SimpleBackend {
                     builder.switch_to_block(profile_cont);
                     builder.seal_block(profile_cont);
                     let offset_bits = builder.ins().iconst(types::I64, i64::from(offset));
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_object_field_set_ptr", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_object_field_set_ptr",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
@@ -10193,7 +13551,13 @@ impl SimpleBackend {
                     let offset = op.value.unwrap_or(0) as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
                     let offset_bits = builder.ins().iconst(types::I64, i64::from(offset));
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_object_field_init_ptr", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_object_field_init_ptr",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
@@ -10213,13 +13577,20 @@ impl SimpleBackend {
                     // Use a runtime call instead of inline load to avoid
                     // Cranelift optimization issues with offset-based loads.
                     let offset_arg = builder.ins().iconst(types::I64, offset_val);
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids,
-                        "molt_object_field_load", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_object_field_load",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[obj_ptr, offset_arg]);
                     let res = builder.inst_results(call)[0];
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "closure_load" => {
@@ -10227,11 +13598,19 @@ impl SimpleBackend {
                     let obj = var_get(&mut builder, &vars, &args[0]).expect("Object not found");
                     let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_closure_load", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_closure_load",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[obj_ptr, offset]);
                     let res = builder.inst_results(call)[0];
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "closure_store" => {
@@ -10240,7 +13619,13 @@ impl SimpleBackend {
                     let val = var_get(&mut builder, &vars, &args[1]).expect("Value not found");
                     let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_closure_store", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_closure_store",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[obj_ptr, offset, *val]);
                     if let Some(out_name) = op.out {
@@ -10257,11 +13642,11 @@ impl SimpleBackend {
                     // or reordering loads from object fields.
                     let mut flags = MemFlags::new();
                     flags.set_readonly();
-                    let res = builder
-                        .ins()
-                        .load(types::I64, flags, obj_ptr, offset);
+                    let res = builder.ins().load(types::I64, flags, obj_ptr, offset);
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "guarded_field_get" => {
@@ -10272,7 +13657,9 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[1]).expect("Class not found");
                     let expected_version =
                         var_get(&mut builder, &vars, &args[2]).expect("Expected version not found");
-                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
+                    let Some(attr_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     let data_id = self
                         .module
                         .declare_data(
@@ -10290,7 +13677,20 @@ impl SimpleBackend {
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
                     let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_guarded_field_get_ptr", &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_guarded_field_get_ptr",
+                        &[
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                        ],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
@@ -10304,7 +13704,9 @@ impl SimpleBackend {
                         ],
                     );
                     let res = builder.inst_results(call)[0];
-                    let Some(out_name) = op.out else { continue; };
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
                     def_var_named(&mut builder, &vars, out_name, res);
                 }
                 "guarded_field_set" => {
@@ -10316,7 +13718,9 @@ impl SimpleBackend {
                     let expected_version =
                         var_get(&mut builder, &vars, &args[2]).expect("Expected version not found");
                     let val = var_get(&mut builder, &vars, &args[3]).expect("Value not found");
-                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
+                    let Some(attr_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     let data_id = self
                         .module
                         .declare_data(
@@ -10334,7 +13738,21 @@ impl SimpleBackend {
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
                     let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_guarded_field_set_ptr", &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_guarded_field_set_ptr",
+                        &[
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                        ],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
@@ -10364,7 +13782,9 @@ impl SimpleBackend {
                     let expected_version =
                         var_get(&mut builder, &vars, &args[2]).expect("Expected version not found");
                     let val = var_get(&mut builder, &vars, &args[3]).expect("Value not found");
-                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
+                    let Some(attr_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     let data_id = self
                         .module
                         .declare_data(
@@ -10382,7 +13802,21 @@ impl SimpleBackend {
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
                     let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_guarded_field_init_ptr", &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_guarded_field_init_ptr",
+                        &[
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                            types::I64,
+                        ],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(
                         local_callee,
@@ -10409,7 +13843,13 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Guard value not found");
                     let expected = var_get(&mut builder, &vars, &args[1])
                         .expect("Guard expected tag not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_guard_type", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_guard_type",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*val, *expected]);
                 }
@@ -10422,13 +13862,21 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[1]).expect("Guard class not found");
                     let expected_version =
                         var_get(&mut builder, &vars, &args[2]).expect("Guard version not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_guard_layout_ptr", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_guard_layout_ptr",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[obj_ptr, *class_bits, *expected_version]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "get_attr_generic_ptr" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -10436,7 +13884,9 @@ impl SimpleBackend {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
-                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
+                    let Some(attr_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     let data_id = self
                         .module
                         .declare_data(
@@ -10465,18 +13915,29 @@ impl SimpleBackend {
                         let ic_raw = builder.ins().iconst(types::I64, ic_idx);
 
                         // --- Declare molt_ic_probe_fast(obj_ptr, ic_index) -> i64 ---
-                        let probe_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_ic_probe_fast", &[types::I64, types::I64], &[types::I64]);
+                        let probe_callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_ic_probe_fast",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let probe_local =
                             self.module.declare_func_in_func(probe_callee, builder.func);
 
                         // --- Declare molt_getattr_ic_slow(obj_ptr, attr, len, ic_index) -> i64 ---
-                        let slow_callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_getattr_ic_slow", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                        let slow_callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_getattr_ic_slow",
+                            &[types::I64, types::I64, types::I64, types::I64],
+                            &[types::I64],
+                        );
                         let slow_local =
                             self.module.declare_func_in_func(slow_callee, builder.func);
 
                         // --- Emit: probe_result = molt_ic_probe_fast(obj_ptr, ic_raw) ---
-                        let probe_call =
-                            builder.ins().call(probe_local, &[obj_ptr, ic_raw]);
+                        let probe_call = builder.ins().call(probe_local, &[obj_ptr, ic_raw]);
                         let probe_result = builder.inst_results(probe_call)[0];
 
                         // --- Branch: hit (probe_result != 0) vs miss ---
@@ -10487,14 +13948,8 @@ impl SimpleBackend {
                         builder.append_block_param(merge_block, types::I64);
 
                         let zero = builder.ins().iconst(types::I64, 0);
-                        let is_hit = builder.ins().icmp(
-                            IntCC::NotEqual,
-                            probe_result,
-                            zero,
-                        );
-                        builder
-                            .ins()
-                            .brif(is_hit, hit_block, &[], miss_block, &[]);
+                        let is_hit = builder.ins().icmp(IntCC::NotEqual, probe_result, zero);
+                        builder.ins().brif(is_hit, hit_block, &[], miss_block, &[]);
 
                         // --- Hit block: probe returned an owned reference ---
                         builder.switch_to_block(hit_block);
@@ -10504,10 +13959,9 @@ impl SimpleBackend {
                         // --- Miss block: full resolution via slow path ---
                         builder.switch_to_block(miss_block);
                         builder.seal_block(miss_block);
-                        let slow_call = builder.ins().call(
-                            slow_local,
-                            &[obj_ptr, attr_ptr, attr_len, ic_raw],
-                        );
+                        let slow_call = builder
+                            .ins()
+                            .call(slow_local, &[obj_ptr, attr_ptr, attr_len, ic_raw]);
                         let slow_result = builder.inst_results(slow_call)[0];
                         // Slow path returns a borrowed reference; inc_ref to own it.
                         emit_maybe_ref_adjust_v2(
@@ -10524,9 +13978,14 @@ impl SimpleBackend {
                         builder.block_params(merge_block)[0]
                     } else {
                         // Legacy path: no IC index available.
-                        let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_get_attr_ptr", &[types::I64, types::I64, types::I64], &[types::I64]);
-                        let local_callee =
-                            self.module.declare_func_in_func(callee, builder.func);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_get_attr_ptr",
+                            &[types::I64, types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder
                             .ins()
                             .call(local_callee, &[obj_ptr, attr_ptr, attr_len]);
@@ -10536,14 +13995,18 @@ impl SimpleBackend {
                         emit_maybe_ref_adjust_v2(&mut builder, slow_res, local_inc_ref_obj, &nbc);
                         slow_res
                     };
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "get_attr_generic_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
+                    let Some(attr_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     let data_id = self
                         .module
                         .declare_data(
@@ -10560,7 +14023,13 @@ impl SimpleBackend {
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_get_attr_object_ic", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_get_attr_object_ic",
+                        &[types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let site_bits = builder.ins().iconst(
                         types::I64,
@@ -10577,14 +14046,18 @@ impl SimpleBackend {
                     // `molt_get_attr_object_ic` delegates to `molt_get_attr_name`, which can
                     // hand back borrowed values on fast paths. Own the result here.
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "get_attr_special_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
+                    let Some(attr_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     let data_id = self
                         .module
                         .declare_data(
@@ -10601,7 +14074,13 @@ impl SimpleBackend {
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_get_attr_special", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_get_attr_special",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
@@ -10609,7 +14088,9 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     // Keep attribute result ownership consistent across all get-attr ops.
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "get_attr_name" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -10617,7 +14098,13 @@ impl SimpleBackend {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
                     let name = var_get(&mut builder, &vars, &args[1]).expect("Attr name not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_get_attr_name", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_get_attr_name",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *name]);
                     let res = builder.inst_results(call)[0];
@@ -10625,7 +14112,9 @@ impl SimpleBackend {
                     // some fast paths. Convert it to an owned reference so lifetime tracking can
                     // safely decref at last use without corrupting dict-owned values.
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "get_attr_name_default" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -10635,13 +14124,21 @@ impl SimpleBackend {
                     let name = var_get(&mut builder, &vars, &args[1]).expect("Attr name not found");
                     let default =
                         var_get(&mut builder, &vars, &args[2]).expect("Attr default not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_get_attr_name_default", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_get_attr_name_default",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *name, *default]);
                     let res = builder.inst_results(call)[0];
                     // See `get_attr_name` above: ensure the returned value is owned.
                     emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "has_attr_name" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -10649,11 +14146,19 @@ impl SimpleBackend {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
                     let name = var_get(&mut builder, &vars, &args[1]).expect("Attr name not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_has_attr_name", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_has_attr_name",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *name]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "set_attr_name" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -10662,11 +14167,19 @@ impl SimpleBackend {
                     });
                     let name = var_get(&mut builder, &vars, &args[1]).expect("Attr name not found");
                     let val = var_get(&mut builder, &vars, &args[2]).expect("Attr value not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_set_attr_name", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_set_attr_name",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *name, *val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "set_attr_generic_ptr" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -10675,7 +14188,9 @@ impl SimpleBackend {
                     });
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
                     let val = var_get(&mut builder, &vars, &args[1]).expect("Attr value not found");
-                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
+                    let Some(attr_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     let data_id = self
                         .module
                         .declare_data(
@@ -10692,13 +14207,21 @@ impl SimpleBackend {
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_set_attr_ptr", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_set_attr_ptr",
+                        &[types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[obj_ptr, attr_ptr, attr_len, *val]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "set_attr_generic_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -10706,7 +14229,9 @@ impl SimpleBackend {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
                     let val = var_get(&mut builder, &vars, &args[1]).expect("Attr value not found");
-                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
+                    let Some(attr_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     let data_id = self
                         .module
                         .declare_data(
@@ -10723,7 +14248,13 @@ impl SimpleBackend {
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_set_attr_object", &[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_set_attr_object",
+                        &[types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
@@ -10739,7 +14270,9 @@ impl SimpleBackend {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
-                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
+                    let Some(attr_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     let data_id = self
                         .module
                         .declare_data(
@@ -10756,20 +14289,30 @@ impl SimpleBackend {
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_del_attr_ptr", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_del_attr_ptr",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[obj_ptr, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "del_attr_generic_obj" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get(&mut builder, &vars, &args[0]).unwrap_or_else(|| {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
-                    let Some(attr_name) = op.s_value.as_ref() else { continue; };
+                    let Some(attr_name) = op.s_value.as_ref() else {
+                        continue;
+                    };
                     let data_id = self
                         .module
                         .declare_data(
@@ -10786,13 +14329,21 @@ impl SimpleBackend {
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
                     let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_del_attr_object", &[types::I64, types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_del_attr_object",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
                         .call(local_callee, &[*obj, attr_ptr, attr_len]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "del_attr_name" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -10800,11 +14351,19 @@ impl SimpleBackend {
                         panic!("Attr object not found in {} op {}", func_ir.name, op_idx)
                     });
                     let name = var_get(&mut builder, &vars, &args[1]).expect("Attr name not found");
-                    let callee = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_del_attr_name", &[types::I64, types::I64], &[types::I64]);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_del_attr_name",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*obj, *name]);
                     let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "ret" => {
                     if std::env::var("MOLT_DEBUG_RET_CLEANUP").as_deref() == Ok("1")
@@ -10832,7 +14391,9 @@ impl SimpleBackend {
                             // Function return: fully drain per-block tracked values.
                             if let Some(names) = block_tracked_obj.remove(&block) {
                                 for name in names {
-                                    if already_decrefed.contains(&name) { continue; }
+                                    if already_decrefed.contains(&name) {
+                                        continue;
+                                    }
                                     let val =
                                         var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
                                             panic!(
@@ -10846,7 +14407,9 @@ impl SimpleBackend {
                             }
                             if let Some(names) = block_tracked_ptr.remove(&block) {
                                 for name in names {
-                                    if already_decrefed.contains(&name) { continue; }
+                                    if already_decrefed.contains(&name) {
+                                        continue;
+                                    }
                                     let val =
                                         var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
                                             panic!(
@@ -10860,13 +14423,17 @@ impl SimpleBackend {
                             }
                         }
                         for name in &tracked_vars {
-                            if already_decrefed.contains(name) { continue; }
+                            if already_decrefed.contains(name) {
+                                continue;
+                            }
                             if let Some(val) = var_get(&mut builder, &vars, name) {
                                 builder.ins().call(local_dec_ref_obj, &[*val]);
                             }
                         }
                         for name in &tracked_obj_vars {
-                            if already_decrefed.contains(name) { continue; }
+                            if already_decrefed.contains(name) {
+                                continue;
+                            }
                             if let Some(val) = var_get(&mut builder, &vars, name) {
                                 builder.ins().call(local_dec_ref_obj, &[*val]);
                             }
@@ -10883,44 +14450,81 @@ impl SimpleBackend {
                     };
                     let ret_val =
                         *var_get(&mut builder, &vars, var_name).expect("Return variable not found");
+                    let ret_root = alias_roots
+                        .get(var_name)
+                        .cloned()
+                        .unwrap_or_else(|| var_name.clone());
+                    let mut protected_return_aliases: BTreeSet<String> =
+                        BTreeSet::from([var_name.clone()]);
+                    for (name, root) in &alias_roots {
+                        if root == &ret_root {
+                            protected_return_aliases.insert(name.clone());
+                        }
+                    }
                     if let Some(block) = builder.current_block() {
                         // Function return: fully drain per-block tracked values (except return).
                         if let Some(names) = block_tracked_obj.remove(&block) {
                             for name in names {
-                                if name == *var_name || already_decrefed.contains(&name) { continue; }
-                                let val = entry_vars.get(&name).copied()
+                                if protected_return_aliases.contains(&name)
+                                    || already_decrefed.contains(&name)
+                                {
+                                    continue;
+                                }
+                                let val = entry_vars
+                                    .get(&name)
+                                    .copied()
                                     .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
-                                let Some(val) = val else { continue; };
+                                let Some(val) = val else {
+                                    continue;
+                                };
                                 builder.ins().call(local_dec_ref_obj, &[val]);
                                 already_decrefed.insert(name);
                             }
                         }
                         if let Some(names) = block_tracked_ptr.remove(&block) {
                             for name in names {
-                                if name == *var_name || already_decrefed.contains(&name) { continue; }
-                                let val = entry_vars.get(&name).copied()
+                                if protected_return_aliases.contains(&name)
+                                    || already_decrefed.contains(&name)
+                                {
+                                    continue;
+                                }
+                                let val = entry_vars
+                                    .get(&name)
+                                    .copied()
                                     .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
-                                let Some(val) = val else { continue; };
+                                let Some(val) = val else {
+                                    continue;
+                                };
                                 builder.ins().call(local_dec_ref_obj, &[val]);
                                 already_decrefed.insert(name);
                             }
                         }
                     }
-                    tracked_vars.retain(|v| v != var_name);
-                    tracked_obj_vars.retain(|v| v != var_name);
-                    tracked_vars_set.remove(var_name);
-                    tracked_obj_vars_set.remove(var_name);
+                    tracked_vars.retain(|v| !protected_return_aliases.contains(v));
+                    tracked_obj_vars.retain(|v| !protected_return_aliases.contains(v));
+                    for protected in &protected_return_aliases {
+                        tracked_vars_set.remove(protected);
+                        tracked_obj_vars_set.remove(protected);
+                    }
                     for name in &tracked_vars {
-                        if already_decrefed.contains(name) { continue; }
-                        let val = entry_vars.get(name).copied()
+                        if already_decrefed.contains(name) {
+                            continue;
+                        }
+                        let val = entry_vars
+                            .get(name)
+                            .copied()
                             .or_else(|| var_get(&mut builder, &vars, name).map(|v| *v));
                         if let Some(val) = val {
                             builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                     }
                     for name in &tracked_obj_vars {
-                        if already_decrefed.contains(name) { continue; }
-                        let val = entry_vars.get(name).copied()
+                        if already_decrefed.contains(name) {
+                            continue;
+                        }
+                        let val = entry_vars
+                            .get(name)
+                            .copied()
                             .or_else(|| var_get(&mut builder, &vars, name).map(|v| *v));
                         if let Some(val) = val {
                             builder.ins().call(local_dec_ref_obj, &[val]);
@@ -10986,15 +14590,24 @@ impl SimpleBackend {
                     let target_block = state_blocks[&target_id];
                     if let Some(block) = builder.current_block() {
                         let mut carry_obj = block_tracked_obj.remove(&block).unwrap_or_default();
-                        let cleanup =
-                            drain_cleanup_tracked_dedup(&mut carry_obj, &last_use, op_idx, None, Some(&mut already_decrefed));
+                        let cleanup = drain_cleanup_tracked_dedup(
+                            &mut carry_obj,
+                            &last_use,
+                            op_idx,
+                            None,
+                            Some(&mut already_decrefed),
+                        );
                         for name in cleanup {
                             // Use entry_vars (definition-time Value) for dec_ref,
                             // not var_get (current SSA Value). If the variable was
                             // redefined, var_get returns the WRONG object.
-                            let val = entry_vars.get(&name).copied()
+                            let val = entry_vars
+                                .get(&name)
+                                .copied()
                                 .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
-                            let Some(val) = val else { continue; };
+                            let Some(val) = val else {
+                                continue;
+                            };
                             builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                         if !carry_obj.is_empty() {
@@ -11005,12 +14618,21 @@ impl SimpleBackend {
                         }
 
                         let mut carry_ptr = block_tracked_ptr.remove(&block).unwrap_or_default();
-                        let cleanup =
-                            drain_cleanup_tracked_dedup(&mut carry_ptr, &last_use, op_idx, None, Some(&mut already_decrefed));
+                        let cleanup = drain_cleanup_tracked_dedup(
+                            &mut carry_ptr,
+                            &last_use,
+                            op_idx,
+                            None,
+                            Some(&mut already_decrefed),
+                        );
                         for name in cleanup {
-                            let val = entry_vars.get(&name).copied()
+                            let val = entry_vars
+                                .get(&name)
+                                .copied()
                                 .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
-                            let Some(val) = val else { continue; };
+                            let Some(val) = val else {
+                                continue;
+                            };
                             builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                         if !carry_ptr.is_empty() {
@@ -11037,7 +14659,13 @@ impl SimpleBackend {
                     // cond is NaN-boxed — must call molt_is_truthy to extract
                     // the boolean. NaN-boxed False is 0x7ffa000000000000 (nonzero),
                     // so a raw icmp_imm(!=0) always evaluates true.
-                    let truthy_fn = Self::import_func_id_split(&mut self.module, &mut self.import_ids, "molt_is_truthy", &[types::I64], &[types::I64]);
+                    let truthy_fn = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_is_truthy",
+                        &[types::I64],
+                        &[types::I64],
+                    );
                     let truthy_ref = self.module.declare_func_in_func(truthy_fn, builder.func);
                     let truthy_call = builder.ins().call(truthy_ref, &[*cond]);
                     let truthy_val = builder.inst_results(truthy_call)[0];
@@ -11048,7 +14676,13 @@ impl SimpleBackend {
                     // br_if terminates the current block and can transfer control to either
                     // successor. Carry all live tracked values into both.
                     let mut carry_obj = block_tracked_obj.remove(&origin_block).unwrap_or_default();
-                    let cleanup = drain_cleanup_tracked_dedup(&mut carry_obj, &last_use, op_idx, None, Some(&mut already_decrefed));
+                    let cleanup = drain_cleanup_tracked_dedup(
+                        &mut carry_obj,
+                        &last_use,
+                        op_idx,
+                        None,
+                        Some(&mut already_decrefed),
+                    );
                     for name in cleanup {
                         let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
                             panic!(
@@ -11069,7 +14703,13 @@ impl SimpleBackend {
                         );
                     }
                     let mut carry_ptr = block_tracked_ptr.remove(&origin_block).unwrap_or_default();
-                    let cleanup = drain_cleanup_tracked_dedup(&mut carry_ptr, &last_use, op_idx, None, Some(&mut already_decrefed));
+                    let cleanup = drain_cleanup_tracked_dedup(
+                        &mut carry_ptr,
+                        &last_use,
+                        op_idx,
+                        None,
+                        Some(&mut already_decrefed),
+                    );
                     for name in cleanup {
                         let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
                             panic!(
@@ -11134,7 +14774,8 @@ impl SimpleBackend {
                 "store_var" => {
                     // Store a value into a named variable (block arg passing)
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = var_get(&mut builder, &vars, &args[0]).expect("store_var: src not found");
+                    let val =
+                        var_get(&mut builder, &vars, &args[0]).expect("store_var: src not found");
                     if let Some(ref var_name) = op.var {
                         def_var_named(&mut builder, &vars, var_name, *val);
                     } else if let Some(ref out_name) = op.out {
@@ -11144,13 +14785,15 @@ impl SimpleBackend {
                 "load_var" | "copy_var" => {
                     // Load a named variable into an output (block arg receiving / copy)
                     if let Some(ref var_name) = op.var {
-                        let val = var_get(&mut builder, &vars, var_name).expect("load_var: var not found");
+                        let val = var_get(&mut builder, &vars, var_name)
+                            .expect("load_var: var not found");
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, *val);
                         }
                     } else if let Some(ref args) = op.args {
                         if !args.is_empty() {
-                            let val = var_get(&mut builder, &vars, &args[0]).expect("copy_var: src not found");
+                            let val = var_get(&mut builder, &vars, &args[0])
+                                .expect("copy_var: src not found");
                             if let Some(ref out_name) = op.out {
                                 def_var_named(&mut builder, &vars, out_name, *val);
                             }
@@ -11165,7 +14808,11 @@ impl SimpleBackend {
                         let entry_block = builder.func.layout.entry_block().unwrap();
                         let param_val = {
                             let params = builder.func.dfg.block_params(entry_block);
-                            if param_idx < params.len() { Some(params[param_idx]) } else { None }
+                            if param_idx < params.len() {
+                                Some(params[param_idx])
+                            } else {
+                                None
+                            }
                         };
                         if let Some(val) = param_val {
                             def_var_named(&mut builder, &vars, out_name, val);
@@ -11196,8 +14843,12 @@ impl SimpleBackend {
                 for val in cleanup {
                     builder.ins().call(local_dec_ref_obj, &[val]);
                 }
-                let cleanup =
-                    drain_cleanup_entry_tracked(&mut tracked_vars, &mut entry_vars, &last_use, op_idx);
+                let cleanup = drain_cleanup_entry_tracked(
+                    &mut tracked_vars,
+                    &mut entry_vars,
+                    &last_use,
+                    op_idx,
+                );
                 for val in cleanup {
                     // Use dec_ref_obj (NaN-box aware) instead of dec_ref (raw ptr).
                     // entry_vars always stores NaN-boxed bits, not raw pointers,
@@ -11311,12 +14962,10 @@ impl SimpleBackend {
                 // Collect successors from the terminator instruction
                 if let Some(last_inst) = builder.func.layout.last_inst(block) {
                     // Branch destinations
-                    for dest in builder.func.dfg.insts[last_inst]
-                        .branch_destination(
-                            &builder.func.dfg.jump_tables,
-                            &builder.func.dfg.exception_tables,
-                        )
-                    {
+                    for dest in builder.func.dfg.insts[last_inst].branch_destination(
+                        &builder.func.dfg.jump_tables,
+                        &builder.func.dfg.exception_tables,
+                    ) {
                         stack.push(dest.block(&builder.func.dfg.value_lists));
                     }
                 }
@@ -11331,9 +14980,9 @@ impl SimpleBackend {
                     // We must NOT call switch_to_block on a filled block.
                     if builder.func.layout.block_insts(block).next().is_none() {
                         builder.switch_to_block(block);
-                        builder.ins().trap(
-                            cranelift_codegen::ir::TrapCode::user(0).unwrap(),
-                        );
+                        builder
+                            .ins()
+                            .trap(cranelift_codegen::ir::TrapCode::user(0).unwrap());
                     }
                 }
             }
@@ -11353,14 +15002,17 @@ impl SimpleBackend {
             eprintln!("CLIF {}:\n{}", func_ir.name, self.ctx.func.display());
         }
 
-        let id = match self
-            .module
-            .declare_function(&func_ir.name, Linkage::Export, &self.ctx.func.signature)
-        {
+        let id = match self.module.declare_function(
+            &func_ir.name,
+            Linkage::Export,
+            &self.ctx.func.signature,
+        ) {
             Ok(id) => id,
             Err(e) => {
                 let err_str = format!("{e}");
-                if err_str.contains("IncompatibleSignature") || err_str.contains("incompatible with previous declaration") {
+                if err_str.contains("IncompatibleSignature")
+                    || err_str.contains("incompatible with previous declaration")
+                {
                     eprintln!(
                         "WARNING: signature mismatch for `{}`; emitting trap stub",
                         func_ir.name
@@ -11380,10 +15032,7 @@ impl SimpleBackend {
                             &existing_sig,
                             &func_ir.name,
                         ) {
-                            eprintln!(
-                                "  -> trap stub failed for {}: {}",
-                                func_ir.name, stub_err
-                            );
+                            eprintln!("  -> trap stub failed for {}: {}", func_ir.name, stub_err);
                         } else {
                             self.defined_func_names.insert(func_ir.name.clone());
                         }
@@ -11400,10 +15049,8 @@ impl SimpleBackend {
         // All deferred functions are compiled in parallel later via
         // flush_deferred_defines().  This avoids the sequential
         // bottleneck of Cranelift's register allocator and optimizer.
-        let built_func = std::mem::replace(
-            &mut self.ctx.func,
-            cranelift_codegen::ir::Function::new(),
-        );
+        let built_func =
+            std::mem::replace(&mut self.ctx.func, cranelift_codegen::ir::Function::new());
         self.deferred_defines.push(crate::DeferredDefine {
             func_id: id,
             func: built_func,
@@ -11418,6 +15065,7 @@ impl SimpleBackend {
 mod tests {
     use super::preanalyze_function_ir;
     use crate::{FunctionIR, OpIR};
+    use std::collections::BTreeMap;
 
     #[test]
     fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
@@ -11479,7 +15127,7 @@ mod tests {
             param_types: None,
         };
 
-        let analysis = preanalyze_function_ir(&func);
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
 
         assert!(analysis.has_ret);
         assert!(analysis.stateful);

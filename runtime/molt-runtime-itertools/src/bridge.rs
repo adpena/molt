@@ -3,8 +3,8 @@
 //! Uses direct `extern "C"` imports resolved by the linker at link time.
 //! No vtable initialization needed — all symbols are resolved from molt-runtime.
 
-use molt_runtime_core::prelude::*;
 use molt_runtime_core::ffi;
+use molt_runtime_core::prelude::*;
 
 /// No-op init for API compatibility with the vtable pattern.
 /// All symbols are resolved at link time so no initialization is needed.
@@ -21,16 +21,8 @@ unsafe extern "C" {
     fn molt_itertools_call_callable1(call_bits: u64, arg0_bits: u64) -> u64;
     fn molt_itertools_call_callable2_bridge(call_bits: u64, arg0_bits: u64, arg1_bits: u64) -> u64;
     fn molt_itertools_tuple_from_iter(iter_bits: u64) -> u64;
-    fn molt_itertools_alloc_class(
-        name_ptr: *const u8,
-        name_len: usize,
-        layout_size: i64,
-    ) -> u64;
-    fn molt_itertools_class_set_iter_next(
-        class_bits: u64,
-        iter_fn_bits: u64,
-        next_fn_bits: u64,
-    );
+    fn molt_itertools_alloc_class(name_ptr: *const u8, name_len: usize, layout_size: i64) -> u64;
+    fn molt_itertools_class_set_iter_next(class_bits: u64, iter_fn_bits: u64, next_fn_bits: u64);
     fn molt_itertools_alloc_function(fn_ptr: u64, arity: u64) -> u64;
     fn molt_itertools_alloc_kwd_mark() -> u64;
     fn molt_itertools_object_class_bits(ptr: *mut u8) -> u64;
@@ -203,15 +195,11 @@ pub fn tuple_from_iter_bits(_py: &PyToken, iter_bits: u64) -> Option<u64> {
 }
 
 pub fn alloc_itertools_class(_py: &PyToken, name: &str, layout_size: i64) -> u64 {
-    unsafe {
-        molt_itertools_alloc_class(name.as_ptr(), name.len(), layout_size)
-    }
+    unsafe { molt_itertools_alloc_class(name.as_ptr(), name.len(), layout_size) }
 }
 
 pub fn class_set_iter_next(_py: &PyToken, class_bits: u64, iter_fn_bits: u64, next_fn_bits: u64) {
-    unsafe {
-        molt_itertools_class_set_iter_next(class_bits, iter_fn_bits, next_fn_bits)
-    }
+    unsafe { molt_itertools_class_set_iter_next(class_bits, iter_fn_bits, next_fn_bits) }
 }
 
 pub fn alloc_function(_py: &PyToken, fn_ptr: u64, arity: u64) -> u64 {

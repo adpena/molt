@@ -26,15 +26,14 @@
 //!   with `molt_runtime_core::with_core_gil!(_py, { … })` as the outer frame.
 
 use molt_obj_model::MoltObject;
-use molt_runtime_core::prelude::*;
 use molt_runtime_core::obj_from_bits;
+use molt_runtime_core::prelude::*;
 
 use crate::bridge::{
-    alloc_dict_with_pairs, alloc_list, alloc_string,
-    alloc_tuple, attr_name_bits_from_bytes, dec_ref_bits, exception_pending, inc_ref_bits,
-    is_truthy, object_type_id, raise_exception, seq_vec_ref,
-    string_obj_to_owned, to_i64, dict_get_in_place, dict_set_in_place,
-    dict_order_clone, molt_iter, molt_iter_next, call_callable1,
+    alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
+    call_callable1, dec_ref_bits, dict_get_in_place, dict_order_clone, dict_set_in_place,
+    exception_pending, inc_ref_bits, is_truthy, molt_iter, molt_iter_next, object_type_id,
+    raise_exception, seq_vec_ref, string_obj_to_owned, to_i64,
 };
 
 // ---------------------------------------------------------------------------
@@ -637,7 +636,7 @@ fn decode_group_names(_py: &CoreGilToken, dict_bits: u64) -> Result<Vec<(String,
         ));
     };
     // We iterate the dict using molt_iter, which yields (key, value) pairs.
-    let iter_bits = molt_iter(_py,dict_bits);
+    let iter_bits = molt_iter(_py, dict_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
@@ -2910,11 +2909,7 @@ fn execute_match(
 ///
 /// Format: `(match_start, match_end, groups_tuple)`
 /// where `groups_tuple` is a tuple of `(start, end) | None` for each group.
-fn build_match_result_bits(
-    _py: &CoreGilToken,
-    result: &MatchResult,
-    group_count: u32,
-) -> u64 {
+fn build_match_result_bits(_py: &CoreGilToken, result: &MatchResult, group_count: u32) -> u64 {
     let start_bits = MoltObject::from_int(result.start as i64).bits();
     let end_bits = MoltObject::from_int(result.end as i64).bits();
 
@@ -3734,14 +3729,9 @@ pub extern "C" fn molt_re_sub_callable(
                     out.push_str(&segment);
 
                     // Build the match result tuple and call the replacement function.
-                    let match_tuple_bits =
-                        build_match_result_bits(_py, &result, group_count);
+                    let match_tuple_bits = build_match_result_bits(_py, &result, group_count);
                     let repl_result_bits =
-                        call_callable1(
-                            _py,
-                            repl_callable_bits,
-                            match_tuple_bits,
-                        );
+                        call_callable1(_py, repl_callable_bits, match_tuple_bits);
                     dec_ref_bits(_py, match_tuple_bits);
 
                     if exception_pending(_py) {
@@ -3854,8 +3844,11 @@ pub extern "C" fn molt_re_match_group(
                     let gn_ty = unsafe { object_type_id(gn_ptr) };
                     if gn_ty == TYPE_ID_DICT {
                         // Look up name in the dict.
-                        if let Some(name_key_bits) = attr_name_bits_from_bytes(_py, name.as_bytes()) {
-                            if let Some(val_bits) = unsafe { dict_get_in_place(_py, gn_ptr, name_key_bits) } {
+                        if let Some(name_key_bits) = attr_name_bits_from_bytes(_py, name.as_bytes())
+                        {
+                            if let Some(val_bits) =
+                                unsafe { dict_get_in_place(_py, gn_ptr, name_key_bits) }
+                            {
                                 dec_ref_bits(_py, name_key_bits);
                                 return to_i64(obj_from_bits(val_bits)).map(|v| v as usize);
                             }

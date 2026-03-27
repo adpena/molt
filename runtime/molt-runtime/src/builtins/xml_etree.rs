@@ -4,9 +4,8 @@
 //! iterparse, indent, Comment, ProcessingInstruction, register_namespace.
 
 use crate::{
-    MoltObject, alloc_list, alloc_string, alloc_tuple,
-    inc_ref_bits, is_truthy, obj_from_bits, raise_exception, string_obj_to_owned,
-    to_i64, int_bits_from_i64,
+    MoltObject, alloc_list, alloc_string, alloc_tuple, inc_ref_bits, int_bits_from_i64, is_truthy,
+    obj_from_bits, raise_exception, string_obj_to_owned, to_i64,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -123,10 +122,7 @@ fn skip_ws(data: &[u8], mut pos: usize) -> usize {
 fn parse_name(data: &[u8], mut pos: usize) -> Result<(String, usize), String> {
     let start = pos;
     while pos < data.len()
-        && !matches!(
-            data[pos],
-            b' ' | b'\t' | b'\n' | b'\r' | b'>' | b'/' | b'='
-        )
+        && !matches!(data[pos], b' ' | b'\t' | b'\n' | b'\r' | b'>' | b'/' | b'=')
     {
         pos += 1;
     }
@@ -194,7 +190,12 @@ fn parse_element(data: &[u8], mut pos: usize) -> Result<(i64, usize), String> {
         pos = skip_ws(data, pos);
     }
     // skip comments
-    while pos + 3 < data.len() && data[pos] == b'<' && data[pos + 1] == b'!' && data[pos + 2] == b'-' && data[pos + 3] == b'-' {
+    while pos + 3 < data.len()
+        && data[pos] == b'<'
+        && data[pos + 1] == b'!'
+        && data[pos + 2] == b'-'
+        && data[pos + 3] == b'-'
+    {
         while pos + 2 < data.len() {
             if data[pos] == b'-' && data[pos + 1] == b'-' && data[pos + 2] == b'>' {
                 pos += 3;
@@ -218,7 +219,8 @@ fn parse_element(data: &[u8], mut pos: usize) -> Result<(i64, usize), String> {
         if pos >= data.len() {
             return Err("unexpected end of tag".to_string());
         }
-        if data[pos] == b'>' || (data[pos] == b'/' && pos + 1 < data.len() && data[pos + 1] == b'>') {
+        if data[pos] == b'>' || (data[pos] == b'/' && pos + 1 < data.len() && data[pos + 1] == b'>')
+        {
             break;
         }
         let (attr_name, new_pos) = parse_name(data, pos)?;
@@ -472,7 +474,11 @@ pub extern "C" fn molt_xml_element_set_tail(handle_bits: u64, tail_bits: u64) ->
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_get_attrib(handle_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
+pub extern "C" fn molt_xml_element_get_attrib(
+    handle_bits: u64,
+    key_bits: u64,
+    default_bits: u64,
+) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
@@ -493,7 +499,11 @@ pub extern "C" fn molt_xml_element_get_attrib(handle_bits: u64, key_bits: u64, d
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_set_attrib(handle_bits: u64, key_bits: u64, value_bits: u64) -> u64 {
+pub extern "C" fn molt_xml_element_set_attrib(
+    handle_bits: u64,
+    key_bits: u64,
+    value_bits: u64,
+) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
@@ -516,7 +526,11 @@ pub extern "C" fn molt_xml_element_attrib_items(handle_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         match with_element(handle, |e| {
-            let mut items: Vec<(String, String)> = e.attrib.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            let mut items: Vec<(String, String)> = e
+                .attrib
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
             items.sort_by(|a, b| a.0.cmp(&b.0));
             items
         }) {
@@ -562,7 +576,10 @@ pub extern "C" fn molt_xml_element_children(handle_bits: u64) -> u64 {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         match with_element(handle, |e| e.children.clone()) {
             Some(children) => {
-                let bits: Vec<u64> = children.iter().map(|&h| int_bits_from_i64(_py, h)).collect();
+                let bits: Vec<u64> = children
+                    .iter()
+                    .map(|&h| int_bits_from_i64(_py, h))
+                    .collect();
                 mk_list(_py, &bits)
             }
             None => MoltObject::none().bits(),
@@ -615,7 +632,8 @@ pub extern "C" fn molt_xml_element_findall(handle_bits: u64, path_bits: u64) -> 
         match with_element(handle, |e| {
             let mut found = Vec::new();
             for &child_h in &e.children {
-                let tag_matches = with_element(child_h, |c| c.tag == path || path == "*").unwrap_or(false);
+                let tag_matches =
+                    with_element(child_h, |c| c.tag == path || path == "*").unwrap_or(false);
                 if tag_matches {
                     found.push(child_h);
                 }
@@ -632,7 +650,11 @@ pub extern "C" fn molt_xml_element_findall(handle_bits: u64, path_bits: u64) -> 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_findtext(handle_bits: u64, path_bits: u64, default_bits: u64) -> u64 {
+pub extern "C" fn molt_xml_element_findtext(
+    handle_bits: u64,
+    path_bits: u64,
+    default_bits: u64,
+) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let path = match string_obj_to_owned(obj_from_bits(path_bits)) {
@@ -705,24 +727,22 @@ pub extern "C" fn molt_xml_fromstring(xml_bits: u64) -> u64 {
         let xml = match string_obj_to_owned(obj_from_bits(xml_bits)) {
             Some(s) => s,
             None => {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "argument must be str",
-                );
+                return raise_exception::<u64>(_py, "TypeError", "argument must be str");
             }
         };
         match parse_xml_string(&xml) {
             Ok(handle) => int_bits_from_i64(_py, handle),
-            Err(msg) => {
-                raise_exception::<u64>(_py, "ParseError", &msg)
-            }
+            Err(msg) => raise_exception::<u64>(_py, "ParseError", &msg),
         }
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_tostring(handle_bits: u64, encoding_bits: u64, short_empty_bits: u64) -> u64 {
+pub extern "C" fn molt_xml_tostring(
+    handle_bits: u64,
+    encoding_bits: u64,
+    short_empty_bits: u64,
+) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
         let short_empty = is_truthy(_py, obj_from_bits(short_empty_bits));
@@ -744,7 +764,8 @@ pub extern "C" fn molt_xml_tostring(handle_bits: u64, encoding_bits: u64, short_
 pub extern "C" fn molt_xml_indent(handle_bits: u64, space_bits: u64, level_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
-        let space = string_obj_to_owned(obj_from_bits(space_bits)).unwrap_or_else(|| "  ".to_string());
+        let space =
+            string_obj_to_owned(obj_from_bits(space_bits)).unwrap_or_else(|| "  ".to_string());
         let level = to_i64(obj_from_bits(level_bits)).unwrap_or(0) as usize;
         indent_element(handle, &space, level);
         MoltObject::none().bits()

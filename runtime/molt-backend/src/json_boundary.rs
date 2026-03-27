@@ -77,7 +77,9 @@ pub(crate) fn optional_f64(obj: &JsonObject, key: &str, ctx: &str) -> Result<Opt
                     "Infinity" => Ok(Some(f64::INFINITY)),
                     "-Infinity" => Ok(Some(f64::NEG_INFINITY)),
                     "NaN" => Ok(Some(f64::NAN)),
-                    _ => Err(format!("{ctx}.{key} must be a number or special float string")),
+                    _ => Err(format!(
+                        "{ctx}.{key} must be a number or special float string"
+                    )),
                 };
             }
             Err(format!("{ctx}.{key} must be a number"))

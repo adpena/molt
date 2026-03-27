@@ -422,9 +422,7 @@ pub(crate) fn io_wait_release_socket(_py: &PyToken<'_>, future_ptr: *mut u8) {
         return;
     }
     let _header = unsafe { header_from_obj_ptr(future_ptr) };
-    let payload_bytes = unsafe {
-        crate::object::object_payload_size(future_ptr)
-    };
+    let payload_bytes = unsafe { crate::object::object_payload_size(future_ptr) };
     if payload_bytes < std::mem::size_of::<u64>() {
         return;
     }
@@ -450,9 +448,7 @@ pub(crate) fn io_wait_release_socket(_py: &PyToken<'_>, future_ptr: *mut u8) {
         return;
     }
     let header = unsafe { header_from_obj_ptr(future_ptr) };
-    let payload_bytes = unsafe {
-        crate::object::object_payload_size(future_ptr)
-    };
+    let payload_bytes = unsafe { crate::object::object_payload_size(future_ptr) };
     if payload_bytes < 2 * std::mem::size_of::<u64>() {
         return;
     }
@@ -489,7 +485,10 @@ pub(crate) fn send_data_from_bits(bits: u64) -> Result<SendData, String> {
     Err("send expects bytes-like object".to_string())
 }
 
-pub(crate) fn iter_values_from_bits(_py: &PyToken<'_>, iterable_bits: u64) -> Result<Vec<u64>, u64> {
+pub(crate) fn iter_values_from_bits(
+    _py: &PyToken<'_>,
+    iterable_bits: u64,
+) -> Result<Vec<u64>, u64> {
     let iter_bits = crate::molt_iter(iterable_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
@@ -1532,7 +1531,11 @@ fn unix_path_from_bits(_py: &PyToken<'_>, addr_bits: u64) -> Result<std::path::P
 }
 
 #[cfg(molt_has_net_io)]
-pub(crate) fn sockaddr_from_bits(_py: &PyToken<'_>, addr_bits: u64, family: i32) -> Result<SockAddr, String> {
+pub(crate) fn sockaddr_from_bits(
+    _py: &PyToken<'_>,
+    addr_bits: u64,
+    family: i32,
+) -> Result<SockAddr, String> {
     if family == libc::AF_UNIX {
         #[cfg(all(unix, molt_has_net_io))]
         {
@@ -1857,7 +1860,11 @@ pub(crate) fn socket_wait_ready_poll(
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn socket_wait_ready(_py: &PyToken<'_>, handle: i64, events: u32) -> Result<(), std::io::Error> {
+pub(crate) fn socket_wait_ready(
+    _py: &PyToken<'_>,
+    handle: i64,
+    events: u32,
+) -> Result<(), std::io::Error> {
     let timeout = socket_timeout(handle);
     if let Some(timeout) = timeout {
         if timeout == Duration::ZERO {
@@ -1972,7 +1979,10 @@ fn connect_raw_socket(fd: SocketFd, sockaddr: &SockAddr) -> std::io::Result<()> 
 }
 
 #[cfg(molt_has_net_io)]
-pub(crate) fn sock_addr_from_storage(storage: libc::sockaddr_storage, len: libc::socklen_t) -> SockAddr {
+pub(crate) fn sock_addr_from_storage(
+    storage: libc::sockaddr_storage,
+    len: libc::socklen_t,
+) -> SockAddr {
     let mut addr_storage = SockAddrStorage::zeroed();
     unsafe {
         *addr_storage.view_as::<libc::sockaddr_storage>() = storage;
@@ -6423,7 +6433,9 @@ pub(crate) fn socket_close_raw_windows(raw: RawSocket) {
 }
 
 #[cfg(all(molt_has_net_io, windows))]
-pub(crate) fn socketpair_windows_loopback_raw(family: i32) -> Result<(RawSocket, RawSocket), std::io::Error> {
+pub(crate) fn socketpair_windows_loopback_raw(
+    family: i32,
+) -> Result<(RawSocket, RawSocket), std::io::Error> {
     let loopback = if family == libc::AF_INET6 {
         "[::1]:0"
     } else {
@@ -6435,8 +6447,6 @@ pub(crate) fn socketpair_windows_loopback_raw(family: i32) -> Result<(RawSocket,
     let (server, _) = listener.accept()?;
     Ok((client.into_raw_socket(), server.into_raw_socket()))
 }
-
-
 
 // ── WASM stubs for functions extracted to sockets_net.rs ──
 // On native, these come from sockets_net.rs (behind molt_has_net_io).

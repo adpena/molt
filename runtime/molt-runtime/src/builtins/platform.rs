@@ -1144,10 +1144,7 @@ fn zip_archive_index_cached<'a>(
     cache: &'a mut HashMap<String, Option<ZipArchiveIndex>>,
     path: &str,
 ) -> Option<&'a ZipArchiveIndex> {
-    cache
-        .entry(path.to_string())
-        .or_insert(None)
-        .as_ref()
+    cache.entry(path.to_string()).or_insert(None).as_ref()
 }
 
 #[cfg(not(feature = "stdlib_archive"))]
@@ -3662,10 +3659,9 @@ fn cext_loader_dlopen(
     let init_name = module_name.rsplit('.').next().unwrap_or(module_name);
 
     let ext_path = std::path::Path::new(path);
-    let module_bits = unsafe {
-        molt_cpython_abi::loader::load_cpython_extension(ext_path, init_name)
-    }
-    .map_err(|e| format!("{e}"))?;
+    let module_bits =
+        unsafe { molt_cpython_abi::loader::load_cpython_extension(ext_path, init_name) }
+            .map_err(|e| format!("{e}"))?;
 
     if module_bits == 0 || module_bits == MoltObject::none().bits() {
         return Err("PyInit returned a null/None module".into());
@@ -6932,9 +6928,7 @@ fn importlib_import_with_fallback(
     #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
     if let Err(_) = &result {
         if importlib_exception_should_fallback(_py) {
-            if let Some(module_bits) =
-                importlib_try_cext_on_sys_path(_py, resolved, modules_ptr)
-            {
+            if let Some(module_bits) = importlib_try_cext_on_sys_path(_py, resolved, modules_ptr) {
                 return Ok(module_bits);
             }
             // Extension search failed too – restore the original error.
@@ -7187,18 +7181,13 @@ fn iterable_count_arg_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Res
     Ok(count)
 }
 
-
 #[path = "platform_importlib_ffi.rs"]
 mod importlib_ffi;
 pub use importlib_ffi::*;
 
-
-
 #[path = "platform_env_ffi.rs"]
 mod env_ffi;
 pub use env_ffi::*;
-
-
 
 #[cfg(test)]
 #[path = "platform_tests.rs"]

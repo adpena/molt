@@ -136,10 +136,7 @@ pub unsafe extern "C" fn PyObject_Hash(op: *mut PyObject) -> isize {
 // ─── PyType subtype / flags / name ────────────────────────────────────────
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyType_IsSubtype(
-    a: *mut PyTypeObject,
-    b: *mut PyTypeObject,
-) -> c_int {
+pub unsafe extern "C" fn PyType_IsSubtype(a: *mut PyTypeObject, b: *mut PyTypeObject) -> c_int {
     if a.is_null() || b.is_null() {
         return 0;
     }

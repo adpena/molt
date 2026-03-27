@@ -4,8 +4,8 @@
 
 #[cfg(feature = "mlir")]
 use melior::{
-    ir::{Location, Module as MlirModule},
     Context as MlirContext,
+    ir::{Location, Module as MlirModule},
 };
 
 /// Create an MLIR context with the standard dialects registered.
@@ -28,8 +28,7 @@ pub fn tir_to_mlir(
     // Parse the MLIR text representation we already generate
     let mlir_text = super::mlir_compat::to_mlir_text(func);
     let _location = Location::unknown(ctx);
-    MlirModule::parse(ctx, &mlir_text)
-        .ok_or_else(|| "Failed to parse TIR as MLIR".to_string())
+    MlirModule::parse(ctx, &mlir_text).ok_or_else(|| "Failed to parse TIR as MLIR".to_string())
 }
 
 /// Run MLIR optimization passes on a module.

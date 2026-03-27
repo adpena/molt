@@ -10,8 +10,8 @@
 /// FFI bridge to molt-runtime internal functions (resolved at link time).
 pub mod bridge;
 
-pub mod colorsys;
 pub mod cmath_mod;
+pub mod colorsys;
 pub mod fractions;
 pub mod math;
 pub mod random_mod;

@@ -21,18 +21,18 @@ use std::os::raw::c_int;
 use std::os::windows::io::{AsRawSocket, BorrowedSocket, FromRawSocket, IntoRawSocket, RawSocket};
 use std::time::Duration;
 
-use super::sockets::{host_from_bits, iter_values_from_bits, service_from_bits};
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
-use super::sockets::socket_timeout;
-#[cfg(molt_has_net_io)]
-use super::sockets::{
-    libc_socket, sock_addr_from_storage, sockaddr_from_bits, sockaddr_to_bits,
-    socket_wait_ready, with_socket_mut,
-};
-#[cfg(target_arch = "wasm32")]
-use super::sockets::{decode_sockaddr, errno_from_rc, wasm_socket_meta_insert};
 #[cfg(all(molt_has_net_io, not(unix)))]
 use super::sockets::socket_register_peer_pair;
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+use super::sockets::socket_timeout;
+#[cfg(target_arch = "wasm32")]
+use super::sockets::{decode_sockaddr, errno_from_rc, wasm_socket_meta_insert};
+use super::sockets::{host_from_bits, iter_values_from_bits, service_from_bits};
+#[cfg(molt_has_net_io)]
+use super::sockets::{
+    libc_socket, sock_addr_from_storage, sockaddr_from_bits, sockaddr_to_bits, socket_wait_ready,
+    with_socket_mut,
+};
 #[cfg(all(molt_has_net_io, windows))]
 use super::sockets::{socket_close_raw_windows, socketpair_windows_loopback_raw};
 
@@ -830,11 +830,17 @@ pub extern "C" fn molt_socket_gethostname() -> u64 {
 #[inline]
 fn socket_af_unspec() -> i32 {
     #[cfg(target_arch = "wasm32")]
-    { 0 }
+    {
+        0
+    }
     #[cfg(molt_has_net_io)]
-    { libc::AF_UNSPEC }
+    {
+        libc::AF_UNSPEC
+    }
     #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-    { 0 }
+    {
+        0
+    }
 }
 
 #[inline]
@@ -872,18 +878,31 @@ fn socket_getaddrinfo_call(
     }
     #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
     {
-        crate::molt_socket_getaddrinfo(host_bits, port_bits, family_bits, type_bits, proto_bits, flags_bits)
+        crate::molt_socket_getaddrinfo(
+            host_bits,
+            port_bits,
+            family_bits,
+            type_bits,
+            proto_bits,
+            flags_bits,
+        )
     }
 }
 
 #[inline]
 fn socket_gethostname_call() -> u64 {
     #[cfg(target_arch = "wasm32")]
-    { molt_socket_gethostname() }
+    {
+        molt_socket_gethostname()
+    }
     #[cfg(molt_has_net_io)]
-    { unsafe { molt_socket_gethostname() } }
+    {
+        unsafe { molt_socket_gethostname() }
+    }
     #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-    { crate::molt_socket_gethostname() }
+    {
+        crate::molt_socket_gethostname()
+    }
 }
 
 fn socket_addrinfo_first_host_bits(_py: &PyToken<'_>, info_bits: u64) -> Result<u64, u64> {

@@ -1,7 +1,7 @@
 //! String encoding and decoding — extracted from ops.rs for maintainability.
 
-use crate::*;
 use super::ops_string::{push_wtf8_codepoint, wtf8_from_bytes, wtf8_has_surrogates};
+use crate::*;
 
 #[derive(Clone, Copy)]
 pub(crate) enum EncodingKind {
