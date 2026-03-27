@@ -6638,10 +6638,74 @@ def _runtime_cargo_features_cached(
 
 
 def _runtime_cargo_features(target_triple: str | None) -> tuple[str, ...]:
-    return _runtime_cargo_features_cached(
-        target_triple,
-        os.environ.get("MOLT_RUNTIME_TK_NATIVE"),
+    features = list(
+        _runtime_cargo_features_cached(
+            target_triple,
+            os.environ.get("MOLT_RUNTIME_TK_NATIVE"),
+        )
     )
+    excluded = set(_runtime_excluded_features())
+    if excluded:
+        features = [feature for feature in features if feature not in excluded]
+    return tuple(features)
+
+
+def _runtime_excluded_features() -> tuple[str, ...]:
+    raw = os.environ.get("MOLT_RUNTIME_EXCLUDE_FEATURES", "").strip()
+    if not raw:
+        return ()
+    return tuple(sorted({feature.strip() for feature in raw.split(",") if feature.strip()}))
+
+
+def _default_runtime_feature_set() -> tuple[str, ...]:
+    return (
+        "wasi_host",
+        "cext_loader",
+        *_ALL_BUILTIN_FEATURES,
+        *_ALL_DOMAIN_FEATURES,
+    )
+
+
+def _effective_runtime_build_features(
+    *,
+    target_triple: str | None,
+    stdlib_profile: str | None,
+    runtime_features: tuple[str, ...],
+    builtin_features: list[str],
+) -> tuple[bool, tuple[str, ...]]:
+    excluded = set(_runtime_excluded_features())
+    is_wasm = bool(target_triple and "wasm" in target_triple)
+
+    if stdlib_profile == "micro":
+        features = [*runtime_features, *builtin_features, "stdlib_micro"]
+        if excluded:
+            features = [feature for feature in features if feature not in excluded]
+        return True, tuple(_dedupe_preserve_order(features))
+
+    if is_wasm:
+        features = [
+            *runtime_features,
+            "stdlib_crypto",
+            "stdlib_compression",
+            "stdlib_serialization",
+            "stdlib_archive",
+            "stdlib_fs_extra",
+            "builtin_set",
+            "builtin_complex",
+            "builtin_memoryview",
+            "builtin_contextvars",
+            "builtin_fcntl",
+        ]
+        if excluded:
+            features = [feature for feature in features if feature not in excluded]
+        return True, tuple(_dedupe_preserve_order(features))
+
+    if excluded:
+        features = [*_default_runtime_feature_set(), *runtime_features]
+        features = [feature for feature in features if feature not in excluded]
+        return True, tuple(_dedupe_preserve_order(features))
+
+    return False, tuple(_dedupe_preserve_order(runtime_features))
 
 
 # ---------------------------------------------------------------------------
@@ -18131,12 +18195,20 @@ def _ensure_runtime_lib(
     rustflags = os.environ.get("RUSTFLAGS", "")
     runtime_features = _runtime_cargo_features(target_triple)
     builtin_features = _builtin_features_from_import_graph(resolved_modules, stdlib_profile)
+    use_no_default_runtime_features, effective_runtime_features = (
+        _effective_runtime_build_features(
+            target_triple=target_triple,
+            stdlib_profile=stdlib_profile,
+            runtime_features=runtime_features,
+            builtin_features=builtin_features,
+        )
+    )
     # When stdlib_profile is micro, include the marker in the fingerprint
     # so full and micro builds are kept distinct in the cache.
-    fingerprint_features: tuple[str, ...] = runtime_features
-    if stdlib_profile == "micro":
+    fingerprint_features: tuple[str, ...] = effective_runtime_features
+    if use_no_default_runtime_features:
         fingerprint_features = tuple(
-            list(runtime_features) + sorted(builtin_features) + ["stdlib_micro", "no-default-features"]
+            list(effective_runtime_features) + ["no-default-features"]
         )
     fingerprint_path = _runtime_fingerprint_path(
         project_root, runtime_lib, cargo_profile, target_triple
@@ -18196,28 +18268,10 @@ def _ensure_runtime_lib(
             else:
                 print("Runtime sources changed; rebuilding runtime...", file=sys.stderr)
         cmd = ["cargo", "build", "-p", "molt-runtime", "--profile", cargo_profile]
-        if stdlib_profile == "micro":
+        if use_no_default_runtime_features:
             cmd.append("--no-default-features")
-            # Re-enable only the micro marker, builtin features from import
-            # graph analysis, and any explicit runtime features.
-            micro_features = list(runtime_features) + builtin_features + ["stdlib_micro"]
-            cmd.extend(["--features", ",".join(micro_features)])
-        else:
-            # For WASM targets, exclude stdlib_ast (rustpython-parser, ~2MB) and
-            # stdlib_unicode_names (unicode_names2, ~1MB) — not useful on WASM
-            # and they inflate the binary well past the 3MB Cloudflare free tier.
-            is_wasm = target_triple and "wasm" in target_triple
-            if is_wasm:
-                cmd.append("--no-default-features")
-                wasm_features = list(runtime_features) + [
-                    "stdlib_crypto", "stdlib_compression", "stdlib_serialization",
-                    "stdlib_archive", "stdlib_fs_extra",
-                    "builtin_set", "builtin_complex", "builtin_memoryview",
-                    "builtin_contextvars", "builtin_fcntl",
-                ]
-                cmd.extend(["--features", ",".join(wasm_features)])
-            elif runtime_features:
-                cmd.extend(["--features", ",".join(runtime_features)])
+        if effective_runtime_features:
+            cmd.extend(["--features", ",".join(effective_runtime_features)])
         if target_triple:
             cmd.extend(["--target", target_triple])
         build_env = os.environ.copy()
