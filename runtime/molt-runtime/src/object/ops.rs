@@ -7932,7 +7932,6 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                 }
             }
         }
-        eprintln!("BUG: molt_contains non-iterable: bits=0x{:x} type={}", container_bits, type_name(_py, container));
         raise_exception::<_>(
             _py,
             "TypeError",
