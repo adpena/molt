@@ -12151,7 +12151,7 @@ def _prepare_backend_ir(
     pgo_profile_summary: Any | None,
     runtime_feedback_summary: Any | None,
     emit_ir_path: Path | None,
-    stdlib_profile: str | None = None,
+    stdlib_profile: str | None = "micro",
 ) -> tuple[_PreparedBackendIR | None, dict[str, Any] | None]:
     entry_path: Path | None = None
     if entry_module != "__main__":
@@ -14190,7 +14190,7 @@ def _prepare_backend_setup(
     warnings: list[str],
     cache: bool,
     ir: Mapping[str, Any],
-    stdlib_profile: str | None = None,
+    stdlib_profile: str | None = "micro",
 ) -> tuple[_PreparedBackendSetup | None, dict[str, Any] | None]:
     runtime_state = _initialize_runtime_artifact_state(
         is_rust_transpile=is_rust_transpile or is_luau_transpile,
@@ -14249,7 +14249,7 @@ def _prepare_backend_runtime_context(
     runtime_cargo_profile: str,
     cargo_timeout: float | None,
     molt_root: Path,
-    stdlib_profile: str | None = None,
+    stdlib_profile: str | None = "micro",
 ) -> _PreparedBackendRuntimeContext:
     runtime_state = prepared_backend_setup.runtime_state
 
@@ -15089,7 +15089,7 @@ def _run_backend_pipeline(
     wasm_opt_level: str = "Oz",
     precompile: bool = False,
     snapshot: bool = False,
-    stdlib_profile: str | None = None,
+    stdlib_profile: str | None = "micro",
 ) -> int:
     (
         _prepared_frontend_run_ticket,
@@ -15859,7 +15859,7 @@ def _run_build_pipeline(
     wasm_opt_level: str = "Oz",
     precompile: bool = False,
     snapshot: bool = False,
-    stdlib_profile: str | None = None,
+    stdlib_profile: str | None = "micro",
 ) -> int:
     prepared_frontend_run_ticket = prepared_frontend_pipeline_bundle[0]
     frontend_layer_error = _run_frontend_pipeline(
@@ -16554,7 +16554,7 @@ def _ensure_runtime_lib_ready(
     runtime_cargo_profile: str,
     molt_root: Path,
     cargo_timeout: float | None,
-    stdlib_profile: str | None = None,
+    stdlib_profile: str | None = "micro",
     resolved_modules: set[str] | None = None,
 ) -> bool:
     runtime_lib = runtime_state.runtime_lib
@@ -16582,7 +16582,7 @@ def _ensure_runtime_wasm_artifact(
     project_root: Path,
     simd_enabled: bool,
     freestanding: bool,
-    stdlib_profile: str | None = None,
+    stdlib_profile: str | None = "micro",
 ) -> bool:
     runtime_path = (
         runtime_state.runtime_reloc_wasm if reloc else runtime_state.runtime_wasm
@@ -18148,7 +18148,7 @@ def _ensure_runtime_lib(
     cargo_profile: str,
     project_root: Path,
     cargo_timeout: float | None,
-    stdlib_profile: str | None = None,
+    stdlib_profile: str | None = "micro",
     resolved_modules: set[str] | None = None,
 ) -> bool:
     # Session-level short-circuit: once we have verified (and possibly built)
@@ -18376,7 +18376,7 @@ def _ensure_runtime_wasm(
     project_root: Path | None = None,
     simd_enabled: bool = True,
     freestanding: bool = False,
-    stdlib_profile: str | None = None,
+    stdlib_profile: str | None = "micro",
 ) -> bool:
     root = project_root or Path(__file__).resolve().parents[2]
     requested_cargo_profile = cargo_profile
@@ -20283,7 +20283,7 @@ def build(
     precompile: bool = False,
     wasm_profile: str = "full",
     snapshot: bool = False,
-    stdlib_profile: str | None = None,
+    stdlib_profile: str | None = "micro",
     tree_shake: bool = True,
     lib_paths: list[str] | None = None,
     split_runtime: bool = False,
