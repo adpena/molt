@@ -869,6 +869,13 @@ fn run_daemon(_socket_path: &str) -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
+    // Disable TIR optimization by default — the TIR SSA roundtrip breaks
+    // operand connections for Copy-mapped ops (loops, fields, exception stack).
+    // Re-enable with MOLT_TIR_OPT=1 for testing TIR passes.
+    if std::env::var("MOLT_TIR_OPT").is_err() {
+        unsafe { std::env::set_var("MOLT_TIR_OPT", "0"); }
+    }
+
     // Hard memory guard: set rlimit on virtual memory to prevent OOM
     // from crashing the entire machine.  Default 4GB, override with
     // MOLT_BACKEND_MAX_RSS_GB env var.
@@ -1129,7 +1136,12 @@ fn main() -> io::Result<()> {
         "output.o"
     };
     let output_file = output_path.unwrap_or(default_output);
-    let mut file = File::create(output_file)?;
+    let mut file = File::create(output_file).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("failed to create backend output '{}': {}", output_file, err),
+        )
+    })?;
 
     if is_luau {
         #[cfg(feature = "luau-backend")]
@@ -1399,7 +1411,17 @@ fn main() -> io::Result<()> {
                 // Merge batch objects with ld -r (relocatable partial link)
                 drop(file); // close the output file handle
                 if batch_paths.len() == 1 {
-                    std::fs::copy(&batch_paths[0], output_file)?;
+                    std::fs::copy(&batch_paths[0], output_file).map_err(|err| {
+                        io::Error::new(
+                            err.kind(),
+                            format!(
+                                "failed to copy batch object '{}' to '{}': {}",
+                                batch_paths[0].display(),
+                                output_file,
+                                err
+                            ),
+                        )
+                    })?;
                 } else {
                     // Use the system linker for partial linking.
                     // Respect CC/LD env vars for cross-compilation.
