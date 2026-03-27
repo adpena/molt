@@ -9902,6 +9902,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             module_backed = {name for name in names if not name.startswith("__molt_")}
             if module_backed:
                 self.module_global_mutations.update(module_backed)
+                # Remove from self.locals so visit_Name falls through to
+                # the module_global_mutations check (module_get_attr).
+                # Without this, the cached local SSA variable shadows the
+                # module dict, making while loop conditions read stale values.
+                for name in module_backed:
+                    self.locals.pop(name, None)
         if self.is_async():
             return
         for name in sorted(names - module_backed):
@@ -22460,6 +22466,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         finally:
             self.control_flow_depth -= 1
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        # Evict module_global_mutations names from the globals cache so
+        # subsequent loads go through MODULE_GET_ATTR instead of reusing a
+        # value that was only assigned in one branch.
+        if self.current_func_name == "molt_main" and not self.is_async():
+            assigned = self._collect_assigned_names(node.body + node.orelse)
+            for name in assigned:
+                if name in self.module_global_mutations:
+                    self.globals.pop(name, None)
         return None
 
     def visit_With(self, node: ast.With) -> None:
