@@ -8800,36 +8800,14 @@ impl SimpleBackend {
                             eprintln!("check_exception {} op={}", func_ir.name, op_idx,);
                         }
                     }
-                    // Collect all names scrubbed from both obj and ptr so we can
-                    // do a single pass over block_tracked maps instead of O(n*m).
-                    let mut scrubbed_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-                    if !carry_obj.is_empty() {
-                        let cleanup =
-                            drain_cleanup_tracked(&mut carry_obj, &last_use, op_idx, None);
-                        for name in cleanup {
-                            // Use entry_vars (definition-time Value) for dec_ref,
-                            // not var_get (current SSA Value). If the variable was
-                            // redefined, var_get returns the WRONG object.
-                            let val = entry_vars.get(&name).copied()
-                                .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
-                            let Some(val) = val else { continue; };
-                            builder.ins().call(local_dec_ref_obj, &[val]);
-                            entry_vars.remove(&name);
-                            scrubbed_names.insert(name);
-                        }
-                    }
-                    if !carry_ptr.is_empty() {
-                        let cleanup =
-                            drain_cleanup_tracked(&mut carry_ptr, &last_use, op_idx, None);
-                        for name in cleanup {
-                            let val = entry_vars.get(&name).copied()
-                                .or_else(|| var_get(&mut builder, &vars, &name).map(|v| *v));
-                            let Some(val) = val else { continue; };
-                            builder.ins().call(local_dec_ref_obj, &[val]);
-                            entry_vars.remove(&name);
-                            scrubbed_names.insert(name);
-                        }
-                    }
+                    // TEMPORARILY DISABLED: check_exception cleanup
+                    // The drain_cleanup_tracked here was dec_ref'ing values
+                    // too early, causing use-after-free in stdlib module init
+                    // (the freed module object's dict gets reused by mimalloc,
+                    // and subsequent module_set_attr accesses garbage).
+                    // TODO: fix last_use analysis to correctly extend lifetimes
+                    // for values stored in persistent containers (sys.modules).
+                    let scrubbed_names: std::collections::HashSet<String> = std::collections::HashSet::new();
                     // Single pass over all exception handler blocks to remove
                     // scrubbed names, instead of one retain per name per block.
                     if !scrubbed_names.is_empty() {

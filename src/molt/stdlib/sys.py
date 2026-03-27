@@ -56,16 +56,17 @@ def _noop(*_args: object, **_kwargs: object) -> None:
 def _safe_intrinsic(
     name: str,
     default: object = None,
+    _ri: object = _require_intrinsic,
 ) -> Callable[..., object]:
     """Resolve an intrinsic, returning *default* (or _noop) on failure.
 
     This NEVER raises during import, making bootstrap infallible on all
     targets including WASM where the registry may be populated lazily.
-    Uses the module-level _require_intrinsic directly instead of capturing
+    The _ri default captures the resolver at definition time, avoiding
     a module-global lookup that can fail in AOT-compiled stdlib modules.
     """
     try:
-        fn = _require_intrinsic(name)
+        fn = _ri(name)
         if callable(fn):
             return fn  # type: ignore[return-value]
     except (RuntimeError, TypeError):
