@@ -7,6 +7,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 import os as _os
 import sys as _sys
+import builtins as _builtins
 
 import importlib.machinery as machinery
 import importlib.util as util
@@ -17,9 +18,6 @@ _MOLT_IMPORTLIB_RESOLVE_NAME = _require_intrinsic(
 )
 _MOLT_IMPORTLIB_KNOWN_ABSENT_MISSING_NAME = _require_intrinsic(
     "molt_importlib_known_absent_missing_name"
-)
-_MOLT_IMPORTLIB_IMPORT_MODULE = _require_intrinsic(
-    "molt_importlib_import_module"
 )
 _MOLT_IMPORTLIB_RUNTIME_MODULES = _require_intrinsic(
     "molt_importlib_runtime_modules"
@@ -107,16 +105,7 @@ def import_module(name: str, package: str | None = None):
         modules = _runtime_modules()
         modules[resolved] = target
         return target
-    try:
-        mod = _MOLT_IMPORTLIB_IMPORT_MODULE(resolved, util, machinery)
-    except BaseException as exc:
-        text = str(exc)
-        kind = type(exc).__name__
-        if kind == "ModuleNotFoundError" or text.startswith("No module named "):
-            raise ModuleNotFoundError(text)
-        if kind == "ImportError":
-            raise ImportError(text)
-        raise
+    mod = _builtins.__import__(resolved, globals(), locals(), ("*",), 0)
     modules = _runtime_modules()
     if resolved in modules:
         return modules[resolved]

@@ -5321,13 +5321,10 @@ fn optional_string_arg_from_bits(
     }
 }
 
-fn importlib_target_minor(_py: &PyToken<'_>) -> i64 {
-    let state = crate::runtime_state(_py);
-    if let Some(info) = state.sys_version_info.lock().unwrap().as_ref()
-        && info.major == 3
-    {
-        return info.minor;
-    }
+fn importlib_target_minor() -> i64 {
+    // Check explicit env-var overrides only.  Do NOT read from
+    // state.sys_version_info — that field is tainted by the host Python
+    // version used to run the compiler.  Default to 12 (molt's target).
     if let Ok(raw) = std::env::var("MOLT_PYTHON_VERSION")
         && let Some((major_raw, minor_raw)) = raw.split_once('.')
         && major_raw.trim() == "3"
@@ -5380,7 +5377,7 @@ fn removed_stdlib_313_missing_name(resolved: &str) -> Option<&'static str> {
 }
 
 fn importlib_known_absent_missing_name(_py: &PyToken<'_>, resolved: &str) -> Option<String> {
-    let target_minor = importlib_target_minor(_py);
+    let target_minor = importlib_target_minor();
     if target_minor >= 13
         && let Some(missing_name) = removed_stdlib_313_missing_name(resolved)
     {
