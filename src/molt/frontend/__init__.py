@@ -5623,6 +5623,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         info = self._lookup_func_defaults(module_name, func_id)
         if info is None:
             return args
+        if info.get("has_vararg"):
+            return None
         total_params = info.get("params")
         defaults = info.get("defaults", [])
         kwonly_count = info.get("kwonly")
