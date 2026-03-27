@@ -1647,15 +1647,16 @@ pub extern "C" fn molt_getcwd() -> u64 {
 }
 
 #[cfg(not(unix))]
-fn unix_seconds_from_system_time(value: SystemTime) -> i128 {
+fn unix_seconds_from_system_time(value: std::time::SystemTime) -> i128 {
+    use std::time::UNIX_EPOCH;
     match value.duration_since(UNIX_EPOCH) {
-        Ok(duration) => i128::from(duration.as_secs()),
-        Err(err) => -i128::from(err.duration().as_secs()),
+        Ok(duration) => i128::from(duration.as_secs() as u64),
+        Err(err) => -i128::from(err.duration().as_secs() as u64),
     }
 }
 
 #[cfg(not(unix))]
-fn metadata_time_seconds(value: Result<SystemTime, std::io::Error>) -> i128 {
+fn metadata_time_seconds(value: Result<std::time::SystemTime, std::io::Error>) -> i128 {
     match value {
         Ok(time) => unix_seconds_from_system_time(time),
         Err(_) => 0,

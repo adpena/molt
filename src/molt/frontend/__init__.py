@@ -2920,6 +2920,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if stmt.args.vararg or stmt.args.kwarg:
+                defaults[stmt.name] = {"has_vararg": True}
                 continue
             params = cls._function_param_names(stmt.args)
             default_specs = cls._default_specs_from_args(stmt.args)
@@ -7329,6 +7330,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if self.current_func_name != "molt_main" and name in self.global_decls:
             self._emit_module_attr_set_runtime(name, value)
             return
+        if (
+            self.current_func_name == "molt_main"
+            and name in self.module_global_mutations
+            and hasattr(self, "module_obj")
+            and self.module_obj is not None
+        ):
+            self._emit_module_attr_set_on(self.module_obj, name, value)
         # Module-level stores inside loops must sync to the module dict
         # so that module_get_attr reads see the updated value on each iteration.
         if (

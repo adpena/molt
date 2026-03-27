@@ -872,7 +872,7 @@ unsafe fn sum_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
 }
 
 #[cfg(target_arch = "wasm32")]
-unsafe fn sum_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64> {
+pub(crate) unsafe fn sum_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64> {
     unsafe {
         use std::arch::wasm32::*;
         let mut i = 0usize;
@@ -998,7 +998,7 @@ unsafe fn min_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
 }
 
 #[cfg(target_arch = "wasm32")]
-unsafe fn min_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64> {
+pub(crate) unsafe fn min_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64> {
     let mut min_val = acc;
     for &bits in elems {
         let obj = MoltObject::from_bits(bits);
@@ -1076,7 +1076,7 @@ unsafe fn max_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
 }
 
 #[cfg(target_arch = "wasm32")]
-unsafe fn max_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64> {
+pub(crate) unsafe fn max_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64> {
     let mut max_val = acc;
     for &bits in elems {
         let obj = MoltObject::from_bits(bits);
@@ -1141,7 +1141,7 @@ unsafe fn sum_ints_trusted_simd_x86_64_avx2(elems: &[u64], acc: i64) -> i64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-unsafe fn sum_ints_trusted_simd_wasm32(elems: &[u64], acc: i64) -> i64 {
+pub(crate) unsafe fn sum_ints_trusted_simd_wasm32(elems: &[u64], acc: i64) -> i64 {
     unsafe {
         use std::arch::wasm32::*;
         let mut i = 0usize;
