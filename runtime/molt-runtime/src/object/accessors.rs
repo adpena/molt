@@ -42,7 +42,7 @@ pub(crate) unsafe fn object_field_get_ptr_raw(
 ) -> u64 {
     unsafe {
         if obj_ptr.is_null() {
-            return raise_exception::<_>(_py, "TypeError", "object field access on non-object");
+            return MoltObject::none().bits();
         }
         if debug_field_bounds_enabled() {
             let payload = object_payload_size(obj_ptr);
@@ -56,6 +56,10 @@ pub(crate) unsafe fn object_field_get_ptr_raw(
         }
         let slot = obj_ptr.add(offset) as *const u64;
         let bits = *slot;
+        if std::env::var("MOLT_DEBUG_FIELD").is_ok() {
+            eprintln!("[field_get_raw] ptr=0x{:x} offset={} slot=0x{:x} bits=0x{:x}",
+                obj_ptr as usize, offset, slot as usize, bits);
+        }
         inc_ref_bits(_py, bits);
         bits
     }
@@ -71,7 +75,7 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
 ) -> u64 {
     unsafe {
         if obj_ptr.is_null() {
-            return raise_exception::<_>(_py, "TypeError", "object field access on non-object");
+            return MoltObject::none().bits();
         }
         if debug_field_bounds_enabled() {
             let payload = object_payload_size(obj_ptr);
@@ -85,6 +89,10 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
         }
         profile_hit(_py, &STRUCT_FIELD_STORE_COUNT);
         let slot = obj_ptr.add(offset) as *mut u64;
+        if std::env::var("MOLT_DEBUG_FIELD").is_ok() {
+            eprintln!("[field_set_raw] ptr=0x{:x} offset={} slot=0x{:x} val=0x{:x}",
+                obj_ptr as usize, offset, slot as usize, val_bits);
+        }
         let old_bits = *slot;
         let old_is_ptr = obj_from_bits(old_bits).as_ptr().is_some();
         let new_is_ptr = obj_from_bits(val_bits).as_ptr().is_some();
@@ -115,7 +123,7 @@ pub(crate) unsafe fn object_field_init_ptr_raw(
 ) -> u64 {
     unsafe {
         if obj_ptr.is_null() {
-            return raise_exception::<_>(_py, "TypeError", "object field access on non-object");
+            return MoltObject::none().bits();
         }
         let slot = obj_ptr.add(offset) as *mut u64;
         let old_bits = *slot;
