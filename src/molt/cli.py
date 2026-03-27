@@ -11643,36 +11643,37 @@ def _append_module_code_slot_ops(
     return next_var
 
 
+_MOLT_TARGET_VERSION = (3, 12, 0, "final", 0)
+
+
 def _python_version_display() -> tuple[str, str, int]:
-    py_version = sys.version_info
-    version_release = py_version.releaselevel
-    version_serial = py_version.serial
+    # Use molt's target version, NOT the host Python version, so that
+    # compiled binaries always report 3.12 regardless of the host used
+    # to run the compiler.
+    major, minor, micro, release, serial = _MOLT_TARGET_VERSION
     version_suffix = ""
-    if version_release == "alpha":
-        version_suffix = f"a{version_serial}"
-    elif version_release == "beta":
-        version_suffix = f"b{version_serial}"
-    elif version_release == "candidate":
-        version_suffix = f"rc{version_serial}"
-    elif version_release != "final":
-        version_suffix = f"{version_release}{version_serial}"
-    version_str = (
-        f"{py_version.major}.{py_version.minor}.{py_version.micro}"
-        f"{version_suffix} (molt)"
-    )
-    return version_release, version_str, version_serial
+    if release == "alpha":
+        version_suffix = f"a{serial}"
+    elif release == "beta":
+        version_suffix = f"b{serial}"
+    elif release == "candidate":
+        version_suffix = f"rc{serial}"
+    elif release != "final":
+        version_suffix = f"{release}{serial}"
+    version_str = f"{major}.{minor}.{micro}{version_suffix} (molt)"
+    return release, version_str, serial
 
 
 def _build_version_info_ops(
     *,
     register_global_code_id: Callable[[str], int],
 ) -> list[dict[str, Any]]:
-    py_version = sys.version_info
-    version_release, version_str, version_serial = _python_version_display()
+    major, minor, micro, version_release, version_serial = _MOLT_TARGET_VERSION
+    _, version_str, _ = _python_version_display()
     return [
-        {"kind": "const", "value": py_version.major, "out": "v3"},
-        {"kind": "const", "value": py_version.minor, "out": "v4"},
-        {"kind": "const", "value": py_version.micro, "out": "v5"},
+        {"kind": "const", "value": major, "out": "v3"},
+        {"kind": "const", "value": minor, "out": "v4"},
+        {"kind": "const", "value": micro, "out": "v5"},
         {"kind": "const_str", "s_value": version_release, "out": "v6"},
         {"kind": "const", "value": version_serial, "out": "v7"},
         {"kind": "const_str", "s_value": version_str, "out": "v8"},
@@ -11929,6 +11930,9 @@ def _build_isolate_bootstrap_ops(
     return [
         {"kind": "code_slots_init", "value": code_slot_count},
         *version_ops,
+        # Match `molt_main`: version/code-slot setup can leave a stale pending
+        # exception bit that must not leak into the first lazily imported module.
+        {"kind": "exception_clear"},
         *module_code_ops,
         {"kind": "ret_void"},
     ]
