@@ -4108,21 +4108,14 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
             // but no control-flow exit), the next MODULE_GET_ATTR receives None.
             // Propagate the already-pending exception instead of overwriting it
             // with a confusing TypeError about "expects module".
-            if exception_pending(_py) {
+            if module_obj.is_none() || exception_pending(_py) {
                 return MoltObject::none().bits();
             }
             let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
                 .unwrap_or_else(|| "<attr>".to_string());
-            if debug_attr {
-                eprintln!(
-                    "molt module_get_attr invalid module (bits=0x{:x}) for attr={}",
-                    module_bits, attr_name
-                );
-            }
-            let is_none = module_obj.is_none();
             let msg = format!(
-                "module attribute access expects module, got non-pointer (bits=0x{:x}, is_none={}) for attr '{}'",
-                module_bits, is_none, attr_name
+                "module attribute access expects module, got non-pointer (bits=0x{:x}) for attr '{}'",
+                module_bits, attr_name
             );
             return raise_exception::<_>(
                 _py,
@@ -4197,16 +4190,18 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
         let trace = trace_name_error();
         let module_obj = obj_from_bits(module_bits);
         let Some(module_ptr) = module_obj.as_ptr() else {
-            // Propagate already-pending exception (see molt_module_get_attr comment).
-            if exception_pending(_py) {
+            // On exception handler paths, SSA variables may resolve to
+            // None (default for undefined Cranelift Variables).  Return
+            // None silently — the exception handler will check
+            // exception_last and re-raise if needed.
+            if module_obj.is_none() || exception_pending(_py) {
                 return MoltObject::none().bits();
             }
             let name = string_obj_to_owned(obj_from_bits(name_bits))
                 .unwrap_or_else(|| "<name>".to_string());
-            let is_none = module_obj.is_none();
             let msg = format!(
-                "module get_global expects module, got non-pointer (bits=0x{:x}, is_none={}) for name '{}'",
-                module_bits, is_none, name
+                "module get_global expects module, got non-pointer (bits=0x{:x}) for name '{}'",
+                module_bits, name
             );
             return raise_exception::<_>(
                 _py,
