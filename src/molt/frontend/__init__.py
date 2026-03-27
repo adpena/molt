@@ -13180,11 +13180,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         dynamic_bases_tuple: MoltValue | None = None
         dynamic_meta: MoltValue | None = None
         dynamic_kw_pairs: list[tuple[str, MoltValue]] = []
+        dynamic_kw_splats: list[MoltValue] = []
         if dynamic_build:
             meta_expr = None
             for kw in node.keywords:
                 if kw.arg is None:
-                    raise NotImplementedError("Class **kwargs are not supported")
+                    splat_val = self.visit(kw.value)
+                    if splat_val is None:
+                        raise NotImplementedError("Unsupported class **kwargs value")
+                    dynamic_kw_splats.append(splat_val)
+                    continue
                 if kw.arg == "metaclass":
                     if meta_expr is not None:
                         raise NotImplementedError("Duplicate metaclass keyword")
@@ -13535,6 +13540,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         kind="CALLARGS_PUSH_KW",
                         args=[callargs, key_val, kw_val],
                         result=MoltValue("none"),
+                    )
+                )
+            for splat_val in dynamic_kw_splats:
+                self.emit(
+                    MoltOp(
+                        kind="CALLARGS_EXPAND_KWSTAR",
+                        args=[callargs, splat_val],
+                        result=MoltValue(self.next_var(), type_hint="None"),
                     )
                 )
             namespace_val = MoltValue(self.next_var(), type_hint="Any")
@@ -13995,6 +14008,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         kind="CALLARGS_PUSH_KW",
                         args=[callargs, key_val, kw_val],
                         result=MoltValue("none"),
+                    )
+                )
+            for splat_val in dynamic_kw_splats:
+                self.emit(
+                    MoltOp(
+                        kind="CALLARGS_EXPAND_KWSTAR",
+                        args=[callargs, splat_val],
+                        result=MoltValue(self.next_var(), type_hint="None"),
                     )
                 )
             class_val = MoltValue(self.next_var(), type_hint="type")
