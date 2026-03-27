@@ -276,3 +276,10 @@ inherits = "release"
 lto = "thin"
 codegen-units = 4
 debug = 1
+
+# Patch cranelift-codegen to fix panics in remove_constant_phis (assertion
+# on mismatched block param counts) and alias_analysis (unwrap on empty
+# successor block).  Both are triggered by SSA Variable-based loop counter
+# phis in nested loops.  The patches convert assertions to bailouts.
+[patch.crates-io]
+cranelift-codegen = { path = "vendor/cranelift-codegen-0.130.0" }

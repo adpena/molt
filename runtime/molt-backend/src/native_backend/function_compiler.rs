@@ -8359,6 +8359,10 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*name_bits]);
                     let res = builder.inst_results(call)[0];
+                    // module_import may return a borrowed reference from sys.modules —
+                    // inc_ref to ensure the caller owns it and dec_ref at last_use
+                    // doesn't free a module still in sys.modules.
+                    emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
                     if let Some(out__) = op.out { def_var_named(&mut builder, &vars, out__, res); }
                 }
                 "module_cache_set" => {
