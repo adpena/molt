@@ -11207,6 +11207,10 @@ pub(crate) unsafe fn dict_set_in_place(
                 dec_ref_bits(_py, old_bits);
                 inc_ref_bits(_py, val_bits);
                 order[val_idx] = val_bits;
+                if crate::object::refcount_opt::is_heap_ref(val_bits) {
+                    (*header_from_obj_ptr(ptr)).flags |=
+                        crate::object::HEADER_FLAG_CONTAINS_REFS;
+                }
             }
             return;
         }
@@ -11227,6 +11231,11 @@ pub(crate) unsafe fn dict_set_in_place(
         inc_ref_bits(_py, val_bits);
         let entry_idx = order.len() / 2 - 1;
         dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
+        if crate::object::refcount_opt::is_heap_ref(key_bits)
+            || crate::object::refcount_opt::is_heap_ref(val_bits)
+        {
+            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+        }
     }
 }
 
@@ -11270,6 +11279,8 @@ pub(crate) unsafe fn dict_set_inline_int_in_place(
                             }
                             if new_obj.as_ptr().is_some() {
                                 inc_ref_bits(_py, val_bits);
+                                (*header_from_obj_ptr(ptr)).flags |=
+                                    crate::object::HEADER_FLAG_CONTAINS_REFS;
                             }
                             order[val_idx] = val_bits;
                         }
@@ -11295,6 +11306,7 @@ pub(crate) unsafe fn dict_set_inline_int_in_place(
         let val_obj = obj_from_bits(val_bits);
         if val_obj.as_ptr().is_some() {
             inc_ref_bits(_py, val_bits);
+            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
         }
         let entry_idx = order.len() / 2 - 1;
         dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
@@ -11383,6 +11395,10 @@ pub(crate) unsafe fn dict_set_in_place_preserving_pending(
                 dec_ref_bits(_py, old_bits);
                 inc_ref_bits(_py, val_bits);
                 order[val_idx] = val_bits;
+                if crate::object::refcount_opt::is_heap_ref(val_bits) {
+                    (*header_from_obj_ptr(ptr)).flags |=
+                        crate::object::HEADER_FLAG_CONTAINS_REFS;
+                }
             }
             return;
         }
@@ -11409,6 +11425,11 @@ pub(crate) unsafe fn dict_set_in_place_preserving_pending(
         inc_ref_bits(_py, val_bits);
         let entry_idx = order.len() / 2 - 1;
         dict_insert_entry_with_hash(_py, order, table, entry_idx, hash);
+        if crate::object::refcount_opt::is_heap_ref(key_bits)
+            || crate::object::refcount_opt::is_heap_ref(val_bits)
+        {
+            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+        }
     }
 }
 
@@ -11446,6 +11467,9 @@ pub(crate) unsafe fn set_add_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits:
         inc_ref_bits(_py, key_bits);
         let entry_idx = order.len() - 1;
         set_insert_entry_with_hash(_py, order, table, entry_idx, hash);
+        if crate::object::refcount_opt::is_heap_ref(key_bits) {
+            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+        }
     }
 }
 
@@ -12999,6 +13023,10 @@ pub extern "C" fn molt_list_setitem_int_fast(
                 dec_ref_bits(_py, old_bits);
                 inc_ref_bits(_py, val_bits);
                 elems[idx as usize] = val_bits;
+                if crate::object::refcount_opt::is_heap_ref(val_bits) {
+                    (*header_from_obj_ptr(ptr)).flags |=
+                        crate::object::HEADER_FLAG_CONTAINS_REFS;
+                }
             }
             list_bits
         })

@@ -1,0 +1,35 @@
+error[E0277]: `Rc<()>` cannot be shared between threads safely
+ --> tests/compile_fail_cases/audit_sink_send.rs:9:41
+  |
+9 | impl molt_runtime::audit::AuditSink for BadSink {
+  |                                         ^^^^^^^ `Rc<()>` cannot be shared between threads safely
+  |
+  = help: within `BadSink`, the trait `Sync` is not implemented for `Rc<()>`
+note: required because it appears within the type `BadSink`
+ --> tests/compile_fail_cases/audit_sink_send.rs:7:8
+  |
+7 | struct BadSink(Rc<()>); // Rc is !Send
+  |        ^^^^^^^
+note: required by a bound in `AuditSink`
+ --> src/audit.rs
+  |
+  | pub trait AuditSink: Send + Sync {
+  |                             ^^^^ required by this bound in `AuditSink`
+
+error[E0277]: `Rc<()>` cannot be sent between threads safely
+ --> tests/compile_fail_cases/audit_sink_send.rs:9:41
+  |
+9 | impl molt_runtime::audit::AuditSink for BadSink {
+  |                                         ^^^^^^^ `Rc<()>` cannot be sent between threads safely
+  |
+  = help: within `BadSink`, the trait `Send` is not implemented for `Rc<()>`
+note: required because it appears within the type `BadSink`
+ --> tests/compile_fail_cases/audit_sink_send.rs:7:8
+  |
+7 | struct BadSink(Rc<()>); // Rc is !Send
+  |        ^^^^^^^
+note: required by a bound in `AuditSink`
+ --> src/audit.rs
+  |
+  | pub trait AuditSink: Send + Sync {
+  |                      ^^^^ required by this bound in `AuditSink`

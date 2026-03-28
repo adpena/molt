@@ -1,0 +1,11 @@
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/compile_fail_cases/thread_local_escape.rs:11:9
+   |
+ 6 |     let mut escaped: Option<&mut dyn molt_runtime::resource::ResourceTracker> = None;
+   |         ----------- `escaped` declared here, outside of the closure body
+ 7 |
+ 8 |     molt_runtime::resource::with_tracker(|t| {
+   |                                           - `t` is a reference that is only valid in the closure body
+...
+11 |         escaped = Some(t);
+   |         ^^^^^^^^^^^^^^^^^ `t` escapes the closure body here

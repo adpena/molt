@@ -1,0 +1,9 @@
+[package]
+name = "molt-snapshot"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "WASM execution state snapshot and resume for Molt"
+
+[dependencies]
+sha2 = "0.10"

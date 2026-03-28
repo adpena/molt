@@ -82,6 +82,24 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _collect_module_imports(path: Path, module_name: str) -> list[str]:
+    text = subprocess.check_output(
+        ["wasm-tools", "print", str(path)],
+        cwd=str(ROOT),
+        text=True,
+    )
+    imports: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        prefix = f'(import "{module_name}" "'
+        if not stripped.startswith(prefix):
+            continue
+        remainder = stripped[len(prefix) :]
+        name, _, _ = remainder.partition('"')
+        imports.append(name)
+    return imports
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -154,6 +172,18 @@ class TestSplitRuntimeArtifacts:
         size_mb = rt_wasm.stat().st_size / (1024 * 1024)
         assert size_mb > 1, f"molt_runtime.wasm is {size_mb:.2f} MB, expected > 1 MB"
 
+    def test_app_wasm_retains_runtime_abi_imports(self, split_build_a):
+        out_dir, result = split_build_a
+        if result.returncode != 0:
+            pytest.skip("build failed")
+        app_wasm = out_dir / "app.wasm"
+        if not app_wasm.exists():
+            pytest.skip("app.wasm not produced")
+        runtime_imports = _collect_module_imports(app_wasm, "molt_runtime")
+        assert runtime_imports, "app.wasm must retain molt_runtime imports in split mode"
+        assert "molt_string_from_bytes" in runtime_imports
+        assert "molt_module_import" in runtime_imports
+
 
 @pytest.mark.slow
 class TestWorkerJsContent:
@@ -175,6 +205,18 @@ class TestWorkerJsContent:
     def test_molt_runtime_import(self, split_build_a):
         content = self._read_worker(split_build_a)
         assert "molt_runtime" in content, "worker.js must reference molt_runtime"
+
+    def test_worker_bridges_call_indirect(self, split_build_a):
+        content = self._read_worker(split_build_a)
+        assert "molt_call_indirect" in content, "worker.js must bridge runtime call_indirect imports"
+
+    def test_worker_bridges_isolate_import(self, split_build_a):
+        content = self._read_worker(split_build_a)
+        assert "molt_isolate_import" in content, "worker.js must bridge runtime isolate imports"
+
+    def test_worker_provisions_shared_memory(self, split_build_a):
+        content = self._read_worker(split_build_a)
+        assert "new WebAssembly.Memory" in content, "worker.js must provision shared memory"
 
     def test_runtime_wasm_import(self, split_build_a):
         content = self._read_worker(split_build_a)
@@ -213,6 +255,11 @@ class TestManifestJson:
     def test_shared_table_initial(self, split_build_a):
         data = self._read_manifest(split_build_a)
         assert data["shared_table_initial"] == 8192
+
+    def test_shared_memory_initial_pages(self, split_build_a):
+        data = self._read_manifest(split_build_a)
+        assert isinstance(data["shared_memory_initial_pages"], int)
+        assert data["shared_memory_initial_pages"] >= 1
 
     def test_modules_structure(self, split_build_a):
         data = self._read_manifest(split_build_a)

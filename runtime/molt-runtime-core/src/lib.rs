@@ -140,12 +140,35 @@ impl Drop for GilReleaseGuard {
 ///
 /// Stub implementation: binds a [`PyToken`] and runs the body immediately.
 /// The real version in `molt-runtime` actually acquires the GIL.
+///
+/// Wraps the body in `catch_unwind` to prevent panics from unwinding through
+/// `extern "C"` boundaries (which is undefined behavior in Rust). On panic,
+/// a `RuntimeError` exception is raised and a safe zero-sentinel is returned.
 #[macro_export]
 macro_rules! with_gil_entry {
     ($py:ident, $body:expr) => {{
         let __py_token = $crate::PyToken::new();
         let $py = &__py_token;
-        $body
+
+        match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+            $body
+        })) {
+            Ok(val) => val,
+            Err(payload) => {
+                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic in FFI boundary".to_string()
+                };
+                $crate::rt_raise_str("RuntimeError", &msg);
+                // SAFETY: All FFI return types used with this macro (u64, i64,
+                // i32, *mut u8, ()) are safely zero-initializable. The caller
+                // will check for the pending exception before using this value.
+                unsafe { ::std::mem::zeroed() }
+            }
+        }
     }};
 }
 
@@ -236,13 +259,35 @@ impl Drop for CoreGilGuard {
 }
 
 /// Cross-crate GIL entry macro — equivalent to with_gil_entry! but works from any crate.
+///
+/// Wraps the body in `catch_unwind` to prevent panics from unwinding through
+/// `extern "C"` boundaries (which is undefined behavior in Rust).
 #[macro_export]
 macro_rules! with_core_gil {
     ($py:ident, $body:block) => {{
         let _gil_guard = $crate::CoreGilGuard::new();
         let $py = _gil_guard.token();
         let $py = &$py;
-        $body
+
+        match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+            $body
+        })) {
+            Ok(val) => val,
+            Err(payload) => {
+                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic in FFI boundary".to_string()
+                };
+                $crate::rt_raise_str("RuntimeError", &msg);
+                // SAFETY: All FFI return types used with this macro (u64, i64,
+                // i32, *mut u8, ()) are safely zero-initializable. The caller
+                // will check for the pending exception before using this value.
+                unsafe { ::std::mem::zeroed() }
+            }
+        }
     }};
 }
 

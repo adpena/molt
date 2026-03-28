@@ -1,0 +1,9 @@
+[package]
+name = "molt-embed"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Embeddable Python-to-WASM/native compilation SDK for Molt"
+
+[dependencies]
+molt-runtime = { path = "../molt-runtime", default-features = false, features = ["stdlib_micro"] }

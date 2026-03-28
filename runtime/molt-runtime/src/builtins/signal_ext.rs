@@ -150,6 +150,9 @@ fn handler_bits_to_py(_py: &PyToken<'_>, signum: i32, bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_signal(signum_bits: u64, handler_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "process") {
+            return raise_exception::<u64>(_py, "PermissionError", "missing process capability for signal operations");
+        }
         let signum = match sig_from_bits(_py, signum_bits) {
             Ok(v) => v,
             Err(e) => return e,
@@ -223,6 +226,9 @@ pub extern "C" fn molt_signal_getsignal(signum_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_raise_signal(signum_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "process") {
+            return raise_exception::<u64>(_py, "PermissionError", "missing process capability for signal operations");
+        }
         let signum = match sig_from_bits(_py, signum_bits) {
             Ok(v) => v,
             Err(e) => return e,
@@ -252,6 +258,9 @@ pub extern "C" fn molt_signal_raise_signal(signum_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_alarm(seconds_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "process") {
+            return raise_exception::<u64>(_py, "PermissionError", "missing process capability for signal operations");
+        }
         #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
             let secs = to_i64(obj_from_bits(seconds_bits)).unwrap_or(0).max(0) as u32;
@@ -273,6 +282,9 @@ pub extern "C" fn molt_signal_alarm(seconds_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_pause() -> u64 {
     crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "process") {
+            return raise_exception::<u64>(_py, "PermissionError", "missing process capability for signal operations");
+        }
         #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
             unsafe { libc::pause() };
@@ -292,6 +304,9 @@ pub extern "C" fn molt_signal_pause() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_signal_set_wakeup_fd(fd_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        if !has_capability(_py, "process") {
+            return raise_exception::<u64>(_py, "PermissionError", "missing process capability for signal operations");
+        }
         let new_fd = to_i64(obj_from_bits(fd_bits)).unwrap_or(-1) as i32;
         let old_fd = WAKEUP_FD.swap(new_fd, Ordering::SeqCst);
         int_bits_from_i64(_py, old_fd as i64)

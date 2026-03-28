@@ -11668,7 +11668,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 dynamic_build = True
                 continue
             base_info = self.classes.get(base_name)
-            if base_info is None and base_name not in BUILTIN_TYPE_TAGS:
+            if (
+                base_info is None
+                and base_name not in BUILTIN_TYPE_TAGS
+                and base_name not in BUILTIN_EXCEPTION_NAMES
+            ):
                 dynamic_build = True
                 continue
             if base_info and base_info.get("custom_metaclass"):
@@ -11710,7 +11714,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         dynamic = dynamic_build or len(base_names) > 1
         if any(
-            name not in self.classes and name not in BUILTIN_TYPE_TAGS
+            name not in self.classes
+            and name not in BUILTIN_TYPE_TAGS
+            and name not in BUILTIN_EXCEPTION_NAMES
             for name in base_names
         ):
             dynamic = True
