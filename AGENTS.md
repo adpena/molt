@@ -220,6 +220,15 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - Never implement CPython fallback/bridging in CLI, runtime, tests, or tooling. Unsupported constructs must be compile-time errors or `bridge_unavailable` runtime exits when `--fallback bridge` is explicitly requested.
 - CPython is only allowed for baseline comparisons (`molt compare`, `tests/molt_diff.py`, CPython regrtest); it must be explicit and never used to execute Molt binaries.
 
+## Binary Analysis & Debugging Tools (Available)
+- **WASM inspection:** `wasm-objdump` (`-x` headers, `-d` disassemble, `-s` sections), `wasm-dis`, `wasm-validate`, `wasm-tools dump/validate` — installed via `brew install wabt wasm-tools`
+- **Native binary analysis:** `gobjdump`, `gnm`, `greadelf`, `gsize`, `gaddr2line` at `/opt/homebrew/opt/binutils/bin/` — installed via `brew install binutils`. Add to PATH: `export PATH="/opt/homebrew/opt/binutils/bin:$PATH"`
+- **Reverse engineering:** `r2` (radare2) — installed via `brew install radare2`
+- **LLVM tools:** `llvm-objdump`, `llvm-nm`, `llvm-readobj`, `llvm-dis` at `/opt/homebrew/opt/llvm/bin/` (if installed)
+- **Debugger:** `lldb` (bundled with Xcode) — use for crash analysis: `lldb /path/to/binary -o run -o bt -o quit`
+- **Timeout:** `gtimeout` (coreutils) — use to prevent infinite-loop hangs: `gtimeout 10s ./binary`
+- **Memory:** `vm_stat` for system memory, `leaks` for leak detection, `vmmap` for virtual memory maps
+
 ## Tooling Add-ons (Optional)
 - `uv run pre-commit install` and `uv run pre-commit run -a`: enable repo hooks (ruff/ty formatting + checks).
 - `python3 tools/check_stdlib_intrinsics.py`: validate stdlib/intrinsic coverage (use `--fallback-intrinsic-backed-only` for strict checks, `--critical-allowlist` for gating, and `--update-doc` to refresh docs).
