@@ -27,6 +27,14 @@ fn with_env_state<R>(entries: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
     out
 }
 
+// WARNING: This function permanently poisons the process state.
+// `molt_runtime_shutdown()` sets a one-shot `RUNTIME_SHUTDOWN_COMPLETE` flag that
+// prevents subsequent re-initialization of the runtime within the same process.
+// Tests that call `with_trusted_runtime` therefore cannot coexist with other tests
+// that need a live runtime in the same process.
+//
+// Mitigation: run with `cargo test -- --test-threads=1`, or isolate these tests
+// into a dedicated test binary (e.g., `tests/platform_tests_isolated.rs`).
 fn with_trusted_runtime<R>(f: impl FnOnce() -> R) -> R {
     let _guard = crate::TEST_MUTEX
         .lock()

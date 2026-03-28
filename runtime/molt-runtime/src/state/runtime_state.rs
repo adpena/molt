@@ -510,6 +510,12 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     // via molt-runtime-core without depending on molt-runtime.
     molt_runtime_core::set_gil_vtable(&CORE_GIL_VT);
 
+    // Initialize resource limits, audit sink, and IO mode from environment
+    // variables set by the capability manifest.
+    crate::object::ops_sys::molt_runtime_init_resources();
+    crate::object::ops_sys::molt_runtime_init_audit();
+    crate::object::ops_sys::molt_runtime_init_io_mode();
+
     1
 }
 

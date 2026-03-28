@@ -95,7 +95,11 @@ def _verify_runtime_integrity(path: Path) -> None:
     filename = path.name
 
     if not RUNTIME_EXPECTED_HASHES:
-        # No hashes have been pinned yet — nothing to enforce.
+        warnings.warn(
+            "RUNTIME_EXPECTED_HASHES is empty — runtime integrity is NOT verified. "
+            "Pin hashes before releasing.",
+            stacklevel=2,
+        )
         return
 
     if filename not in RUNTIME_EXPECTED_HASHES:
