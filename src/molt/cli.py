@@ -6651,7 +6651,6 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         for symbol in cast(list[str], payload.get("pgo_hot_functions", []))
         if isinstance(symbol, str) and symbol.strip()
     }
-
     module_frontend_start = time.perf_counter()
     visit_s = 0.0
     lower_s = 0.0
@@ -7851,6 +7850,57 @@ def _is_valid_wasm_binary(path: Path) -> bool:
     return _inspect_wasm_binary(path) == "valid"
 
 
+def _read_wasm_varuint(data: bytes, offset: int) -> tuple[int, int] | None:
+    value = 0
+    shift = 0
+    while offset < len(data):
+        byte = data[offset]
+        offset += 1
+        value |= (byte & 0x7F) << shift
+        if byte & 0x80 == 0:
+            return value, offset
+        shift += 7
+        if shift > 35:
+            return None
+    return None
+
+
+def _wasm_has_nonempty_code_section(path: Path) -> bool:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return False
+    if len(data) < 8 or data[:8] != b"\x00asm\x01\x00\x00\x00":
+        return False
+    offset = 8
+    while offset < len(data):
+        section_id = data[offset]
+        offset += 1
+        size_info = _read_wasm_varuint(data, offset)
+        if size_info is None:
+            return False
+        section_size, offset = size_info
+        payload_end = offset + section_size
+        if payload_end > len(data):
+            return False
+        if section_id == 10:
+            count_info = _read_wasm_varuint(data, offset)
+            return bool(count_info and count_info[0] > 0)
+        offset = payload_end
+    return False
+
+
+def _is_reusable_wasm_artifact(path: Path) -> bool:
+    if _inspect_wasm_binary(path) != "valid":
+        return False
+    structural_error = _validate_wasm_structural(path)
+    return structural_error is None
+
+
+def _is_valid_runtime_wasm_artifact(path: Path) -> bool:
+    return _is_reusable_wasm_artifact(path) and _wasm_has_nonempty_code_section(path)
+
+
 def _inspect_wasm_binary(path: Path) -> Literal["missing", "invalid", "valid"]:
     try:
         with path.open("rb") as handle:
@@ -7862,9 +7912,62 @@ def _inspect_wasm_binary(path: Path) -> Literal["missing", "invalid", "valid"]:
     return "valid"
 
 
+def _validate_wasm_structural(path: Path) -> str | None:
+    exe = shutil.which("wasm-tools")
+    if exe is None:
+        return None
+    try:
+        result = subprocess.run(
+            [exe, "validate", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except Exception as exc:
+        return f"wasm-tools validate failed to run: {exc}"
+    if result.returncode == 0:
+        return None
+    detail = (result.stderr or result.stdout).strip()
+    return detail or "wasm-tools validate failed with no diagnostic output"
+
+
+@functools.lru_cache(maxsize=8)
+def _rust_target_libdir(target_triple: str) -> Path | None:
+    rustc = shutil.which("rustc")
+    if rustc is None:
+        return None
+    try:
+        result = subprocess.run(
+            [rustc, "--print", "target-libdir", "--target", target_triple],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    path_text = result.stdout.strip()
+    if not path_text:
+        return None
+    return Path(path_text)
+
+
+def _wasm_wasi_libc_archive(target_triple: str = "wasm32-wasip1") -> Path | None:
+    target_libdir = _rust_target_libdir(target_triple)
+    if target_libdir is None:
+        return None
+    libc_archive = target_libdir / "self-contained" / "libc.a"
+    if not libc_archive.exists():
+        return None
+    return libc_archive
+
+
 def _is_valid_cached_backend_artifact(path: Path, *, is_wasm: bool) -> bool:
     if is_wasm:
-        return _is_valid_wasm_binary(path)
+        return _is_reusable_wasm_artifact(path)
     try:
         return path.stat().st_size > 0
     except OSError:
@@ -9662,19 +9765,22 @@ def _materialize_cached_backend_artifact(
     state: dict[str, Any] | None = None,
     output_stat: os.stat_result | None = None,
 ) -> bool:
+    is_wasm_output = output_artifact.suffix == ".wasm"
     if state_path is None:
         state_path = _artifact_sync_state_path(project_root, output_artifact)
         state = _read_artifact_sync_state(state_path)
     if output_stat is None:
         with contextlib.suppress(OSError):
             output_stat = output_artifact.stat()
-    if output_stat is not None and _artifact_sync_state_matches_stat(
-        state,
-        source_key=source_key,
-        tier=tier,
-        stat=output_stat,
-    ):
-        return True
+    if output_stat is not None:
+        synced = _artifact_sync_state_matches_stat(
+            state,
+            source_key=source_key,
+            tier=tier,
+            stat=output_stat,
+        )
+        if synced and (not is_wasm_output or _is_reusable_wasm_artifact(output_artifact)):
+            return True
     sync_tier = tier
     sync_source_key = source_key
     try:
@@ -9761,6 +9867,7 @@ def _backend_daemon_skip_output_sync_flags(
     state: dict[str, Any] | None = None,
     output_stat: os.stat_result | None = None,
 ) -> tuple[bool, bool]:
+    is_wasm_output = output_artifact.suffix == ".wasm"
     if state_path is None:
         state_path = _artifact_sync_state_path(project_root, output_artifact)
         state = _read_artifact_sync_state(state_path)
@@ -9783,6 +9890,8 @@ def _backend_daemon_skip_output_sync_flags(
         tier="function",
         stat=output_stat,
     )
+    if is_wasm_output and not _is_reusable_wasm_artifact(output_artifact):
+        return False, False
     return skip_module_output, skip_function_output
 
 
@@ -9816,6 +9925,7 @@ def _stage_backend_output_and_caches(
     state: dict[str, Any] | None = None,
     output_stat: os.stat_result | None = None,
 ) -> str | None:
+    is_wasm_output = output_artifact.suffix == ".wasm"
     try:
         if output_artifact.parent != Path("."):
             output_artifact.parent.mkdir(parents=True, exist_ok=True)
@@ -9862,6 +9972,8 @@ def _stage_backend_output_and_caches(
                 )
             )
         )
+        if output_already_synced and is_wasm_output:
+            output_already_synced = _is_reusable_wasm_artifact(output_artifact)
 
     try:
         if output_already_synced:
@@ -12996,7 +13108,7 @@ def _build_cache_info(
 
 
 def _native_stdlib_object_split_enabled(*, target: str, emit_mode: str) -> bool:
-    return target == "native" and emit_mode != "obj"
+    return target == "native"
 
 
 def _stdlib_object_cache_path(
@@ -13322,16 +13434,12 @@ int main(int argc, char** argv) {
     return main_c_content
 
 
-def _build_native_link_command(
+def _build_native_link_driver_command(
     *,
-    output_obj: Path,
-    stub_path: Path,
-    runtime_lib: Path,
-    output_binary: Path,
+    output_obj: Path | None,
     target_triple: str | None,
     sysroot_path: Path | None,
     profile: str,
-    stdlib_obj_path: Path | None = None,
 ) -> tuple[list[str], str | None, str | None]:
     cc = os.environ.get("CC", "clang")
     link_cmd = shlex.split(cc)
@@ -13352,9 +13460,7 @@ def _build_native_link_command(
         link_cmd.extend(["-target", target_arg])
     if sysroot_path is not None:
         sysroot_flag = "--sysroot"
-        if link_cmd and Path(link_cmd[0]).name.startswith("zig"):
-            sysroot_flag = "--sysroot"
-        elif (
+        if (
             target_triple and ("apple" in target_triple or "darwin" in target_triple)
         ) or (not target_triple and sys.platform == "darwin"):
             sysroot_flag = "-isysroot"
@@ -13371,13 +13477,33 @@ def _build_native_link_command(
         link_cmd = _strip_arch_flags(link_cmd)
         arch = (
             os.environ.get("MOLT_ARCH")
-            or _detect_macos_arch(output_obj)
+            or (None if output_obj is None else _detect_macos_arch(output_obj))
             or platform.machine()
         )
         link_cmd.extend(["-arch", arch])
         deployment_target = _detect_macos_deployment_target(arch)
         if deployment_target:
             link_cmd.append(f"-mmacosx-version-min={deployment_target}")
+    return link_cmd, linker_hint, normalized_target
+
+
+def _build_native_link_command(
+    *,
+    output_obj: Path,
+    stub_path: Path,
+    runtime_lib: Path,
+    output_binary: Path,
+    target_triple: str | None,
+    sysroot_path: Path | None,
+    profile: str,
+    stdlib_obj_path: Path | None = None,
+) -> tuple[list[str], str | None, str | None]:
+    link_cmd, linker_hint, normalized_target = _build_native_link_driver_command(
+        output_obj=output_obj,
+        target_triple=target_triple,
+        sysroot_path=sysroot_path,
+        profile=profile,
+    )
     _link_inputs = [str(stub_path), str(output_obj)]
     if stdlib_obj_path is not None and stdlib_obj_path.exists():
         _link_inputs.append(str(stdlib_obj_path))
@@ -13446,6 +13572,70 @@ def _run_native_link_command(
         text=True,
         timeout=link_timeout,
     )
+
+
+def _run_native_partial_link_command(
+    *,
+    input_objects: Sequence[Path],
+    output_path: Path,
+    json_output: bool,
+    link_timeout: float | None,
+    target_triple: str | None = None,
+    sysroot_path: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    primary_object = input_objects[0] if input_objects else None
+    link_cmd, _linker_hint, _normalized_target = _build_native_link_driver_command(
+        output_obj=primary_object,
+        target_triple=target_triple,
+        sysroot_path=sysroot_path,
+        profile="dev",
+    )
+    link_cmd.extend(["-r", *[str(path) for path in input_objects], "-o", str(output_path)])
+    return _run_native_link_command(
+        link_cmd=link_cmd,
+        json_output=json_output,
+        link_timeout=link_timeout,
+    )
+
+
+def _prepare_native_object_artifact(
+    *,
+    output_artifact: Path,
+    artifacts_root: Path,
+    stdlib_obj_path: Path | None,
+    json_output: bool,
+    link_timeout: float | None,
+    target_triple: str | None = None,
+    sysroot_path: Path | None = None,
+) -> tuple[Path | None, subprocess.CompletedProcess[str] | None, dict[str, Any] | None]:
+    if stdlib_obj_path is None or not stdlib_obj_path.exists():
+        return output_artifact, None, None
+    merged_output = artifacts_root / f"{output_artifact.stem}_linked{output_artifact.suffix}"
+    try:
+        link_process = _run_native_partial_link_command(
+            input_objects=[output_artifact, stdlib_obj_path],
+            output_path=merged_output,
+            json_output=json_output,
+            link_timeout=link_timeout,
+            target_triple=target_triple,
+            sysroot_path=sysroot_path,
+        )
+    except subprocess.TimeoutExpired:
+        return None, None, _fail(
+            "Native object partial link timed out",
+            json_output,
+            command="build",
+        )
+    except RuntimeError as exc:
+        return None, None, _fail(str(exc), json_output, command="build")
+    if link_process.returncode != 0:
+        err = (link_process.stderr or "").strip() or (link_process.stdout or "").strip()
+        msg = "Native object partial link failed"
+        if err:
+            msg = f"{msg}: {err}"
+        return None, link_process, _fail(msg, json_output, command="build")
+    os.replace(merged_output, output_artifact)
+    return output_artifact, link_process, None
 
 
 def _retry_native_link_without_hint(
@@ -15933,7 +16123,6 @@ def _run_backend_pipeline(
         output_layout.is_rust_transpile
         or output_layout.is_luau_transpile
         or output_layout.is_wasm
-        or output_layout.emit_mode == "obj"
     ):
         prepared_non_native_result, prepared_non_native_result_error = (
             _prepare_non_native_build_result(
@@ -16007,6 +16196,59 @@ def _run_backend_pipeline(
             extra_fields=prepared_non_native_result.extra_fields,
             artifacts=prepared_non_native_result.artifacts,
             success_messages=prepared_non_native_result.success_messages,
+        )
+
+    if output_layout.emit_mode == "obj":
+        prepared_object_output, _partial_link_process, prepared_object_error = (
+            _prepare_native_object_artifact(
+                output_artifact=output_layout.output_artifact,
+                artifacts_root=artifacts_root,
+                stdlib_obj_path=prepared_backend_setup.cache_setup.stdlib_object_path,
+                json_output=json_output,
+                link_timeout=prepared_build_config.link_timeout,
+                target_triple=output_layout.target_triple,
+                sysroot_path=prepared_build_roots.sysroot_path,
+            )
+        )
+        if prepared_object_error is not None:
+            return prepared_object_error
+        assert prepared_object_output is not None
+        return _emit_non_native_build_result(
+            output=prepared_object_output,
+            consumer_output=prepared_object_output,
+            bundle_root=None,
+            cache=cache,
+            cache_hit=cache_hit,
+            cache_key=cache_key,
+            function_cache_key=function_cache_key,
+            cache_path=cache_path,
+            function_cache_path=function_cache_path,
+            cache_hit_tier=cache_hit_tier,
+            backend_daemon_cached=backend_daemon_cached,
+            backend_daemon_cache_tier=backend_daemon_cache_tier,
+            backend_daemon_config_digest=backend_daemon_config_digest,
+            target=target,
+            target_triple=output_layout.target_triple,
+            source_path=resolved_build_entry.source_path,
+            deterministic=deterministic,
+            trusted=trusted,
+            capabilities_list=prepared_build_config.capabilities_list,
+            capability_profiles=prepared_build_config.capability_profiles,
+            capabilities_source=prepared_build_config.capabilities_source,
+            sysroot_path=prepared_build_roots.sysroot_path,
+            emit_mode=output_layout.emit_mode,
+            profile=profile,
+            native_arch_perf_enabled=prepared_build_preamble.native_arch_perf_enabled,
+            diagnostics_payload=diagnostics_payload,
+            diagnostics_path=diagnostics_path,
+            pgo_profile_payload=prepared_build_config.pgo_profile_payload,
+            runtime_feedback_payload=prepared_build_config.runtime_feedback_payload,
+            emit_ir_path=output_layout.emit_ir_path,
+            warnings=prepared_build_preamble.warnings,
+            json_output=json_output,
+            resolved_diagnostics_verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
+            artifacts={"object": str(prepared_object_output)},
+            success_messages=[f"Successfully built {prepared_object_output}"],
         )
 
     if cache_hit and runtime_lib is not None:
@@ -16136,6 +16378,14 @@ def _prepare_non_native_build_result(
         artifacts: dict[str, str] = {"wasm": str(output_wasm)}
         _split_runtime = split_runtime or os.environ.get("MOLT_SPLIT_RUNTIME") == "1"
         if linked:
+            structural_error = _validate_wasm_structural(output_wasm)
+            if structural_error is not None:
+                return None, _fail(
+                    "Generated wasm module failed structural validation before linking: "
+                    + structural_error,
+                    json_output,
+                    command="build",
+                )
             if not ensure_runtime_wasm_reloc():
                 return None, _fail(
                     "Runtime wasm build failed",
@@ -18718,16 +18968,34 @@ def _ensure_backend_binary(
         # Invalidate TIR optimization cache — the optimized IR from the old
         # backend may produce wrong code with the new passes (e.g. SCCP folding
         # loop-carried phis). Also clear compiled binary cache.
+        #
+        # IMPORTANT: Do NOT wipe the entire molt cache root
+        # (~/Library/Caches/molt) — that also removes the build directory
+        # structure (home/build/*) and other infrastructure that later build
+        # steps depend on.  Only remove the specific artifact caches.
         import shutil
         for cache_dir in [
             project_root / ".molt_cache",
             Path.home() / "Library" / "Caches" / "molt" / "home" / "bin",
-            Path.home() / "Library" / "Caches" / "molt",
         ]:
             if cache_dir.is_dir():
                 shutil.rmtree(cache_dir, ignore_errors=True)
                 if not json_output:
                     print(f"  Cleared stale cache: {cache_dir}", file=sys.stderr)
+        # Remove cached .o and .wasm artifacts from the cache root without
+        # destroying the directory tree (home/build/*, home/bin/, etc.).
+        _cache_root = _default_molt_cache()
+        if _cache_root.is_dir():
+            for _cached_file in _cache_root.iterdir():
+                if _cached_file.is_file() and _cached_file.suffix in {
+                    ".o", ".wasm", ".fingerprint",
+                }:
+                    try:
+                        _cached_file.unlink()
+                    except OSError:
+                        pass
+            if not json_output:
+                print(f"  Cleared cached artifacts in: {_cache_root}", file=sys.stderr)
         cmd = [
             "cargo",
             "build",
@@ -19027,6 +19295,32 @@ def _wasm_runtime_artifact_path(target_root: Path, profile_dir: str) -> Path:
     return target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
 
 
+def _wasm_runtime_staticlib_path(target_root: Path, profile_dir: str) -> Path:
+    return target_root / "wasm32-wasip1" / profile_dir / "libmolt_runtime.a"
+
+
+def _wasm_runtime_deps_dir(target_root: Path, profile_dir: str) -> Path:
+    return target_root / "wasm32-wasip1" / profile_dir / "deps"
+
+
+def _resolve_built_runtime_wasm_artifact(target_root: Path, profile_dir: str) -> Path:
+    primary = _wasm_runtime_artifact_path(target_root, profile_dir)
+    if primary.exists():
+        return primary
+    deps_primary = _wasm_runtime_deps_dir(target_root, profile_dir) / "molt_runtime.wasm"
+    if deps_primary.exists():
+        return deps_primary
+    deps_dir = _wasm_runtime_deps_dir(target_root, profile_dir)
+    candidates = sorted(
+        deps_dir.glob("molt_runtime-*.wasm"),
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+        reverse=True,
+    )
+    if candidates:
+        return candidates[0]
+    return primary
+
+
 def _wasm_runtime_recovery_target_root(target_root: Path) -> Path:
     return target_root.parent / f"{target_root.name}-wasm-runtime-recovery"
 
@@ -19040,6 +19334,7 @@ def _run_runtime_wasm_cargo_build(
     profile_dir: str,
     target_root_override: Path | None = None,
     json_output: bool,
+    artifact_kind: Literal["cdylib", "staticlib"] = "cdylib",
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     build_env = env.copy()
     if target_root_override is not None:
@@ -19047,13 +19342,23 @@ def _run_runtime_wasm_cargo_build(
         target_root = target_root_override
     else:
         target_root = _cargo_target_root(root)
-    src = _wasm_runtime_artifact_path(target_root, profile_dir)
-    try:
-        src.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError:
-        pass
+    if artifact_kind == "staticlib":
+        staticlib = _wasm_runtime_staticlib_path(target_root, profile_dir)
+        stale_artifacts = [staticlib]
+    else:
+        primary = _wasm_runtime_artifact_path(target_root, profile_dir)
+        deps_primary = _wasm_runtime_deps_dir(target_root, profile_dir) / "molt_runtime.wasm"
+        stale_artifacts = [primary, deps_primary]
+        stale_artifacts.extend(
+            _wasm_runtime_deps_dir(target_root, profile_dir).glob("molt_runtime-*.wasm")
+        )
+    for stale in stale_artifacts:
+        try:
+            stale.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
     build = subprocess.run(
         cmd,
         cwd=root,
@@ -19079,7 +19384,67 @@ def _run_runtime_wasm_cargo_build(
             check=False,
             text=True,
         )
-    return build, src
+    if artifact_kind == "staticlib":
+        return build, _wasm_runtime_staticlib_path(target_root, profile_dir)
+    return build, _resolve_built_runtime_wasm_artifact(target_root, profile_dir)
+
+
+def _link_runtime_staticlib_to_reloc_wasm(
+    *,
+    staticlib_path: Path,
+    output_path: Path,
+    json_output: bool,
+    link_timeout: float | None,
+) -> bool:
+    wasm_ld = shutil.which("wasm-ld")
+    if wasm_ld is None:
+        if not json_output:
+            print(
+                "Runtime relocatable wasm link failed: wasm-ld not found.",
+                file=sys.stderr,
+            )
+        return False
+    libc_archive = _wasm_wasi_libc_archive()
+    if libc_archive is None:
+        if not json_output:
+            print(
+                "Runtime relocatable wasm link failed: Rust wasm32-wasip1 libc.a not found.",
+                file=sys.stderr,
+            )
+        return False
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    process = subprocess.run(
+        [
+            wasm_ld,
+            "-r",
+            "--whole-archive",
+            str(staticlib_path),
+            str(libc_archive),
+            "--no-whole-archive",
+            "-o",
+            str(output_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=link_timeout,
+        check=False,
+    )
+    if process.returncode != 0:
+        if not json_output:
+            err = (process.stderr or "").strip() or (process.stdout or "").strip()
+            msg = "Runtime relocatable wasm link failed"
+            if err:
+                msg = f"{msg}: {err}"
+            print(msg, file=sys.stderr)
+        return False
+    if not _is_valid_runtime_wasm_artifact(output_path):
+        if not json_output:
+            print(
+                f"Runtime relocatable wasm artifact is invalid/incomplete: {output_path}",
+                file=sys.stderr,
+            )
+        return False
+    return True
 
 
 def _ensure_runtime_wasm(
@@ -19099,23 +19464,26 @@ def _ensure_runtime_wasm(
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     env = os.environ.copy()
     use_legacy_wasm_flags = os.environ.get("MOLT_WASM_LEGACY_LINK_FLAGS") == "1"
-    if use_legacy_wasm_flags:
-        if reloc:
-            flags = (
-                "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
-                " -C relocation-model=pic"
-            )
-        else:
-            flags = (
-                "-C link-arg=--import-memory -C link-arg=--import-table"
-                " -C link-arg=--growable-table"
-            )
+    if reloc:
+        flags = ""
     else:
-        flags = (
+        set_exports = (
+            " -C link-arg=--export=molt_frozenset_add"
+            " -C link-arg=--export=molt_set_remove"
+            " -C link-arg=--export=molt_set_pop"
+            " -C link-arg=--export=molt_set_update"
+            " -C link-arg=--export=molt_set_intersection_update"
+            " -C link-arg=--export=molt_set_difference_update"
+            " -C link-arg=--export=molt_set_symdiff_update"
+        )
+        shared_flags = (
             "-C link-arg=--import-memory -C link-arg=--import-table"
             " -C link-arg=--growable-table"
-            if reloc
-            else ""
+        )
+        flags = (
+            shared_flags
+            if use_legacy_wasm_flags
+            else shared_flags + set_exports
         )
     rustflags = env.get("RUSTFLAGS", "").strip()
     if flags:
@@ -19160,7 +19528,7 @@ def _ensure_runtime_wasm(
         needs_rebuild = _artifact_needs_rebuild(
             runtime_wasm, fingerprint, stored_fingerprint
         )
-        if not needs_rebuild and _is_valid_wasm_binary(runtime_wasm):
+        if not needs_rebuild and _is_valid_runtime_wasm_artifact(runtime_wasm):
             return True
         if not needs_rebuild and not json_output:
             print(
@@ -19186,16 +19554,29 @@ def _ensure_runtime_wasm(
         else:
             env.pop("RUSTC_WRAPPER", None)
         profile_dir = _cargo_profile_dir(cargo_profile)
-        cmd = [
-            "cargo",
-            "build",
-            "--package",
-            "molt-runtime",
-            "--profile",
-            cargo_profile,
-            "--target",
-            "wasm32-wasip1",
-        ]
+        if reloc:
+            cmd = [
+                "cargo",
+                "build",
+                "--package",
+                "molt-runtime",
+                "--profile",
+                cargo_profile,
+                "--target",
+                "wasm32-wasip1",
+            ]
+        else:
+            cmd = [
+                "cargo",
+                "rustc",
+                "--package",
+                "molt-runtime",
+                "--profile",
+                cargo_profile,
+                "--target",
+                "wasm32-wasip1",
+                "--lib",
+            ]
         if stdlib_profile == "micro":
             cmd.append("--no-default-features")
             if cargo_runtime_features:
@@ -19212,6 +19593,8 @@ def _ensure_runtime_wasm(
                 "builtin_contextvars", "builtin_fcntl",
             ]
             cmd.extend(["--features", ",".join(wasm_features)])
+        if not reloc:
+            cmd.extend(["--", "--crate-type=cdylib"])
         try:
             build, src = _run_runtime_wasm_cargo_build(
                 cmd=cmd,
@@ -19220,6 +19603,7 @@ def _ensure_runtime_wasm(
                 cargo_timeout=cargo_timeout,
                 profile_dir=profile_dir,
                 json_output=json_output,
+                artifact_kind="staticlib" if reloc else "cdylib",
             )
         except subprocess.TimeoutExpired:
             if not json_output:
@@ -19234,6 +19618,24 @@ def _ensure_runtime_wasm(
             if not json_output:
                 print("Runtime wasm build failed", file=sys.stderr)
             return False
+        if reloc:
+            if not src.exists():
+                if not json_output:
+                    print(
+                        "Runtime wasm build succeeded but staticlib artifact is missing.",
+                        file=sys.stderr,
+                    )
+                return False
+            if not _link_runtime_staticlib_to_reloc_wasm(
+                staticlib_path=src,
+                output_path=runtime_wasm,
+                json_output=json_output,
+                link_timeout=cargo_timeout,
+            ):
+                return False
+            fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_runtime_fingerprint(fingerprint_path, fingerprint)
+            return True
         src_state = _inspect_wasm_binary(src)
         if src_state == "missing":
             if not json_output:
