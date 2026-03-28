@@ -459,18 +459,22 @@ impl ColdHeaderSlab {
     /// Returns 0 if the slab is full (65535 live cold headers).
     fn alloc(&mut self, cold: MoltColdHeader) -> u16 {
         if let Some(idx) = self.free_list.pop() {
-            self.entries[idx as usize] = cold;
-            idx
-        } else {
-            let idx = self.entries.len();
-            if idx > u16::MAX as usize {
-                // Slab is full — extremely unlikely (65535 simultaneous
-                // oversized objects or generators).  Fall back gracefully.
-                return 0;
+            // Belt-and-suspenders: verify the recycled index is in bounds.
+            // This defends against any residual free-list corruption.
+            if (idx as usize) < self.entries.len() {
+                self.entries[idx as usize] = cold;
+                return idx;
             }
-            self.entries.push(cold);
-            idx as u16
+            // Index was stale/corrupted — discard and fall through to push.
         }
+        let idx = self.entries.len();
+        if idx > u16::MAX as usize {
+            // Slab is full — extremely unlikely (65535 simultaneous
+            // oversized objects or generators).  Fall back gracefully.
+            return 0;
+        }
+        self.entries.push(cold);
+        idx as u16
     }
 
     /// Get a reference to the cold header at `idx`.
@@ -502,10 +506,13 @@ impl ColdHeaderSlab {
             return;
         }
         // Zero out the entry to avoid stale data, then recycle.
+        // Only push to free_list when the index is actually in bounds —
+        // a corrupted cold_idx (e.g. from use-after-free or nursery
+        // memory reuse) must not poison the free list.
         if let Some(entry) = self.entries.get_mut(idx as usize) {
             *entry = MoltColdHeader::default();
+            self.free_list.push(idx);
         }
-        self.free_list.push(idx);
     }
 }
 
@@ -2112,6 +2119,41 @@ mod tests {
             assert_eq!(ptr1, ptr2);
             unsafe { dec_ref_ptr(_py, ptr2) };
         });
+    }
+
+    #[test]
+    fn cold_header_slab_rejects_out_of_bounds_free() {
+        // Regression test: free() must not push out-of-bounds indices to
+        // the free list. A corrupted cold_idx previously poisoned the
+        // free list, causing alloc() to panic on the next reuse.
+        use super::{ColdHeaderSlab, MoltColdHeader};
+
+        let mut slab = ColdHeaderSlab::new();
+        // Allocate a few entries so slab.entries has a small len.
+        let idx1 = slab.alloc(MoltColdHeader::default());
+        assert!(idx1 >= 1);
+        let idx2 = slab.alloc(MoltColdHeader::default());
+        assert!(idx2 >= 1);
+        let len_before_free = slab.entries.len();
+        let free_list_len_before = slab.free_list.len();
+
+        // Free with a corrupted index far beyond the slab size.
+        slab.free(24427);
+
+        // The free list must NOT grow — corrupted index was rejected.
+        assert_eq!(slab.free_list.len(), free_list_len_before);
+        // Slab entries unchanged.
+        assert_eq!(slab.entries.len(), len_before_free);
+
+        // Now allocate again — must succeed without panic.
+        let idx3 = slab.alloc(MoltColdHeader::default());
+        assert!(idx3 >= 1);
+
+        // Free a valid index and verify it IS recycled.
+        slab.free(idx1);
+        assert_eq!(slab.free_list.len(), free_list_len_before + 1);
+        let idx4 = slab.alloc(MoltColdHeader::default());
+        assert_eq!(idx4, idx1); // Recycled the freed slot.
     }
 
     #[test]

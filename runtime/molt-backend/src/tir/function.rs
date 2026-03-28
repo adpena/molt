@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::blocks::{BlockId, TirBlock};
+use super::blocks::{BlockId, LoopRole, TirBlock};
 use super::ops::AttrDict;
 use super::types::TirType;
 use super::values::ValueId;
@@ -34,6 +34,10 @@ pub struct TirFunction {
     /// back-conversion can emit labels with the original IDs that ops like
     /// `check_exception`, `jump`, and `br_if` reference via `state_blocks`.
     pub label_id_map: std::collections::HashMap<u32, i64>,
+    /// Structural loop roles for blocks — records which blocks are loop
+    /// headers (`loop_start`) or loop ends (`loop_end`) so the back-conversion
+    /// can re-emit these markers for downstream backends (Cranelift, WASM).
+    pub loop_roles: HashMap<BlockId, LoopRole>,
 }
 
 impl TirFunction {
@@ -60,6 +64,7 @@ impl TirFunction {
             args,
             ops: Vec::new(),
             terminator: Terminator::Unreachable,
+            loop_role: LoopRole::None,
         };
 
         let mut blocks = HashMap::new();
@@ -76,6 +81,7 @@ impl TirFunction {
             attrs: AttrDict::new(),
             has_exception_handling: false,
             label_id_map: HashMap::new(),
+            loop_roles: HashMap::new(),
         }
     }
 
