@@ -1,4 +1,6 @@
-# Branch Integration Into Main Implementation Plan
+# ~~Branch Integration Into Main Implementation Plan~~ [SUPERSEDED]
+
+> **SUPERSEDED** by Operation Greenfield (2026-03-27): see `docs/superpowers/specs/2026-03-27-operation-greenfield-design.md` and the Wave A/C/B plans.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
