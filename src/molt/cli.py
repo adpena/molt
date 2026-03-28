@@ -12908,6 +12908,13 @@ def _build_isolate_import_ops(
             # Emit lazy code-slot setup for this module (if available).
             if per_module_code_ops and module_name in per_module_code_ops:
                 import_ops.extend(_revar_ops(per_module_code_ops[module_name]))
+            # Match `molt_main` and `molt_isolate_bootstrap`: per-module
+            # code replay can leave a stale pending exception bit from
+            # code_new/code_slot_set. Imported module init functions start
+            # with check_exception-based error paths and often predeclare
+            # globals to None, so entering them with a stale flag corrupts
+            # module publication instead of executing the real body.
+            import_ops.append({"kind": "exception_clear"})
             init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
             init_out = import_var()
             import_ops.append(

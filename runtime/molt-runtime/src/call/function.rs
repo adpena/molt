@@ -161,12 +161,22 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
                             debug_name.as_deref().unwrap_or("<unnamed>"),
                         );
                     }
+                    // SAFETY: `fn_ptr` was read from the function object via `function_fn_ptr`,
+                    // which returns the code pointer set by the compiler during code generation
+                    // (see `emit_call` in wasm.rs). The arity was verified to be 1 above, plus
+                    // closure_bits != 0 so we use the 2-arg signature (closure, arg0). If fn_ptr
+                    // is null or points to a function with a different ABI, this is UB — the
+                    // compiler must emit valid non-null pointers with matching extern "C" ABI.
                     let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
                     func(closure_bits, arg0_bits) as u64
                 }
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
+                // SAFETY: Same invariant as the wasm32 path above — fn_ptr is a valid extern "C"
+                // function pointer from `function_fn_ptr`. Arity == 1, closure present, so the
+                // 2-arg (closure, arg0) signature matches. The compiler guarantees this pointer
+                // was emitted for a 1-arg closure function. UB if fn_ptr is null or mistyped.
                 let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
                 func(closure_bits, arg0_bits) as u64
             }
@@ -189,10 +199,21 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
                         );
                     }
                     if is_void_wasm_call1_target(fn_ptr) {
+                        // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
+                        // `function_fn_ptr`. This branch handles void intrinsics (drop/close
+                        // functions) identified by `is_void_wasm_call1_target` — these return
+                        // nothing, so the void signature `fn(u64)` is correct. The compiler and
+                        // intrinsic registry must guarantee fn_ptr targets a void-returning
+                        // function. UB if fn_ptr is null or the target actually returns a value.
                         let func: extern "C" fn(u64) = std::mem::transmute(fn_ptr as usize);
                         func(arg0_bits);
                         MoltObject::none().bits()
                     } else {
+                        // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
+                        // `function_fn_ptr`. Arity == 1, no closure, so the 1-arg signature
+                        // `fn(u64) -> i64` is correct. The compiler guarantees this pointer
+                        // was emitted for a 1-arg non-closure function. UB if fn_ptr is null
+                        // or the target has a different calling convention.
                         let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
                         func(arg0_bits) as u64
                     }
@@ -200,6 +221,10 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
+                // SAFETY: `fn_ptr` is a valid extern "C" function pointer from `function_fn_ptr`.
+                // Arity == 1, no closure, so the 1-arg signature `fn(u64) -> i64` matches. The
+                // compiler must emit a valid non-null pointer for this function. UB if fn_ptr is
+                // null or points to a function with a different signature.
                 let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
                 func(arg0_bits) as u64
             }
@@ -319,12 +344,22 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
                 if tramp_ptr != 0 {
                     molt_call_indirect1(wasm_direct_call_table_idx(fn_ptr), closure_bits) as u64
                 } else {
+                    // SAFETY: `fn_ptr` is a valid extern "C" function pointer obtained from
+                    // `function_fn_ptr(func_ptr)`, which reads the code pointer stored in the
+                    // function object by the compiler (see `emit_call` in wasm.rs). Arity == 0
+                    // and closure_bits != 0, so the 1-arg signature `fn(u64) -> i64` is correct
+                    // (the single arg is the closure environment). The compiler must guarantee
+                    // fn_ptr is non-null and targets a matching ABI. UB if violated.
                     let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
                     func(closure_bits) as u64
                 }
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
+                // SAFETY: Same invariant as the wasm32 closure path — fn_ptr from
+                // `function_fn_ptr` is a valid extern "C" pointer for a 0-arg function with
+                // closure. The 1-arg signature passes the closure env. The compiler must emit
+                // a non-null pointer with matching ABI. UB if fn_ptr is null or mistyped.
                 let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
                 func(closure_bits) as u64
             }
@@ -334,12 +369,21 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
                 if tramp_ptr != 0 {
                     molt_call_indirect0(wasm_direct_call_table_idx(fn_ptr)) as u64
                 } else {
+                    // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
+                    // `function_fn_ptr`. Arity == 0, no closure, so the nullary signature
+                    // `fn() -> i64` is correct. The compiler must guarantee fn_ptr is non-null
+                    // and targets a 0-arg extern "C" function. UB if fn_ptr is null or has a
+                    // different calling convention or arity.
                     let func: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr as usize);
                     func() as u64
                 }
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
+                // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
+                // `function_fn_ptr`. Arity == 0, no closure, so the nullary signature
+                // `fn() -> i64` is correct. The compiler must emit a valid non-null pointer.
+                // UB if fn_ptr is null or points to a function expecting arguments.
                 let func: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr as usize);
                 func() as u64
             }
@@ -397,6 +441,12 @@ pub(crate) unsafe fn call_function_obj2(
                         arg1_bits,
                     ) as u64
                 } else {
+                    // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
+                    // `function_fn_ptr(func_ptr)`, set by the compiler during code generation.
+                    // Arity == 2 and closure_bits != 0, so the 3-arg signature
+                    // `fn(u64, u64, u64) -> i64` is correct (closure + 2 args). The compiler
+                    // must guarantee fn_ptr is non-null and targets a matching ABI. UB if
+                    // fn_ptr is null or the target has a different parameter count.
                     let func: extern "C" fn(u64, u64, u64) -> i64 =
                         std::mem::transmute(fn_ptr as usize);
                     func(closure_bits, arg0_bits, arg1_bits) as u64
@@ -404,6 +454,10 @@ pub(crate) unsafe fn call_function_obj2(
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
+                // SAFETY: Same invariant as the wasm32 closure path — fn_ptr from
+                // `function_fn_ptr` is a valid extern "C" pointer for a 2-arg function with
+                // closure. The 3-arg signature passes (closure, arg0, arg1). The compiler must
+                // emit a non-null pointer with matching ABI. UB if fn_ptr is null or mistyped.
                 let func: extern "C" fn(u64, u64, u64) -> i64 =
                     std::mem::transmute(fn_ptr as usize);
                 func(closure_bits, arg0_bits, arg1_bits) as u64
@@ -415,12 +469,19 @@ pub(crate) unsafe fn call_function_obj2(
                     molt_call_indirect2(wasm_direct_call_table_idx(fn_ptr), arg0_bits, arg1_bits)
                         as u64
                 } else {
+                    // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
+                    // `function_fn_ptr`. Arity == 2, no closure, so the 2-arg signature
+                    // `fn(u64, u64) -> i64` is correct. The compiler must guarantee fn_ptr is
+                    // non-null and targets a matching ABI. UB if fn_ptr is null or mistyped.
                     let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
                     func(arg0_bits, arg1_bits) as u64
                 }
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
+                // SAFETY: Same invariant as the wasm32 non-closure path — fn_ptr from
+                // `function_fn_ptr` targets a 2-arg extern "C" function. The compiler must
+                // emit a valid non-null pointer. UB if fn_ptr is null or has wrong arity.
                 let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
                 func(arg0_bits, arg1_bits) as u64
             }

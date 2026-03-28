@@ -206,6 +206,9 @@ pub extern "C" fn molt_ssl_context_load_cert_chain(
     keyfile_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
+        if let Err(err) = require_net_capability(_py, "ssl.load_cert_chain") {
+            return err;
+        }
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -239,6 +242,9 @@ pub extern "C" fn molt_ssl_context_load_verify_locations(
     cadata_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
+        if let Err(err) = require_net_capability(_py, "ssl.load_verify_locations") {
+            return err;
+        }
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
