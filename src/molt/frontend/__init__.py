@@ -3580,6 +3580,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         with self._suppress_check_exception(emit_on_exit=False):
             self.emit(MoltOp(kind="LABEL", args=[label], result=MoltValue("none")))
             if self.current_func_name == "molt_main" and self.module_name:
+                # Guard MODULE_CACHE_DEL with an exception-pending check.
+                # The exception handler label is reachable both from
+                # check_exception jumps (exception pending) and from normal
+                # fallthrough when no explicit ret precedes the label.
+                # Deleting the module from the cache unconditionally would
+                # corrupt the module cache on the normal (non-error) path.
+                _guard_exc = MoltValue(self.next_var(), type_hint="exception")
+                self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=_guard_exc))
+                _guard_none = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=_guard_none))
+                _guard_is = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="IS", args=[_guard_exc, _guard_none], result=_guard_is))
+                _guard_pending = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="NOT", args=[_guard_is], result=_guard_pending))
+                self.emit(MoltOp(kind="IF", args=[_guard_pending], result=MoltValue("none")))
                 module_name_val = MoltValue(self.next_var(), type_hint="str")
                 self.emit(
                     MoltOp(
@@ -3613,6 +3628,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             result=MoltValue("none"),
                         )
                     )
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self._emit_restore_exception_stack_depth()
         self._emit_raise_if_pending(emit_exit=True, clear_handlers=clear_handlers)
         self.function_exception_label = prev_label
