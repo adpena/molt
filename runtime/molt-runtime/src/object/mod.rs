@@ -60,6 +60,7 @@ pub(crate) mod ops_slice;
 pub(crate) mod ops_string;
 pub(crate) mod ops_vec;
 pub(crate) mod refcount;
+pub(crate) mod refcount_opt;
 #[allow(dead_code)]
 pub mod string_intern;
 #[allow(dead_code)]
@@ -412,6 +413,10 @@ pub(crate) const HEADER_FLAG_INTERNED: u32 = 1 << 17;
 // Object was bump-allocated in the thread-local nursery.
 // Deallocation skips `std::alloc::dealloc` — the nursery reclaims memory in bulk via `reset()`.
 pub(crate) const HEADER_FLAG_NURSERY: u32 = 1 << 18;
+/// Container (list, tuple, dict, set) has at least one element that is a heap
+/// pointer (TAG_PTR).  When this flag is clear, `dec_ref` cleanup can skip
+/// iterating over elements because they are all primitives (int/float/bool/None).
+pub(crate) const HEADER_FLAG_CONTAINS_REFS: u32 = 1 << 19;
 
 /// Maximum total_size (header + payload) eligible for nursery allocation.
 /// Objects larger than this always go through the global allocator.
@@ -1544,8 +1549,12 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     let vec_ptr = seq_vec_ptr(ptr);
                     if !vec_ptr.is_null() {
                         let vec = Box::from_raw(vec_ptr);
-                        for bits in vec.iter() {
-                            dec_ref_bits(py, *bits);
+                        // contains_refs fast-path: skip element dec_ref when
+                        // every element is a primitive (int/float/bool/None).
+                        if (header.flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
+                            for bits in vec.iter() {
+                                dec_ref_bits(py, *bits);
+                            }
                         }
                     }
                 }
@@ -1553,8 +1562,10 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     let vec_ptr = seq_vec_ptr(ptr);
                     if !vec_ptr.is_null() {
                         let vec = Box::from_raw(vec_ptr);
-                        for bits in vec.iter() {
-                            dec_ref_bits(py, *bits);
+                        if (header.flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
+                            for bits in vec.iter() {
+                                dec_ref_bits(py, *bits);
+                            }
                         }
                     }
                 }
@@ -1563,8 +1574,10 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     let table_ptr = dict_table_ptr(ptr);
                     if !order_ptr.is_null() {
                         let order = Box::from_raw(order_ptr);
-                        for bits in order.iter() {
-                            dec_ref_bits(py, *bits);
+                        if (header.flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
+                            for bits in order.iter() {
+                                dec_ref_bits(py, *bits);
+                            }
                         }
                     }
                     if !table_ptr.is_null() {
@@ -1594,8 +1607,10 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     let table_ptr = set_table_ptr(ptr);
                     if !order_ptr.is_null() {
                         let order = Box::from_raw(order_ptr);
-                        for bits in order.iter() {
-                            dec_ref_bits(py, *bits);
+                        if (header.flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
+                            for bits in order.iter() {
+                                dec_ref_bits(py, *bits);
+                            }
                         }
                     }
                     if !table_ptr.is_null() {

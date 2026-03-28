@@ -585,6 +585,9 @@ pub(crate) fn alloc_list_with_capacity(
         }
         let vec_ptr = Box::into_raw(Box::new(vec));
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
+        if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
+            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+        }
     }
     ptr
 }
@@ -608,6 +611,9 @@ pub(crate) fn alloc_list_with_capacity_owned(
         vec.extend_from_slice(elems);
         let vec_ptr = Box::into_raw(Box::new(vec));
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
+        if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
+            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+        }
     }
     ptr
 }
@@ -642,6 +648,9 @@ pub(crate) fn alloc_tuple_with_capacity(
         }
         let vec_ptr = Box::into_raw(Box::new(vec));
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
+        if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
+            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+        }
     }
     ptr
 }

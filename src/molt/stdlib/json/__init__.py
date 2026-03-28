@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-from typing import Any, Callable, Iterable
+# NOTE: typing imports are annotation-only thanks to PEP 563 (from __future__
+# import annotations).  Importing the typing module at runtime pulls in
+# sys._getframe which the Molt native backend does not yet provide.  Keep the
+# import guarded behind TYPE_CHECKING so the compiled binary does not need the
+# typing module.
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    from typing import Any, Callable, Iterable
 
 _MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj")
 _MOLT_JSON_ENCODE_BASESTRING = _require_intrinsic(
@@ -67,16 +74,16 @@ def _raise_json_decode_from_value_error(exc: ValueError, doc: str) -> None:
 
 
 def _try_intrinsic_dumps(
-    obj: Any,
+    obj,
     *,
-    skipkeys: bool,
-    ensure_ascii: bool,
-    check_circular: bool,
-    allow_nan: bool,
-    sort_keys: bool,
-    indent: int | str | None,
-    separators: tuple[str, str],
-    default: Callable[[Any], Any] | None,
+    skipkeys,
+    ensure_ascii,
+    check_circular,
+    allow_nan,
+    sort_keys,
+    indent,
+    separators,
+    default,
 ) -> str:
     return _MOLT_JSON_DUMPS_EX(
         obj,
@@ -93,19 +100,22 @@ def _try_intrinsic_dumps(
 
 
 def loads(
-    s: str | bytes | bytearray,
+    s,
     *,
-    cls: Any | None = None,
-    object_hook: Callable[[dict[str, Any]], Any] | None = None,
-    parse_float: Callable[[str], Any] | None = None,
-    parse_int: Callable[[str], Any] | None = None,
-    parse_constant: Callable[[str], Any] | None = None,
-    object_pairs_hook: Callable[[list[tuple[str, Any]]], Any] | None = None,
-    **kw: Any,
-) -> Any:
+    cls=None,
+    object_hook=None,
+    parse_float=None,
+    parse_int=None,
+    parse_constant=None,
+    object_pairs_hook=None,
+    **kw,
+):
     strict_explicit = "strict" in kw
     strict = kw.pop("strict", True)
-    decoder_cls = JSONDecoder if cls is None else cls
+    if cls is not None:
+        decoder_cls = cls
+    else:
+        decoder_cls = JSONDecoder
     text = _MOLT_JSON_COERCE_TEXT(s)
     if isinstance(s, str) and text.startswith("\ufeff"):
         raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)", text, 0)
@@ -142,16 +152,16 @@ def loads(
 
 
 def load(
-    fp: Any,
+    fp,
     *,
-    cls: Any | None = None,
-    object_hook: Callable[[dict[str, Any]], Any] | None = None,
-    parse_float: Callable[[str], Any] | None = None,
-    parse_int: Callable[[str], Any] | None = None,
-    parse_constant: Callable[[str], Any] | None = None,
-    object_pairs_hook: Callable[[list[tuple[str, Any]]], Any] | None = None,
-    **kw: Any,
-) -> Any:
+    cls=None,
+    object_hook=None,
+    parse_float=None,
+    parse_int=None,
+    parse_constant=None,
+    object_pairs_hook=None,
+    **kw,
+):
     return loads(
         fp.read(),
         cls=cls,
@@ -165,24 +175,27 @@ def load(
 
 
 def dumps(
-    obj: Any,
+    obj,
     *,
-    cls: Any | None = None,
-    skipkeys: bool = False,
-    ensure_ascii: bool = True,
-    check_circular: bool = True,
-    allow_nan: bool = True,
-    sort_keys: bool = False,
-    indent: int | str | None = None,
-    separators: tuple[str, str] | None = None,
-    default: Callable[[Any], Any] | None = None,
-    **kw: Any,
+    cls=None,
+    skipkeys=False,
+    ensure_ascii=True,
+    check_circular=True,
+    allow_nan=True,
+    sort_keys=False,
+    indent=None,
+    separators=None,
+    default=None,
+    **kw,
 ) -> str:
     if separators is None:
         separators = _MOLT_JSON_DEFAULT_SEPARATORS(indent)
     elif len(separators) != 2:
         raise ValueError("separators must be a (item, key) tuple")
-    encoder_cls = cls or JSONEncoder
+    if cls is not None:
+        encoder_cls = cls
+    else:
+        encoder_cls = JSONEncoder
     if encoder_cls is JSONEncoder and not kw:
         return _try_intrinsic_dumps(
             obj,
@@ -210,19 +223,19 @@ def dumps(
 
 
 def dump(
-    obj: Any,
-    fp: Any,
+    obj,
+    fp,
     *,
-    cls: Any | None = None,
-    skipkeys: bool = False,
-    ensure_ascii: bool = True,
-    check_circular: bool = True,
-    allow_nan: bool = True,
-    sort_keys: bool = False,
-    indent: int | str | None = None,
-    separators: tuple[str, str] | None = None,
-    default: Callable[[Any], Any] | None = None,
-    **kw: Any,
+    cls=None,
+    skipkeys=False,
+    ensure_ascii=True,
+    check_circular=True,
+    allow_nan=True,
+    sort_keys=False,
+    indent=None,
+    separators=None,
+    default=None,
+    **kw,
 ) -> None:
     text = dumps(
         obj,
@@ -244,14 +257,14 @@ class JSONEncoder:
     def __init__(
         self,
         *,
-        skipkeys: bool = False,
-        ensure_ascii: bool = True,
-        check_circular: bool = True,
-        allow_nan: bool = True,
-        sort_keys: bool = False,
-        indent: int | str | None = None,
-        separators: tuple[str, str] | None = None,
-        default: Callable[[Any], Any] | None = None,
+        skipkeys=False,
+        ensure_ascii=True,
+        check_circular=True,
+        allow_nan=True,
+        sort_keys=False,
+        indent=None,
+        separators=None,
+        default=None,
     ) -> None:
         if separators is None:
             separators = _MOLT_JSON_DEFAULT_SEPARATORS(indent)
@@ -266,13 +279,13 @@ class JSONEncoder:
         self.separators = separators
         self._default = default
 
-    def default(self, obj: Any) -> Any:
+    def default(self, obj):
         if self._default is not None:
             return self._default(obj)
         raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
-    def encode(self, obj: Any) -> str:
-        default_cb: Callable[[Any], Any] | None = self._default
+    def encode(self, obj) -> str:
+        default_cb = self._default
         if type(self) is not JSONEncoder:
             default_cb = self.default
         return _try_intrinsic_dumps(
@@ -287,7 +300,7 @@ class JSONEncoder:
             default=default_cb,
         )
 
-    def iterencode(self, obj: Any) -> Iterable[str]:
+    def iterencode(self, obj):
         yield self.encode(obj)
 
 
@@ -295,12 +308,12 @@ class JSONDecoder:
     def __init__(
         self,
         *,
-        object_hook: Callable[[dict[str, Any]], Any] | None = None,
-        parse_float: Callable[[str], Any] | None = None,
-        parse_int: Callable[[str], Any] | None = None,
-        parse_constant: Callable[[str], Any] | None = None,
-        object_pairs_hook: Callable[[list[tuple[str, Any]]], Any] | None = None,
-        strict: bool = True,
+        object_hook=None,
+        parse_float=None,
+        parse_int=None,
+        parse_constant=None,
+        object_pairs_hook=None,
+        strict=True,
     ) -> None:
         self.object_hook = object_hook
         self.parse_float = parse_float
@@ -309,7 +322,7 @@ class JSONDecoder:
         self.object_pairs_hook = object_pairs_hook
         self.strict = strict
 
-    def decode(self, s: str) -> Any:
+    def decode(self, s: str):
         if not isinstance(s, str):
             raise TypeError(
                 f"the JSON object must be str, bytes or bytearray, not {type(s).__name__}"
@@ -327,7 +340,7 @@ class JSONDecoder:
         except ValueError as exc:
             _raise_json_decode_from_value_error(exc, s)
 
-    def raw_decode(self, s: str, idx: int = 0) -> tuple[Any, int]:
+    def raw_decode(self, s: str, idx: int = 0):
         if not isinstance(s, str):
             raise TypeError(f"first argument must be a string, not {type(s).__name__}")
         import operator

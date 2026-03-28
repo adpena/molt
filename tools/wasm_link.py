@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import shutil
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import warnings
 from pathlib import Path
 
 
@@ -38,6 +40,18 @@ CALL_INDIRECT_RE = re.compile(r"molt_call_indirect(\d+)")
 # Rust wasm symbol names include a hash suffix like "17h<hex...>E". Capture the arity
 # digits that precede the 2-digit hash-length tag so 10+ arities don't get truncated.
 CALL_INDIRECT_MANGLED_RE = re.compile(r"molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA-F]+E)")
+
+# SHA-256 integrity hashes for known runtime binaries.  When a filename appears
+# in this dict the linker will verify the on-disk file matches the expected hash
+# before passing it to wasm-ld.  Populate entries when cutting a release:
+#
+#   python3 -c "import hashlib, sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" molt_runtime.wasm
+#
+# Leave the dict empty during development — the linker will emit a warning for
+# files not listed here rather than rejecting them outright.
+RUNTIME_EXPECTED_HASHES: dict[str, str] = {
+    # "molt_runtime.wasm": "<sha256-hex-digest>",
+}
 _OUTPUT_RUNTIME_EXPORT_ALIASES = (
     "molt_isolate_bootstrap",
     "molt_isolate_import",
@@ -57,6 +71,49 @@ def _default_runtime_path() -> Path:
 
 def _is_wasm_binary(data: bytes) -> bool:
     return len(data) >= 8 and data[:4] == WASM_MAGIC and data[4:8] == WASM_VERSION
+
+
+def _verify_runtime_integrity(path: Path) -> None:
+    """Verify SHA-256 integrity of the runtime binary.
+
+    Raises ``SystemExit`` when a hash mismatch is detected.  The check can be
+    bypassed by setting ``MOLT_SKIP_RUNTIME_VERIFY=1`` in the environment
+    (intended for local development only).
+    """
+    if os.environ.get("MOLT_SKIP_RUNTIME_VERIFY") == "1":
+        return
+
+    # Reject path-traversal components before reading the file.
+    for part in path.parts:
+        if part == "..":
+            raise SystemExit(
+                f"Runtime path contains '..' traversal component: {path}"
+            )
+
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    filename = path.name
+
+    if not RUNTIME_EXPECTED_HASHES:
+        # No hashes have been pinned yet — nothing to enforce.
+        return
+
+    if filename not in RUNTIME_EXPECTED_HASHES:
+        warnings.warn(
+            f"Runtime file '{filename}' has no pinned SHA-256 hash in "
+            f"RUNTIME_EXPECTED_HASHES — integrity not verified.",
+            stacklevel=2,
+        )
+        return
+
+    expected = RUNTIME_EXPECTED_HASHES[filename]
+    if digest != expected:
+        raise SystemExit(
+            f"Runtime integrity check failed for {path}\n"
+            f"  expected SHA-256: {expected}\n"
+            f"  actual   SHA-256: {digest}\n"
+            f"Set MOLT_SKIP_RUNTIME_VERIFY=1 to bypass (development only)."
+        )
 
 
 def _read_wasm_bytes_with_retry(
@@ -1283,6 +1340,15 @@ def _tree_shake_runtime(
     """
     sections = _parse_sections(runtime_data)
 
+    # Canonicalize the app import surface to the runtime export naming
+    # convention.  The app imports the unprefixed ABI names (e.g. `alloc`,
+    # `module_import`), while the runtime exports the corresponding
+    # `molt_*` symbols.  Without this normalization, split-runtime
+    # tree-shaking strips every function export even when the app has a
+    # large live runtime dependency surface.
+    normalized_required_exports = set(required_exports)
+    normalized_required_exports.update(f"molt_{name}" for name in required_exports)
+
     # Rewrite export section: keep memory/table/global exports and only
     # function exports that are in the required set.
     new_sections: list[tuple[int, bytes]] = []
@@ -1309,7 +1375,7 @@ def _tree_shake_runtime(
                 # Memory (2), table (1), global (3) -- always keep.
                 filtered.append((name, kind, index))
                 kept_exports += 1
-            elif name in required_exports:
+            elif name in normalized_required_exports:
                 filtered.append((name, kind, index))
                 kept_exports += 1
             else:
@@ -3132,8 +3198,14 @@ def _run_wasm_ld(
             app_wasm = out_dir / "app.wasm"
             rt_wasm = out_dir / "molt_runtime.wasm"
 
-            # The linked output is the app module (linked against stub).
-            shutil.copy2(str(linked), str(app_wasm))
+            # For split-runtime, the app artifact must remain unlinked while
+            # preserving the runtime ABI rewrite performed earlier in the link
+            # pipeline.  Copying the fully linked binary here collapses the
+            # split contract, while copying the raw frontend output would leave
+            # stale unprefixed runtime imports that do not match the deploy
+            # runtime's export ABI.  The correct artifact is the rewritten,
+            # still-unlinked module.
+            shutil.copy2(str(rewritten_path), str(app_wasm))
 
             # Resolve the deploy-ready (non-relocatable) runtime.
             deploy_runtime = runtime
@@ -3221,6 +3293,7 @@ def main() -> int:
     if not runtime.exists():
         print(f"Runtime wasm not found: {runtime}", file=sys.stderr)
         return 1
+    _verify_runtime_integrity(runtime)
     if not output.exists():
         print(f"Output wasm not found: {output}", file=sys.stderr)
         return 1

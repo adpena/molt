@@ -6,7 +6,7 @@ use crate::{
     inc_ref_bits, module_dict_bits, obj_from_bits, object_set_class_bits, object_type_id,
     raise_exception, string_bytes, string_len,
 };
-use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
 const REGISTRY_NAME: &str = "_molt_intrinsics";
 const LOOKUP_HELPER_NAME: &str = "_molt_intrinsic_lookup";
@@ -23,8 +23,20 @@ static BUILTINS_MODULE_PTR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut()
 static INTRINSIC_MANIFEST_PTR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 static INTRINSIC_MANIFEST_LEN: AtomicU32 = AtomicU32::new(0);
 
+/// One-shot guard: only the first call (compiler-generated bootstrap) takes
+/// effect.  Uses compare_exchange to eliminate the TOCTOU race between
+/// load and store that a plain load+store pair would have on native
+/// multi-threaded targets.
+static MANIFEST_SET: AtomicBool = AtomicBool::new(false);
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_intrinsic_manifest(ptr: u64, len: u64) -> u64 {
+    if MANIFEST_SET
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return 0; // already set — silently ignore subsequent calls
+    }
     INTRINSIC_MANIFEST_PTR.store(ptr as u32 as *mut u8, Ordering::Release);
     INTRINSIC_MANIFEST_LEN.store(len as u32, Ordering::Release);
     0
@@ -486,6 +498,16 @@ pub(crate) fn register_intrinsics_module(_py: &PyToken<'_>) {
     dec_ref_bits(_py, name_bits);
 }
 
+// Expose internals for testing.
+#[cfg(test)]
+pub(crate) fn test_manifest_set() -> &'static AtomicBool {
+    &MANIFEST_SET
+}
+#[cfg(test)]
+pub(crate) fn test_manifest_ptr() -> &'static AtomicPtr<u8> {
+    &INTRINSIC_MANIFEST_PTR
+}
+
 /// Runtime implementation of require_intrinsic(name, namespace=None) -> function.
 ///
 /// The optional namespace is accepted for API compatibility with
@@ -560,4 +582,45 @@ pub extern "C" fn molt_require_intrinsic_runtime(name_bits: u64, namespace_bits:
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::Ordering;
+
+    /// Test one-shot manifest guard: first call sets, second is ignored.
+    ///
+    /// Because MANIFEST_SET is a process-global static, this test must run
+    /// in a single function to avoid ordering issues with parallel test
+    /// execution.  We reset the flag at the start (safe in test-only code)
+    /// so the test is idempotent even if other tests ran first.
+    #[test]
+    fn manifest_one_shot_guard() {
+        // Reset globals so this test is self-contained.
+        test_manifest_set().store(false, Ordering::SeqCst);
+        test_manifest_ptr().store(core::ptr::null_mut(), Ordering::SeqCst);
+
+        // First call should succeed and latch the guard.
+        let ret = molt_set_intrinsic_manifest(0x1000, 10);
+        assert_eq!(ret, 0, "first call should return 0 (success)");
+        assert!(
+            test_manifest_set().load(Ordering::SeqCst),
+            "MANIFEST_SET should be true after first call"
+        );
+        assert_eq!(
+            test_manifest_ptr().load(Ordering::SeqCst) as usize,
+            0x1000,
+            "INTRINSIC_MANIFEST_PTR should be 0x1000 after first call"
+        );
+
+        // Second call should be silently ignored.
+        let ret2 = molt_set_intrinsic_manifest(0x2000, 20);
+        assert_eq!(ret2, 0, "second call should also return 0");
+        assert_eq!(
+            test_manifest_ptr().load(Ordering::SeqCst) as usize,
+            0x1000,
+            "INTRINSIC_MANIFEST_PTR must still be 0x1000, NOT 0x2000"
+        );
+    }
 }

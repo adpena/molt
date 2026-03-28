@@ -2,6 +2,7 @@
 """Generate a Cloudflare Worker entry point from template."""
 from __future__ import annotations
 import argparse
+import json
 from pathlib import Path
 
 TEMPLATE_PATH = Path(__file__).parent / "wasm_worker_template.js"
@@ -13,9 +14,10 @@ def generate_worker(
     wasm_filename: str = "worker_linked.wasm",
 ) -> None:
     template = TEMPLATE_PATH.read_text()
-    caps_str = ", ".join(f"'{c}'" for c in capabilities)
-    template = template.replace("{{TMP_QUOTA_MB}}", str(tmp_quota_mb))
-    template = template.replace("{{CAPABILITIES}}", caps_str)
+    if not all(c.isalnum() or c in "._-" for c in wasm_filename):
+        raise ValueError(f"Invalid wasm_filename: {wasm_filename!r}")
+    template = template.replace("{{TMP_QUOTA_MB}}", str(int(tmp_quota_mb)))
+    template = template.replace("{{CAPABILITIES}}", json.dumps(capabilities))
     template = template.replace("{{WASM_FILENAME}}", wasm_filename)
     output.write_text(template)
 

@@ -1,0 +1,33 @@
+[package]
+name = "molt-backend-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+molt-backend = { path = "..", features = ["wasm-backend"] }
+arbitrary = { version = "1", features = ["derive"] }
+wasm-encoder = "0.245.1"
+wasmparser = "0.245.1"
+
+# Prevent this from interfering with workspace, if any
+[workspace]
+
+[[bin]]
+name = "fuzz_nan_boxing"
+path = "fuzz_targets/fuzz_nan_boxing.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_wasm_type_section"
+path = "fuzz_targets/fuzz_wasm_type_section.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_tir_passes"
+path = "fuzz_targets/fuzz_tir_passes.rs"
+doc = false
