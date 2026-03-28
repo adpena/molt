@@ -7055,3 +7055,93 @@ pub extern "C" fn molt_raise_recursion_error() -> u64 {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Runtime initialization from manifest environment variables
+// ---------------------------------------------------------------------------
+
+/// Initialize the resource tracker from environment variables set by the
+/// capability manifest. Called during runtime startup.
+///
+/// Reads: MOLT_RESOURCE_MAX_MEMORY, MOLT_RESOURCE_MAX_DURATION_MS,
+///        MOLT_RESOURCE_MAX_ALLOCATIONS, MOLT_RESOURCE_MAX_RECURSION_DEPTH
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_runtime_init_resources() {
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
+    use std::time::Duration;
+
+    let max_memory = std::env::var("MOLT_RESOURCE_MAX_MEMORY")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok());
+    let max_duration_ms = std::env::var("MOLT_RESOURCE_MAX_DURATION_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok());
+    let max_allocations = std::env::var("MOLT_RESOURCE_MAX_ALLOCATIONS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok());
+    let max_recursion_depth = std::env::var("MOLT_RESOURCE_MAX_RECURSION_DEPTH")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok());
+
+    let has_any = max_memory.is_some()
+        || max_duration_ms.is_some()
+        || max_allocations.is_some()
+        || max_recursion_depth.is_some();
+
+    if has_any {
+        let limits = ResourceLimits {
+            max_memory,
+            max_duration: max_duration_ms.map(Duration::from_millis),
+            max_allocations,
+            max_recursion_depth,
+            max_operation_result_bytes: None,
+        };
+        set_tracker(Box::new(LimitedTracker::new(&limits)));
+    }
+}
+
+/// Initialize the audit sink from environment variables.
+///
+/// Reads: MOLT_AUDIT_ENABLED, MOLT_AUDIT_SINK
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_runtime_init_audit() {
+    use crate::audit::{set_audit_sink, JsonLinesSink, NullSink, StderrSink};
+
+    let enabled = std::env::var("MOLT_AUDIT_ENABLED")
+        .ok()
+        .map(|s| s == "1")
+        .unwrap_or(false);
+
+    if !enabled {
+        return;
+    }
+
+    let sink_type = std::env::var("MOLT_AUDIT_SINK").unwrap_or_else(|_| "stderr".into());
+    match sink_type.as_str() {
+        "jsonl" => {
+            set_audit_sink(Box::new(JsonLinesSink::new(std::io::stderr())));
+        }
+        "stderr" => {
+            set_audit_sink(Box::new(StderrSink));
+        }
+        _ => {
+            set_audit_sink(Box::new(NullSink));
+        }
+    }
+}
+
+/// Initialize IO mode from environment variable.
+///
+/// Reads: MOLT_IO_MODE (real | virtual | callback)
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_runtime_init_io_mode() {
+    use crate::vfs::caps::{IoMode, set_io_mode};
+
+    let mode_str = std::env::var("MOLT_IO_MODE").unwrap_or_else(|_| "real".into());
+    let mode = match mode_str.as_str() {
+        "virtual" => IoMode::Virtual,
+        "callback" => IoMode::Callback,
+        _ => IoMode::Real,
+    };
+    set_io_mode(mode);
+}
+

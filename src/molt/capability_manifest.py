@@ -239,6 +239,27 @@ class CapabilityManifest:
         """Return allowed minus denied capabilities."""
         return self.expanded_allow() - set(self.deny)
 
+    def to_env_vars(self) -> dict[str, str]:
+        """Convert manifest to environment variables for runtime propagation."""
+        env: dict[str, str] = {}
+        effective = sorted(self.effective_capabilities())
+        env["MOLT_CAPABILITIES"] = ",".join(effective)
+        if self.resources.max_memory is not None:
+            env["MOLT_RESOURCE_MAX_MEMORY"] = str(self.resources.max_memory)
+        if self.resources.max_duration is not None:
+            env["MOLT_RESOURCE_MAX_DURATION_MS"] = str(int(self.resources.max_duration * 1000))
+        if self.resources.max_allocations is not None:
+            env["MOLT_RESOURCE_MAX_ALLOCATIONS"] = str(self.resources.max_allocations)
+        if self.resources.max_recursion_depth is not None:
+            env["MOLT_RESOURCE_MAX_RECURSION_DEPTH"] = str(self.resources.max_recursion_depth)
+        if self.audit.enabled:
+            env["MOLT_AUDIT_ENABLED"] = "1"
+            env["MOLT_AUDIT_SINK"] = self.audit.sink
+            env["MOLT_AUDIT_OUTPUT"] = self.audit.output
+        if self.io.mode != "real":
+            env["MOLT_IO_MODE"] = self.io.mode
+        return env
+
 
 # ---------------------------------------------------------------------------
 # Validation
@@ -659,12 +680,16 @@ def _parse_and_strip_signature(text: str, suffix: str) -> dict[str, Any]:
     Uses structural parsing for all formats — never regex on raw text.
     """
     if suffix == ".toml":
-        import tomllib
         data = tomllib.loads(text)
     elif suffix == ".json":
         data = json.loads(text)
     elif suffix in (".yaml", ".yml"):
-        import yaml
+        try:
+            import yaml
+        except ImportError as exc:
+            raise ImportError(
+                "YAML manifests require the 'pyyaml' package: pip install pyyaml"
+            ) from exc
         data = yaml.safe_load(text) or {}
     else:
         raise ManifestError(f"unsupported manifest format: {suffix!r}")
@@ -762,6 +787,11 @@ def verify_manifest_signature(
         )
 
     stored_digest = sig[len("sha256:"):]
+    if len(stored_digest) != 64 or not all(c in "0123456789abcdef" for c in stored_digest):
+        raise ManifestError(
+            f"invalid signature digest: expected 64 lowercase hex characters, "
+            f"got {stored_digest!r}"
+        )
     expected_digest = compute_manifest_hash(manifest_path)
 
     if stored_digest != expected_digest:
