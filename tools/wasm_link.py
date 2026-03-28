@@ -2398,7 +2398,10 @@ def _parse_func_type_indices(sections: list[tuple[int, bytes]]) -> tuple[int, li
     return -1, []
 
 
-def _fixup_func_type_indices(data: bytes, reference_data: bytes | None = None) -> bytes | None:
+def _fixup_func_type_indices(data: bytes, reference_data: bytes | None = None, runtime_data: bytes | None = None) -> bytes | None:
+    # wasm-ld 22.1.1 produces valid type-index assignments; disable all
+    # repair heuristics to avoid introducing corruption.
+    return None
     """Detect and repair function-section type-index mismatches.
 
     After wasm-ld merges two relocatable modules, the type section is
@@ -2448,183 +2451,13 @@ def _fixup_func_type_indices(data: bytes, reference_data: bytes | None = None) -
     if func_count != len(func_type_indices):
         return None
 
-    for f_idx in range(func_count):
+    # Skip past the code section bodies to set `offset` correctly.
+    # (The old local-access heuristic was removed because wasm-ld 22.1.1
+    #  produces valid type indices; the heuristic incorrectly re-assigned
+    #  types for functions whose declared locals masked the parameter count.)
+    for _f_idx in range(func_count):
         body_size, offset = _read_varuint(code_payload, offset)
-        body_end = offset + body_size
-
-        if body_size <= 2:
-            offset = body_end
-            continue
-
-        pos = offset
-        try:
-            local_decl_count, pos = _read_varuint(code_payload, pos)
-            declared_locals = 0
-            for _ in range(local_decl_count):
-                n, pos = _read_varuint(code_payload, pos)
-                pos += 1  # valtype
-                declared_locals += n
-        except (IndexError, ValueError):
-            offset = body_end
-            continue
-
-        # Scan for local.get/set/tee to find max index
-        max_local = -1
-        while pos < body_end:
-            op = code_payload[pos]
-            pos += 1
-            if op in (0x20, 0x21, 0x22):
-                try:
-                    idx_val, pos = _read_varuint(code_payload, pos)
-                    if idx_val > max_local:
-                        max_local = idx_val
-                except (IndexError, ValueError):
-                    break
-            elif op in (0x00, 0x01, 0x05, 0x0B, 0x0F, 0x1A, 0x1B, 0xD1, 0xD3):
-                pass
-            elif op in (0x02, 0x03, 0x04):
-                if pos < body_end:
-                    bt = code_payload[pos]
-                    if bt in (0x40, 0x7F, 0x7E, 0x7D, 0x7C, 0x70, 0x6F, 0x7B):
-                        pos += 1
-                    else:
-                        while pos < body_end and code_payload[pos] & 0x80:
-                            pos += 1
-                        if pos < body_end:
-                            pos += 1
-            elif op in (0x0C, 0x0D, 0x23, 0x24, 0x25, 0x26,
-                        0x3F, 0x40, 0xD0, 0xD4, 0xD5):
-                try:
-                    _, pos = _read_varuint(code_payload, pos)
-                except (IndexError, ValueError):
-                    break
-            elif op == 0x0E:
-                try:
-                    n, pos = _read_varuint(code_payload, pos)
-                    for _ in range(n + 1):
-                        _, pos = _read_varuint(code_payload, pos)
-                except (IndexError, ValueError):
-                    break
-            elif op in (0x10, 0x12):
-                try:
-                    _, pos = _read_varuint(code_payload, pos)
-                except (IndexError, ValueError):
-                    break
-            elif op in (0x11, 0x13):
-                try:
-                    _, pos = _read_varuint(code_payload, pos)
-                    _, pos = _read_varuint(code_payload, pos)
-                except (IndexError, ValueError):
-                    break
-            elif op in (0x14, 0x15):
-                try:
-                    _, pos = _read_varuint(code_payload, pos)
-                except (IndexError, ValueError):
-                    break
-            elif op == 0xD2:
-                try:
-                    _, pos = _read_varuint(code_payload, pos)
-                except (IndexError, ValueError):
-                    break
-            elif 0x28 <= op <= 0x3E:
-                try:
-                    _, pos = _read_varuint(code_payload, pos)
-                    _, pos = _read_varuint(code_payload, pos)
-                except (IndexError, ValueError):
-                    break
-            elif op == 0x41:
-                while pos < body_end and code_payload[pos] & 0x80:
-                    pos += 1
-                if pos < body_end:
-                    pos += 1
-            elif op == 0x42:
-                while pos < body_end and code_payload[pos] & 0x80:
-                    pos += 1
-                if pos < body_end:
-                    pos += 1
-            elif op == 0x43:
-                pos += 4
-            elif op == 0x44:
-                pos += 8
-            elif 0x45 <= op <= 0xC4:
-                pass
-            elif op == 0x1C:
-                try:
-                    n, pos = _read_varuint(code_payload, pos)
-                    pos += n
-                except (IndexError, ValueError):
-                    break
-            elif op == 0xFC:
-                try:
-                    ext, pos = _read_varuint(code_payload, pos)
-                    if ext <= 7:
-                        pass
-                    elif ext in (8, 10, 12, 14):
-                        _, pos = _read_varuint(code_payload, pos)
-                        _, pos = _read_varuint(code_payload, pos)
-                    elif ext in (9, 11, 13, 15, 16, 17):
-                        _, pos = _read_varuint(code_payload, pos)
-                except (IndexError, ValueError):
-                    break
-            elif op == 0xFD:
-                try:
-                    simd, pos = _read_varuint(code_payload, pos)
-                    if simd <= 11:
-                        _, pos = _read_varuint(code_payload, pos)
-                        _, pos = _read_varuint(code_payload, pos)
-                    elif simd in (12, 13):
-                        pos += 16
-                    elif 84 <= simd <= 91:
-                        _, pos = _read_varuint(code_payload, pos)
-                        _, pos = _read_varuint(code_payload, pos)
-                        pos += 1
-                    elif 21 <= simd <= 34:
-                        pos += 1
-                    elif 92 <= simd <= 93:
-                        _, pos = _read_varuint(code_payload, pos)
-                        _, pos = _read_varuint(code_payload, pos)
-                except (IndexError, ValueError):
-                    break
-            elif op == 0xFE:
-                try:
-                    atom, pos = _read_varuint(code_payload, pos)
-                    if atom == 0x03:
-                        pos += 1
-                    elif atom >= 0x10 or atom in (0x00, 0x01, 0x02):
-                        _, pos = _read_varuint(code_payload, pos)
-                        _, pos = _read_varuint(code_payload, pos)
-                except (IndexError, ValueError):
-                    break
-            else:
-                break
-
-        if max_local < 0:
-            offset = body_end
-            continue
-
-        type_idx = func_type_indices[f_idx]
-        if type_idx >= len(linked_types):
-            offset = body_end
-            continue
-        param_count = len(linked_types[type_idx][0])
-        result_count = len(linked_types[type_idx][1])
-        total_available = param_count + declared_locals
-        needed = max_local + 1
-        if total_available >= needed:
-            offset = body_end
-            continue
-        required_params = needed - declared_locals
-        if required_params <= 0:
-            offset = body_end
-            continue
-        result_types = linked_types[type_idx][1]
-        candidates = [
-            ti for ti, (pt, rt) in enumerate(linked_types)
-            if len(pt) == required_params and rt == result_types
-        ]
-        if candidates:
-            repairs[f_idx] = candidates[0]
-        offset = body_end
+        offset += body_size
 
     if not repairs:
         return None
