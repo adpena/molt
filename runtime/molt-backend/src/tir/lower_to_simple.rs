@@ -12,6 +12,7 @@
 //! Full round-trip with type annotations, phi elimination, and all OpCode
 //! mappings.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use crate::ir::OpIR;
@@ -21,6 +22,10 @@ use super::function::TirFunction;
 use super::ops::{AttrValue, OpCode, TirOp};
 use super::types::TirType;
 use super::values::ValueId;
+
+thread_local! {
+    static VALUE_NAME_OVERRIDES: RefCell<HashMap<ValueId, String>> = RefCell::new(HashMap::new());
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -41,6 +46,18 @@ use super::values::ValueId;
 /// `type_hint`, `stack_eligible`), closing the optimisation gap where type
 /// information was previously lost.
 pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>) -> Vec<OpIR> {
+    VALUE_NAME_OVERRIDES.with(|overrides| {
+        let mut overrides = overrides.borrow_mut();
+        overrides.clear();
+        if let Some(entry_block) = func.blocks.get(&func.entry_block) {
+            for (idx, arg) in entry_block.args.iter().enumerate() {
+                if let Some(name) = func.param_names.get(idx) {
+                    overrides.insert(arg.id, name.clone());
+                }
+            }
+        }
+    });
+
     let mut out = Vec::new();
 
     // Compute block visit order (reverse-postorder from entry).
@@ -124,8 +141,6 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             if let Some(param_vars) = block_param_vars.get(bid) {
                 for (i, var_name) in param_vars.iter().enumerate() {
                     if i < block.args.len() {
-                        // The actual value was stored into `var_name` by
-                        // the predecessor's terminator emission. Load it.
                         out.push(OpIR {
                             kind: "load_var".to_string(),
                             var: Some(var_name.clone()),
@@ -150,6 +165,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         emit_terminator(block, &block_param_vars, &block_label_id, &mut out);
     }
 
+    VALUE_NAME_OVERRIDES.with(|overrides| overrides.borrow_mut().clear());
     out
 }
 
@@ -287,6 +303,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 kind,
                 args: Some(operand_args(op)),
                 s_value: attr_str(&op.attrs, "name").or_else(|| attr_str(&op.attrs, "s_value")),
+                value: attr_int(&op.attrs, "value"),
                 out: out_var,
                 ic_index: attr_int(&op.attrs, "ic_index"),
                 ..OpIR::default()
@@ -299,6 +316,8 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 kind,
                 args: Some(operand_args(op)),
                 s_value: attr_str(&op.attrs, "name").or_else(|| attr_str(&op.attrs, "s_value")),
+                value: attr_int(&op.attrs, "value"),
+                out: out_var,
                 ..OpIR::default()
             })
         }
@@ -859,7 +878,13 @@ fn type_to_hint_string(ty: &TirType) -> String {
 
 /// Synthesise a SimpleIR variable name from a ValueId.
 fn value_var(id: ValueId) -> String {
-    format!("_v{}", id.0)
+    VALUE_NAME_OVERRIDES.with(|overrides| {
+        overrides
+            .borrow()
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| format!("_v{}", id.0))
+    })
 }
 
 fn binary_op(kind: &str, op: &TirOp, out: Option<String>) -> OpIR {
@@ -1357,5 +1382,141 @@ mod tests {
                 "empty type map should not set type_hint"
             );
         }
+    }
+
+    #[test]
+    fn tir_round_trip_preserves_guarded_field_set_offset() {
+        use crate::ir::{FunctionIR, OpIR};
+        use crate::tir::lower_from_simple::lower_to_tir;
+
+        let func_ir = FunctionIR {
+            name: "guarded_store".into(),
+            params: vec![
+                "obj".into(),
+                "class_bits".into(),
+                "expected".into(),
+                "value".into(),
+            ],
+            ops: vec![OpIR {
+                kind: "guarded_field_set".into(),
+                args: Some(vec![
+                    "obj".into(),
+                    "class_bits".into(),
+                    "expected".into(),
+                    "value".into(),
+                ]),
+                s_value: Some("x".into()),
+                value: Some(24),
+                ..OpIR::default()
+            }],
+            param_types: None,
+        };
+
+        let tir_func = lower_to_tir(&func_ir);
+        let round_tripped = lower_to_simple_ir(&tir_func, &HashMap::new());
+        let store_op = round_tripped
+            .iter()
+            .find(|op| op.kind == "guarded_field_set")
+            .expect("expected guarded_field_set after TIR round-trip");
+
+        assert_eq!(store_op.s_value.as_deref(), Some("x"));
+        assert_eq!(store_op.value, Some(24));
+    }
+
+    #[test]
+    fn tir_round_trip_preserves_guarded_field_get_offset() {
+        use crate::ir::{FunctionIR, OpIR};
+        use crate::tir::lower_from_simple::lower_to_tir;
+
+        let func_ir = FunctionIR {
+            name: "guarded_load".into(),
+            params: vec!["obj".into(), "class_bits".into(), "expected".into()],
+            ops: vec![OpIR {
+                kind: "guarded_field_get".into(),
+                args: Some(vec!["obj".into(), "class_bits".into(), "expected".into()]),
+                s_value: Some("x".into()),
+                value: Some(24),
+                out: Some("loaded".into()),
+                ..OpIR::default()
+            }],
+            param_types: None,
+        };
+
+        let tir_func = lower_to_tir(&func_ir);
+        let round_tripped = lower_to_simple_ir(&tir_func, &HashMap::new());
+        let load_op = round_tripped
+            .iter()
+            .find(|op| op.kind == "guarded_field_get")
+            .expect("expected guarded_field_get after TIR round-trip");
+
+        assert_eq!(load_op.s_value.as_deref(), Some("x"));
+        assert_eq!(load_op.value, Some(24));
+        assert!(
+            load_op.out.is_some(),
+            "guarded_field_get must preserve an output"
+        );
+    }
+
+    /// Integration test: TIR round-trip preserves loop markers (loop_start, loop_end).
+    /// Simulates a `while i < 3: total += i; i += 1` pattern.
+    #[test]
+    fn tir_round_trip_preserves_loop_markers() {
+        use crate::ir::{FunctionIR, OpIR};
+        use crate::tir::lower_from_simple::lower_to_tir;
+
+        let func_ir = FunctionIR {
+            name: "while_loop".into(),
+            params: vec!["n".into()],
+            ops: vec![
+                OpIR { kind: "const".into(), value: Some(0), out: Some("total".into()), ..OpIR::default() },
+                OpIR { kind: "const".into(), value: Some(0), out: Some("i".into()), ..OpIR::default() },
+                // loop_start: header
+                OpIR { kind: "loop_start".into(), ..OpIR::default() },
+                // condition: i < n
+                OpIR { kind: "lt".into(), args: Some(vec!["i".into(), "n".into()]), out: Some("cond".into()), ..OpIR::default() },
+                OpIR { kind: "loop_break_if_false".into(), args: Some(vec!["cond".into()]), ..OpIR::default() },
+                // body: total += i
+                OpIR { kind: "add".into(), args: Some(vec!["total".into(), "i".into()]), out: Some("total".into()), ..OpIR::default() },
+                // body: i += 1
+                OpIR { kind: "const".into(), value: Some(1), out: Some("one".into()), ..OpIR::default() },
+                OpIR { kind: "add".into(), args: Some(vec!["i".into(), "one".into()]), out: Some("i".into()), ..OpIR::default() },
+                // loop_end: back-edge
+                OpIR { kind: "loop_end".into(), ..OpIR::default() },
+                // after loop
+                OpIR { kind: "ret".into(), var: Some("total".into()), ..OpIR::default() },
+            ],
+            param_types: None,
+        };
+
+        let tir_func = lower_to_tir(&func_ir);
+
+        // Verify loop roles were detected.
+        let has_header = tir_func.loop_roles.values().any(|r| *r == super::super::blocks::LoopRole::LoopHeader);
+        let has_end = tir_func.loop_roles.values().any(|r| *r == super::super::blocks::LoopRole::LoopEnd);
+        assert!(has_header, "expected a LoopHeader role; loop_roles = {:?}", tir_func.loop_roles);
+        assert!(has_end, "expected a LoopEnd role; loop_roles = {:?}", tir_func.loop_roles);
+
+        let type_map = HashMap::new();
+        let round_tripped = lower_to_simple_ir(&tir_func, &type_map);
+
+        // Must contain a conditional branch (from the loop_break_if_false).
+        let has_br_if = round_tripped.iter().any(|o| o.kind == "br_if");
+        assert!(has_br_if, "round-tripped while loop must contain a br_if for the loop condition; ops: {:?}",
+            round_tripped.iter().map(|o| o.kind.as_str()).collect::<Vec<_>>());
+
+        // Must contain a back-edge: a jump to the header label.
+        let header_label = round_tripped.iter()
+            .find(|o| o.kind == "label")
+            .and_then(|o| o.value);
+        let has_back_edge = round_tripped.iter().any(|o| o.kind == "jump" && o.value == header_label);
+        assert!(has_back_edge, "round-tripped while loop must contain a back-edge jump to header");
+
+        // Must still have a ret op.
+        let has_ret = round_tripped.iter().any(|o| o.kind == "ret");
+        assert!(has_ret, "round-tripped ops must contain ret");
+
+        // Label validation must pass.
+        assert!(validate_labels(&round_tripped),
+            "label validation failed on round-tripped while loop");
     }
 }

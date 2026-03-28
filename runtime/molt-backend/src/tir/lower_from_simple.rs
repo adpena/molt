@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use crate::ir::FunctionIR;
 
-use super::blocks::{BlockId, TirBlock};
+use super::blocks::{BlockId, LoopRole, TirBlock};
 use super::cfg::CFG;
 use super::function::TirFunction;
 use super::ssa::{SsaOutput, convert_to_ssa_with_params};
@@ -103,8 +103,12 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         }
     }
 
+    // Detect loop structural roles from the original SimpleIR ops.
+    let loop_roles = detect_loop_roles(ir, &cfg, &block_map);
+
     TirFunction {
         name: ir.name.clone(),
+        param_names: ir.params.clone(),
         param_types,
         return_type,
         blocks: block_map,
@@ -114,7 +118,35 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         attrs: super::ops::AttrDict::new(),
         has_exception_handling,
         label_id_map,
+        loop_roles,
     }
+}
+
+/// Scan the original SimpleIR ops and CFG to detect which TIR blocks correspond
+/// to `loop_start` and `loop_end` structural markers.  Returns a map from
+/// BlockId to LoopRole for every block that has a loop-structural role.
+fn detect_loop_roles(
+    ir: &FunctionIR,
+    cfg: &CFG,
+    _block_map: &HashMap<BlockId, TirBlock>,
+) -> HashMap<BlockId, LoopRole> {
+    let mut roles = HashMap::new();
+    for (bid, bb) in cfg.blocks.iter().enumerate() {
+        if bb.start_op >= ir.ops.len() {
+            continue;
+        }
+        let first_kind = ir.ops[bb.start_op].kind.as_str();
+        match first_kind {
+            "loop_start" => {
+                roles.insert(BlockId(bid as u32), LoopRole::LoopHeader);
+            }
+            "loop_end" => {
+                roles.insert(BlockId(bid as u32), LoopRole::LoopEnd);
+            }
+            _ => {}
+        }
+    }
+    roles
 }
 
 /// Walk the original ops and propagate `fast_int` / `fast_float` / `type_hint`

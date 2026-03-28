@@ -428,6 +428,7 @@ mod tests {
         blocks.insert(entry_id, block);
         TirFunction {
             name: "test".into(),
+            param_names: vec![],
             param_types: vec![],
             return_type: TirType::None,
             blocks,
@@ -437,6 +438,7 @@ mod tests {
             attrs: AttrDict::new(),
             has_exception_handling: false,
             label_id_map: HashMap::new(),
+            loop_roles: HashMap::new(),
         }
     }
 
@@ -652,6 +654,7 @@ mod tests {
 
         let mut func = TirFunction {
             name: "join_test".into(),
+            param_names: vec!["p0".into()],
             param_types: vec![TirType::Bool],
             return_type: TirType::I64,
             blocks,
@@ -661,6 +664,7 @@ mod tests {
             attrs: AttrDict::new(),
             has_exception_handling: false,
             label_id_map: HashMap::new(),
+            loop_roles: HashMap::new(),
         };
 
         let refined = refine_types(&mut func);
@@ -753,6 +757,7 @@ mod tests {
 
         let mut func = TirFunction {
             name: "union_test".into(),
+            param_names: vec!["p0".into()],
             param_types: vec![TirType::Bool],
             return_type: TirType::DynBox,
             blocks,
@@ -762,6 +767,7 @@ mod tests {
             attrs: AttrDict::new(),
             has_exception_handling: false,
             label_id_map: HashMap::new(),
+            loop_roles: HashMap::new(),
         };
 
         let refined = refine_types(&mut func);
@@ -833,6 +839,7 @@ mod tests {
         blocks.insert(entry_id, block);
         let mut func = TirFunction {
             name: "dynbox_test".into(),
+            param_names: vec!["p0".into(), "p1".into()],
             param_types: vec![TirType::DynBox, TirType::DynBox],
             return_type: TirType::DynBox,
             blocks,
@@ -842,6 +849,7 @@ mod tests {
             attrs: AttrDict::new(),
             has_exception_handling: false,
             label_id_map: HashMap::new(),
+            loop_roles: HashMap::new(),
         };
         let refined = refine_types(&mut func);
         assert_eq!(refined, 0);
