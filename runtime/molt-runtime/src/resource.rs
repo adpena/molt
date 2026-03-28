@@ -10,6 +10,7 @@
 
 use std::cell::RefCell;
 use std::fmt;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
@@ -470,20 +471,43 @@ impl ResourceTracker for UnlimitedTracker {
 }
 
 // ---------------------------------------------------------------------------
+// Global tracker factory
+// ---------------------------------------------------------------------------
+
+/// A factory function that creates a fresh [`ResourceTracker`] for each new
+/// thread.  This solves the problem where threads spawned without calling
+/// [`set_tracker`] would silently get an [`UnlimitedTracker`] even when the
+/// host intended to enforce limits.
+///
+/// Set once via [`set_global_tracker_factory`]; all threads created afterwards
+/// will use it to initialize their thread-local tracker.
+static GLOBAL_TRACKER_FACTORY: OnceLock<fn() -> Box<dyn ResourceTracker>> = OnceLock::new();
+
+// ---------------------------------------------------------------------------
 // Thread-local accessor
 // ---------------------------------------------------------------------------
 
+/// Initialize the thread-local tracker.  If a global factory has been set
+/// (by another thread calling [`set_global_tracker_factory`]), use it to
+/// create a fresh tracker; otherwise fall back to [`UnlimitedTracker`].
+fn make_default_tracker() -> Box<dyn ResourceTracker> {
+    match GLOBAL_TRACKER_FACTORY.get() {
+        Some(factory) => factory(),
+        None => Box::new(UnlimitedTracker),
+    }
+}
+
 thread_local! {
     static TRACKER: RefCell<Box<dyn ResourceTracker>> =
-        RefCell::new(Box::new(UnlimitedTracker));
+        RefCell::new(make_default_tracker());
 }
 
 /// Access the thread-local resource tracker.
 ///
 /// The tracker is set during WASM host initialization via [`set_tracker`].
-/// Default: [`UnlimitedTracker`] (no limits).
+/// Default: [`UnlimitedTracker`] (no limits), unless a global factory was
+/// installed via [`set_global_tracker_factory`].
 ///
-/// # Example
 /// # Reentrancy
 ///
 /// The closure `f` holds a mutable borrow on the thread-local tracker.
@@ -510,6 +534,36 @@ pub fn set_tracker(tracker: Box<dyn ResourceTracker>) {
     TRACKER.with(|cell| {
         *cell.borrow_mut() = tracker;
     });
+}
+
+/// Set a global factory function that creates a fresh [`ResourceTracker`]
+/// for every new thread.
+///
+/// This uses [`OnceLock`], so only the first call takes effect.  Typically
+/// called once during host initialization, before spawning worker threads.
+///
+/// Unlike [`set_tracker`] (which only affects the calling thread), this
+/// ensures every thread created *after* this call gets a properly configured
+/// tracker (e.g. [`LimitedTracker`]) instead of the default
+/// [`UnlimitedTracker`].
+///
+/// # Example
+///
+/// ```ignore
+/// use molt_runtime::resource::{set_global_tracker_factory, LimitedTracker, ResourceLimits};
+///
+/// let limits = ResourceLimits {
+///     max_memory: Some(64 * 1024 * 1024),
+///     ..Default::default()
+/// };
+/// set_global_tracker_factory(|| Box::new(LimitedTracker::new(&limits)));
+/// ```
+///
+/// Note: the factory is a `fn()` pointer (not a closure) to keep it `Send +
+/// Sync` without boxing.  If you need captured state, use a static or
+/// `OnceLock` for the configuration.
+pub fn set_global_tracker_factory(factory: fn() -> Box<dyn ResourceTracker>) {
+    let _ = GLOBAL_TRACKER_FACTORY.set(factory);
 }
 
 // ---------------------------------------------------------------------------
@@ -816,7 +870,11 @@ mod tests {
     }
 
     #[test]
-    fn with_tracker_default_is_unlimited() {
+    fn with_tracker_explicit_unlimited() {
+        // Explicitly install UnlimitedTracker to ensure this test is
+        // independent of any global factory that may have been set by
+        // other tests in the same process.
+        set_tracker(Box::new(UnlimitedTracker));
         let result = with_tracker(|t| t.on_allocate(1 << 30));
         assert!(result.is_ok());
     }
@@ -866,5 +924,31 @@ mod tests {
             count: u64::MAX,
         };
         assert!(op.estimated_bytes().is_none());
+    }
+
+    #[test]
+    fn global_tracker_factory_inherited_by_spawned_thread() {
+        // Install a factory that creates a LimitedTracker with a tiny
+        // memory cap.  Threads spawned after this call should inherit it.
+        fn factory() -> Box<dyn ResourceTracker> {
+            Box::new(LimitedTracker::new(&ResourceLimits {
+                max_memory: Some(128),
+                ..Default::default()
+            }))
+        }
+        set_global_tracker_factory(factory);
+
+        // Spawn a thread that NEVER calls set_tracker.
+        // Its thread-local should be initialized via the factory.
+        let handle = std::thread::spawn(|| {
+            // 256 bytes exceeds the 128-byte limit from the factory.
+            with_tracker(|t| t.on_allocate(256))
+        });
+        let result = handle.join().expect("child thread panicked");
+        assert!(
+            result.is_err(),
+            "spawned thread should have inherited the limited tracker \
+             from the global factory, but allocation of 256 bytes succeeded"
+        );
     }
 }

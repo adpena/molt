@@ -8,6 +8,7 @@
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 
+use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::*;
 use std::path::{Path, PathBuf};
 
@@ -67,7 +68,9 @@ pub extern "C" fn molt_tempfile_gettempdirb() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tempfile_mkdtemp(suffix_bits: u64, prefix_bits: u64, dir_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.write") {
+        let allowed = has_capability(_py, "fs.write");
+        audit_capability_decision("tempfile.mkdtemp", "fs.write", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let suffix = require_str_opt(_py, suffix_bits).unwrap_or_default();
@@ -99,7 +102,9 @@ pub extern "C" fn molt_tempfile_mkdtemp(suffix_bits: u64, prefix_bits: u64, dir_
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tempfile_mkstemp(suffix_bits: u64, prefix_bits: u64, dir_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.write") {
+        let allowed = has_capability(_py, "fs.write");
+        audit_capability_decision("tempfile.mkstemp", "fs.write", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let suffix = require_str_opt(_py, suffix_bits).unwrap_or_default();
@@ -124,7 +129,8 @@ pub extern "C" fn molt_tempfile_mkstemp(suffix_bits: u64, prefix_bits: u64, dir_
                         Ok(kept) => kept,
                         Err(e) => {
                             return raise_exception::<u64>(
-                                _py, "OSError",
+                                _py,
+                                "OSError",
                                 &format!("tempfile keep failed: {e}"),
                             );
                         }
@@ -138,7 +144,8 @@ pub extern "C" fn molt_tempfile_mkstemp(suffix_bits: u64, prefix_bits: u64, dir_
                         Ok(kept) => kept,
                         Err(e) => {
                             return raise_exception::<u64>(
-                                _py, "OSError",
+                                _py,
+                                "OSError",
                                 &format!("tempfile keep failed: {e}"),
                             );
                         }
@@ -186,7 +193,9 @@ pub extern "C" fn molt_tempfile_named(
     delete_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.write") {
+        let allowed = has_capability(_py, "fs.write");
+        audit_capability_decision("tempfile.named", "fs.write", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let suffix = require_str_opt(_py, suffix_bits).unwrap_or_default();
@@ -215,7 +224,8 @@ pub extern "C" fn molt_tempfile_named(
                         Ok(kept) => kept,
                         Err(e) => {
                             return raise_exception::<u64>(
-                                _py, "OSError",
+                                _py,
+                                "OSError",
                                 &format!("tempfile keep failed: {e}"),
                             );
                         }
@@ -229,7 +239,8 @@ pub extern "C" fn molt_tempfile_named(
                         Ok(kept) => kept,
                         Err(e) => {
                             return raise_exception::<u64>(
-                                _py, "OSError",
+                                _py,
+                                "OSError",
                                 &format!("tempfile keep failed: {e}"),
                             );
                         }
@@ -275,7 +286,9 @@ pub extern "C" fn molt_tempfile_named(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tempfile_tempdir(suffix_bits: u64, prefix_bits: u64, dir_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.write") {
+        let allowed = has_capability(_py, "fs.write");
+        audit_capability_decision("tempfile.tempdir", "fs.write", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let suffix = require_str_opt(_py, suffix_bits).unwrap_or_default();
@@ -305,7 +318,9 @@ pub extern "C" fn molt_tempfile_tempdir(suffix_bits: u64, prefix_bits: u64, dir_
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tempfile_cleanup(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.write") {
+        let allowed = has_capability(_py, "fs.write");
+        audit_capability_decision("tempfile.cleanup", "fs.write", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let s = match string_obj_to_owned(obj_from_bits(path_bits)) {

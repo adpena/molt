@@ -1,5 +1,6 @@
 use super::channels::has_capability;
 use crate::PyToken;
+use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::*;
 
 // Re-export network utilities so that `sockets::*` includes them
@@ -1069,7 +1070,17 @@ pub(crate) fn require_capability<T: ExceptionSentinel>(
     caps: &[&str],
     label: &str,
 ) -> Result<(), T> {
-    if caps.iter().any(|cap| has_capability(_py, cap)) {
+    let allowed = caps.iter().any(|cap| has_capability(_py, cap));
+    // Emit an audit event for every capability gate that flows through here
+    // (net, process, time).  Map the known label set to static strings.
+    let (op, cap): (&'static str, &'static str) = match label {
+        "net" => ("net.require", "net"),
+        "process" => ("process.require", "process"),
+        "time.wall" => ("time.require", "time.wall"),
+        _ => ("capability.require", "unknown"),
+    };
+    audit_capability_decision(op, cap, AuditArgs::None, allowed);
+    if allowed {
         Ok(())
     } else {
         let msg = format!("missing {label} capability");

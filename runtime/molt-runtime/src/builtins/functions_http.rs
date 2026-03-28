@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use super::functions::{
     alloc_qs_dict, alloc_qsl_list, alloc_string_bits, alloc_string_tuple, iter_next_pair,
 };
+use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::builtins::exceptions::exception_kind_bits;
 use crate::builtins::numbers::to_f64;
 use crate::builtins::platform::env_state_get;
@@ -490,7 +491,9 @@ fn urllib_attr_truthy(_py: &crate::PyToken<'_>, obj_bits: u64, name: &[u8]) -> R
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ctypes_require_ffi() -> u64 {
     crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "ffi.unsafe") {
+        let allowed = crate::has_capability(_py, "ffi.unsafe");
+        audit_capability_decision("ffi.require", "ffi.unsafe", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<_>(
                 _py,
                 "PermissionError",
@@ -504,7 +507,9 @@ pub extern "C" fn molt_ctypes_require_ffi() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ctypes_coerce_value(ctype_bits: u64, value_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "ffi.unsafe") {
+        let allowed = crate::has_capability(_py, "ffi.unsafe");
+        audit_capability_decision("ffi.coerce_value", "ffi.unsafe", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<_>(
                 _py,
                 "PermissionError",
@@ -545,7 +550,9 @@ pub extern "C" fn molt_ctypes_coerce_value(ctype_bits: u64, value_bits: u64) -> 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ctypes_default_value(ctype_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "ffi.unsafe") {
+        let allowed = crate::has_capability(_py, "ffi.unsafe");
+        audit_capability_decision("ffi.default_value", "ffi.unsafe", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<_>(
                 _py,
                 "PermissionError",
@@ -583,7 +590,9 @@ pub extern "C" fn molt_ctypes_default_value(ctype_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ctypes_sizeof(obj_or_type_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "ffi.unsafe") {
+        let allowed = crate::has_capability(_py, "ffi.unsafe");
+        audit_capability_decision("ffi.sizeof", "ffi.unsafe", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<_>(
                 _py,
                 "PermissionError",

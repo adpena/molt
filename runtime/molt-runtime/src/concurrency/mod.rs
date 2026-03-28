@@ -47,9 +47,7 @@ macro_rules! with_gil_entry {
 
         // Wrap in catch_unwind to prevent panics from unwinding through
         // extern "C" boundaries, which is undefined behavior in Rust.
-        match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
-            $body
-        })) {
+        match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body)) {
             Ok(val) => val,
             Err(payload) => {
                 let msg = if let Some(s) = payload.downcast_ref::<&str>() {
@@ -59,17 +57,19 @@ macro_rules! with_gil_entry {
                 } else {
                     "unknown panic in FFI boundary".to_string()
                 };
-                $crate::builtins::exceptions::raise_exception::<u64>(
-                    $py,
-                    "RuntimeError",
-                    &msg,
-                );
+                // Set the pending RuntimeError flag.  The <u64> type parameter
+                // only affects the returned sentinel (which we discard) — the
+                // exception flag is set regardless of the type parameter.
+                let _ =
+                    $crate::builtins::exceptions::raise_exception::<u64>($py, "RuntimeError", &msg);
                 // SAFETY: All FFI return types used with this macro (u64, i64,
-                // i32, f64, *mut u8, *const u8, ()) are safely zero-
+                // i32, f64, *mut u8, *const u8, bool, ()) are safely zero-
                 // initializable. The caller will check for the pending
                 // exception before using this value.
                 #[allow(unused_unsafe)]
-                unsafe { ::std::mem::zeroed() }
+                unsafe {
+                    ::std::mem::zeroed()
+                }
             }
         }
     }};

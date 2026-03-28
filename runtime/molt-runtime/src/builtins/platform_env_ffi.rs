@@ -1,4 +1,5 @@
 use super::*;
+use crate::audit::{AuditArgs, audit_capability_decision};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_uuid_getnode() -> u64 {
@@ -29,7 +30,9 @@ pub extern "C" fn molt_uuid_uuid4_bytes() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_uuid_uuid1_bytes(node_bits: u64, clock_seq_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "time.wall") && !has_capability(_py, "time") {
+        let allowed = has_capability(_py, "time.wall") || has_capability(_py, "time");
+        audit_capability_decision("time.uuid1", "time.wall", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing time.wall capability");
         }
         let node_override = if obj_from_bits(node_bits).is_none() {
@@ -733,6 +736,11 @@ pub extern "C" fn molt_socket_constants() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_get(key_bits: u64, default_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let allowed = has_capability(_py, "env.read");
+        audit_capability_decision("env.get", "env.read", AuditArgs::None, allowed);
+        if !allowed {
+            return raise_exception::<u64>(_py, "PermissionError", "missing env.read capability");
+        }
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
             Some(key) => key,
             None => return default_bits,
@@ -768,6 +776,11 @@ pub extern "C" fn molt_env_get(key_bits: u64, default_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_set(key_bits: u64, value_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let allowed = has_capability(_py, "env.write");
+        audit_capability_decision("env.set", "env.write", AuditArgs::None, allowed);
+        if !allowed {
+            return raise_exception::<u64>(_py, "PermissionError", "missing env.write capability");
+        }
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
             Some(key) => key,
             None => return MoltObject::none().bits(),
@@ -789,6 +802,11 @@ pub extern "C" fn molt_env_set(key_bits: u64, value_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_unset(key_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let allowed = has_capability(_py, "env.write");
+        audit_capability_decision("env.unset", "env.write", AuditArgs::None, allowed);
+        if !allowed {
+            return raise_exception::<u64>(_py, "PermissionError", "missing env.write capability");
+        }
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
             Some(key) => key,
             None => return MoltObject::from_bool(false).bits(),
@@ -806,6 +824,11 @@ pub extern "C" fn molt_env_unset(key_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_len() -> u64 {
     crate::with_gil_entry!(_py, {
+        let allowed = has_capability(_py, "env.read");
+        audit_capability_decision("env.len", "env.read", AuditArgs::None, allowed);
+        if !allowed {
+            return raise_exception::<u64>(_py, "PermissionError", "missing env.read capability");
+        }
         let len = {
             let guard = env_state()
                 .lock()
@@ -819,6 +842,11 @@ pub extern "C" fn molt_env_len() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_contains(key_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let allowed = has_capability(_py, "env.read");
+        audit_capability_decision("env.contains", "env.read", AuditArgs::None, allowed);
+        if !allowed {
+            return raise_exception::<u64>(_py, "PermissionError", "missing env.read capability");
+        }
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
             Some(key) => key,
             None => return MoltObject::from_bool(false).bits(),
@@ -836,6 +864,11 @@ pub extern "C" fn molt_env_contains(key_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_snapshot() -> u64 {
     crate::with_gil_entry!(_py, {
+        let allowed = has_capability(_py, "env.read");
+        audit_capability_decision("env.snapshot", "env.read", AuditArgs::None, allowed);
+        if !allowed {
+            return raise_exception::<u64>(_py, "PermissionError", "missing env.read capability");
+        }
         let env_pairs: Vec<(String, String)> = {
             let guard = env_state()
                 .lock()
@@ -884,6 +917,11 @@ pub extern "C" fn molt_env_snapshot() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_popitem() -> u64 {
     crate::with_gil_entry!(_py, {
+        let allowed = has_capability(_py, "env.write");
+        audit_capability_decision("env.popitem", "env.write", AuditArgs::None, allowed);
+        if !allowed {
+            return raise_exception::<u64>(_py, "PermissionError", "missing env.write capability");
+        }
         let (key, value) = {
             let mut guard = env_state()
                 .lock()
@@ -923,6 +961,11 @@ pub extern "C" fn molt_env_popitem() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_clear() -> u64 {
     crate::with_gil_entry!(_py, {
+        let allowed = has_capability(_py, "env.write");
+        audit_capability_decision("env.clear", "env.write", AuditArgs::None, allowed);
+        if !allowed {
+            return raise_exception::<u64>(_py, "PermissionError", "missing env.write capability");
+        }
         {
             let mut guard = env_state()
                 .lock()
@@ -936,6 +979,11 @@ pub extern "C" fn molt_env_clear() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_putenv(key_bits: u64, value_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let allowed = has_capability(_py, "env.write");
+        audit_capability_decision("env.putenv", "env.write", AuditArgs::None, allowed);
+        if !allowed {
+            return raise_exception::<u64>(_py, "PermissionError", "missing env.write capability");
+        }
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
             Some(key) => key,
             None => return MoltObject::none().bits(),
@@ -957,6 +1005,11 @@ pub extern "C" fn molt_env_putenv(key_bits: u64, value_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_unsetenv(key_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let allowed = has_capability(_py, "env.write");
+        audit_capability_decision("env.unsetenv", "env.write", AuditArgs::None, allowed);
+        if !allowed {
+            return raise_exception::<u64>(_py, "PermissionError", "missing env.write capability");
+        }
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
             Some(key) => key,
             None => return MoltObject::none().bits(),

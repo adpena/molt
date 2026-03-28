@@ -5,6 +5,7 @@ use crate::libc_compat as libc;
 // Re-export path/glob/os functions so that `io::*` includes them
 #[allow(unused_imports)]
 pub use super::io_path::*;
+use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::object::{
     MoltFileBackend, MoltMemoryBackend, MoltTextBackend, NEWLINE_KIND_CR, NEWLINE_KIND_CRLF,
     NEWLINE_KIND_LF,
@@ -3404,7 +3405,9 @@ pub(crate) fn path_expandvars_with_lookup(
 }
 
 pub(crate) fn path_expandvars_text(_py: &PyToken<'_>, path: &str) -> Result<String, u64> {
-    if !has_capability(_py, "env.read") {
+    let allowed = has_capability(_py, "env.read");
+    audit_capability_decision("env.expandvars", "env.read", AuditArgs::None, allowed);
+    if !allowed {
         return Err(raise_exception::<_>(
             _py,
             "PermissionError",

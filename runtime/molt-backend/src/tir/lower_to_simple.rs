@@ -1468,22 +1468,66 @@ mod tests {
             name: "while_loop".into(),
             params: vec!["n".into()],
             ops: vec![
-                OpIR { kind: "const".into(), value: Some(0), out: Some("total".into()), ..OpIR::default() },
-                OpIR { kind: "const".into(), value: Some(0), out: Some("i".into()), ..OpIR::default() },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(0),
+                    out: Some("total".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(0),
+                    out: Some("i".into()),
+                    ..OpIR::default()
+                },
                 // loop_start: header
-                OpIR { kind: "loop_start".into(), ..OpIR::default() },
+                OpIR {
+                    kind: "loop_start".into(),
+                    ..OpIR::default()
+                },
                 // condition: i < n
-                OpIR { kind: "lt".into(), args: Some(vec!["i".into(), "n".into()]), out: Some("cond".into()), ..OpIR::default() },
-                OpIR { kind: "loop_break_if_false".into(), args: Some(vec!["cond".into()]), ..OpIR::default() },
+                OpIR {
+                    kind: "lt".into(),
+                    args: Some(vec!["i".into(), "n".into()]),
+                    out: Some("cond".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_break_if_false".into(),
+                    args: Some(vec!["cond".into()]),
+                    ..OpIR::default()
+                },
                 // body: total += i
-                OpIR { kind: "add".into(), args: Some(vec!["total".into(), "i".into()]), out: Some("total".into()), ..OpIR::default() },
+                OpIR {
+                    kind: "add".into(),
+                    args: Some(vec!["total".into(), "i".into()]),
+                    out: Some("total".into()),
+                    ..OpIR::default()
+                },
                 // body: i += 1
-                OpIR { kind: "const".into(), value: Some(1), out: Some("one".into()), ..OpIR::default() },
-                OpIR { kind: "add".into(), args: Some(vec!["i".into(), "one".into()]), out: Some("i".into()), ..OpIR::default() },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(1),
+                    out: Some("one".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "add".into(),
+                    args: Some(vec!["i".into(), "one".into()]),
+                    out: Some("i".into()),
+                    ..OpIR::default()
+                },
                 // loop_end: back-edge
-                OpIR { kind: "loop_end".into(), ..OpIR::default() },
+                OpIR {
+                    kind: "loop_end".into(),
+                    ..OpIR::default()
+                },
                 // after loop
-                OpIR { kind: "ret".into(), var: Some("total".into()), ..OpIR::default() },
+                OpIR {
+                    kind: "ret".into(),
+                    var: Some("total".into()),
+                    ..OpIR::default()
+                },
             ],
             param_types: None,
         };
@@ -1491,32 +1535,60 @@ mod tests {
         let tir_func = lower_to_tir(&func_ir);
 
         // Verify loop roles were detected.
-        let has_header = tir_func.loop_roles.values().any(|r| *r == super::super::blocks::LoopRole::LoopHeader);
-        let has_end = tir_func.loop_roles.values().any(|r| *r == super::super::blocks::LoopRole::LoopEnd);
-        assert!(has_header, "expected a LoopHeader role; loop_roles = {:?}", tir_func.loop_roles);
-        assert!(has_end, "expected a LoopEnd role; loop_roles = {:?}", tir_func.loop_roles);
+        let has_header = tir_func
+            .loop_roles
+            .values()
+            .any(|r| *r == super::super::blocks::LoopRole::LoopHeader);
+        let has_end = tir_func
+            .loop_roles
+            .values()
+            .any(|r| *r == super::super::blocks::LoopRole::LoopEnd);
+        assert!(
+            has_header,
+            "expected a LoopHeader role; loop_roles = {:?}",
+            tir_func.loop_roles
+        );
+        assert!(
+            has_end,
+            "expected a LoopEnd role; loop_roles = {:?}",
+            tir_func.loop_roles
+        );
 
         let type_map = HashMap::new();
         let round_tripped = lower_to_simple_ir(&tir_func, &type_map);
 
         // Must contain a conditional branch (from the loop_break_if_false).
         let has_br_if = round_tripped.iter().any(|o| o.kind == "br_if");
-        assert!(has_br_if, "round-tripped while loop must contain a br_if for the loop condition; ops: {:?}",
-            round_tripped.iter().map(|o| o.kind.as_str()).collect::<Vec<_>>());
+        assert!(
+            has_br_if,
+            "round-tripped while loop must contain a br_if for the loop condition; ops: {:?}",
+            round_tripped
+                .iter()
+                .map(|o| o.kind.as_str())
+                .collect::<Vec<_>>()
+        );
 
         // Must contain a back-edge: a jump to the header label.
-        let header_label = round_tripped.iter()
+        let header_label = round_tripped
+            .iter()
             .find(|o| o.kind == "label")
             .and_then(|o| o.value);
-        let has_back_edge = round_tripped.iter().any(|o| o.kind == "jump" && o.value == header_label);
-        assert!(has_back_edge, "round-tripped while loop must contain a back-edge jump to header");
+        let has_back_edge = round_tripped
+            .iter()
+            .any(|o| o.kind == "jump" && o.value == header_label);
+        assert!(
+            has_back_edge,
+            "round-tripped while loop must contain a back-edge jump to header"
+        );
 
         // Must still have a ret op.
         let has_ret = round_tripped.iter().any(|o| o.kind == "ret");
         assert!(has_ret, "round-tripped ops must contain ret");
 
         // Label validation must pass.
-        assert!(validate_labels(&round_tripped),
-            "label validation failed on round-tripped while loop");
+        assert!(
+            validate_labels(&round_tripped),
+            "label validation failed on round-tripped while loop"
+        );
     }
 }

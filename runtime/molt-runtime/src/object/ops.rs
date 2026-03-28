@@ -11208,8 +11208,7 @@ pub(crate) unsafe fn dict_set_in_place(
                 inc_ref_bits(_py, val_bits);
                 order[val_idx] = val_bits;
                 if crate::object::refcount_opt::is_heap_ref(val_bits) {
-                    (*header_from_obj_ptr(ptr)).flags |=
-                        crate::object::HEADER_FLAG_CONTAINS_REFS;
+                    (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
                 }
             }
             return;
@@ -11396,8 +11395,7 @@ pub(crate) unsafe fn dict_set_in_place_preserving_pending(
                 inc_ref_bits(_py, val_bits);
                 order[val_idx] = val_bits;
                 if crate::object::refcount_opt::is_heap_ref(val_bits) {
-                    (*header_from_obj_ptr(ptr)).flags |=
-                        crate::object::HEADER_FLAG_CONTAINS_REFS;
+                    (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
                 }
             }
             return;
@@ -13024,8 +13022,7 @@ pub extern "C" fn molt_list_setitem_int_fast(
                 inc_ref_bits(_py, val_bits);
                 elems[idx as usize] = val_bits;
                 if crate::object::refcount_opt::is_heap_ref(val_bits) {
-                    (*header_from_obj_ptr(ptr)).flags |=
-                        crate::object::HEADER_FLAG_CONTAINS_REFS;
+                    (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
                 }
             }
             list_bits

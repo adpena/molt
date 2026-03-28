@@ -7,7 +7,7 @@
 //! The serialization format uses a versioned wire protocol with SHA-256
 //! integrity checking, inspired by Monty's postcard-based snapshot system.
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 /// Wire format version. Increment on breaking changes.
 const SNAPSHOT_VERSION: u16 = 1;
@@ -89,9 +89,14 @@ impl std::fmt::Display for SnapshotError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::VersionMismatch { expected, found } => {
-                write!(f, "snapshot version mismatch: expected {expected}, found {found}")
+                write!(
+                    f,
+                    "snapshot version mismatch: expected {expected}, found {found}"
+                )
             }
-            Self::IntegrityError { .. } => write!(f, "snapshot integrity check failed (SHA-256 mismatch)"),
+            Self::IntegrityError { .. } => {
+                write!(f, "snapshot integrity check failed (SHA-256 mismatch)")
+            }
             Self::MalformedData { message } => write!(f, "malformed snapshot: {message}"),
             Self::IncompatibleModule { message } => write!(f, "incompatible module: {message}"),
         }
@@ -193,7 +198,9 @@ impl ExecutionSnapshot {
 
         let memory_len = read_u32(data, &mut cursor)? as usize;
         if cursor + memory_len > data.len() {
-            return Err(SnapshotError::MalformedData { message: "memory truncated".into() });
+            return Err(SnapshotError::MalformedData {
+                message: "memory truncated".into(),
+            });
         }
         let memory = data[cursor..cursor + memory_len].to_vec();
         cursor += memory_len;
@@ -224,7 +231,11 @@ impl ExecutionSnapshot {
         }
         let call_id = read_u64(data, &mut cursor)?;
 
-        let pending_call = PendingExternalCall { function_name, args, call_id };
+        let pending_call = PendingExternalCall {
+            function_name,
+            args,
+            call_id,
+        };
 
         let resource_state = ResourceSnapshot {
             allocation_count: read_u64(data, &mut cursor)? as usize,
@@ -245,7 +256,9 @@ impl ExecutionSnapshot {
 }
 
 // Serialization helpers
-fn write_u32(buf: &mut Vec<u8>, v: u32) { buf.extend_from_slice(&v.to_le_bytes()); }
+fn write_u32(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
 fn write_str(buf: &mut Vec<u8>, s: &str) {
     write_u32(buf, s.len() as u32);
     buf.extend_from_slice(s.as_bytes());
@@ -253,7 +266,9 @@ fn write_str(buf: &mut Vec<u8>, s: &str) {
 
 fn read_u32(data: &[u8], cursor: &mut usize) -> Result<u32, SnapshotError> {
     if *cursor + 4 > data.len() {
-        return Err(SnapshotError::MalformedData { message: "truncated u32".into() });
+        return Err(SnapshotError::MalformedData {
+            message: "truncated u32".into(),
+        });
     }
     let v = u32::from_le_bytes(data[*cursor..*cursor + 4].try_into().unwrap());
     *cursor += 4;
@@ -262,7 +277,9 @@ fn read_u32(data: &[u8], cursor: &mut usize) -> Result<u32, SnapshotError> {
 
 fn read_u64(data: &[u8], cursor: &mut usize) -> Result<u64, SnapshotError> {
     if *cursor + 8 > data.len() {
-        return Err(SnapshotError::MalformedData { message: "truncated u64".into() });
+        return Err(SnapshotError::MalformedData {
+            message: "truncated u64".into(),
+        });
     }
     let v = u64::from_le_bytes(data[*cursor..*cursor + 8].try_into().unwrap());
     *cursor += 8;
@@ -272,10 +289,15 @@ fn read_u64(data: &[u8], cursor: &mut usize) -> Result<u64, SnapshotError> {
 fn read_str(data: &[u8], cursor: &mut usize) -> Result<String, SnapshotError> {
     let len = read_u32(data, cursor)? as usize;
     if *cursor + len > data.len() {
-        return Err(SnapshotError::MalformedData { message: "truncated string".into() });
+        return Err(SnapshotError::MalformedData {
+            message: "truncated string".into(),
+        });
     }
-    let s = String::from_utf8(data[*cursor..*cursor + len].to_vec())
-        .map_err(|e| SnapshotError::MalformedData { message: format!("invalid UTF-8: {e}") })?;
+    let s = String::from_utf8(data[*cursor..*cursor + len].to_vec()).map_err(|e| {
+        SnapshotError::MalformedData {
+            message: format!("invalid UTF-8: {e}"),
+        }
+    })?;
     *cursor += len;
     Ok(s)
 }
@@ -290,7 +312,11 @@ mod tests {
             memory: vec![0u8; 64],
             globals: vec![42, 0x7ff8_0001_0000_0000],
             table: vec![0, 1, 2],
-            pc: ProgramCounter { func_index: 5, instruction_offset: 128, call_depth: 3 },
+            pc: ProgramCounter {
+                func_index: 5,
+                instruction_offset: 128,
+                call_depth: 3,
+            },
             pending_call: PendingExternalCall {
                 function_name: "fetch_data".into(),
                 args: vec![0x7ff8_0001_0000_002A],
@@ -337,7 +363,13 @@ mod tests {
         let mut bytes = snap.serialize();
         bytes[0] = 99; // bogus version
         let err = ExecutionSnapshot::deserialize(&bytes).unwrap_err();
-        assert!(matches!(err, SnapshotError::VersionMismatch { expected: 1, found: _ }));
+        assert!(matches!(
+            err,
+            SnapshotError::VersionMismatch {
+                expected: 1,
+                found: _
+            }
+        ));
     }
 
     #[test]
@@ -353,7 +385,11 @@ mod tests {
             memory: vec![],
             globals: vec![],
             table: vec![],
-            pc: ProgramCounter { func_index: 0, instruction_offset: 0, call_depth: 0 },
+            pc: ProgramCounter {
+                func_index: 0,
+                instruction_offset: 0,
+                call_depth: 0,
+            },
             pending_call: PendingExternalCall {
                 function_name: String::new(),
                 args: vec![],
