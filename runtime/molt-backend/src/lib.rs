@@ -785,6 +785,7 @@ fn is_int_tag(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> 
 /// inline-int tag or the bool tag.  Used to guard fast_int arithmetic paths
 /// so that bigint pointers (which have the pointer tag) fall through to the
 /// slow `molt_add` / `molt_sub` / etc. call.
+#[cfg(feature = "native-backend")]
 fn is_int_or_bool_tag(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
     let mask = builder.use_var(nbc.qnan_tag_mask);
     let masked = builder.ins().band(val, mask);
@@ -1562,6 +1563,7 @@ fn drain_cleanup_tracked_dedup(
     cleanup
 }
 
+#[cfg(feature = "native-backend")]
 fn drain_cleanup_entry_tracked(
     names: &mut Vec<String>,
     entry_vars: &mut BTreeMap<String, Value>,
@@ -2515,24 +2517,15 @@ impl SimpleBackend {
                 if gpu_kernel_names.contains(&func_ir.name) {
                     continue;
                 }
-                // Skip TIR optimization for functions with indexed loops —
-                // the TIR SSA roundtrip corrupts loop_index_start's phi
-                // connection to the back-edge block arg. This is a known
-                // limitation. TODO: fix lower_to_simple.rs to properly
-                // wire loop_index_start args to block arg variables.
-                // Skip TIR for functions with ops whose operand connections
-                // are broken by the TIR SSA roundtrip: loops (phi), fields
-                // (guarded_field), and exception stack (paired enter/exit).
+                // Skip TIR for functions with loop ops — the SSA roundtrip
+                // corrupts loop phi connections, producing silently wrong
+                // results that the validate_labels check cannot detect.
+                // Other ops (guarded_field, exception_stack) roundtrip safely
+                // through the Copy passthrough in lower_op().
                 if func_ir.ops.iter().any(|op| {
                     matches!(
                         op.kind.as_str(),
-                        "loop_start"
-                            | "loop_index_start"
-                            | "guarded_field_set"
-                            | "guarded_field_get"
-                            | "guarded_field_set_init"
-                            | "exception_stack_enter"
-                            | "exception_stack_exit"
+                        "loop_start" | "loop_index_start" | "loop_end"
                     )
                 }) {
                     continue;

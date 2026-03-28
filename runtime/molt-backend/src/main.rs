@@ -75,6 +75,16 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn ensure_output_parent_dir(output_file: &str) -> io::Result<()> {
+    let path = Path::new(output_file);
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(feature = "native-backend")]
 fn is_user_owned_symbol(name: &str, entry_module: &str) -> bool {
     let entry_init = format!("molt_init_{entry_module}");
@@ -871,14 +881,9 @@ fn run_daemon(_socket_path: &str) -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
-    // Disable TIR optimization by default — the TIR SSA roundtrip breaks
-    // operand connections for Copy-mapped ops (loops, fields, exception stack).
-    // Re-enable with MOLT_TIR_OPT=1 for testing TIR passes.
-    if std::env::var("MOLT_TIR_OPT").is_err() {
-        unsafe {
-            std::env::set_var("MOLT_TIR_OPT", "0");
-        }
-    }
+    // TIR optimization is ON by default. The pipeline has catch_unwind +
+    // validate_labels fallback per-function, so broken roundtrips degrade
+    // gracefully to unoptimized IR. Disable with MOLT_TIR_OPT=0 if needed.
 
     // Hard memory guard: set rlimit on virtual memory to prevent OOM
     // from crashing the entire machine.  Default 4GB, override with
@@ -1159,6 +1164,15 @@ fn main() -> io::Result<()> {
         "output.o"
     };
     let output_file = output_path.unwrap_or(default_output);
+    ensure_output_parent_dir(output_file).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!(
+                "failed to create backend output parent for '{}': {}",
+                output_file, err
+            ),
+        )
+    })?;
     let mut file = File::create(output_file).map_err(|err| {
         io::Error::new(
             err.kind(),
@@ -1513,8 +1527,8 @@ fn main() -> io::Result<()> {
 mod tests {
     use super::{
         DaemonCache, DaemonJobRequest, DaemonRequest, DaemonResponse, compile_single_job,
-        daemon_response_payload, is_user_owned_symbol, read_daemon_request_bytes,
-        write_cached_output,
+        daemon_response_payload, ensure_output_parent_dir, is_user_owned_symbol,
+        read_daemon_request_bytes, write_cached_output,
     };
     use std::io::Cursor;
     use std::sync::Arc;
@@ -1615,6 +1629,21 @@ mod tests {
 
         assert!(!written);
         assert!(!output.exists());
+    }
+
+    #[test]
+    fn ensure_output_parent_dir_creates_nested_directories() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("molt-backend-parent-{nonce}"));
+        let output = root.join("nested").join("cache").join("artifact.wasm");
+
+        ensure_output_parent_dir(output.to_str().expect("utf8 path")).expect("parent dir creation");
+
+        assert!(output.parent().expect("parent exists").is_dir());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
