@@ -34,13 +34,13 @@ fn nan_unbox_int(bits: u64) -> Option<i64> {
     if !is_tagged(bits, TAG_INT) {
         return None;
     }
-    let payload = bits & POINTER_MASK;
-    // Sign-extend from 47 bits
-    let value = if payload & (1 << 46) != 0 {
-        (payload | !POINTER_MASK) as i64
-    } else {
-        payload as i64
-    };
+    // Mirror the WASM codegen's approach: (val << 17) >> 17 (arithmetic shift)
+    // This correctly sign-extends from bit 46 and discards any stray upper bits.
+    let shifted = (bits as i64) << 17;
+    let value = shifted >> 17;
+    if value < INT_MIN_INLINE || value > INT_MAX_INLINE {
+        return None; // invalid payload — bits above the 47-bit field are set
+    }
     Some(value)
 }
 
