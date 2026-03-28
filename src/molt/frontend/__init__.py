@@ -3579,7 +3579,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.function_exception_label = None
         with self._suppress_check_exception(emit_on_exit=False):
             self.emit(MoltOp(kind="LABEL", args=[label], result=MoltValue("none")))
-            if self.current_func_name == "molt_main" and self.module_name:
+            if (
+                self.module_name
+                and (
+                    self.current_func_name == "molt_main"
+                    or self.current_func_name.startswith("molt_init_")
+                )
+            ):
                 # Guard MODULE_CACHE_DEL with an exception-pending check.
                 # The exception handler label is reachable both from
                 # check_exception jumps (exception pending) and from normal
@@ -9917,6 +9923,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             # boxed-local indirection for top-level loops.
             module_backed = {name for name in names if not name.startswith("__molt_")}
             if module_backed:
+                # Flush any values that were previously assigned (before
+                # this loop) into the module dict.  Without this, a
+                # variable assigned before the loop and then mutated inside
+                # the loop would lose its initial value when module_get_attr
+                # reads find nothing in the module dict.
+                for name in sorted(module_backed):
+                    existing = self.globals.get(name)
+                    if existing is None:
+                        existing = self.locals.get(name)
+                    if existing is not None and self.module_obj is not None:
+                        self._emit_module_attr_set_on(
+                            self.module_obj, name, existing
+                        )
                 self.module_global_mutations.update(module_backed)
                 # Remove from self.locals so visit_Name falls through to
                 # the module_global_mutations check (module_get_attr).
@@ -22465,6 +22484,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     if self.current_func_name == "molt_main":
                         module_backed = {n for n in assigned if not n.startswith("__molt_")}
                         if module_backed:
+                            for name in sorted(module_backed):
+                                existing = self.globals.get(name)
+                                if existing is None:
+                                    existing = self.locals.get(name)
+                                if existing is not None and self.module_obj is not None:
+                                    self._emit_module_attr_set_on(
+                                        self.module_obj, name, existing
+                                    )
                             self.module_global_mutations.update(module_backed)
                         for name in sorted(assigned - module_backed):
                             self._box_local(name)
@@ -22481,6 +22508,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 # mutable store instead of synthesising boxed-local cells.
                 module_backed = {n for n in assigned if not n.startswith("__molt_")}
                 if module_backed:
+                    # Flush any values that were previously assigned (before
+                    # this if-block) into the module dict.  Without this,
+                    # a variable assigned unconditionally *before* the if,
+                    # then conditionally reassigned *inside* the if, would
+                    # lose its initial value: the pre-if store only wrote to
+                    # self.globals (SSA cache), and the post-if eviction
+                    # removes the cache entry, so MODULE_GET_ATTR would find
+                    # nothing in the module dict.
+                    for name in sorted(module_backed):
+                        existing = self.globals.get(name)
+                        if existing is None:
+                            existing = self.locals.get(name)
+                        if existing is not None and self.module_obj is not None:
+                            self._emit_module_attr_set_on(
+                                self.module_obj, name, existing
+                            )
                     self.module_global_mutations.update(module_backed)
                 for name in sorted(assigned - module_backed):
                     self._box_local(name)
@@ -23477,6 +23520,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             ):
                 self.emit(
                     MoltOp(
+                        kind="CHECK_EXCEPTION",
+                        args=[self.try_end_labels[-1]],
+                        result=MoltValue("none"),
+                    )
+                )
+                self.emit(
+                    MoltOp(
                         kind="JUMP",
                         args=[self.try_end_labels[-1]],
                         result=MoltValue("none"),
@@ -23488,6 +23538,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if done_label is not None:
                 self.emit(
                     MoltOp(
+                        kind="CHECK_EXCEPTION",
+                        args=[done_label],
+                        result=MoltValue("none"),
+                    )
+                )
+                self.emit(
+                    MoltOp(
                         kind="JUMP",
                         args=[done_label],
                         result=MoltValue("none"),
@@ -23496,6 +23553,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return
         if self.function_exception_label is not None:
             self._emit_restore_exception_stack_depth()
+            self.emit(
+                MoltOp(
+                    kind="CHECK_EXCEPTION",
+                    args=[self.function_exception_label],
+                    result=MoltValue("none"),
+                )
+            )
             self.emit(
                 MoltOp(
                     kind="JUMP",
@@ -28577,6 +28641,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             elif op.kind == "STATE_LABEL":
                 json_ops.append({"kind": "state_label", "value": control_value(op)})
             elif op.kind == "JUMP":
+                if json_ops and json_ops[-1].get("kind") == "raise":
+                    json_ops.append({"kind": "check_exception", "value": control_value(op)})
                 json_ops.append({"kind": "jump", "value": control_value(op)})
             elif op.kind == "PHI":
                 json_ops.append(
@@ -37061,7 +37127,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             out.append(op)
         if pending_check is not None:
             out.append(pending_check)
-        return out
+        repaired: list[MoltOp] = []
+        for idx, op in enumerate(out):
+            repaired.append(op)
+            if op.kind not in {"RAISE", "RAISE_CAUSE", "RERAISE"}:
+                continue
+            if idx + 1 >= len(out):
+                continue
+            next_op = out[idx + 1]
+            if next_op.kind != "JUMP" or not next_op.args:
+                continue
+            repaired.append(
+                MoltOp(
+                    kind="CHECK_EXCEPTION",
+                    args=[next_op.args[0]],
+                    result=MoltValue("none"),
+                )
+            )
+        return repaired
 
     def _finalize_code_ids(self) -> None:
         for data in self.funcs_map.values():

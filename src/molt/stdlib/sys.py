@@ -861,44 +861,63 @@ if not isinstance(_bootstrap_payload_value, dict):
         "stdlib_root": None,
     }
 
+# Extract all payload fields immediately in a local function scope.
+# This avoids a native-backend use-after-free where the dict reference
+# held in the module dict can get corrupted across chunk boundaries
+# when many function calls intervene between dict creation and use.
+def _extract_bootstrap_payload(payload: dict) -> tuple:
+    """Extract all bootstrap payload fields in one scope."""
+    _path_val = payload.get("path") if isinstance(payload, dict) else []
+    _pp_val = payload.get("pythonpath_entries") if isinstance(payload, dict) else []
+    _mr_val = payload.get("module_roots_entries") if isinstance(payload, dict) else []
+    _vsp_val = payload.get("venv_site_packages_entries") if isinstance(payload, dict) else []
+    _pwd_val = payload.get("pwd") if isinstance(payload, dict) else "/"
+    _icwd_val = payload.get("include_cwd") if isinstance(payload, dict) else False
+    _sr_val = payload.get("stdlib_root") if isinstance(payload, dict) else None
+
+    def _to_str_list(val: object) -> list:
+        if not isinstance(val, (list, tuple)):
+            return []
+        out: list = []
+        for entry in val:
+            if isinstance(entry, str):
+                out.append(entry)
+        return out
+
+    path_list = _to_str_list(_path_val)
+    pp_list = _to_str_list(_pp_val)
+    mr_list = _to_str_list(_mr_val)
+    vsp_list = _to_str_list(_vsp_val)
+    pwd_str = str(_pwd_val) if isinstance(_pwd_val, str) else "/"
+    icwd_bool = bool(_icwd_val) if _icwd_val is not None else False
+    sr_str = str(_sr_val) if isinstance(_sr_val, str) else None
+    return (path_list, pp_list, mr_list, vsp_list, pwd_str, icwd_bool, sr_str)
+
+_bp_result = _extract_bootstrap_payload(_bootstrap_payload_value)
+_bp_path_list = _bp_result[0]
+_bp_pythonpath_list = _bp_result[1]
+_bp_module_roots_list = _bp_result[2]
+_bp_vsp_list = _bp_result[3]
+_bp_pwd_str = _bp_result[4]
+_bp_include_cwd_bool = _bp_result[5]
+_bp_stdlib_root_str = _bp_result[6]
+
 # Prefer the new consolidated path intrinsic when available.
 if callable(_MOLT_SYS_PATH_NEW):
     _sys_path_raw = _MOLT_SYS_PATH_NEW()
     if isinstance(_sys_path_raw, (list, tuple)):
         path = list(_sys_path_raw)
     else:
-        path = _bootstrap_str_list(
-            _bootstrap_payload_value, "path", "molt_sys_bootstrap_payload"
-        )
+        path = list(_bp_path_list)
 else:
-    path = _bootstrap_str_list(
-        _bootstrap_payload_value, "path", "molt_sys_bootstrap_payload"
-    )
-_molt_bootstrap_pythonpath = tuple(
-    _bootstrap_str_list(
-        _bootstrap_payload_value, "pythonpath_entries", "molt_sys_bootstrap_payload"
-    )
-)
-_molt_bootstrap_module_roots = tuple(
-    _bootstrap_str_list(
-        _bootstrap_payload_value, "module_roots_entries", "molt_sys_bootstrap_payload"
-    )
-)
-_molt_bootstrap_venv_site_packages = tuple(
-    _bootstrap_str_list(
-        _bootstrap_payload_value,
-        "venv_site_packages_entries",
-        "molt_sys_bootstrap_payload",
-    )
-)
-_molt_bootstrap_pwd = _bootstrap_str(
-    _bootstrap_payload_value, "pwd", "molt_sys_bootstrap_payload"
-)
-_molt_bootstrap_include_cwd_val = _bootstrap_payload_value.get("include_cwd")
+    path = list(_bp_path_list)
+_molt_bootstrap_pythonpath = tuple(_bp_pythonpath_list)
+_molt_bootstrap_module_roots = tuple(_bp_module_roots_list)
+_molt_bootstrap_venv_site_packages = tuple(_bp_vsp_list)
+_molt_bootstrap_pwd = _bp_pwd_str
+_molt_bootstrap_include_cwd_val = _bp_include_cwd_bool
 _molt_bootstrap_include_cwd = bool(_molt_bootstrap_include_cwd_val) if _molt_bootstrap_include_cwd_val is not None else False
-_molt_bootstrap_stdlib_root = _bootstrap_str_or_none(
-    _bootstrap_payload_value, "stdlib_root", "molt_sys_bootstrap_payload"
-)
+_molt_bootstrap_stdlib_root = _bp_stdlib_root_str
 
 
 def _resolve_stdio_handle(intrinsic: object, name: str) -> object:
