@@ -22,9 +22,9 @@ Reproduced facts from this session:
     `error code: 1102`.
   - `/sql` can emit leading NUL bytes in the body when it does respond.
 - The current generated split-runtime bundle from `molt build ... --profile cloudflare --split-runtime`
-  emits a `wrangler.toml` with `[wasm_modules]`. Wrangler 4 local dev rejects
-  this for module workers with:
-  `Wasm bindings are not allowed in modules-based scripts. Use Wasm modules instead.`
+  emits a `wrangler.jsonc` module-worker config with explicit `rules`,
+  `no_bundle`, and `find_additional_modules`. The live verifier now targets
+  this shape directly.
 - The generated `worker.js` in the current repo does not match the behavior
   currently observed in production, proving artifact-contract drift between
   generated output and live deployment.

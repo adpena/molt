@@ -11,6 +11,7 @@ use serde_json::Value as JsonValue;
 use sha1::Sha1;
 use sha2::Sha256;
 
+use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_emit};
 use crate::builtins::io::{
     path_basename_text, path_dirname_text, path_join_text, path_normpath_text,
 };
@@ -3464,7 +3465,22 @@ fn importlib_validate_extension_metadata(
                 ),
             ));
         }
-        if !has_capability(_py, cap) {
+        let allowed = has_capability(_py, cap);
+        // Audit each individual capability check for extension loading.
+        audit_emit(AuditEvent::new(
+            "module.extension.cap_check",
+            "module.extension",
+            AuditArgs::Custom(cap.to_string()),
+            if allowed {
+                AuditDecision::Allowed
+            } else {
+                AuditDecision::Denied {
+                    reason: format!("missing {cap} capability for extension {module_name:?}"),
+                }
+            },
+            module_path!().to_string(),
+        ));
+        if !allowed {
             missing_caps.insert(cap.to_string());
         }
     }

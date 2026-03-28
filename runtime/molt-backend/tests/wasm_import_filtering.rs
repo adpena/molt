@@ -109,6 +109,10 @@ fn compile_with_profile(ir: SimpleIR, profile: WasmProfile) -> Vec<u8> {
     .compile(ir)
 }
 
+fn compile_with_options(ir: SimpleIR, options: WasmCompileOptions) -> Vec<u8> {
+    WasmBackend::with_options(options).compile(ir)
+}
+
 fn import_names(wasm: &[u8]) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for payload in Parser::new(0).parse_all(wasm) {
@@ -155,6 +159,35 @@ fn auto_hello_world_includes_used_structural_imports() {
         names.contains("runtime_init"),
         "runtime_init should be present (structural)"
     );
+}
+
+#[test]
+fn auto_reloc_preserves_reserved_runtime_callable_imports() {
+    let wasm = compile_with_options(
+        hello_world_ir(),
+        WasmCompileOptions {
+            wasm_profile: WasmProfile::Auto,
+            reloc_enabled: true,
+            ..WasmCompileOptions::default()
+        },
+    );
+    let names = import_names(&wasm);
+    for name in [
+        "type_call",
+        "type_new",
+        "type_init",
+        "object_new_bound",
+        "object_init",
+        "object_init_subclass",
+        "exception_new_bound",
+        "exception_init",
+        "exceptiongroup_init",
+    ] {
+        assert!(
+            names.contains(name),
+            "{name} should be present as a linked-wasm structural import"
+        );
+    }
 }
 
 #[test]

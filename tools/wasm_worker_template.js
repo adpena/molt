@@ -365,7 +365,12 @@ export default {
             const output = stdio.getStdout();
             const stderr = stdio.getStderr();
             const headers = { 'content-type': 'text/plain; charset=utf-8' };
-            if (stderr) headers['x-molt-stderr'] = encodeURIComponent(stderr);
+            // Only expose stderr to clients when debug capability is enabled.
+            if (stderr && CAPABILITIES.includes('debug')) {
+                headers['x-molt-stderr'] = encodeURIComponent(stderr);
+            } else if (stderr) {
+                console.error('molt worker stderr:', stderr);
+            }
             return new Response(output, { headers });
         } catch (err) {
             // proc_exit(0) is a clean exit
@@ -375,7 +380,8 @@ export default {
                     headers: { 'content-type': 'text/plain; charset=utf-8' },
                 });
             }
-            return new Response(`Error: ${err.message}\n${err.stack}`, {
+            console.error('molt worker error:', err.message);
+            return new Response('internal error', {
                 status: 500,
                 headers: { 'content-type': 'text/plain' },
             });

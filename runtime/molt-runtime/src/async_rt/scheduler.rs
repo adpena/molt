@@ -50,6 +50,7 @@ use super::cancellation::{
 };
 use super::channels::has_capability;
 use super::{spawned_task_count, spawned_task_inc};
+use crate::audit::{AuditArgs, audit_capability_decision};
 
 // --- Scheduler ---
 
@@ -1348,14 +1349,18 @@ pub extern "C" fn molt_asyncio_child_watcher_pop(callbacks_bits: u64, pid_bits: 
 }
 
 fn asyncio_has_any_net_capability(_py: &PyToken<'_>) -> bool {
-    has_capability(_py, "net")
+    let allowed = has_capability(_py, "net")
         || has_capability(_py, "net.connect")
         || has_capability(_py, "net.listen")
-        || has_capability(_py, "net.bind")
+        || has_capability(_py, "net.bind");
+    audit_capability_decision("net.asyncio", "net", AuditArgs::None, allowed);
+    allowed
 }
 
 fn asyncio_has_any_process_capability(_py: &PyToken<'_>) -> bool {
-    has_capability(_py, "process") || has_capability(_py, "process.exec")
+    let allowed = has_capability(_py, "process") || has_capability(_py, "process.exec");
+    audit_capability_decision("process.asyncio", "process", AuditArgs::None, allowed);
+    allowed
 }
 
 #[unsafe(no_mangle)]

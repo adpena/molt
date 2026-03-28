@@ -1,5 +1,6 @@
 use molt_obj_model::MoltObject;
 
+use crate::audit::{AuditArgs, audit_capability_decision};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{GilReleaseGuard, raise_os_error};
 use crate::{
@@ -19,6 +20,22 @@ use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
 use std::thread;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
+
+/// Checks the "net" capability and emits an audit event. Returns `Err(bits)`
+/// with a PermissionError if the capability is denied.
+#[inline]
+fn require_net_capability(_py: &crate::PyToken<'_>, operation: &'static str) -> Result<(), u64> {
+    let allowed = crate::has_capability(_py, "net");
+    audit_capability_decision(operation, "net", AuditArgs::None, allowed);
+    if !allowed {
+        return Err(raise_exception::<u64>(
+            _py,
+            "PermissionError",
+            "missing net capability for select/poll operations",
+        ));
+    }
+    Ok(())
+}
 
 const SELECT_KIND_POLL: i64 = 0;
 const SELECT_KIND_EPOLL: i64 = 1;
@@ -837,6 +854,9 @@ pub extern "C" fn molt_select_backend_available(kind_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_new(kind_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        if let Err(err) = require_net_capability(_py, "select.selector_new") {
+            return err;
+        }
         let Some(kind) = to_i64(obj_from_bits(kind_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "selector kind must be an integer");
         };
@@ -1083,6 +1103,9 @@ pub extern "C" fn molt_select_selector_modify_obj(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_select_selector_poll(handle_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        if let Err(err) = require_net_capability(_py, "select.selector_poll") {
+            return err;
+        }
         let selector = match selector_state(_py, handle_bits) {
             Ok(selector) => selector,
             Err(err) => return err,
@@ -1252,6 +1275,9 @@ pub extern "C" fn molt_select_select(
     timeout_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
+        if let Err(err) = require_net_capability(_py, "select.select") {
+            return err;
+        }
         let r_objects = match collect_iterable(_py, rlist_bits) {
             Ok(values) => values,
             Err(err) => return err,

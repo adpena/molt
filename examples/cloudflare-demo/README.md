@@ -46,7 +46,7 @@ This produces:
 - `molt_runtime.wasm` (~1-2MB) - tree-shaken runtime with only the builtins your app uses
 - `worker.js` - multi-module loader that stitches them together
 - `manifest.json` - deployment manifest
-- `wrangler.toml` - ready-to-deploy Cloudflare config
+- `wrangler.jsonc` - ready-to-deploy Cloudflare config
 
 vs. the monolithic `worker_linked.wasm` (~3MB gzipped) that includes everything.
 

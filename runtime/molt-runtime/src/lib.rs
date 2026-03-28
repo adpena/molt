@@ -112,6 +112,7 @@ mod gui;
 mod tk_bridge;
 #[cfg(feature = "stdlib_tk")]
 pub use molt_runtime_tk;
+pub mod audit;
 #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
 mod cpython_abi_hooks;
 mod intrinsics;
@@ -120,9 +121,8 @@ mod libc_compat;
 mod object;
 mod provenance;
 mod randomness;
-pub mod resource;
-pub mod audit;
 pub mod refcount_verify;
+pub mod resource;
 mod state;
 mod utils;
 pub mod vfs;

@@ -81,7 +81,7 @@ fn now_ns() -> u64 {
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()
         .and_then(|d| u64::try_from(d.as_nanos()).ok())
-        .unwrap_or(u64::MAX)
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +412,42 @@ pub fn audit_flush() {
 }
 
 // ---------------------------------------------------------------------------
+// Convenience helper for capability-gated code paths
+// ---------------------------------------------------------------------------
+
+/// Emit an audit event recording a capability decision.
+///
+/// This is the recommended entry point for non-VFS capability checks.
+/// It accepts `&'static str` for the operation and capability names,
+/// keeping allocations to the bare minimum on the hot path.
+///
+/// `operation`  — dot-separated name such as `"process.signal"`, `"net.connect"`.
+/// `capability` — the capability that was tested, e.g. `"process"`, `"net"`.
+/// `args`       — operation-specific arguments (use `AuditArgs::None` when N/A).
+/// `allowed`    — whether the capability check passed.
+pub fn audit_capability_decision(
+    operation: &'static str,
+    capability: &'static str,
+    args: AuditArgs,
+    allowed: bool,
+) {
+    let decision = if allowed {
+        AuditDecision::Allowed
+    } else {
+        AuditDecision::Denied {
+            reason: format!("missing {capability} capability"),
+        }
+    };
+    audit_emit(AuditEvent::new(
+        operation,
+        capability,
+        args,
+        decision,
+        module_path!().to_string(),
+    ));
+}
+
+// ---------------------------------------------------------------------------
 // Helper macro
 // ---------------------------------------------------------------------------
 
@@ -681,5 +717,49 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].operation, "fs.read");
         assert_eq!(events[1].module, "my.module");
+    }
+
+    #[test]
+    fn global_sink_inherited_by_spawned_thread() {
+        // Set up a shared buffered sink as the global default.
+        let sink = Arc::new(BufferedSink::new());
+
+        struct SharedSink(Arc<BufferedSink>);
+        impl AuditSink for SharedSink {
+            fn emit(&self, event: &AuditEvent) {
+                self.0.emit(event);
+            }
+        }
+
+        // Install as global default (OnceLock: first call wins across
+        // the entire test process, so this test must run with
+        // `--test-threads=1` or accept that if another test set it first,
+        // the OnceLock is already occupied).
+        let shared: Arc<dyn AuditSink + Send + Sync> = Arc::new(SharedSink(Arc::clone(&sink)));
+        set_global_audit_sink(Arc::clone(&shared));
+
+        // Spawn a thread that NEVER calls set_audit_sink.
+        // Its thread-local will be initialized from make_default_sink(),
+        // which reads GLOBAL_AUDIT_SINK.
+        let handle = std::thread::spawn(move || {
+            audit_emit(AuditEvent::new(
+                "thread.test",
+                "thread.cap",
+                AuditArgs::Custom("from-child".into()),
+                AuditDecision::Allowed,
+                "child_thread".into(),
+            ));
+        });
+        handle.join().expect("child thread panicked");
+
+        // The event should have been captured by the shared sink.
+        let events = sink.events();
+        assert!(
+            events.iter().any(|e| e.operation == "thread.test"),
+            "global audit sink was not inherited by the spawned thread; \
+             captured {} events: {:?}",
+            events.len(),
+            events.iter().map(|e| e.operation).collect::<Vec<_>>()
+        );
     }
 }

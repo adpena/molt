@@ -21,6 +21,18 @@ use crate::{
 
 #[cfg(target_arch = "wasm32")]
 #[inline]
+fn wasm_direct_call_table_idx(fn_ptr: u64) -> u64 {
+    crate::builtins::functions::reserved_wasm_runtime_callable_ptr(fn_ptr).unwrap_or(fn_ptr)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn is_reserved_wasm_runtime_callable(fn_ptr: u64) -> bool {
+    crate::builtins::functions::reserved_wasm_runtime_callable_ptr(fn_ptr).is_some()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
 fn is_void_wasm_call1_target(fn_ptr: u64) -> bool {
     const VOID_INTRINSICS: [&str; 9] = [
         "molt_email_message_drop",
@@ -140,7 +152,8 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
                             debug_name.as_deref().unwrap_or("<unnamed>"),
                         );
                     }
-                    molt_call_indirect2(tramp_ptr, closure_bits, arg0_bits) as u64
+                    molt_call_indirect2(wasm_direct_call_table_idx(fn_ptr), closure_bits, arg0_bits)
+                        as u64
                 } else {
                     if debug_enabled {
                         eprintln!(
@@ -167,7 +180,7 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
                             debug_name.as_deref().unwrap_or("<unnamed>"),
                         );
                     }
-                    molt_call_indirect1(tramp_ptr, arg0_bits) as u64
+                    molt_call_indirect1(wasm_direct_call_table_idx(fn_ptr), arg0_bits) as u64
                 } else {
                     if debug_enabled {
                         eprintln!(
@@ -304,7 +317,7 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect1(tramp_ptr, closure_bits) as u64
+                    molt_call_indirect1(wasm_direct_call_table_idx(fn_ptr), closure_bits) as u64
                 } else {
                     let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
                     func(closure_bits) as u64
@@ -319,7 +332,7 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect0(tramp_ptr) as u64
+                    molt_call_indirect0(wasm_direct_call_table_idx(fn_ptr)) as u64
                 } else {
                     let func: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr as usize);
                     func() as u64
@@ -377,7 +390,12 @@ pub(crate) unsafe fn call_function_obj2(
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect3(tramp_ptr, closure_bits, arg0_bits, arg1_bits) as u64
+                    molt_call_indirect3(
+                        wasm_direct_call_table_idx(fn_ptr),
+                        closure_bits,
+                        arg0_bits,
+                        arg1_bits,
+                    ) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64) -> i64 =
                         std::mem::transmute(fn_ptr as usize);
@@ -394,7 +412,8 @@ pub(crate) unsafe fn call_function_obj2(
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect2(tramp_ptr, arg0_bits, arg1_bits) as u64
+                    molt_call_indirect2(wasm_direct_call_table_idx(fn_ptr), arg0_bits, arg1_bits)
+                        as u64
                 } else {
                     let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
                     func(arg0_bits, arg1_bits) as u64
@@ -453,8 +472,13 @@ pub(crate) unsafe fn call_function_obj3(
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect4(tramp_ptr, closure_bits, arg0_bits, arg1_bits, arg2_bits)
-                        as u64
+                    molt_call_indirect4(
+                        wasm_direct_call_table_idx(fn_ptr),
+                        closure_bits,
+                        arg0_bits,
+                        arg1_bits,
+                        arg2_bits,
+                    ) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
                         std::mem::transmute(fn_ptr as usize);
@@ -471,7 +495,12 @@ pub(crate) unsafe fn call_function_obj3(
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect3(tramp_ptr, arg0_bits, arg1_bits, arg2_bits) as u64
+                    molt_call_indirect3(
+                        wasm_direct_call_table_idx(fn_ptr),
+                        arg0_bits,
+                        arg1_bits,
+                        arg2_bits,
+                    ) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64) -> i64 =
                         std::mem::transmute(fn_ptr as usize);
@@ -526,7 +555,7 @@ pub(crate) unsafe fn call_function_obj4(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect5(
-                        tramp_ptr,
+                        wasm_direct_call_table_idx(fn_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -549,8 +578,13 @@ pub(crate) unsafe fn call_function_obj4(
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect4(tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits)
-                        as u64
+                    molt_call_indirect4(
+                        wasm_direct_call_table_idx(fn_ptr),
+                        arg0_bits,
+                        arg1_bits,
+                        arg2_bits,
+                        arg3_bits,
+                    ) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
                         std::mem::transmute(fn_ptr as usize);
@@ -606,7 +640,7 @@ unsafe fn call_function_obj5(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect6(
-                        tramp_ptr,
+                        wasm_direct_call_table_idx(fn_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -645,7 +679,12 @@ unsafe fn call_function_obj5(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect5(
-                        tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits,
+                        wasm_direct_call_table_idx(fn_ptr),
+                        arg0_bits,
+                        arg1_bits,
+                        arg2_bits,
+                        arg3_bits,
+                        arg4_bits,
                     ) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
@@ -704,7 +743,7 @@ unsafe fn call_function_obj6(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect7(
-                        tramp_ptr,
+                        wasm_direct_call_table_idx(fn_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -746,7 +785,13 @@ unsafe fn call_function_obj6(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect6(
-                        tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
+                        wasm_direct_call_table_idx(fn_ptr),
+                        arg0_bits,
+                        arg1_bits,
+                        arg2_bits,
+                        arg3_bits,
+                        arg4_bits,
+                        arg5_bits,
                     ) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
@@ -810,7 +855,7 @@ unsafe fn call_function_obj7(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect8(
-                        tramp_ptr,
+                        wasm_direct_call_table_idx(fn_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -855,8 +900,14 @@ unsafe fn call_function_obj7(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect7(
-                        tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits,
-                        arg5_bits, arg6_bits,
+                        wasm_direct_call_table_idx(fn_ptr),
+                        arg0_bits,
+                        arg1_bits,
+                        arg2_bits,
+                        arg3_bits,
+                        arg4_bits,
+                        arg5_bits,
+                        arg6_bits,
                     ) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64 =
@@ -921,7 +972,7 @@ unsafe fn call_function_obj8(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect9(
-                        tramp_ptr,
+                        wasm_direct_call_table_idx(fn_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -969,8 +1020,15 @@ unsafe fn call_function_obj8(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect8(
-                        tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits,
-                        arg5_bits, arg6_bits, arg7_bits,
+                        wasm_direct_call_table_idx(fn_ptr),
+                        arg0_bits,
+                        arg1_bits,
+                        arg2_bits,
+                        arg3_bits,
+                        arg4_bits,
+                        arg5_bits,
+                        arg6_bits,
+                        arg7_bits,
                     ) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
@@ -1038,7 +1096,7 @@ unsafe fn call_function_obj9(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect10(
-                        tramp_ptr,
+                        wasm_direct_call_table_idx(fn_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -1099,8 +1157,16 @@ unsafe fn call_function_obj9(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect9(
-                        tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits,
-                        arg5_bits, arg6_bits, arg7_bits, arg8_bits,
+                        wasm_direct_call_table_idx(fn_ptr),
+                        arg0_bits,
+                        arg1_bits,
+                        arg2_bits,
+                        arg3_bits,
+                        arg4_bits,
+                        arg5_bits,
+                        arg6_bits,
+                        arg7_bits,
+                        arg8_bits,
                     ) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
@@ -1169,7 +1235,7 @@ unsafe fn call_function_obj10(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect11(
-                        tramp_ptr,
+                        wasm_direct_call_table_idx(fn_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -1245,8 +1311,17 @@ unsafe fn call_function_obj10(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect10(
-                        tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits,
-                        arg5_bits, arg6_bits, arg7_bits, arg8_bits, arg9_bits,
+                        wasm_direct_call_table_idx(fn_ptr),
+                        arg0_bits,
+                        arg1_bits,
+                        arg2_bits,
+                        arg3_bits,
+                        arg4_bits,
+                        arg5_bits,
+                        arg6_bits,
+                        arg7_bits,
+                        arg8_bits,
+                        arg9_bits,
                     ) as u64
                 } else {
                     let func: extern "C" fn(
@@ -1326,7 +1401,7 @@ unsafe fn call_function_obj11(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect12(
-                        tramp_ptr,
+                        wasm_direct_call_table_idx(fn_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -1407,8 +1482,18 @@ unsafe fn call_function_obj11(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect11(
-                        tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits,
-                        arg5_bits, arg6_bits, arg7_bits, arg8_bits, arg9_bits, arg10_bits,
+                        wasm_direct_call_table_idx(fn_ptr),
+                        arg0_bits,
+                        arg1_bits,
+                        arg2_bits,
+                        arg3_bits,
+                        arg4_bits,
+                        arg5_bits,
+                        arg6_bits,
+                        arg7_bits,
+                        arg8_bits,
+                        arg9_bits,
+                        arg10_bits,
                     ) as u64
                 } else {
                     let func: extern "C" fn(
@@ -1501,7 +1586,7 @@ unsafe fn call_function_obj12(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect13(
-                        tramp_ptr,
+                        wasm_direct_call_table_idx(fn_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -1587,8 +1672,18 @@ unsafe fn call_function_obj12(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect12(
-                        tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits,
-                        arg5_bits, arg6_bits, arg7_bits, arg8_bits, arg9_bits, arg10_bits,
+                        wasm_direct_call_table_idx(fn_ptr),
+                        arg0_bits,
+                        arg1_bits,
+                        arg2_bits,
+                        arg3_bits,
+                        arg4_bits,
+                        arg5_bits,
+                        arg6_bits,
+                        arg7_bits,
+                        arg8_bits,
+                        arg9_bits,
+                        arg10_bits,
                         arg11_bits,
                     ) as u64
                 } else {
@@ -1742,9 +1837,20 @@ pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, ar
         let func_obj = obj_from_bits(func_bits);
         if let Some(func_ptr) = func_obj.as_ptr()
             && object_type_id(func_ptr) == TYPE_ID_FUNCTION
-            && function_trampoline_ptr(func_ptr) != 0
         {
-            return call_function_obj_trampoline(_py, func_bits, args);
+            let tramp_ptr = function_trampoline_ptr(func_ptr);
+            if tramp_ptr != 0 {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    if !is_reserved_wasm_runtime_callable(function_fn_ptr(func_ptr)) {
+                        return call_function_obj_trampoline(_py, func_bits, args);
+                    }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    return call_function_obj_trampoline(_py, func_bits, args);
+                }
+            }
         }
         if function_needs_task_trampoline(_py, func_bits) {
             return call_function_obj_trampoline(_py, func_bits, args);

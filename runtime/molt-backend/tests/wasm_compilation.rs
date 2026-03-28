@@ -341,6 +341,16 @@ fn ret_with_value_compiles() {
 }
 
 #[test]
+fn function_without_explicit_ret_still_validates() {
+    let mut c = op("const");
+    c.value = Some(42);
+    c.out = Some("v0".to_string());
+
+    let wasm = compile_single_function(vec![c], &[]);
+    validate_wasm(&wasm).expect("implicit-None function should validate structurally");
+}
+
+#[test]
 fn multiple_functions_compile() {
     let ir = SimpleIR {
         functions: vec![

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import datetime as _datetime
 import json
 import shlex
 import re
@@ -18,7 +19,6 @@ from pathlib import Path
 from typing import Any
 
 _WORKER_URL_RE = re.compile(r"https://[^\s\"'<>]+\.workers\.dev[^\s\"'<>]*")
-_EXPECTED_COMPATIBILITY_DATE = "$today"
 _EXPECTED_PROBE_PATHS = (
     "/",
     "/fib/100",
@@ -106,11 +106,13 @@ def validate_bundle_contract(
         raise RuntimeError(
             f"Cloudflare wrangler config must point at worker.js, got: {main!r}"
         )
-    if compatibility_date != _EXPECTED_COMPATIBILITY_DATE:
+    try:
+        _datetime.date.fromisoformat(compatibility_date)
+    except ValueError as exc:
         raise RuntimeError(
-            "Cloudflare wrangler config compatibility_date drifted: "
-            f"{compatibility_date!r} != {_EXPECTED_COMPATIBILITY_DATE!r}"
-        )
+            "Cloudflare wrangler config compatibility_date must be an ISO date, "
+            f"got: {compatibility_date!r}"
+        ) from exc
     if not no_bundle:
         raise RuntimeError("Cloudflare wrangler config must set no_bundle=true")
     if not find_additional_modules:

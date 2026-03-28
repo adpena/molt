@@ -9,6 +9,7 @@ fn email_quopri_alloc_str(_py: &crate::PyToken<'_>, value: &str) -> u64 {
         MoltObject::from_ptr(ptr).bits()
     }
 }
+use crate::audit::{AuditArgs, audit_capability_decision};
 use molt_obj_model::MoltObject;
 #[cfg(feature = "stdlib_ast")]
 use rustpython_parser::{Mode as ParseMode, ParseErrorType, ast as pyast, parse as parse_python};
@@ -36,6 +37,93 @@ use crate::{
     seq_vec_ref, string_obj_to_owned, to_i64, type_name,
 };
 use memchr::{memchr, memmem};
+
+#[cfg(target_arch = "wasm32")]
+use super::exceptions::{molt_exception_init, molt_exception_new_bound, molt_exceptiongroup_init};
+#[cfg(target_arch = "wasm32")]
+use crate::builtins::types::{molt_object_new_bound, molt_type_init, molt_type_new};
+#[cfg(target_arch = "wasm32")]
+use crate::object::ops_builtins::{molt_object_init, molt_object_init_subclass, molt_type_call};
+
+#[cfg(target_arch = "wasm32")]
+const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 33;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn reserved_wasm_runtime_callable_ptr(fn_ptr: u64) -> Option<u64> {
+    let base = crate::wasm_table_base();
+    macro_rules! entry_list {
+        ($(($idx:expr, $sym:ident, $import:literal, $arity:expr))+) => {
+            {
+                $(
+                    if fn_ptr == fn_addr!($sym) {
+                        return Some(base + RESERVED_WASM_RUNTIME_CALLABLE_BASE + ($idx as u64));
+                    }
+                )+
+            }
+        };
+    }
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../wasm_runtime_callables.inc"
+    ));
+    None
+}
+
+#[cfg(target_arch = "wasm32")]
+const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = {
+    macro_rules! entry_list {
+        ($(($idx:expr, $sym:ident, $import:literal, $arity:expr))+) => {
+            [$( { let _ = ($idx, stringify!($sym), $import, $arity); () }, )+].len() as u64
+        };
+    }
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../wasm_runtime_callables.inc"
+    ))
+};
+
+#[cfg(target_arch = "wasm32")]
+const RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE: u64 =
+    RESERVED_WASM_RUNTIME_CALLABLE_BASE + RESERVED_WASM_RUNTIME_CALLABLE_COUNT;
+
+#[cfg(target_arch = "wasm32")]
+fn reserved_wasm_runtime_trampoline_ptr(fn_ptr: u64) -> Option<u64> {
+    let base = crate::wasm_table_base();
+    macro_rules! entry_list {
+        ($(($idx:expr, $sym:ident, $import:literal, $arity:expr))+) => {
+            {
+                $(
+                    if fn_ptr == fn_addr!($sym) {
+                        return Some(base + RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE + ($idx as u64));
+                    }
+                )+
+            }
+        };
+    }
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../wasm_runtime_callables.inc"
+    ));
+    None
+}
+
+pub(crate) fn alloc_runtime_function_obj(
+    _py: &crate::PyToken<'_>,
+    fn_ptr: u64,
+    arity: u64,
+) -> *mut u8 {
+    let ptr = alloc_function_obj(_py, fn_ptr, arity);
+    if ptr.is_null() {
+        return ptr;
+    }
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        if let Some(tramp_ptr) = reserved_wasm_runtime_trampoline_ptr(fn_ptr) {
+            function_set_trampoline_ptr(ptr, tramp_ptr);
+        }
+    }
+    ptr
+}
 
 const THIS_ENCODED: &str = concat!(
     "Gur Mra bs Clguba, ol Gvz Crgref\n\n",
@@ -4679,7 +4767,9 @@ pub extern "C" fn molt_textwrap_indent_ex(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pkgutil_iter_modules(path_bits: u64, prefix_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "fs.read") {
+        let allowed = crate::has_capability(_py, "fs.read");
+        audit_capability_decision("pkgutil.iter.modules", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let Some(prefix) = string_obj_to_owned(obj_from_bits(prefix_bits)) else {
@@ -4701,7 +4791,9 @@ pub extern "C" fn molt_pkgutil_iter_modules(path_bits: u64, prefix_bits: u64) ->
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pkgutil_walk_packages(path_bits: u64, prefix_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "fs.read") {
+        let allowed = crate::has_capability(_py, "fs.read");
+        audit_capability_decision("pkgutil.walk.packages", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let Some(prefix) = string_obj_to_owned(obj_from_bits(prefix_bits)) else {
@@ -4723,7 +4815,11 @@ pub extern "C" fn molt_pkgutil_walk_packages(path_bits: u64, prefix_bits: u64) -
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_copyfile(src_bits: u64, dst_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "fs.read") || !crate::has_capability(_py, "fs.write") {
+        let allowed_1 = crate::has_capability(_py, "fs.read");
+        audit_capability_decision("shutil.copyfile", "fs.read", AuditArgs::None, allowed_1);
+        let allowed_2 = crate::has_capability(_py, "fs.write");
+        audit_capability_decision("shutil.copyfile", "fs.write", AuditArgs::None, allowed_2);
+        if !allowed_1 || !allowed_2 {
             return raise_exception::<_>(
                 _py,
                 "PermissionError",
@@ -4751,7 +4847,11 @@ pub extern "C" fn molt_shutil_copyfile(src_bits: u64, dst_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_which(cmd_bits: u64, path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "fs.read") || !crate::has_capability(_py, "env.read") {
+        let allowed_1 = crate::has_capability(_py, "fs.read");
+        audit_capability_decision("shutil.which", "fs.read", AuditArgs::None, allowed_1);
+        let allowed_2 = crate::has_capability(_py, "env.read");
+        audit_capability_decision("shutil.which", "env.read", AuditArgs::None, allowed_2);
+        if !allowed_1 || !allowed_2 {
             return raise_exception::<_>(
                 _py,
                 "PermissionError",
@@ -4852,7 +4952,11 @@ pub extern "C" fn molt_shutil_which(cmd_bits: u64, path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_py_compile_compile(file_bits: u64, cfile_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "fs.read") || !crate::has_capability(_py, "fs.write") {
+        let allowed_1 = crate::has_capability(_py, "fs.read");
+        audit_capability_decision("py.compile.compile", "fs.read", AuditArgs::None, allowed_1);
+        let allowed_2 = crate::has_capability(_py, "fs.write");
+        audit_capability_decision("py.compile.compile", "fs.write", AuditArgs::None, allowed_2);
+        if !allowed_1 || !allowed_2 {
             return raise_exception::<_>(
                 _py,
                 "PermissionError",
@@ -4895,7 +4999,14 @@ pub extern "C" fn molt_py_compile_compile(file_bits: u64, cfile_bits: u64) -> u6
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_compileall_compile_file(fullname_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "fs.read") {
+        let allowed = crate::has_capability(_py, "fs.read");
+        audit_capability_decision(
+            "compileall.compile.file",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
+        if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let Some(fullname) = string_obj_to_owned(obj_from_bits(fullname_bits)) else {
@@ -4908,7 +5019,14 @@ pub extern "C" fn molt_compileall_compile_file(fullname_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_compileall_compile_dir(dir_bits: u64, maxlevels_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "fs.read") {
+        let allowed = crate::has_capability(_py, "fs.read");
+        audit_capability_decision(
+            "compileall.compile.dir",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
+        if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let Some(dir) = string_obj_to_owned(obj_from_bits(dir_bits)) else {
@@ -4928,7 +5046,14 @@ pub extern "C" fn molt_compileall_compile_path(
     maxlevels_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !crate::has_capability(_py, "fs.read") {
+        let allowed = crate::has_capability(_py, "fs.read");
+        audit_capability_decision(
+            "compileall.compile.path",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
+        if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let paths = match iterable_to_string_vec(_py, paths_bits) {

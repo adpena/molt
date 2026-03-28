@@ -586,7 +586,7 @@ molt deploy cloudflare app.py --wrangler-args "--env production"
 The `cloudflare` deploy target automatically:
 1. Builds with `--target wasm --split-runtime`.
 2. Generates `worker.js`, `app.wasm`, `molt_runtime.wasm`, and `manifest.json`.
-3. Runs `wrangler deploy` (requires `wrangler` in PATH and a `wrangler.toml`).
+3. Runs `wrangler deploy` (requires `wrangler` in PATH and a Wrangler config file, typically the generated `wrangler.jsonc`).
 
 ### Roblox
 
