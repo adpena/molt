@@ -1,6 +1,38 @@
 //! Mount-to-capability mapping for VFS access control.
 
 use crate::vfs::VfsError;
+use std::cell::RefCell;
+
+// ---------------------------------------------------------------------------
+// IO mode selection
+// ---------------------------------------------------------------------------
+
+/// Controls how the runtime performs IO operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IoMode {
+    /// Real filesystem access (default).
+    Real,
+    /// All IO routed through the in-memory VFS.
+    Virtual,
+    /// IO operations invoke host-provided callbacks.
+    Callback,
+}
+
+thread_local! {
+    static IO_MODE: RefCell<IoMode> = const { RefCell::new(IoMode::Real) };
+}
+
+/// Set the IO mode for the current thread.
+pub fn set_io_mode(mode: IoMode) {
+    IO_MODE.with(|cell| {
+        *cell.borrow_mut() = mode;
+    });
+}
+
+/// Get the current IO mode.
+pub fn io_mode() -> IoMode {
+    IO_MODE.with(|cell| *cell.borrow())
+}
 
 /// Sentinel for "never writable" (distinct from "" which means "always allowed").
 const NEVER: &str = "!";

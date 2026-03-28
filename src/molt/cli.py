@@ -1201,6 +1201,7 @@ class _PreparedBuildConfig:
     capabilities_list: list[str] | None
     capability_profiles: list[str]
     capabilities_source: str | None
+    manifest_env_vars: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -3185,6 +3186,7 @@ def _prepare_build_config(
     pgo_profile: str | None,
     runtime_feedback: str | None,
     capabilities: CapabilityInput | None,
+    capability_manifest: str | None = None,
 ) -> tuple[_PreparedBuildConfig | None, dict[str, Any] | None]:
     pgo_profile_summary: PgoProfileSummary | None = None
     pgo_profile_path: Path | None = None
@@ -3301,6 +3303,29 @@ def _prepare_build_config(
         capability_profiles = profiles
         capabilities_source = source
 
+    # Load capability manifest if --capability-manifest was provided
+    manifest_env_vars: dict[str, str] = {}
+    if capability_manifest is not None:
+        from molt.capability_manifest import load_manifest
+        try:
+            manifest = load_manifest(capability_manifest)
+            manifest_env_vars = manifest.to_env_vars()
+            # Merge manifest capabilities with --capabilities flag
+            if capabilities_list is None:
+                capabilities_list = sorted(manifest.effective_capabilities())
+                capabilities_source = str(capability_manifest)
+            else:
+                # CLI --capabilities takes precedence; manifest adds
+                manifest_caps = manifest.effective_capabilities()
+                merged = sorted(set(capabilities_list) | manifest_caps)
+                capabilities_list = merged
+        except Exception as e:
+            return None, _fail(
+                f"Invalid capability manifest: {e}",
+                json_output,
+                command="build",
+            )
+
     return _PreparedBuildConfig(
         pgo_profile_summary=pgo_profile_summary,
         pgo_profile_path=pgo_profile_path,
@@ -3320,6 +3345,7 @@ def _prepare_build_config(
         capabilities_list=capabilities_list,
         capability_profiles=capability_profiles,
         capabilities_source=capabilities_source,
+        manifest_env_vars=manifest_env_vars,
     ), None
 
 
@@ -3492,7 +3518,8 @@ def _prepare_build_inputs(
     pgo_profile: str | None,
     runtime_feedback: str | None,
     capabilities: CapabilityInput | None,
-    respect_pythonpath: bool,
+    capability_manifest: str | None = None,
+    respect_pythonpath: bool = False,
     lib_paths: list[str] | None = None,
 ) -> tuple[
     tuple[
@@ -3535,6 +3562,7 @@ def _prepare_build_inputs(
         pgo_profile=pgo_profile,
         runtime_feedback=runtime_feedback,
         capabilities=capabilities,
+        capability_manifest=capability_manifest,
     )
     if prepared_build_config_error is not None:
         return None, prepared_build_config_error
@@ -12813,11 +12841,18 @@ def _build_isolate_bootstrap_ops(
 
 def _build_isolate_import_ops(
     *,
+    code_slot_count: int,
     module_order: Sequence[str],
     register_global_code_id: Callable[[str], int],
     per_module_code_ops: Mapping[str, Sequence[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
-    import_ops: list[dict[str, Any]] = []
+    # Runtime-side module imports can reach this function before either
+    # `molt_main` or `molt_isolate_bootstrap` has initialized the global
+    # code-slot table. Import-time code-slot replay therefore must make the
+    # slot table available on its own rather than assuming caller ordering.
+    import_ops: list[dict[str, Any]] = [
+        {"kind": "code_slots_init", "value": code_slot_count},
+    ]
     import_var_idx = 0
 
     def import_var() -> str:
@@ -13171,6 +13206,7 @@ def _prepare_backend_ir(
         {"name": "molt_isolate_bootstrap", "params": [], "ops": isolate_bootstrap_ops}
     )
     import_ops = _build_isolate_import_ops(
+        code_slot_count=len(global_code_ids),
         module_order=module_order,
         register_global_code_id=register_global_code_id,
         per_module_code_ops=lazy_module_ops,
@@ -21613,6 +21649,7 @@ def build(
     tree_shake: bool = True,
     lib_paths: list[str] | None = None,
     split_runtime: bool = False,
+    capability_manifest: str | None = None,
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
@@ -21652,6 +21689,7 @@ def build(
         pgo_profile=pgo_profile,
         runtime_feedback=runtime_feedback,
         capabilities=capabilities,
+        capability_manifest=capability_manifest,
         respect_pythonpath=respect_pythonpath,
         lib_paths=lib_paths or [],
     )
@@ -21727,6 +21765,7 @@ def _run_script_cross(
     timing: bool = False,
     trusted: bool = False,
     capabilities: CapabilityInput | None = None,
+    capability_manifest: str | None = None,
     build_args: list[str] | None = None,
     build_profile: BuildProfile | None = None,
 ) -> int:
@@ -21774,6 +21813,18 @@ def _run_script_cross(
             )
         if parsed is not None:
             env["MOLT_CAPABILITIES"] = ",".join(parsed)
+
+    if capability_manifest is not None:
+        from molt.capability_manifest import load_manifest
+        try:
+            manifest_obj = load_manifest(capability_manifest)
+            env.update(manifest_obj.to_env_vars())
+        except Exception as e:
+            return _fail(
+                f"Invalid capability manifest: {e}",
+                json_output,
+                command="run",
+            )
 
     capabilities_tmp: Path | None = None
     if build_profile is not None and not _build_args_has_profile_flag(build_args):
@@ -22046,6 +22097,7 @@ def run_script(
     timing: bool = False,
     trusted: bool = False,
     capabilities: CapabilityInput | None = None,
+    capability_manifest: str | None = None,
     build_args: list[str] | None = None,
     build_profile: BuildProfile | None = None,
 ) -> int:
@@ -22093,6 +22145,18 @@ def run_script(
             )
         if parsed is not None:
             env["MOLT_CAPABILITIES"] = ",".join(parsed)
+
+    if capability_manifest is not None:
+        from molt.capability_manifest import load_manifest
+        try:
+            manifest_obj = load_manifest(capability_manifest)
+            env.update(manifest_obj.to_env_vars())
+        except Exception as e:
+            return _fail(
+                f"Invalid capability manifest: {e}",
+                json_output,
+                command="run",
+            )
 
     capabilities_tmp: Path | None = None
     if build_profile is not None and not _build_args_has_profile_flag(build_args):
@@ -26210,6 +26274,7 @@ def _completion_script(shell: str) -> str:
             "--trusted",
             "--no-trusted",
             "--capabilities",
+            "--capability-manifest",
             "--cache",
             "--no-cache",
             "--cache-dir",
@@ -26238,6 +26303,7 @@ def _completion_script(shell: str) -> str:
             "--rebuild",
             "--timing",
             "--capabilities",
+            "--capability-manifest",
             "--trusted",
             "--no-trusted",
             "--json",
@@ -26980,6 +27046,10 @@ def main() -> int:
         help="Capability profiles/tokens or path to manifest (toml/json).",
     )
     build_parser.add_argument(
+        "--capability-manifest",
+        help="Path to a capability manifest file (toml/json/yaml) for build-time configuration.",
+    )
+    build_parser.add_argument(
         "--diagnostics",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -27248,6 +27318,10 @@ def main() -> int:
     run_parser.add_argument(
         "--capabilities",
         help="Capability profiles/tokens or path to manifest (toml/json).",
+    )
+    run_parser.add_argument(
+        "--capability-manifest",
+        help="Path to a capability manifest file (toml/json/yaml) for runtime configuration.",
     )
     run_parser.add_argument(
         "--trusted",
@@ -28334,6 +28408,7 @@ def main() -> int:
             stdlib_profile=stdlib_profile,
             lib_paths=lib_paths or None,
             split_runtime=getattr(args, "split_runtime", False),
+            capability_manifest=getattr(args, "capability_manifest", None),
         )
     if args.command == "extension":
         if args.extension_command == "build":
@@ -28476,6 +28551,7 @@ def main() -> int:
                 args.timing,
                 trusted,
                 capabilities,
+                getattr(args, "capability_manifest", None),
                 build_args,
                 cast(BuildProfile | None, run_profile),
             )
@@ -28488,6 +28564,7 @@ def main() -> int:
             args.timing,
             trusted,
             capabilities,
+            getattr(args, "capability_manifest", None),
             build_args,
             cast(BuildProfile | None, run_profile),
         )
@@ -29103,6 +29180,16 @@ def _is_private_ip(host: str) -> bool:
     lower = host.lower()
     if lower in ("metadata.google.internal", "metadata.internal"):
         return True
+    # Fast path: if host is already a bare IP literal, check directly
+    # without DNS resolution (avoids syscall and resolver-down false positives).
+    try:
+        bare = ipaddress.ip_address(host)
+        if isinstance(bare, ipaddress.IPv6Address) and bare.ipv4_mapped is not None:
+            bare = bare.ipv4_mapped
+        return (bare.is_private or bare.is_loopback or bare.is_link_local
+                or bare.is_reserved or str(bare) == "169.254.169.254")
+    except ValueError:
+        pass  # not a bare IP — fall through to DNS resolution
     # Resolve DNS and check all resulting IPs
     try:
         infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
@@ -29110,10 +29197,12 @@ def _is_private_ip(host: str) -> bool:
         return True  # unresolvable hosts are blocked conservatively
     for _family, _type, _proto, _canonname, sockaddr in infos:
         ip_str = sockaddr[0]
+        # Strip IPv6 scope-id suffix (e.g. "fe80::1%eth0") before parsing
+        bare_ip = ip_str.split("%")[0]
         try:
-            addr = ipaddress.ip_address(ip_str)
+            addr = ipaddress.ip_address(bare_ip)
         except ValueError:
-            continue
+            return True  # fail-closed: unrecognizable address is blocked
         # Unwrap IPv4-mapped IPv6 addresses (e.g. ::ffff:169.254.169.254)
         # so the private/loopback/link-local checks work correctly.
         if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
