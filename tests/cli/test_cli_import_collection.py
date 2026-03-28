@@ -8493,3 +8493,109 @@ def test_internal_batch_build_server_ping_shutdown_roundtrip() -> None:
     assert shutdown_response["shutdown"] is True
     proc.wait(timeout=5)
     assert proc.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# C2.1  Cache identity encodes stdlib partition mode
+# ---------------------------------------------------------------------------
+
+
+def test_cache_variant_differs_when_stdlib_split_toggles() -> None:
+    """Prove that the cache key changes when stdlib partition mode is toggled.
+
+    ``_prepare_backend_cache_setup`` builds a ``cache_variant`` that feeds into
+    the cache key.  The variant includes ``stdlib_split=0`` vs ``stdlib_split=1``
+    so a monolithic build can never hit a split-object cache entry (or vice-versa).
+    """
+    # Minimal IR that _cache_key can digest
+    tiny_ir: dict = {
+        "module": "__main__",
+        "filename": "test.py",
+        "ops": [],
+        "functions": [],
+        "classes": [],
+        "constants": {},
+        "imports": [],
+    }
+
+    warnings: list[str] = []
+    common = dict(
+        cache_enabled=True,
+        ir=tiny_ir,
+        target="native",
+        target_triple=None,
+        profile="release",
+        runtime_cargo_profile="release",
+        backend_cargo_profile="release",
+        is_wasm=False,
+        linked=False,
+        project_root=ROOT,
+        cache_dir=None,
+        warnings=warnings,
+    )
+
+    setup_split = cli._prepare_backend_cache_setup(
+        emit_mode="obj",             # native + obj  => split enabled
+        output_artifact=ROOT / "dummy_split.o",
+        **common,
+    )
+
+    # _native_stdlib_object_split_enabled returns True for native target,
+    # so we simulate monolithic by patching the helper.
+    import unittest.mock as _mock
+
+    with _mock.patch.object(
+        cli,
+        "_native_stdlib_object_split_enabled",
+        return_value=False,
+    ):
+        setup_mono = cli._prepare_backend_cache_setup(
+            emit_mode="obj",
+            output_artifact=ROOT / "dummy_mono.o",
+            **common,
+        )
+
+    assert setup_split.cache_key is not None
+    assert setup_mono.cache_key is not None
+    assert setup_split.cache_key != setup_mono.cache_key, (
+        "Cache keys must differ between stdlib-split and monolithic modes"
+    )
+
+
+# ---------------------------------------------------------------------------
+# C2.2  Link fingerprint hashes stdlib partition artifact contents
+# ---------------------------------------------------------------------------
+
+
+def test_link_fingerprint_changes_when_stdlib_artifact_content_changes(
+    tmp_path: Path,
+) -> None:
+    """Prove that _link_fingerprint hashes file contents so that changing a
+    stdlib partition artifact forces a relink."""
+    user_obj = tmp_path / "user.o"
+    user_obj.write_bytes(b"\x00ELF-user")
+
+    stdlib_obj = tmp_path / "stdlib.o"
+    stdlib_obj.write_bytes(b"\x00ELF-stdlib-v1")
+
+    link_cmd = ["cc", "-o", "out", "user.o", "stdlib.o"]
+
+    fp1 = cli._link_fingerprint(
+        project_root=tmp_path,
+        inputs=[user_obj, stdlib_obj],
+        link_cmd=link_cmd,
+    )
+
+    # Mutate the stdlib artifact
+    stdlib_obj.write_bytes(b"\x00ELF-stdlib-v2")
+
+    fp2 = cli._link_fingerprint(
+        project_root=tmp_path,
+        inputs=[user_obj, stdlib_obj],
+        link_cmd=link_cmd,
+    )
+
+    assert fp1 is not None and fp2 is not None
+    assert fp1["hash"] != fp2["hash"], (
+        "Link fingerprint must change when stdlib artifact content changes"
+    )
