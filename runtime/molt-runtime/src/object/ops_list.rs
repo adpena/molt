@@ -31,6 +31,10 @@ pub extern "C" fn molt_list_append(list_bits: u64, val_bits: u64) -> u64 {
                     let elems = seq_vec(ptr);
                     elems.push(val_bits);
                     inc_ref_bits(_py, val_bits);
+                    if crate::object::refcount_opt::is_heap_ref(val_bits) {
+                        (*header_from_obj_ptr(ptr)).flags |=
+                            crate::object::HEADER_FLAG_CONTAINS_REFS;
+                    }
                     return MoltObject::none().bits();
                 }
             }
@@ -96,6 +100,10 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
                 if let Some(other_ptr) = other_obj.as_ptr() {
                     let other_type = object_type_id(other_ptr);
                     if other_type == TYPE_ID_LIST || other_type == TYPE_ID_TUPLE {
+                        // Inherit contains_refs from source container.
+                        let src_has_refs = ((*header_from_obj_ptr(other_ptr)).flags
+                            & crate::object::HEADER_FLAG_CONTAINS_REFS)
+                            != 0;
                         if other_ptr == list_ptr {
                             let snapshot = seq_vec_ref(other_ptr).clone();
                             for item in snapshot {
@@ -109,14 +117,25 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
                                 inc_ref_bits(_py, item);
                             }
                         }
+                        if src_has_refs {
+                            (*header_from_obj_ptr(list_ptr)).flags |=
+                                crate::object::HEADER_FLAG_CONTAINS_REFS;
+                        }
                         return MoltObject::none().bits();
                     }
                     if other_type == TYPE_ID_DICT {
+                        let src_has_refs = ((*header_from_obj_ptr(other_ptr)).flags
+                            & crate::object::HEADER_FLAG_CONTAINS_REFS)
+                            != 0;
                         let order = dict_order(other_ptr);
                         for idx in (0..order.len()).step_by(2) {
                             let key_bits = order[idx];
                             list_elems.push(key_bits);
                             inc_ref_bits(_py, key_bits);
+                        }
+                        if src_has_refs {
+                            (*header_from_obj_ptr(list_ptr)).flags |=
+                                crate::object::HEADER_FLAG_CONTAINS_REFS;
                         }
                         return MoltObject::none().bits();
                     }
@@ -133,6 +152,9 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
                                         return MoltObject::none().bits();
                                     }
                                     list_elems.push(MoltObject::from_ptr(tuple_ptr).bits());
+                                    // Newly created tuples are always heap pointers.
+                                    (*header_from_obj_ptr(list_ptr)).flags |=
+                                        crate::object::HEADER_FLAG_CONTAINS_REFS;
                                 } else {
                                     let item = if other_type == TYPE_ID_DICT_KEYS_VIEW {
                                         key_bits
@@ -141,6 +163,10 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
                                     };
                                     list_elems.push(item);
                                     inc_ref_bits(_py, item);
+                                    if crate::object::refcount_opt::is_heap_ref(item) {
+                                        (*header_from_obj_ptr(list_ptr)).flags |=
+                                            crate::object::HEADER_FLAG_CONTAINS_REFS;
+                                    }
                                 }
                             }
                         }
@@ -174,6 +200,10 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
                     let val_bits = pair_elems[0];
                     list_elems.push(val_bits);
                     inc_ref_bits(_py, val_bits);
+                    if crate::object::refcount_opt::is_heap_ref(val_bits) {
+                        (*header_from_obj_ptr(list_ptr)).flags |=
+                            crate::object::HEADER_FLAG_CONTAINS_REFS;
+                    }
                 }
                 return MoltObject::none().bits();
             }
@@ -210,6 +240,10 @@ pub extern "C" fn molt_list_insert(list_bits: u64, index_bits: u64, val_bits: u6
                     let elems = seq_vec(list_ptr);
                     elems.insert(idx as usize, val_bits);
                     inc_ref_bits(_py, val_bits);
+                    if crate::object::refcount_opt::is_heap_ref(val_bits) {
+                        (*header_from_obj_ptr(list_ptr)).flags |=
+                            crate::object::HEADER_FLAG_CONTAINS_REFS;
+                    }
                     return MoltObject::none().bits();
                 }
             }

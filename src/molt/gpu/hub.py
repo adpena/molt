@@ -11,6 +11,7 @@ Usage:
 import os
 import json
 import re
+import urllib.parse
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -18,6 +19,14 @@ from pathlib import Path
 HF_API_URL = "https://huggingface.co/api/models"
 HF_CDN_URL = "https://huggingface.co"
 CACHE_DIR = Path.home() / ".cache" / "molt" / "hub"
+
+_REVISION_RE = re.compile(r'^[a-zA-Z0-9._-]+$')
+
+
+def _validate_revision(revision: str) -> None:
+    """Reject revision strings that could cause path traversal or URL injection."""
+    if not revision or not _REVISION_RE.match(revision):
+        raise ValueError(f"Invalid revision: {revision!r}")
 
 
 def download_model(repo_id: str, filename: str = None, revision: str = "main",
@@ -31,6 +40,7 @@ def download_model(repo_id: str, filename: str = None, revision: str = "main",
     """
     if not re.match(r'^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$', repo_id):
         raise ValueError(f"Invalid repo_id: {repo_id}")
+    _validate_revision(revision)
 
     cache = Path(cache_dir) if cache_dir else CACHE_DIR
     repo_dir = cache / repo_id.replace("/", "--")
@@ -53,7 +63,7 @@ def download_model(repo_id: str, filename: str = None, revision: str = "main",
         return str(local_path)
 
     # Download
-    url = f"{HF_CDN_URL}/{repo_id}/resolve/{revision}/{filename}"
+    url = f"{HF_CDN_URL}/{repo_id}/resolve/{urllib.parse.quote(revision, safe='')}/{filename}"
     print(f"Downloading {url}...")
 
     try:
@@ -96,7 +106,10 @@ def download_model(repo_id: str, filename: str = None, revision: str = "main",
 
 def list_files(repo_id: str, revision: str = "main") -> list:
     """List files in a HuggingFace model repository."""
-    url = f"{HF_API_URL}/{repo_id}?revision={revision}"
+    if not re.match(r'^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$', repo_id):
+        raise ValueError(f"Invalid repo_id: {repo_id}")
+    _validate_revision(revision)
+    url = f"{HF_API_URL}/{repo_id}?revision={urllib.parse.quote(revision, safe='')}"
     try:
         with urllib.request.urlopen(url) as response:
             data = json.loads(response.read())
@@ -108,6 +121,8 @@ def list_files(repo_id: str, revision: str = "main") -> list:
 
 def model_info(repo_id: str) -> dict:
     """Get metadata about a HuggingFace model."""
+    if not re.match(r'^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$', repo_id):
+        raise ValueError(f"Invalid repo_id: {repo_id}")
     url = f"{HF_API_URL}/{repo_id}"
     try:
         with urllib.request.urlopen(url) as response:

@@ -1,0 +1,19 @@
+{
+  "name": "molt-python-demo",
+  "main": "src/app.py",
+  "compatibility_date": "$today",
+  "no_bundle": true,
+  "find_additional_modules": true,
+  "rules": [
+    {
+      "type": "ESModule",
+      "globs": ["**/*.js"],
+      "fallthrough": false
+    },
+    {
+      "type": "CompiledWasm",
+      "globs": ["**/*.wasm"],
+      "fallthrough": false
+    }
+  ]
+}

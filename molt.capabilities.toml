@@ -1,0 +1,129 @@
+# Molt Capability Manifest v2.0
+#
+# Unified format for capability grants, resource limits, audit config,
+# IO mode, and Monty interoperability.
+#
+# Load with: molt build --capability-manifest molt.capabilities.toml main.py
+# Supported formats: TOML, YAML, JSON (auto-detected by extension).
+
+[manifest]
+# Manifest schema version. Must be "2.0" for this format.
+version = "2.0"
+# Human-readable description included in audit logs and binary provenance.
+description = "Example capability manifest for edge deployment"
+
+# -- Capability Grants --------------------------------------------------------
+# By default a Molt binary has ZERO capabilities. This section declares
+# which operations the compiled module is allowed to perform.
+
+[capabilities]
+# Granted capabilities -- explicit allowlist.
+# Accepts individual tokens ("net", "fs.read") or profile names ("fs", "env").
+# Profiles expand to their member capabilities (see docs/CAPABILITIES.md).
+allow = ["net", "fs.read", "env.read", "time.wall"]
+
+# Revoked capabilities -- overrides entries in `allow`.
+# Use this to grant a broad profile but exclude specific items.
+deny = ["fs.write"]
+
+# Effect annotations for package audit. Packages declaring effects not
+# in this list are rejected by `molt package` and `molt verify`.
+effects = ["nondet"]
+
+# Per-package capability scoping.
+# Package allowlists must be a subset of the global `allow` list.
+# This restricts individual packages to only the capabilities they need.
+[capabilities.packages.my_module]
+allow = ["net"]
+effects = []
+
+# -- Resource Limits ----------------------------------------------------------
+# Enforced by the ResourceTracker at the WASM host boundary (or native runtime).
+# Omitted fields = unlimited. All limits are checked at runtime, not compile time.
+#
+# See docs/RESOURCE_CONTROLS.md for the full ResourceTracker trait reference.
+
+[resources]
+# Maximum heap memory in bytes. Supports KB/MB/GB suffixes.
+# When exceeded: uncatchable ResourceError::Memory.
+max_memory = "64MB"
+
+# Maximum wall-clock execution time. Supports ms/s/m suffixes.
+# Time checks are rate-limited (sampled every 10th check_time call).
+# When exceeded: uncatchable ResourceError::Time.
+max_duration = "30s"
+
+# Maximum number of individual heap allocations.
+# Useful for detecting allocation-heavy hot loops.
+# When exceeded: uncatchable ResourceError::Allocation.
+max_allocations = 1_000_000
+
+# Maximum call-stack recursion depth.
+# When exceeded: catchable RecursionError (matches CPython semantics).
+max_recursion_depth = 500
+
+# Pre-emptive operation guards.
+# These check the *estimated* result size BEFORE executing the operation,
+# preventing OOM from pathological inputs like `2 ** (1 << 40)`.
+# Supports KB/MB/GB suffixes. Default: 10MB per operation when omitted.
+[resources.operation_limits]
+# Maximum estimated result size for integer exponentiation (a ** b).
+max_pow_result = "10MB"
+# Maximum estimated result size for sequence repetition (s * n, [x] * n).
+max_repeat_result = "10MB"
+# Maximum estimated result size for left shift amplification (a << n).
+max_shift_result = "10MB"
+# Maximum estimated result size for str.replace expansion.
+max_string_result = "10MB"
+
+# -- IO Mode ------------------------------------------------------------------
+# Controls how the runtime handles filesystem, network, and environment I/O.
+
+[io]
+# "real" (default): real filesystem/network/env access (production default).
+# "virtual": all I/O goes to in-memory VFS (sandbox mode, no real I/O).
+# "callback": every I/O operation yields to host for decision (Monty-style).
+mode = "real"
+
+# Virtual filesystem mounts (only used when mode = "virtual").
+# Each mount maps a guest path to a backing store configuration.
+[io.virtual_mounts]
+# In-memory tmpdir with size cap.
+"/tmp" = { type = "memory", max_size = "16MB" }
+# Read-only mount from the bundle's data directory.
+"/data" = { type = "readonly", source = "/bundle/data" }
+
+# -- Audit Configuration ------------------------------------------------------
+# Structured audit logging for every capability-gated operation.
+# See docs/AUDIT_LOGGING.md for event format, sink details, and compliance guide.
+
+[audit]
+# Master switch. When false, the NullSink is installed (zero overhead).
+enabled = false
+# Sink type:
+#   "null"     -- no-op (default, zero overhead)
+#   "stderr"   -- compact human-readable lines to stderr
+#   "jsonl"    -- one JSON object per line (for log aggregation)
+#   "buffered" -- in-memory collection (for testing/batch export)
+sink = "null"
+# Output destination for the jsonl sink. Currently supports "stderr".
+# Future: file paths, Unix sockets, HTTP endpoints.
+output = "stderr"
+
+# -- Monty Interoperability ----------------------------------------------------
+# Enables tiered execution: Monty interprets cold code, Molt AOT-compiles hot
+# paths. This section configures the boundary between the two runtimes.
+
+[monty]
+# When true, the compiled module includes Monty-compatible metadata for
+# interop (shared type stubs, compatible object layouts).
+compatible = true
+# Directory containing type stubs shared between Monty and Molt.
+shared_stubs = "stubs/"
+# Execution tier strategy:
+#   "auto"      -- start interpreted, tier-up after threshold
+#   "interpret" -- always interpret (Monty only)
+#   "compile"   -- always AOT compile (Molt only)
+execution_tier = "auto"
+# Number of function calls before AOT compilation (only with tier = "auto").
+tier_up_threshold = 100

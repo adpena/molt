@@ -12,6 +12,8 @@ members = [
     "runtime/molt-db",
     "runtime/molt-worker",
     "runtime/molt-wasm-host",
+    "runtime/molt-snapshot",
+    "runtime/molt-embed",
 ]
 resolver = "2"
 

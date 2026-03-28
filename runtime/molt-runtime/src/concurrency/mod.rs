@@ -44,6 +44,33 @@ macro_rules! with_gil_entry {
         let _gil_guard = $crate::concurrency::GilGuard::new();
         let $py = _gil_guard.token();
         let $py = &$py;
-        $body
+
+        // Wrap in catch_unwind to prevent panics from unwinding through
+        // extern "C" boundaries, which is undefined behavior in Rust.
+        match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+            $body
+        })) {
+            Ok(val) => val,
+            Err(payload) => {
+                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic in FFI boundary".to_string()
+                };
+                $crate::builtins::exceptions::raise_exception::<u64>(
+                    $py,
+                    "RuntimeError",
+                    &msg,
+                );
+                // SAFETY: All FFI return types used with this macro (u64, i64,
+                // i32, f64, *mut u8, *const u8, ()) are safely zero-
+                // initializable. The caller will check for the pending
+                // exception before using this value.
+                #[allow(unused_unsafe)]
+                unsafe { ::std::mem::zeroed() }
+            }
+        }
     }};
 }

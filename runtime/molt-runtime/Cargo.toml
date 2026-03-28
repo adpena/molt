@@ -9,7 +9,7 @@ build = "build.rs"
 crate-type = ["staticlib", "rlib"]
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(feature, values("audit", "refcount_verify"))'] }
 
 [features]
 default = ["stdlib_full", "wasi_host"]
@@ -92,6 +92,11 @@ cext_loader = ["dep:molt-cpython-abi"]
 wasm_freestanding = []
 vfs_bundle_tar = []
 wasi_host = ["stdlib_fs_extra"]
+
+# Structured audit logging: enables audit event emission in capability checks.
+audit = []
+# Debug feature: tracks inc_ref/dec_ref and panics on leaks or double-free.
+refcount_verify = []
 
 [dependencies]
 # Core runtime (always required)

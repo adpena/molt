@@ -8860,14 +8860,94 @@ def _codesign_binary(binary_path: Path) -> None:
 
 
 
-def _generate_split_worker_js() -> str:
+def _read_wasm_varuint(data: bytes, offset: int) -> tuple[int, int]:
+    result = 0
+    shift = 0
+    while True:
+        if offset >= len(data):
+            raise ValueError("Unexpected EOF while reading wasm varuint")
+        byte = data[offset]
+        offset += 1
+        result |= (byte & 0x7F) << shift
+        if byte & 0x80 == 0:
+            return result, offset
+        shift += 7
+
+
+def _read_wasm_string(data: bytes, offset: int) -> tuple[str, int]:
+    length, offset = _read_wasm_varuint(data, offset)
+    end = offset + length
+    if end > len(data):
+        raise ValueError("Unexpected EOF while reading wasm string")
+    return data[offset:end].decode("utf-8"), end
+
+
+def _wasm_import_minima(path: Path) -> tuple[int | None, int | None]:
+    data = path.read_bytes()
+    if len(data) < 8 or data[:4] != b"\x00asm":
+        raise ValueError(f"Invalid wasm binary: {path}")
+
+    memory_min: int | None = None
+    table_min: int | None = None
+    offset = 8
+    while offset < len(data):
+        section_id = data[offset]
+        offset += 1
+        section_size, offset = _read_wasm_varuint(data, offset)
+        section_end = offset + section_size
+        if section_end > len(data):
+            raise ValueError(f"Invalid wasm section length in {path}")
+        if section_id == 2:
+            count, cursor = _read_wasm_varuint(data, offset)
+            for _ in range(count):
+                module_name, cursor = _read_wasm_string(data, cursor)
+                field_name, cursor = _read_wasm_string(data, cursor)
+                kind = data[cursor]
+                cursor += 1
+                if kind == 0:
+                    _, cursor = _read_wasm_varuint(data, cursor)
+                elif kind == 1:
+                    cursor += 1  # elemtype
+                    flags, cursor = _read_wasm_varuint(data, cursor)
+                    minimum, cursor = _read_wasm_varuint(data, cursor)
+                    if flags & 0x1:
+                        _, cursor = _read_wasm_varuint(data, cursor)
+                    if (
+                        module_name == "env"
+                        and field_name == "__indirect_function_table"
+                    ):
+                        table_min = minimum
+                elif kind == 2:
+                    flags, cursor = _read_wasm_varuint(data, cursor)
+                    minimum, cursor = _read_wasm_varuint(data, cursor)
+                    if flags & 0x1:
+                        _, cursor = _read_wasm_varuint(data, cursor)
+                    if module_name == "env" and field_name == "memory":
+                        memory_min = minimum
+                elif kind == 3:
+                    cursor += 2
+                elif kind == 4:
+                    cursor += 1
+                    _, cursor = _read_wasm_varuint(data, cursor)
+                else:
+                    raise ValueError(f"Unknown wasm import kind {kind} in {path}")
+            break
+        offset = section_end
+    return memory_min, table_min
+
+
+def _generate_split_worker_js(
+    *,
+    shared_memory_initial_pages: int,
+    shared_table_initial: int,
+) -> str:
     """Generate a Cloudflare Workers shim for split-runtime deployment.
 
     The runtime WASM module is loaded separately and can be cached by the
     CDN independently of the app module.  Both modules share linear memory
     through WASI imports.
     """
-    return """// Molt split-runtime Cloudflare Workers shim
+    worker_js = """// Molt split-runtime Cloudflare Workers shim
 // Runtime module is cached independently by the CDN.
 import runtimeModule from "./molt_runtime.wasm";
 import appModule from "./app.wasm";
@@ -8884,7 +8964,8 @@ export default {
     const stderrChunks = [];
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
-    let wasmMemory = null;
+    const wasmMemory = new WebAssembly.Memory({ initial: __MOLT_SHARED_MEMORY_PAGES__ });
+    let appInstance = null;
 
     const wasiArgs = ["molt", urlPath, queryString];
     const argsEncoded = wasiArgs.map(a => encoder.encode(a + "\0"));
@@ -9001,7 +9082,22 @@ export default {
     };
 
     // Host stubs for platform features not available in Workers
+    const callIndirect = (fnIndex, ...args) => {
+      const fn = sharedTable.get(Number(fnIndex));
+      if (typeof fn !== "function") {
+        throw new Error(`missing wasm table entry: ${fnIndex}`);
+      }
+      return fn(...args);
+    };
+
     const hostEnv = {
+      memory: wasmMemory,
+      molt_isolate_import(...args) {
+        if (!appInstance || !appInstance.exports.molt_isolate_import) {
+          throw new Error("molt_isolate_import called before app instantiation");
+        }
+        return appInstance.exports.molt_isolate_import(...args);
+      },
       molt_time_timezone_host()  { return 0n; },
       molt_time_local_offset_host() { return 0n; },
       molt_getpid_host()         { return 1n; },
@@ -9053,25 +9149,25 @@ export default {
       molt_ws_connect_host()     { return -1; },
     };
 
+    for (let arity = 0; arity <= 13; arity++) {
+      hostEnv[`molt_call_indirect${arity}`] = (fnIndex, ...args) =>
+        callIndirect(fnIndex, ...args);
+    }
+
     // Shared table for indirect calls — both modules reference the same table.
-    const sharedTable = new WebAssembly.Table({ initial: 8192, element: "anyfunc" });
+    const sharedTable = new WebAssembly.Table({ initial: __MOLT_SHARED_TABLE_INITIAL__, element: "anyfunc" });
 
     try {
       // 1. Instantiate the runtime module first.
-      //    The runtime defines its own memory (exported as "memory").
-      //    We pass WASI + host env imports, plus the shared table.
+      //    The runtime imports host-owned shared memory/table plus host bridges.
       const rtImports = {
         wasi_snapshot_preview1: wasi,
         env: { ...hostEnv, __indirect_function_table: sharedTable },
       };
       const rtInstance = await WebAssembly.instantiate(runtimeModule, rtImports);
 
-      // Use the runtime's exported memory as the shared linear memory.
-      wasmMemory = rtInstance.exports.memory;
-
       // 2. Instantiate the app module.
-      //    It imports from molt_runtime (the runtime's exports) plus WASI/env.
-      //    Memory and table come from the runtime so both modules share them.
+      //    It imports the runtime ABI exports plus the same host-owned memory/table.
       const appImports = {
         wasi_snapshot_preview1: wasi,
         env: {
@@ -9081,7 +9177,7 @@ export default {
         },
         molt_runtime: rtInstance.exports,
       };
-      const appInstance = await WebAssembly.instantiate(appModule, appImports);
+      appInstance = await WebAssembly.instantiate(appModule, appImports);
 
       // 3. Initialize and run
       if (rtInstance.exports._initialize) rtInstance.exports._initialize();
@@ -9103,6 +9199,10 @@ export default {
   }
 };
 """
+    return (
+        worker_js.replace("__MOLT_SHARED_MEMORY_PAGES__", str(shared_memory_initial_pages))
+        .replace("__MOLT_SHARED_TABLE_INITIAL__", str(shared_table_initial))
+    )
 
 
 def _backend_bin_path(
@@ -16511,12 +16611,24 @@ def _prepare_non_native_build_result(
 
             app_size = app_wasm.stat().st_size
             rt_size = rt_wasm.stat().st_size
+            app_memory_min, app_table_min = _wasm_import_minima(app_wasm)
+            rt_memory_min, rt_table_min = _wasm_import_minima(rt_wasm)
+            shared_memory_initial_pages = max(
+                app_memory_min or 0,
+                rt_memory_min or 0,
+            )
+            shared_table_initial = max(
+                app_table_min or 0,
+                rt_table_min or 0,
+                8192,
+            )
 
             manifest_data = {
                 "version": 2,
                 "mode": "split-runtime",
                 "tree_shaken": True,
-                "shared_table_initial": 8192,
+                "shared_memory_initial_pages": shared_memory_initial_pages,
+                "shared_table_initial": shared_table_initial,
                 "modules": {
                     "runtime": {
                         "path": "molt_runtime.wasm",
@@ -16536,7 +16648,12 @@ def _prepare_non_native_build_result(
             # Generate split-runtime Cloudflare Workers shim with full
             # WASI support and multi-module instantiation.
             worker_js = split_dir / "worker.js"
-            worker_js.write_text(_generate_split_worker_js())
+            worker_js.write_text(
+                _generate_split_worker_js(
+                    shared_memory_initial_pages=shared_memory_initial_pages,
+                    shared_table_initial=shared_table_initial,
+                )
+            )
 
             # Generate wrangler.toml for Cloudflare Workers deployment
             wrangler_toml = split_dir / "wrangler.toml"
@@ -28852,9 +28969,45 @@ def _write_cached_artifact(cache_path: Path, data: bytes) -> None:
             pass
 
 
+def _is_private_ip(host: str) -> bool:
+    """Check if a hostname or IP is private/link-local/metadata."""
+    import ipaddress
+    import socket
+    # Check hostname-based blocklist first
+    lower = host.lower()
+    if lower in ("metadata.google.internal", "metadata.internal"):
+        return True
+    # Resolve DNS and check all resulting IPs
+    try:
+        infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except socket.gaierror:
+        return False  # unresolvable is not private
+    for _family, _type, _proto, _canonname, sockaddr in infos:
+        ip_str = sockaddr[0]
+        try:
+            addr = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if (
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_reserved
+            or ip_str == "169.254.169.254"
+        ):
+            return True
+    return False
+
+
 def _download_artifact(url: str, expected_hash: str) -> bytes:
     if not url or not expected_hash:
         raise ValueError("missing url or hash")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        raise ValueError(f"only https URLs are allowed, got {parsed.scheme!r}")
+    host = parsed.hostname or ""
+    if _is_private_ip(host):
+        raise ValueError(f"URL resolves to private/metadata address: {host}")
     cache_path = _vendor_cache_path(url, expected_hash)
     expected = expected_hash.split(":", 1)[-1]
     if cache_path is not None:

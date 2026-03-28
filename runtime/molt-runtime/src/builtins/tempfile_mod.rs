@@ -120,18 +120,29 @@ pub extern "C" fn molt_tempfile_mkstemp(suffix_bits: u64, prefix_bits: u64, dir_
                 #[cfg(unix)]
                 let fd = {
                     use std::os::unix::io::IntoRawFd;
-                    let (file, _path) = named.keep().unwrap_or_else(|e| {
-                        // Shouldn't happen but fall back
-                        panic!("tempfile keep failed: {e}");
-                    });
+                    let (file, _path) = match named.keep() {
+                        Ok(kept) => kept,
+                        Err(e) => {
+                            return raise_exception::<u64>(
+                                _py, "OSError",
+                                &format!("tempfile keep failed: {e}"),
+                            );
+                        }
+                    };
                     file.into_raw_fd() as i64
                 };
                 #[cfg(windows)]
                 let fd = {
                     use std::os::windows::io::IntoRawHandle;
-                    let (file, _path) = named.keep().unwrap_or_else(|e| {
-                        panic!("tempfile keep failed: {e}");
-                    });
+                    let (file, _path) = match named.keep() {
+                        Ok(kept) => kept,
+                        Err(e) => {
+                            return raise_exception::<u64>(
+                                _py, "OSError",
+                                &format!("tempfile keep failed: {e}"),
+                            );
+                        }
+                    };
                     file.into_raw_handle() as i64
                 };
                 #[cfg(not(any(unix, windows)))]
@@ -200,17 +211,29 @@ pub extern "C" fn molt_tempfile_named(
                 #[cfg(unix)]
                 let fd = {
                     use std::os::unix::io::IntoRawFd;
-                    let (file, _path) = named.keep().unwrap_or_else(|e| {
-                        panic!("tempfile keep failed: {e}");
-                    });
+                    let (file, _path) = match named.keep() {
+                        Ok(kept) => kept,
+                        Err(e) => {
+                            return raise_exception::<u64>(
+                                _py, "OSError",
+                                &format!("tempfile keep failed: {e}"),
+                            );
+                        }
+                    };
                     file.into_raw_fd() as i64
                 };
                 #[cfg(windows)]
                 let fd = {
                     use std::os::windows::io::IntoRawHandle;
-                    let (file, _path) = named.keep().unwrap_or_else(|e| {
-                        panic!("tempfile keep failed: {e}");
-                    });
+                    let (file, _path) = match named.keep() {
+                        Ok(kept) => kept,
+                        Err(e) => {
+                            return raise_exception::<u64>(
+                                _py, "OSError",
+                                &format!("tempfile keep failed: {e}"),
+                            );
+                        }
+                    };
                     file.into_raw_handle() as i64
                 };
                 #[cfg(not(any(unix, windows)))]
