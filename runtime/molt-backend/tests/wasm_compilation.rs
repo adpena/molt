@@ -98,6 +98,12 @@ fn validate_wasm(wasm: &[u8]) -> Result<(), wasmparser::BinaryReaderError> {
     Validator::new().validate_all(wasm).map(|_| ())
 }
 
+fn ret_value(name: &str) -> OpIR {
+    let mut ret = op("ret");
+    ret.args = Some(vec![name.to_string()]);
+    ret
+}
+
 // -----------------------------------------------------------------------
 // Empty / minimal module tests
 // -----------------------------------------------------------------------
@@ -244,7 +250,8 @@ fn const_str_compiles_and_calls_string_from_bytes() {
     c.s_value = Some("hello".to_string());
     c.out = Some("v0".to_string());
 
-    let wasm = compile_single_function(vec![c, op("ret_void")], &[]);
+    // Keep the string value live so TIR DCE does not erase the pure const_str op.
+    let wasm = compile_single_function(vec![c, ret_value("v0")], &[]);
     let calls = import_call_counts(&wasm);
     assert!(
         count_import(&calls, "string_from_bytes") > 0,
@@ -262,7 +269,8 @@ fn add_op_calls_add_import() {
     add.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     add.out = Some("v0".to_string());
 
-    let wasm = compile_single_function(vec![add, op("ret_void")], &["p0", "p1"]);
+    // Keep the arithmetic result live so DCE cannot erase the pure add op.
+    let wasm = compile_single_function(vec![add, ret_value("v0")], &["p0", "p1"]);
     let calls = import_call_counts(&wasm);
     assert!(
         count_import(&calls, "add") > 0,
@@ -276,7 +284,7 @@ fn sub_op_calls_sub_import() {
     sub.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     sub.out = Some("v0".to_string());
 
-    let wasm = compile_single_function(vec![sub, op("ret_void")], &["p0", "p1"]);
+    let wasm = compile_single_function(vec![sub, ret_value("v0")], &["p0", "p1"]);
     let calls = import_call_counts(&wasm);
     assert!(
         count_import(&calls, "sub") > 0,
@@ -290,7 +298,7 @@ fn mul_op_calls_mul_import() {
     mul.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     mul.out = Some("v0".to_string());
 
-    let wasm = compile_single_function(vec![mul, op("ret_void")], &["p0", "p1"]);
+    let wasm = compile_single_function(vec![mul, ret_value("v0")], &["p0", "p1"]);
     let calls = import_call_counts(&wasm);
     assert!(
         count_import(&calls, "mul") > 0,
@@ -461,7 +469,7 @@ fn comparison_ops_compile() {
         cmp.args = Some(vec!["p0".to_string(), "p1".to_string()]);
         cmp.out = Some("v0".to_string());
 
-        let wasm = compile_single_function(vec![cmp, op("ret_void")], &["p0", "p1"]);
+        let wasm = compile_single_function(vec![cmp, ret_value("v0")], &["p0", "p1"]);
         let calls = import_call_counts(&wasm);
         assert!(
             count_import(&calls, op_name) > 0,

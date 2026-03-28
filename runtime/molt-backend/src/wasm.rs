@@ -130,9 +130,9 @@ const TAG_EXCEPTION_INDEX: u32 = 0;
 
 /// First dynamic type index; must equal the count of all statically-defined types.
 ///
-/// Static signatures currently occupy indices 0..=54 inclusive. Dynamic user
+/// Static signatures currently occupy indices 0..=39 inclusive. Dynamic user
 /// arity signatures and wrapper signatures must start after that fixed set.
-const STATIC_TYPE_COUNT: u32 = 55;
+const STATIC_TYPE_COUNT: u32 = 40;
 
 #[derive(Clone, Copy)]
 struct DataSegmentInfo {
