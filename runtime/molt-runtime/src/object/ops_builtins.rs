@@ -223,27 +223,59 @@ pub extern "C" fn molt_guarded_call_obj(
 }
 
 /// Shared dispatch table: call fn_ptr with n arguments read from args_ptr.
+///
+/// # Safety
+///
+/// All `transmute` calls in this function share the same invariants:
+///
+/// 1. **fn_ptr is a valid function pointer.** The caller (compiled Python code or
+///    `molt_call_func_dispatch`) guarantees that `fn_ptr` was obtained from a
+///    `TYPE_ID_FUNCTION` object's code slot, which is populated by the compiler
+///    backend when emitting WASM or native code. A zero/dangling fn_ptr here is
+///    undefined behavior (segfault or worse).
+///
+/// 2. **Arity (`n`) matches the target function's actual parameter count.** The
+///    compiler emits call sites with statically-known arity that must agree with
+///    the function definition. Mismatch corrupts the stack (extern "C" ABI does
+///    not check argument counts).
+///
+/// 3. **`args_ptr` points to a contiguous array of at least `n` u64 values.**
+///    The caller allocates this on its own stack frame. Out-of-bounds reads are
+///    UB.
+///
+/// 4. **All arguments and the return value are MoltObject bit patterns (u64).**
+///    The extern "C" ABI used by every target function expects and returns u64
+///    values encoding NaN-boxed Molt objects.
+///
+/// **Violation consequence:** Arity mismatch or invalid fn_ptr causes stack
+/// corruption, segfault, or silent data corruption. There is no runtime guard;
+/// correctness depends entirely on the compiler backend.
 #[inline(never)]
 unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize) -> u64 {
     unsafe {
         match n {
             0 => {
+                // SAFETY: transmute to 0-arity fn; see function-level invariants.
                 let f: extern "C" fn() -> u64 = std::mem::transmute(fn_ptr as usize);
                 f()
             }
             1 => {
+                // SAFETY: transmute to 1-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64) -> u64 = std::mem::transmute(fn_ptr as usize);
                 f(*args_ptr)
             }
             2 => {
+                // SAFETY: transmute to 2-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
                 f(*args_ptr, *args_ptr.add(1))
             }
             3 => {
+                // SAFETY: transmute to 3-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
                 f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2))
             }
             4 => {
+                // SAFETY: transmute to 4-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64, u64, u64, u64) -> u64 =
                     std::mem::transmute(fn_ptr as usize);
                 f(
@@ -254,6 +286,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                 )
             }
             5 => {
+                // SAFETY: transmute to 5-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64, u64, u64, u64, u64) -> u64 =
                     std::mem::transmute(fn_ptr as usize);
                 f(
@@ -265,6 +298,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                 )
             }
             6 => {
+                // SAFETY: transmute to 6-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64, u64, u64, u64, u64, u64) -> u64 =
                     std::mem::transmute(fn_ptr as usize);
                 f(
@@ -277,6 +311,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                 )
             }
             7 => {
+                // SAFETY: transmute to 7-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> u64 =
                     std::mem::transmute(fn_ptr as usize);
                 f(
@@ -290,6 +325,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                 )
             }
             8 => {
+                // SAFETY: transmute to 8-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> u64 =
                     std::mem::transmute(fn_ptr as usize);
                 f(
