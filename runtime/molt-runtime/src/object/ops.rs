@@ -50,6 +50,55 @@ use std::sync::{Mutex, OnceLock};
 
 use super::ops_string::{push_wtf8_codepoint, utf8_char_to_byte_index_cached, wtf8_codepoint_at};
 
+#[cfg(all(target_arch = "wasm32", not(feature = "wasm_freestanding")))]
+#[link(wasm_import_module = "wasi_snapshot_preview1")]
+unsafe extern "C" {
+    fn args_sizes_get(argc: *mut u32, argv_buf_size: *mut u32) -> u16;
+    fn args_get(argv: *mut *mut u8, argv_buf: *mut u8) -> u16;
+}
+
+#[cfg(all(target_arch = "wasm32", not(feature = "wasm_freestanding")))]
+fn collect_wasi_argv_bytes() -> Option<Vec<Vec<u8>>> {
+    unsafe {
+        let mut argc = 0u32;
+        let mut argv_buf_size = 0u32;
+        if args_sizes_get(&mut argc, &mut argv_buf_size) != 0 {
+            return None;
+        }
+        let argc_usize = argc as usize;
+        let mut argv_ptrs = vec![std::ptr::null_mut(); argc_usize];
+        let mut argv_buf = vec![0u8; argv_buf_size as usize];
+        let argv_buf_ptr = if argv_buf.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            argv_buf.as_mut_ptr()
+        };
+        if args_get(argv_ptrs.as_mut_ptr(), argv_buf_ptr) != 0 {
+            return None;
+        }
+        let base = argv_buf.as_ptr() as usize;
+        let end = base.saturating_add(argv_buf.len());
+        let mut out = Vec::with_capacity(argc_usize);
+        for ptr in argv_ptrs {
+            if ptr.is_null() {
+                return None;
+            }
+            let addr = ptr as usize;
+            if addr < base || addr >= end {
+                return None;
+            }
+            let cstr = CStr::from_ptr(ptr.cast::<i8>());
+            out.push(cstr.to_bytes().to_vec());
+        }
+        Some(out)
+    }
+}
+
+#[cfg(not(all(target_arch = "wasm32", not(feature = "wasm_freestanding"))))]
+fn collect_wasi_argv_bytes() -> Option<Vec<Vec<u8>>> {
+    None
+}
+
 #[inline]
 fn unicode_range_contains(ranges: &[(u32, u32)], code: u32) -> bool {
     let mut lo = 0usize;
@@ -1787,7 +1836,14 @@ pub extern "C" fn molt_setrecursionlimit(limit_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_getargv() -> u64 {
     crate::with_gil_entry!(_py, {
-        let args_guard = runtime_state(_py).argv.lock().unwrap();
+        let mut args_guard = runtime_state(_py).argv.lock().unwrap();
+        if args_guard.is_empty() {
+            if let Some(wasi_args) = collect_wasi_argv_bytes() {
+                if !wasi_args.is_empty() {
+                    *args_guard = wasi_args;
+                }
+            }
+        }
         // On WASM, molt_set_argv may not have been called (no C main stub).
         // Fall back to std::env::args() so WASI args are still visible.
         let env_args_storage;
@@ -11633,31 +11689,35 @@ pub extern "C" fn molt_guarded_class_def(
     }
 
     let nb = nbases as usize;
+    let bases_vec = if nb > 0 {
+        unsafe { std::slice::from_raw_parts(bases_ptr, nb).to_vec() }
+    } else {
+        Vec::new()
+    };
     if nb > 0 {
-        unsafe {
-            let bases_slice = std::slice::from_raw_parts(bases_ptr, nb);
-            if nb == 1 {
-                molt_class_set_base(class_bits, bases_slice[0]);
-            } else {
-                crate::with_gil_entry!(_py, {
-                    let tuple_ptr = crate::object::builders::alloc_tuple(_py, bases_slice);
-                    if !tuple_ptr.is_null() {
-                        let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
-                        molt_class_set_base(class_bits, tuple_bits);
-                        crate::dec_ref_bits(_py, tuple_bits);
-                    }
-                });
-            }
+        if nb == 1 {
+            molt_class_set_base(class_bits, bases_vec[0]);
+        } else {
+            crate::with_gil_entry!(_py, {
+                let tuple_ptr = crate::object::builders::alloc_tuple(_py, &bases_vec);
+                if !tuple_ptr.is_null() {
+                    let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
+                    molt_class_set_base(class_bits, tuple_bits);
+                    crate::dec_ref_bits(_py, tuple_bits);
+                }
+            });
         }
     }
 
     let na = nattrs as usize;
+    let attrs_vec = if na > 0 {
+        unsafe { std::slice::from_raw_parts(attrs_ptr, na * 2).to_vec() }
+    } else {
+        Vec::new()
+    };
     if na > 0 {
-        unsafe {
-            let attrs_slice = std::slice::from_raw_parts(attrs_ptr, na * 2);
-            for pair in attrs_slice.chunks_exact(2) {
-                molt_set_attr_name(class_bits, pair[0], pair[1]);
-            }
+        for pair in attrs_vec.chunks_exact(2) {
+            molt_set_attr_name(class_bits, pair[0], pair[1]);
         }
     }
 
@@ -11675,59 +11735,60 @@ pub extern "C" fn molt_guarded_class_def(
     molt_class_apply_set_name(class_bits);
 
     if (flags & 1) != 0 && nb > 0 {
-        unsafe {
-            let bases_slice = std::slice::from_raw_parts(bases_ptr, nb);
-            crate::with_gil_entry!(_py, {
-                let init_name = crate::intern_static_name(
-                    _py,
-                    &crate::runtime_state(_py).interned.init_subclass_name,
-                    b"__init_subclass__",
-                );
-                for &base in bases_slice {
-                    // Guard: base must be a valid heap pointer (type object).
-                    // A CSE alias bug can cause float/int bits to appear in
-                    // the base slot — skip non-pointer values to prevent
-                    // "'float' object has no attribute '__init__'" crashes.
-                    let base_obj = obj_from_bits(base);
-                    let Some(base_ptr) = base_obj.as_ptr() else {
-                        continue;
-                    };
-                    if object_type_id(base_ptr) != TYPE_ID_TYPE {
+        crate::with_gil_entry!(_py, {
+            let init_name = crate::intern_static_name(
+                _py,
+                &crate::runtime_state(_py).interned.init_subclass_name,
+                b"__init_subclass__",
+            );
+            for &base in &bases_vec {
+                // Snapshot `bases_vec`/`attrs_vec` before any nested call:
+                // linked wasm class lowering passes pointers into a shared
+                // scratch region, and reentrant compiled calls can overwrite
+                // that storage if we keep borrowing it directly.
+                let base_obj = obj_from_bits(base);
+                let Some(base_ptr) = base_obj.as_ptr() else {
+                    continue;
+                };
+                if unsafe { object_type_id(base_ptr) } != TYPE_ID_TYPE {
+                    continue;
+                }
+                let init_attr =
+                    crate::builtins::attributes::molt_get_attr_name_default(base, init_name, none);
+                if init_attr != none {
+                    if unsafe { crate::call::type_policy::callable_function_addr(Some(init_attr)) }
+                        == Some(fn_addr!(crate::molt_object_init_subclass))
+                    {
+                        crate::dec_ref_bits(_py, init_attr);
                         continue;
                     }
-                    let init_attr = crate::builtins::attributes::molt_get_attr_name_default(
-                        base, init_name, none,
-                    );
-                    if init_attr != none {
-                        // __init_subclass__(cls) or __init_subclass__(cls, **kwargs)
-                        // The compiled function may have arity 2 when **kwargs
-                        // is present; pass an empty dict to satisfy the extra
-                        // parameter.  This mirrors CPython's implicit classmethod
-                        // wrapping + empty kwargs for class statements without
-                        // keyword arguments.
-                        let init_obj = obj_from_bits(init_attr);
-                        let needs_kwargs = match init_obj.as_ptr() {
+                    let init_obj = obj_from_bits(init_attr);
+                    let needs_kwargs = unsafe {
+                        match init_obj.as_ptr() {
                             Some(ptr) if object_type_id(ptr) == TYPE_ID_FUNCTION => {
                                 function_arity(ptr) > 1
                             }
                             _ => false,
-                        };
-                        if needs_kwargs {
-                            let empty_dict = crate::builtins::containers_alloc::molt_dict_new(0);
-                            let _ = crate::call::dispatch::call_callable2(
-                                _py, init_attr, class_bits, empty_dict,
-                            );
-                            crate::dec_ref_bits(_py, empty_dict);
-                        } else {
-                            let _ =
-                                crate::call::dispatch::call_callable1(_py, init_attr, class_bits);
                         }
-                        crate::dec_ref_bits(_py, init_attr);
+                    };
+                    if needs_kwargs {
+                        let empty_dict = crate::builtins::containers_alloc::molt_dict_new(0);
+                        let _ = unsafe {
+                            crate::call::dispatch::call_callable2(
+                                _py, init_attr, class_bits, empty_dict,
+                            )
+                        };
+                        crate::dec_ref_bits(_py, empty_dict);
+                    } else {
+                        let _ = unsafe {
+                            crate::call::dispatch::call_callable1(_py, init_attr, class_bits)
+                        };
                     }
+                    crate::dec_ref_bits(_py, init_attr);
                 }
-                // init_name is globally interned — do NOT dec_ref it.
-            });
-        }
+            }
+            // init_name is globally interned — do NOT dec_ref it.
+        });
     }
 
     let version_obj = MoltObject::from_int(layout_version).bits();

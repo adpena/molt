@@ -140,7 +140,7 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
                             debug_name.as_deref().unwrap_or("<unnamed>"),
                         );
                     }
-                    molt_call_indirect2(fn_ptr, closure_bits, arg0_bits) as u64
+                    molt_call_indirect2(tramp_ptr, closure_bits, arg0_bits) as u64
                 } else {
                     if debug_enabled {
                         eprintln!(
@@ -167,7 +167,7 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
                             debug_name.as_deref().unwrap_or("<unnamed>"),
                         );
                     }
-                    molt_call_indirect1(fn_ptr, arg0_bits) as u64
+                    molt_call_indirect1(tramp_ptr, arg0_bits) as u64
                 } else {
                     if debug_enabled {
                         eprintln!(
@@ -304,7 +304,7 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect1(fn_ptr, closure_bits) as u64
+                    molt_call_indirect1(tramp_ptr, closure_bits) as u64
                 } else {
                     let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
                     func(closure_bits) as u64
@@ -319,7 +319,7 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect0(fn_ptr) as u64
+                    molt_call_indirect0(tramp_ptr) as u64
                 } else {
                     let func: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr as usize);
                     func() as u64
@@ -377,7 +377,7 @@ pub(crate) unsafe fn call_function_obj2(
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect3(fn_ptr, closure_bits, arg0_bits, arg1_bits) as u64
+                    molt_call_indirect3(tramp_ptr, closure_bits, arg0_bits, arg1_bits) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64) -> i64 =
                         std::mem::transmute(fn_ptr as usize);
@@ -394,7 +394,7 @@ pub(crate) unsafe fn call_function_obj2(
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect2(fn_ptr, arg0_bits, arg1_bits) as u64
+                    molt_call_indirect2(tramp_ptr, arg0_bits, arg1_bits) as u64
                 } else {
                     let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
                     func(arg0_bits, arg1_bits) as u64
@@ -453,7 +453,7 @@ pub(crate) unsafe fn call_function_obj3(
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect4(fn_ptr, closure_bits, arg0_bits, arg1_bits, arg2_bits)
+                    molt_call_indirect4(tramp_ptr, closure_bits, arg0_bits, arg1_bits, arg2_bits)
                         as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
@@ -471,7 +471,7 @@ pub(crate) unsafe fn call_function_obj3(
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect3(fn_ptr, arg0_bits, arg1_bits, arg2_bits) as u64
+                    molt_call_indirect3(tramp_ptr, arg0_bits, arg1_bits, arg2_bits) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64) -> i64 =
                         std::mem::transmute(fn_ptr as usize);
@@ -526,7 +526,7 @@ pub(crate) unsafe fn call_function_obj4(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect5(
-                        fn_ptr,
+                        tramp_ptr,
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -549,7 +549,8 @@ pub(crate) unsafe fn call_function_obj4(
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect4(fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
+                    molt_call_indirect4(tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits)
+                        as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
                         std::mem::transmute(fn_ptr as usize);
@@ -605,7 +606,7 @@ unsafe fn call_function_obj5(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect6(
-                        fn_ptr,
+                        tramp_ptr,
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -644,7 +645,7 @@ unsafe fn call_function_obj5(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect5(
-                        fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits,
+                        tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits,
                     ) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
@@ -703,7 +704,7 @@ unsafe fn call_function_obj6(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect7(
-                        fn_ptr,
+                        tramp_ptr,
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -745,7 +746,7 @@ unsafe fn call_function_obj6(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect6(
-                        fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
+                        tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
                     ) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
@@ -809,7 +810,7 @@ unsafe fn call_function_obj7(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect8(
-                        fn_ptr,
+                        tramp_ptr,
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -854,8 +855,8 @@ unsafe fn call_function_obj7(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect7(
-                        fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
-                        arg6_bits,
+                        tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits,
+                        arg5_bits, arg6_bits,
                     ) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64 =
@@ -920,7 +921,7 @@ unsafe fn call_function_obj8(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect9(
-                        fn_ptr,
+                        tramp_ptr,
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -968,8 +969,8 @@ unsafe fn call_function_obj8(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect8(
-                        fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
-                        arg6_bits, arg7_bits,
+                        tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits,
+                        arg5_bits, arg6_bits, arg7_bits,
                     ) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
@@ -1037,7 +1038,7 @@ unsafe fn call_function_obj9(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect10(
-                        fn_ptr,
+                        tramp_ptr,
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -1098,8 +1099,8 @@ unsafe fn call_function_obj9(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect9(
-                        fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
-                        arg6_bits, arg7_bits, arg8_bits,
+                        tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits,
+                        arg5_bits, arg6_bits, arg7_bits, arg8_bits,
                     ) as u64
                 } else {
                     let func: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64 =
@@ -1168,7 +1169,7 @@ unsafe fn call_function_obj10(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect11(
-                        fn_ptr,
+                        tramp_ptr,
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -1244,8 +1245,8 @@ unsafe fn call_function_obj10(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect10(
-                        fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
-                        arg6_bits, arg7_bits, arg8_bits, arg9_bits,
+                        tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits,
+                        arg5_bits, arg6_bits, arg7_bits, arg8_bits, arg9_bits,
                     ) as u64
                 } else {
                     let func: extern "C" fn(
@@ -1325,7 +1326,7 @@ unsafe fn call_function_obj11(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect12(
-                        fn_ptr,
+                        tramp_ptr,
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -1406,8 +1407,8 @@ unsafe fn call_function_obj11(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect11(
-                        fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
-                        arg6_bits, arg7_bits, arg8_bits, arg9_bits, arg10_bits,
+                        tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits,
+                        arg5_bits, arg6_bits, arg7_bits, arg8_bits, arg9_bits, arg10_bits,
                     ) as u64
                 } else {
                     let func: extern "C" fn(
@@ -1500,7 +1501,7 @@ unsafe fn call_function_obj12(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect13(
-                        fn_ptr,
+                        tramp_ptr,
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -1586,8 +1587,9 @@ unsafe fn call_function_obj12(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect12(
-                        fn_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
-                        arg6_bits, arg7_bits, arg8_bits, arg9_bits, arg10_bits, arg11_bits,
+                        tramp_ptr, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits,
+                        arg5_bits, arg6_bits, arg7_bits, arg8_bits, arg9_bits, arg10_bits,
+                        arg11_bits,
                     ) as u64
                 } else {
                     let func: extern "C" fn(

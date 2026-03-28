@@ -25,7 +25,6 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::HashSet;
 #[cfg(feature = "native-backend")]
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(feature = "native-backend")]
 use std::fmt::Write as _;
 #[cfg(feature = "native-backend")]
 use std::sync::OnceLock;
@@ -1304,14 +1303,12 @@ fn parse_inst_id(text: &str) -> Option<usize> {
     None
 }
 
-#[cfg(feature = "native-backend")]
 struct DumpIrConfig {
     mode: String,
     filter: Option<String>,
 }
 
-#[cfg(feature = "native-backend")]
-fn should_dump_ir() -> Option<DumpIrConfig> {
+pub(crate) fn should_dump_ir() -> Option<DumpIrConfig> {
     let raw = std::env::var("MOLT_DUMP_IR").ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -1341,8 +1338,7 @@ fn should_dump_ir() -> Option<DumpIrConfig> {
     Some(DumpIrConfig { mode, filter })
 }
 
-#[cfg(feature = "native-backend")]
-fn dump_ir_matches(config: &DumpIrConfig, func_name: &str) -> bool {
+pub(crate) fn dump_ir_matches(config: &DumpIrConfig, func_name: &str) -> bool {
     let Some(filter) = config.filter.as_ref() else {
         return true;
     };
@@ -1387,8 +1383,7 @@ fn should_trace_ops(func_name: &str) -> Option<TraceOpsConfig> {
     }
 }
 
-#[cfg(feature = "native-backend")]
-fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
+pub(crate) fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
     let mut out = String::new();
     let full = mode.eq_ignore_ascii_case("full");
     let mut last_written = 0usize;
@@ -1448,6 +1443,19 @@ fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
         return;
     }
     eprintln!("IR ops for {} (mode={}):\n{}", func_ir.name, mode, out);
+    if std::env::var("MOLT_DUMP_IR_FILE").as_deref() == Ok("1") {
+        let _ = std::fs::create_dir_all("logs");
+        let sanitized = func_ir
+            .name
+            .chars()
+            .map(|ch| match ch {
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => ch,
+                _ => '_',
+            })
+            .collect::<String>();
+        let path = std::path::Path::new("logs").join(format!("ir_dump_{sanitized}.log"));
+        let _ = std::fs::write(path, &out);
+    }
 }
 
 #[cfg(feature = "native-backend")]
@@ -2521,13 +2529,12 @@ impl SimpleBackend {
                 // the TIR roundtrip via LoopRole metadata on TirFunction, so
                 // functions with loops benefit from TIR optimization.
                 let body_bytes = crate::tir::serialize::serialize_ops(&func_ir.ops);
-                let content_hash =
-                    crate::tir::cache::CompilationCache::compute_hash_with_signature(
+                let content_hash = crate::tir::cache::CompilationCache::compute_hash_with_signature(
                     &func_ir.name,
                     &func_ir.params,
                     func_ir.param_types.as_deref(),
                     &body_bytes,
-                    );
+                );
                 // Cache hit — apply directly and skip.
                 if let Some(cached_bytes) = tir_cache.get(&content_hash) {
                     if let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes)
