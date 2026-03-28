@@ -1648,6 +1648,24 @@ fn alloc_class_obj_from_name(_py: &PyToken<'_>, name: &str) -> *mut u8 {
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
     let class_ptr = alloc_class_obj(_py, name_bits);
     dec_ref_bits(_py, name_bits);
+    if !class_ptr.is_null() {
+        // Ensure the class object is an instance of `type` (CPython parity).
+        // Without this, `type(cls)` falls back to `builtins.type_obj` in
+        // `type_of_bits`, but `issubclass` checks that compare metaclass
+        // identity may fail because the stored class-bits are 0 instead of
+        // the canonical `type` object.
+        unsafe {
+            let builtins = builtin_classes(_py);
+            let old = object_class_bits(class_ptr);
+            if old != builtins.type_obj {
+                if old != 0 {
+                    dec_ref_bits(_py, old);
+                }
+                crate::object_set_class_bits(_py, class_ptr, builtins.type_obj);
+                inc_ref_bits(_py, builtins.type_obj);
+            }
+        }
+    }
     class_ptr
 }
 
