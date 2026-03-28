@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as _datetime
 import json
 import subprocess
 from pathlib import Path
@@ -51,7 +52,7 @@ def test_validate_bundle_contract_accepts_split_runtime_layout(
             {
                 "name": "molt-python-demo",
                 "main": "worker.js",
-                "compatibility_date": "$today",
+                "compatibility_date": "2026-03-28",
                 "no_bundle": True,
                 "find_additional_modules": True,
                 "rules": [
@@ -67,7 +68,8 @@ def test_validate_bundle_contract_accepts_split_runtime_layout(
 
     assert contract.bundle_root == bundle_root
     assert contract.wrangler_config == wrangler_config
-    assert contract.compatibility_date == "$today"
+    assert contract.compatibility_date == "2026-03-28"
+    assert _datetime.date.fromisoformat(contract.compatibility_date).isoformat() == "2026-03-28"
     assert contract.no_bundle is True
     assert contract.worker_js == bundle_root / "worker.js"
     assert contract.manifest == bundle_root / "manifest.json"

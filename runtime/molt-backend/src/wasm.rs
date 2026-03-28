@@ -73,6 +73,36 @@ const POLL_TABLE_FUNCS: &[&str] = &[
     "contextlib_async_exitstack_exit_poll",
     "contextlib_async_exitstack_enter_context_poll",
 ];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ReservedRuntimeCallableSpec {
+    index: u32,
+    runtime_name: &'static str,
+    import_name: &'static str,
+    arity: usize,
+}
+
+const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec] = &{
+    macro_rules! entry_list {
+        ($(($idx:expr, $sym:ident, $import:literal, $arity:expr))+) => {
+            [
+                $(
+                    ReservedRuntimeCallableSpec {
+                        index: $idx,
+                        runtime_name: stringify!($sym),
+                        import_name: $import,
+                        arity: $arity,
+                    },
+                )+
+            ]
+        };
+    }
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../wasm_runtime_callables.inc"
+    ))
+};
+const RESERVED_RUNTIME_CALLABLE_COUNT: u32 = RESERVED_RUNTIME_CALLABLE_SPECS.len() as u32;
 const STATE_REMAP_TABLE_MAX_ENTRIES: usize = 4096;
 const STATE_REMAP_TABLE_MAX_SPARSITY: usize = 8;
 /// Minimum number of sparse remap entries before we attempt `br_table` dispatch.
@@ -1522,13 +1552,12 @@ impl WasmBackend {
 
                 // Compute a stable content hash from the function name + input ops.
                 let body_bytes = crate::tir::serialize::serialize_ops(&func_ir.ops);
-                let content_hash =
-                    crate::tir::cache::CompilationCache::compute_hash_with_signature(
-                        &func_ir.name,
-                        &func_ir.params,
-                        func_ir.param_types.as_deref(),
-                        &body_bytes,
-                    );
+                let content_hash = crate::tir::cache::CompilationCache::compute_hash_with_signature(
+                    &func_ir.name,
+                    &func_ir.params,
+                    func_ir.param_types.as_deref(),
+                    &body_bytes,
+                );
 
                 // Cache hit: restore previously optimized ops and skip the pipeline.
                 if let Some(cached_bytes) = tir_cache.get(&content_hash) {
@@ -1966,7 +1995,19 @@ impl WasmBackend {
 
         // In Auto mode, scan the IR to determine which imports are actually used.
         let auto_required: Option<BTreeSet<String>> = if is_auto {
-            Some(Self::collect_required_imports(&ir))
+            let mut required = Self::collect_required_imports(&ir);
+            // Linked/reloc wasm can materialize these constructor callables at
+            // runtime via method caches even when no IR op mentions the imports
+            // directly. If Auto prunes them here, wrapper emission degrades them
+            // to sentinel traps and the linked table contract breaks.
+            if self.options.reloc_enabled {
+                required.extend(
+                    RESERVED_RUNTIME_CALLABLE_SPECS
+                        .iter()
+                        .map(|spec| spec.import_name.to_string()),
+                );
+            }
+            Some(required)
         } else {
             None
         };
@@ -2148,7 +2189,13 @@ impl WasmBackend {
             })
             .filter(|(import_name, _)| !self.import_ids.contains_key(import_name))
             .collect();
+        for spec in RESERVED_RUNTIME_CALLABLE_SPECS {
+            if !self.import_ids.contains_key(spec.import_name) {
+                auto_import_names.push((spec.import_name.to_string(), spec.arity));
+            }
+        }
         auto_import_names.sort_by(|a, b| a.0.cmp(&b.0));
+        auto_import_names.dedup_by(|a, b| a.0 == b.0);
         for (import_name, arity) in auto_import_names {
             add_import(
                 import_name.as_str(),
@@ -3018,6 +3065,10 @@ impl WasmBackend {
             ("molt_os_wstopsig", "os_wstopsig", 1),
             ("molt_os_wtermsig", "os_wtermsig", 1),
         ]);
+        let reserved_runtime_callable_names: BTreeSet<&str> = RESERVED_RUNTIME_CALLABLE_SPECS
+            .iter()
+            .map(|spec| spec.runtime_name)
+            .collect();
         let hardcoded_builtin_runtime_names: BTreeSet<&str> = builtin_table_funcs
             .iter()
             .map(|(runtime_name, _, _)| *runtime_name)
@@ -3026,6 +3077,7 @@ impl WasmBackend {
             .iter()
             .filter(|(runtime_name, _)| {
                 !hardcoded_builtin_runtime_names.contains(runtime_name.as_str())
+                    && !reserved_runtime_callable_names.contains(runtime_name.as_str())
             })
             .map(|(runtime_name, arity)| {
                 let import_name = runtime_name
@@ -3036,10 +3088,15 @@ impl WasmBackend {
             })
             .collect();
         auto_builtin_table_funcs.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut builtin_trampoline_funcs: Vec<(String, usize)> = Vec::new();
+        let mut compact_builtin_trampoline_funcs: Vec<(String, usize)> = Vec::new();
         let builtin_runtime_names: BTreeSet<&str> = builtin_table_funcs
             .iter()
             .map(|(runtime_name, _, _)| *runtime_name)
+            .chain(
+                RESERVED_RUNTIME_CALLABLE_SPECS
+                    .iter()
+                    .map(|spec| spec.runtime_name),
+            )
             .chain(
                 auto_builtin_table_funcs
                     .iter()
@@ -3050,13 +3107,21 @@ impl WasmBackend {
             .iter()
             .map(|(runtime_name, _, _)| *runtime_name)
             .chain(
+                RESERVED_RUNTIME_CALLABLE_SPECS
+                    .iter()
+                    .map(|spec| spec.runtime_name),
+            )
+            .chain(
                 auto_builtin_table_funcs
                     .iter()
                     .map(|(runtime_name, _, _)| runtime_name.as_str()),
             )
         {
+            if reserved_runtime_callable_names.contains(runtime_name) {
+                continue;
+            }
             if let Some(arity) = builtin_trampoline_specs.get(runtime_name) {
-                builtin_trampoline_funcs.push((runtime_name.to_string(), *arity));
+                compact_builtin_trampoline_funcs.push((runtime_name.to_string(), *arity));
             }
         }
         // Intrinsic ABIs are canonicalized to i64/u64 for dynamic function-object dispatch.
@@ -3073,7 +3138,17 @@ impl WasmBackend {
         ]
         .into_iter()
         .collect();
-        let mut builtin_wrapper_funcs: Vec<(String, String, usize)> = Vec::new();
+        let mut builtin_wrapper_funcs: Vec<(String, String, usize)> =
+            RESERVED_RUNTIME_CALLABLE_SPECS
+                .iter()
+                .map(|spec| {
+                    (
+                        spec.runtime_name.to_string(),
+                        spec.import_name.to_string(),
+                        spec.arity,
+                    )
+                })
+                .collect();
         for (runtime_name, import_name, arity) in builtin_table_funcs
             .iter()
             .map(|(runtime_name, import_name, arity)| {
@@ -3093,28 +3168,30 @@ impl WasmBackend {
                 builtin_wrapper_funcs.push((runtime_name, import_name, arity));
             }
         }
-        if builtin_trampoline_specs.len() != builtin_trampoline_funcs.len() {
+        if builtin_trampoline_specs.len() != compact_builtin_trampoline_funcs.len() {
             for name in builtin_trampoline_specs.keys() {
                 if !builtin_runtime_names.contains(name.as_str()) {
                     panic!("builtin {name} missing from wasm table");
                 }
             }
         }
-        // Table compaction: only count referenced builtins for the table size.
-        // Unreferenced builtins are omitted entirely (not sentinel-filled).
-        let builtin_table_len: usize = builtin_table_funcs
+        let compact_builtin_table_len: usize = builtin_table_funcs
             .iter()
             .map(|(rn, _, _)| (*rn).to_string())
             .chain(auto_builtin_table_funcs.iter().map(|(rn, _, _)| rn.clone()))
             .filter(|rn| builtin_trampoline_specs.contains_key(rn.as_str()))
             .count();
+        // Table compaction: only count referenced builtins for the table size.
+        // Unreferenced builtins are omitted entirely (not sentinel-filled).
         let table_base: u32 = self.options.table_base;
         // 1 sentinel slot + one slot per POLL_TABLE_FUNCS entry.
         // Derived dynamically so adding/removing poll functions cannot desync.
         let poll_table_prefix = (1 + POLL_TABLE_FUNCS.len()) as u32;
+        let reserved_runtime_callable_table_len = RESERVED_RUNTIME_CALLABLE_COUNT as usize;
         let table_len = (poll_table_prefix as usize
-            + builtin_table_len
-            + builtin_trampoline_funcs.len()
+            + reserved_runtime_callable_table_len * 2
+            + compact_builtin_table_len
+            + compact_builtin_trampoline_funcs.len()
             + ir.functions.len() * 2) as u32;
         let table_min = table_base + table_len;
         let table_ty = TableType {
@@ -3255,6 +3332,30 @@ impl WasmBackend {
             32,
         );
 
+        let reserved_runtime_callable_table_start = poll_table_prefix;
+        let reserved_runtime_trampoline_table_start =
+            reserved_runtime_callable_table_start + RESERVED_RUNTIME_CALLABLE_COUNT;
+        let compact_builtin_table_start =
+            reserved_runtime_trampoline_table_start + RESERVED_RUNTIME_CALLABLE_COUNT;
+        let compact_builtin_trampoline_table_start =
+            compact_builtin_table_start + compact_builtin_table_len as u32;
+        let user_func_table_start =
+            compact_builtin_trampoline_table_start + compact_builtin_trampoline_funcs.len() as u32;
+        let user_trampoline_table_start = user_func_table_start + ir.functions.len() as u32;
+
+        for spec in RESERVED_RUNTIME_CALLABLE_SPECS {
+            let runtime_name = spec.runtime_name.to_string();
+            let wrapper_idx = *builtin_wrapper_indices
+                .get(&runtime_name)
+                .unwrap_or_else(|| panic!("reserved runtime wrapper missing for {runtime_name}"));
+            func_to_table_idx.insert(
+                runtime_name.clone(),
+                reserved_runtime_callable_table_start + spec.index,
+            );
+            func_to_index.insert(runtime_name, wrapper_idx);
+            table_indices.push(wrapper_idx);
+        }
+
         // Table compaction: only allocate slots for referenced builtins.
         // Unreferenced builtins are completely omitted from the element table.
         let mut compact_slot = 0u32;
@@ -3274,7 +3375,7 @@ impl WasmBackend {
             if !is_referenced {
                 continue; // Omit — no slot allocated.
             }
-            let idx = compact_slot + poll_table_prefix;
+            let idx = compact_slot + compact_builtin_table_start;
             func_to_table_idx.insert(runtime_key.clone(), idx);
             if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key) {
                 func_to_index.insert(runtime_key, *wrapper_idx);
@@ -3297,36 +3398,42 @@ impl WasmBackend {
             compact_slot += 1;
         }
         debug_assert_eq!(
-            compact_slot as usize, builtin_table_len,
+            compact_slot as usize, compact_builtin_table_len,
             "compact slot count must match pre-computed builtin_table_len"
         );
 
         let user_func_start = self.func_count;
         let user_func_count = ir.functions.len() as u32;
-        let builtin_trampoline_count = builtin_trampoline_funcs.len() as u32;
+        let builtin_trampoline_count =
+            RESERVED_RUNTIME_CALLABLE_COUNT + compact_builtin_trampoline_funcs.len() as u32;
         let builtin_trampoline_start = user_func_start + user_func_count;
         let user_trampoline_start = builtin_trampoline_start + builtin_trampoline_count;
+        let reserved_runtime_trampoline_func_start = builtin_trampoline_start;
+        let compact_builtin_trampoline_func_start =
+            reserved_runtime_trampoline_func_start + RESERVED_RUNTIME_CALLABLE_COUNT;
+
+        let mut func_to_trampoline_idx = BTreeMap::new();
+        for spec in RESERVED_RUNTIME_CALLABLE_SPECS {
+            let runtime_name = spec.runtime_name.to_string();
+            func_to_trampoline_idx.insert(
+                runtime_name,
+                reserved_runtime_trampoline_table_start + spec.index,
+            );
+            table_indices.push(reserved_runtime_trampoline_func_start + spec.index);
+        }
+        for (i, (name, _)) in compact_builtin_trampoline_funcs.iter().enumerate() {
+            let idx = compact_builtin_trampoline_table_start + i as u32;
+            func_to_trampoline_idx.insert(name.clone(), idx);
+            table_indices.push(compact_builtin_trampoline_func_start + i as u32);
+        }
         for (i, func_ir) in ir.functions.iter().enumerate() {
-            let idx = (i as u32) + poll_table_prefix + builtin_table_len as u32;
+            let idx = user_func_table_start + i as u32;
             func_to_table_idx.insert(func_ir.name.clone(), idx);
             func_to_index.insert(func_ir.name.clone(), user_func_start + i as u32);
             table_indices.push(user_func_start + i as u32);
         }
-        let mut func_to_trampoline_idx = BTreeMap::new();
-        for (i, (name, _)) in builtin_trampoline_funcs.iter().enumerate() {
-            let idx = (i as u32)
-                + poll_table_prefix
-                + builtin_table_len as u32
-                + ir.functions.len() as u32;
-            func_to_trampoline_idx.insert(name.clone(), idx);
-            table_indices.push(builtin_trampoline_start + i as u32);
-        }
         for (i, func_ir) in ir.functions.iter().enumerate() {
-            let idx = (i
-                + poll_table_prefix as usize
-                + builtin_table_len
-                + ir.functions.len()
-                + builtin_trampoline_funcs.len()) as u32;
+            let idx = user_trampoline_table_start + i as u32;
             func_to_trampoline_idx.insert(func_ir.name.clone(), idx);
             table_indices.push(user_trampoline_start + i as u32);
         }
@@ -3363,7 +3470,36 @@ impl WasmBackend {
                 self.func_count
             );
         }
-        for (name, arity) in &builtin_trampoline_funcs {
+        for spec in RESERVED_RUNTIME_CALLABLE_SPECS {
+            let name = spec.runtime_name;
+            let arity = spec.arity;
+            let target_idx = *func_to_index
+                .get(name)
+                .unwrap_or_else(|| panic!("reserved runtime trampoline target missing for {name}"));
+            let table_slot = *func_to_table_idx.get(name).unwrap_or_else(|| {
+                panic!("reserved runtime trampoline table slot missing for {name}")
+            });
+            let table_idx = table_base + table_slot;
+            self.compile_trampoline(
+                reloc_enabled,
+                target_idx,
+                table_idx,
+                TrampolineSpec {
+                    arity,
+                    has_closure: false,
+                    kind: TrampolineKind::Plain,
+                    closure_size: 0,
+                },
+                None,
+            );
+        }
+        if self.func_count != compact_builtin_trampoline_func_start {
+            panic!(
+                "wasm compact builtin trampoline index mismatch: expected {compact_builtin_trampoline_func_start}, got {}",
+                self.func_count
+            );
+        }
+        for (name, arity) in &compact_builtin_trampoline_funcs {
             let target_idx = *func_to_index
                 .get(name)
                 .unwrap_or_else(|| panic!("builtin trampoline target missing for {name}"));
@@ -12656,6 +12792,10 @@ impl WasmBackend {
                 func.instruction(&Instruction::End);
                 control_stack.pop();
             }
+            // Plain functions can legally rely on Python's implicit `None`
+            // return. Match the stateful/jumpful lowering paths instead of
+            // falling off the end of an i64-returning WASM function.
+            const_cache.emit_none(func);
             func.instruction(&Instruction::End);
         }
 

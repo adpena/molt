@@ -6730,8 +6730,8 @@ def test_deploy_cloudflare_uses_build_json_bundle_root(
     )
     bundle_root = tmp_path / "dist" / "worker"
     bundle_root.mkdir(parents=True)
-    wrangler_config = bundle_root / "wrangler.toml"
-    wrangler_config.write_text('name = "demo"\n')
+    wrangler_config = bundle_root / "wrangler.jsonc"
+    wrangler_config.write_text('{"name":"demo"}\n')
     payload = cli._json_payload(
         "build",
         "ok",

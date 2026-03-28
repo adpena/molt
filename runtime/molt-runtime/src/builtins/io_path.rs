@@ -22,6 +22,7 @@ use super::io::{
     path_suffix_text, path_suffixes_text, raise_io_error_for_glob, raw_from_bytes_text,
 };
 use crate::PyToken;
+use crate::audit::{AuditArgs, audit_capability_decision};
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 use crate::randomness::fill_os_random;
@@ -1149,7 +1150,9 @@ pub extern "C" fn molt_path_expanduser(path_bits: u64) -> u64 {
             }
             return MoltObject::from_ptr(ptr).bits();
         };
-        if !has_capability(_py, "env.read") {
+        let env_allowed = has_capability(_py, "env.read");
+        audit_capability_decision("env.expanduser", "env.read", AuditArgs::None, env_allowed);
+        if !env_allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing env.read capability");
         }
         let mut home = std::env::var("HOME").ok();

@@ -27,6 +27,25 @@ def test_wasm_linked_class_instantiation_preserves_type_name(tmp_path: Path) -> 
     assert run.stdout.splitlines() == ["A"]
 
 
+def test_wasm_linked_class_instantiation_runs_module_body(tmp_path: Path) -> None:
+    require_wasm_toolchain()
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "class_inst_probe.py"
+    src.write_text(
+        "class A:\n"
+        "    pass\n\n"
+        "A()\n"
+        'print("hi")\n',
+        encoding="utf-8",
+    )
+
+    output_wasm = build_wasm_linked(root, src, tmp_path)
+    run = run_wasm_linked(root, output_wasm)
+
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.splitlines() == ["hi"]
+
+
 def test_wasm_linked_plain_class_definition_runs_module_body(tmp_path: Path) -> None:
     require_wasm_toolchain()
     root = Path(__file__).resolve().parents[1]

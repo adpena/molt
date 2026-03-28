@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use super::poll::ws_wait_poll_fn_addr;
 use super::sockets::{SendData, require_net_capability, send_data_from_bits};
 use super::{cancel_tokens, current_token_id, token_id_from_bits};
+use crate::audit::{AuditArgs, audit_capability_decision};
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 use crate::{
@@ -2189,7 +2190,14 @@ pub unsafe extern "C" fn molt_ws_connect(
         if url_ptr.is_null() && url_len != 0 {
             return 1;
         }
-        if !has_capability(_py, "websocket.connect") {
+        let ws_allowed = has_capability(_py, "websocket.connect");
+        audit_capability_decision(
+            "net.websocket_connect",
+            "websocket.connect",
+            AuditArgs::None,
+            ws_allowed,
+        );
+        if !ws_allowed {
             return 6;
         }
         let hook_ptr = WS_CONNECT_HOOK.load(AtomicOrdering::Acquire);
@@ -2287,7 +2295,14 @@ pub unsafe extern "C" fn molt_ws_connect(
             if url_ptr.is_null() && url_len != 0 {
                 return 1;
             }
-            if !has_capability(_py, "websocket.connect") {
+            let ws_allowed = has_capability(_py, "websocket.connect");
+            audit_capability_decision(
+                "net.websocket_connect",
+                "websocket.connect",
+                AuditArgs::None,
+                ws_allowed,
+            );
+            if !ws_allowed {
                 return 6;
             }
             let mut handle: i64 = 0;
@@ -2690,7 +2705,9 @@ fn db_query_impl(
     if req_ptr.is_null() && len != 0 {
         return 1;
     }
-    if !has_capability(_py, "db.read") {
+    let db_read_allowed = has_capability(_py, "db.read");
+    audit_capability_decision("db.query", "db.read", AuditArgs::None, db_read_allowed);
+    if !db_read_allowed {
         return 6;
     }
     cancel_tokens(_py);
@@ -2732,7 +2749,9 @@ fn db_exec_impl(
     if req_ptr.is_null() && len != 0 {
         return 1;
     }
-    if !has_capability(_py, "db.write") {
+    let db_write_allowed = has_capability(_py, "db.write");
+    audit_capability_decision("db.exec", "db.write", AuditArgs::None, db_write_allowed);
+    if !db_write_allowed {
         return 6;
     }
     cancel_tokens(_py);

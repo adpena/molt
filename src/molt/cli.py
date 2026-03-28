@@ -14,6 +14,7 @@ import functools
 import hashlib
 import http.client
 import io
+import ipaddress
 import tempfile
 import json
 import os
@@ -8962,20 +8963,21 @@ export default {
 
     const stdoutChunks = [];
     const stderrChunks = [];
-    const decoder = new TextDecoder();
+    const stdoutDecoder = new TextDecoder();
+    const stderrDecoder = new TextDecoder();
     const encoder = new TextEncoder();
     const wasmMemory = new WebAssembly.Memory({ initial: __MOLT_SHARED_MEMORY_PAGES__ });
     let appInstance = null;
 
     const wasiArgs = ["molt", urlPath, queryString];
-    const argsEncoded = wasiArgs.map(a => encoder.encode(a + "\0"));
+    const argsEncoded = wasiArgs.map(a => encoder.encode(a + "\\0"));
     const argsTotalSize = argsEncoded.reduce((s, a) => s + a.length, 0);
 
     const envVars = [
       "MOLT_TRUSTED=1",
       ...(queryString ? [`QUERY_STRING=${queryString}`] : []),
     ];
-    const envEncoded = envVars.map(e => encoder.encode(e + "\0"));
+    const envEncoded = envVars.map(e => encoder.encode(e + "\\0"));
     const envTotalSize = envEncoded.reduce((s, e) => s + e.length, 0);
 
     const wasi = {
@@ -8987,6 +8989,7 @@ export default {
             const ptr = view.getUint32(iovs + i * 8, true);
             const len = view.getUint32(iovs + i * 8 + 4, true);
             const bytes = new Uint8Array(wasmMemory.buffer, ptr, len);
+            const decoder = (fd === 1) ? stdoutDecoder : stderrDecoder;
             const text = decoder.decode(bytes, { stream: true });
             if (fd === 1) stdoutChunks.push(text);
             else stderrChunks.push(text);
@@ -9157,6 +9160,9 @@ export default {
     // Shared table for indirect calls — both modules reference the same table.
     const sharedTable = new WebAssembly.Table({ initial: __MOLT_SHARED_TABLE_INITIAL__, element: "anyfunc" });
 
+    let rtInstance = null;
+    let pendingError = null;
+    let procExit = null;
     try {
       // 1. Instantiate the runtime module first.
       //    The runtime imports host-owned shared memory/table plus host bridges.
@@ -9164,7 +9170,7 @@ export default {
         wasi_snapshot_preview1: wasi,
         env: { ...hostEnv, __indirect_function_table: sharedTable },
       };
-      const rtInstance = await WebAssembly.instantiate(runtimeModule, rtImports);
+      rtInstance = await WebAssembly.instantiate(runtimeModule, rtImports);
 
       // 2. Instantiate the app module.
       //    It imports the runtime ABI exports plus the same host-owned memory/table.
@@ -9185,8 +9191,24 @@ export default {
       if (appInstance.exports.molt_main) appInstance.exports.molt_main();
       else if (appInstance.exports._start) appInstance.exports._start();
     } catch (err) {
-      if (!(err instanceof ProcExit)) throw err;
+      if (err instanceof ProcExit) procExit = err;
+      else pendingError = err;
+    } finally {
+      if (rtInstance && rtInstance.exports.molt_runtime_shutdown) {
+        try {
+          rtInstance.exports.molt_runtime_shutdown();
+        } catch (shutdownErr) {
+          if (!pendingError) pendingError = shutdownErr;
+        }
+      }
     }
+
+    const stdoutTail = stdoutDecoder.decode();
+    if (stdoutTail) stdoutChunks.push(stdoutTail);
+    const stderrTail = stderrDecoder.decode();
+    if (stderrTail) stderrChunks.push(stderrTail);
+
+    if (pendingError) throw pendingError;
 
     const output = stdoutChunks.join("");
     const trimmed = output.trimStart();
@@ -9194,6 +9216,7 @@ export default {
       ? "text/html; charset=utf-8"
       : "text/plain; charset=utf-8";
     return new Response(output, {
+      status: procExit && procExit.code !== 0 ? 500 : 200,
       headers: { "content-type": contentType },
     });
   }
@@ -13587,6 +13610,58 @@ def _build_native_link_driver_command(
     return link_cmd, linker_hint, normalized_target
 
 
+def _collect_cargo_native_link_deps(runtime_lib: Path) -> tuple[list[str], list[str]]:
+    """Collect native library link flags from cargo build-script output files.
+
+    When the runtime static library is built by cargo, crate build scripts
+    (e.g. lzma-sys) emit ``cargo:rustc-link-lib=`` and
+    ``cargo:rustc-link-search=`` directives.  Cargo normally consumes these
+    during its own link step, but Molt performs a custom link, so we must
+    forward them ourselves.
+
+    Returns ``(search_paths, link_libs)`` -- lists of ``-L<path>`` and
+    ``-l<lib>`` flags ready to append to the linker command.
+    """
+    search_paths: list[str] = []
+    link_libs: list[str] = []
+    # Walk up from the runtime lib to find the cargo build directory.
+    # runtime_lib is typically at <target>/release/libmolt_runtime.a
+    profile_dir = runtime_lib.parent  # e.g. target/release
+    build_dir = profile_dir / "build"
+    if not build_dir.is_dir():
+        return search_paths, link_libs
+    seen_libs: set[str] = set()
+    for entry in build_dir.iterdir():
+        output_file = entry / "output"
+        if not output_file.is_file():
+            continue
+        try:
+            text = output_file.read_text(errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if line.startswith("cargo:rustc-link-search="):
+                raw = line[len("cargo:rustc-link-search="):]
+                # Strip optional kind prefix (e.g. "native=")
+                if "=" in raw:
+                    raw = raw.split("=", 1)[1]
+                if raw and raw not in seen_libs:
+                    search_paths.append(f"-L{raw}")
+                    seen_libs.add(raw)
+            elif line.startswith("cargo:rustc-link-lib="):
+                raw = line[len("cargo:rustc-link-lib="):]
+                # Skip static= linkages (those are baked into the .a already)
+                if raw.startswith("static=") or raw.startswith("static:"):
+                    continue
+                # Strip optional kind prefix (e.g. "dylib=")
+                if "=" in raw:
+                    raw = raw.split("=", 1)[1]
+                if raw and raw not in seen_libs:
+                    link_libs.append(f"-l{raw}")
+                    seen_libs.add(raw)
+    return search_paths, link_libs
+
+
 def _build_native_link_command(
     *,
     output_obj: Path,
@@ -13657,6 +13732,11 @@ def _build_native_link_command(
             link_cmd.append("-lm")
         elif sys.platform == "win32":
             link_cmd.extend(["-Wl,/OPT:REF", "-Wl,/OPT:ICF"])
+    # Forward native library dependencies emitted by cargo build scripts
+    # (e.g. lzma-sys emitting -llzma) so the custom link step succeeds.
+    cargo_search, cargo_libs = _collect_cargo_native_link_deps(runtime_lib)
+    link_cmd.extend(cargo_search)
+    link_cmd.extend(cargo_libs)
     return link_cmd, linker_hint, normalized_target
 
 
@@ -16655,23 +16735,34 @@ def _prepare_non_native_build_result(
                 )
             )
 
-            # Generate wrangler.toml for Cloudflare Workers deployment
-            wrangler_toml = split_dir / "wrangler.toml"
-            if not wrangler_toml.exists():
-                wrangler_toml.write_text(
-                    '# Auto-generated by molt build --split-runtime\n'
-                    'name = "molt-app"\n'
-                    'main = "worker.js"\n'
-                    'compatibility_date = "2024-01-01"\n\n'
-                    '[build]\n'
-                    'command = ""\n\n'
-                    '# Split-runtime: tree-shaken runtime is cached\n'
-                    '# independently by the CDN. Only app.wasm changes\n'
-                    '# per deployment.\n'
-                    '[wasm_modules]\n'
-                    'RUNTIME = "molt_runtime.wasm"\n'
-                    'APP = "app.wasm"\n'
-                )
+            # Generate wrangler.jsonc for Cloudflare Workers deployment.
+            # JSONC is the modern Wrangler config shape and matches the
+            # live-verification tooling contract.
+            wrangler_jsonc = split_dir / "wrangler.jsonc"
+            wrangler_jsonc.write_text(
+                '{\n'
+                '  "name": "molt-app",\n'
+                '  "main": "worker.js",\n'
+                f'  "compatibility_date": "{dt.date.today().isoformat()}",\n'
+                '  "no_bundle": true,\n'
+                '  "find_additional_modules": true,\n'
+                '  "rules": [\n'
+                '    {\n'
+                '      "type": "ESModule",\n'
+                '      "globs": ["**/*.js"],\n'
+                '      "fallthrough": false\n'
+                '    },\n'
+                '    {\n'
+                '      "type": "CompiledWasm",\n'
+                '      "globs": ["**/*.wasm"],\n'
+                '      "fallthrough": false\n'
+                '    }\n'
+                '  ]\n'
+                '}\n'
+            )
+            legacy_wrangler_toml = split_dir / "wrangler.toml"
+            if legacy_wrangler_toml.exists():
+                legacy_wrangler_toml.unlink()
             bundle_root = split_dir
             artifacts.update(
                 {
@@ -16679,7 +16770,7 @@ def _prepare_non_native_build_result(
                     "runtime_wasm": str(rt_wasm),
                     "manifest": str(manifest),
                     "worker_js": str(worker_js),
-                    "wrangler_config": str(wrangler_toml),
+                    "wrangler_config": str(wrangler_jsonc),
                 }
             )
 
@@ -27959,6 +28050,31 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
+    # --- harness command ---
+    harness_parser = subparsers.add_parser(
+        "harness",
+        help="Run the Molt quality harness",
+        description="Run layered quality checks (compile, lint, test, fuzz, etc.).",
+    )
+    harness_parser.add_argument(
+        "profile",
+        nargs="?",
+        default="standard",
+        choices=["quick", "standard", "deep"],
+        help="Test profile (default: standard).",
+    )
+    harness_parser.add_argument(
+        "--no-fail-fast",
+        action="store_true",
+        help="Continue running layers after a failure.",
+    )
+    harness_parser.add_argument(
+        "--json", action="store_true", help="Print JSON report to stdout."
+    )
+    harness_parser.add_argument(
+        "--verbose", action="store_true", help="Emit verbose diagnostics."
+    )
+
     args = parser.parse_args()
 
     config_root = _find_project_root(Path.cwd())
@@ -28703,6 +28819,18 @@ def main() -> int:
     if args.command == "completion":
         return completion(args.shell, args.json, args.verbose)
 
+    if args.command == "harness":
+        from molt.harness import main as harness_main
+
+        harness_args = [getattr(args, "profile", "standard")]
+        if getattr(args, "no_fail_fast", False):
+            harness_args.append("--no-fail-fast")
+        if getattr(args, "verbose", False):
+            harness_args.append("--verbose")
+        if getattr(args, "json", False):
+            harness_args.append("--json")
+        return harness_main(harness_args)
+
     if args.command == "deploy":
         deploy_build_profile = args.build_profile
         if getattr(args, "release", False) and not deploy_build_profile:
@@ -28971,8 +29099,6 @@ def _write_cached_artifact(cache_path: Path, data: bytes) -> None:
 
 def _is_private_ip(host: str) -> bool:
     """Check if a hostname or IP is private/link-local/metadata."""
-    import ipaddress
-    import socket
     # Check hostname-based blocklist first
     lower = host.lower()
     if lower in ("metadata.google.internal", "metadata.internal"):
@@ -28981,22 +29107,51 @@ def _is_private_ip(host: str) -> bool:
     try:
         infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
     except socket.gaierror:
-        return False  # unresolvable is not private
+        return True  # unresolvable hosts are blocked conservatively
     for _family, _type, _proto, _canonname, sockaddr in infos:
         ip_str = sockaddr[0]
         try:
             addr = ipaddress.ip_address(ip_str)
         except ValueError:
             continue
+        # Unwrap IPv4-mapped IPv6 addresses (e.g. ::ffff:169.254.169.254)
+        # so the private/loopback/link-local checks work correctly.
+        if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+            addr = addr.ipv4_mapped
         if (
             addr.is_private
             or addr.is_loopback
             or addr.is_link_local
             or addr.is_reserved
-            or ip_str == "169.254.169.254"
+            or str(addr) == "169.254.169.254"
         ):
             return True
     return False
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Block all HTTP redirects to prevent SSRF via redirect bypass."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        parsed = urllib.parse.urlparse(newurl)
+        if parsed.scheme != "https":
+            raise ValueError(
+                f"redirect to non-HTTPS URL blocked: {newurl}"
+            )
+        redir_host = parsed.hostname or ""
+        if _is_private_ip(redir_host):
+            raise ValueError(
+                f"redirect to private/metadata address blocked: {redir_host}"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _download_artifact(url: str, expected_hash: str) -> bytes:
@@ -29008,13 +29163,20 @@ def _download_artifact(url: str, expected_hash: str) -> bytes:
     host = parsed.hostname or ""
     if _is_private_ip(host):
         raise ValueError(f"URL resolves to private/metadata address: {host}")
+    if ":" not in expected_hash:
+        raise ValueError(f"hash must be in 'algorithm:hex' format, got {expected_hash!r}")
+    algo, expected = expected_hash.split(":", 1)
+    if algo != "sha256" or len(expected) != 64 or not all(c in "0123456789abcdef" for c in expected):
+        raise ValueError(f"unsupported or malformed hash: {expected_hash!r}")
     cache_path = _vendor_cache_path(url, expected_hash)
-    expected = expected_hash.split(":", 1)[-1]
     if cache_path is not None:
         cached = _read_cached_artifact(cache_path, expected)
         if cached is not None:
             return cached
-    with urllib.request.urlopen(url) as response:
+    opener = urllib.request.build_opener(
+        _NoRedirectHandler, urllib.request.HTTPSHandler()
+    )
+    with opener.open(url) as response:
         data = response.read()
     digest = hashlib.sha256(data).hexdigest()
     if digest != expected:

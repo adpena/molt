@@ -11,12 +11,13 @@
 //   copy / copy2 / copytree / move: fs.read + fs.write
 //   rmtree:                         fs.write
 //   disk_usage / get_terminal_size: fs.read (no writes)
-//   make_archive / unpack_archive:  fs.read + fs.write
+//   make_archive / unpack_archive:  fs.read + fs.write + process (tar formats)
 //   chown:                          fs.write  (Unix only)
 
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 
+use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::*;
 use std::fs;
 use std::io::ErrorKind;
@@ -600,6 +601,21 @@ pub extern "C" fn molt_shutil_make_archive(
                 }
             }
             "tar" | "gztar" | "bztar" | "xztar" => {
+                // tar requires spawning a subprocess — gate on "process" capability.
+                let allowed = has_capability(_py, "process");
+                audit_capability_decision(
+                    "shutil.make_archive",
+                    "process",
+                    AuditArgs::None,
+                    allowed,
+                );
+                if !allowed {
+                    return raise_exception::<u64>(
+                        _py,
+                        "PermissionError",
+                        "missing process capability for archive operations",
+                    );
+                }
                 // Use std::process to invoke tar(1) which is universally available.
                 let compression_flag = match format.as_str() {
                     "gztar" => Some("-z"),
@@ -711,6 +727,16 @@ pub extern "C" fn molt_shutil_unpack_archive(filename_bits: u64, extract_dir_bit
             || name_lower.ends_with(".tar.xz")
             || name_lower.ends_with(".txz")
         {
+            // tar requires spawning a subprocess — gate on "process" capability.
+            let allowed = has_capability(_py, "process");
+            audit_capability_decision("shutil.unpack_archive", "process", AuditArgs::None, allowed);
+            if !allowed {
+                return raise_exception::<u64>(
+                    _py,
+                    "PermissionError",
+                    "missing process capability for archive operations",
+                );
+            }
             let mut cmd = std::process::Command::new("tar");
             cmd.arg("-xf").arg(&filename);
             cmd.arg("-C").arg(&extract_dir);

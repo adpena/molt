@@ -47,11 +47,12 @@ def download_model(repo_id: str, filename: str = None, revision: str = "main",
     repo_dir.mkdir(parents=True, exist_ok=True)
 
     if filename is None:
-        # Try common filenames
+        # Try common filenames — only catch 404 (FileNotFoundError).
+        # Let auth errors, validation errors, and network failures propagate.
         for candidate in ["model.safetensors", "pytorch_model.bin", "model.gguf"]:
             try:
                 return download_model(repo_id, candidate, revision, cache_dir)
-            except Exception:
+            except FileNotFoundError:
                 continue
         raise FileNotFoundError(f"No model file found in {repo_id}")
 
@@ -115,8 +116,14 @@ def list_files(repo_id: str, revision: str = "main") -> list:
             data = json.loads(response.read())
             siblings = data.get("siblings", [])
             return [s["rfilename"] for s in siblings]
-    except Exception as e:
-        raise ConnectionError(f"Failed to list files for {repo_id}: {e}")
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise PermissionError(f"Authentication required for {repo_id}. Set HF_TOKEN.") from e
+        if e.code == 404:
+            raise FileNotFoundError(f"Repository not found: {repo_id}") from e
+        raise ConnectionError(f"HTTP {e.code} listing files for {repo_id}") from e
+    except urllib.error.URLError as e:
+        raise ConnectionError(f"Failed to list files for {repo_id}: {e.reason}") from e
 
 
 def model_info(repo_id: str) -> dict:
@@ -127,5 +134,11 @@ def model_info(repo_id: str) -> dict:
     try:
         with urllib.request.urlopen(url) as response:
             return json.loads(response.read())
-    except Exception as e:
-        raise ConnectionError(f"Failed to get info for {repo_id}: {e}")
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise PermissionError(f"Authentication required for {repo_id}. Set HF_TOKEN.") from e
+        if e.code == 404:
+            raise FileNotFoundError(f"Repository not found: {repo_id}") from e
+        raise ConnectionError(f"HTTP {e.code} getting info for {repo_id}") from e
+    except urllib.error.URLError as e:
+        raise ConnectionError(f"Failed to get info for {repo_id}: {e.reason}") from e

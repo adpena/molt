@@ -18,5 +18,11 @@ path = "fuzz_targets/string_ops.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "fuzz_vfs_caps"
+path = "fuzz_targets/fuzz_vfs_caps.rs"
+test = false
+doc = false
+
 [workspace]
 members = ["."]

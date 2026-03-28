@@ -544,6 +544,15 @@ def _parse_v2_dict(data: dict) -> CapabilityManifest:
     audit = _parse_audit(data.get("audit", {}))
     monty = _parse_monty(data.get("monty", {}))
 
+    signature_raw = data.get("signature")
+    signature: Optional[str] = None
+    if isinstance(signature_raw, dict):
+        # TOML [signature] table -- extract the value key.
+        signature = signature_raw.get("value")
+    elif isinstance(signature_raw, str):
+        # JSON/YAML scalar key.
+        signature = signature_raw
+
     return CapabilityManifest(
         version=version,
         description=description,
@@ -555,6 +564,7 @@ def _parse_v2_dict(data: dict) -> CapabilityManifest:
         audit=audit,
         io=io,
         monty=monty,
+        signature=signature,
     )
 
 
@@ -601,12 +611,18 @@ def _load_json(path: Path) -> CapabilityManifest:
                 effects=list(pkg_data.get("effects", [])),
             )
 
+    signature_raw = data.get("signature")
+    signature: Optional[str] = None
+    if isinstance(signature_raw, str):
+        signature = signature_raw
+
     return CapabilityManifest(
         version="1.0",
         allow=allow,
         deny=deny,
         effects=effects,
         packages=packages,
+        signature=signature,
     )
 
 
@@ -631,6 +647,155 @@ def _load_yaml(path: Path) -> CapabilityManifest:
 
     # YAML uses the same structure as TOML — reuse the TOML parser internals.
     return _parse_v2_dict(data)
+
+
+# ---------------------------------------------------------------------------
+# Signature verification
+# ---------------------------------------------------------------------------
+
+def _parse_and_strip_signature(text: str, suffix: str) -> dict[str, Any]:
+    """Parse a manifest file and return the data dict with 'signature' removed.
+
+    Uses structural parsing for all formats — never regex on raw text.
+    """
+    if suffix == ".toml":
+        import tomllib
+        data = tomllib.loads(text)
+    elif suffix == ".json":
+        data = json.loads(text)
+    elif suffix in (".yaml", ".yml"):
+        import yaml
+        data = yaml.safe_load(text) or {}
+    else:
+        raise ManifestError(f"unsupported manifest format: {suffix!r}")
+    if not isinstance(data, dict):
+        raise ManifestError("manifest root must be a mapping")
+    data.pop("signature", None)
+    return data
+
+
+def compute_manifest_hash(manifest_path: Path) -> str:
+    """Compute a SHA-256 hash of a manifest file with the signature stripped.
+
+    The file is parsed structurally, the ``signature`` key is removed,
+    and the remaining data is serialized to sorted JSON for deterministic
+    hashing.  This avoids regex-based stripping which is fragile against
+    crafted input (e.g. ``[signature]`` inside TOML multi-line strings).
+
+    Parameters
+    ----------
+    manifest_path : Path
+        Path to the manifest file (.toml, .json, .yaml, .yml).
+
+    Returns
+    -------
+    str
+        Hex-encoded SHA-256 digest of the canonical JSON representation.
+    """
+    text = manifest_path.read_text(encoding="utf-8")
+    data = _parse_and_strip_signature(text, manifest_path.suffix.lower())
+    canonical = json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class SignatureStatus:
+    """Result of manifest signature verification."""
+    VERIFIED = "verified"
+    UNSIGNED = "unsigned"
+
+    def __init__(self, status: str) -> None:
+        self.status = status
+
+    @property
+    def is_verified(self) -> bool:
+        return self.status == self.VERIFIED
+
+    @property
+    def is_unsigned(self) -> bool:
+        return self.status == self.UNSIGNED
+
+    def __bool__(self) -> bool:
+        return self.is_verified
+
+    def __repr__(self) -> str:
+        return f"SignatureStatus({self.status!r})"
+
+
+def verify_manifest_signature(
+    manifest_path: Path, manifest: CapabilityManifest
+) -> SignatureStatus:
+    """Verify the cryptographic signature embedded in a manifest.
+
+    Returns a :class:`SignatureStatus` that is truthy only when the
+    signature is present **and** matches.  Callers that require signed
+    manifests should check ``result.is_verified`` or use ``bool(result)``.
+
+    Parameters
+    ----------
+    manifest_path : Path
+        Path to the on-disk manifest file.
+    manifest : CapabilityManifest
+        The already-parsed manifest object.
+
+    Returns
+    -------
+    SignatureStatus
+        ``VERIFIED`` if the signature matches, ``UNSIGNED`` if absent.
+
+    Raises
+    ------
+    ManifestError
+        If the signature format is invalid or the digest does not match.
+    """
+    if manifest.signature is None:
+        warnings.warn(
+            f"manifest {str(manifest_path)!r} is unsigned; "
+            "consider signing with `molt sign-manifest`",
+            stacklevel=2,
+        )
+        return SignatureStatus(SignatureStatus.UNSIGNED)
+
+    sig = manifest.signature
+    if not sig.startswith("sha256:"):
+        raise ManifestError(
+            f"invalid signature format {sig!r}; expected 'sha256:<hex_digest>'"
+        )
+
+    stored_digest = sig[len("sha256:"):]
+    expected_digest = compute_manifest_hash(manifest_path)
+
+    if stored_digest != expected_digest:
+        raise ManifestError(
+            f"manifest signature mismatch: stored digest {stored_digest!r} "
+            f"does not match computed digest {expected_digest!r}; "
+            f"the manifest file may have been tampered with"
+        )
+    return SignatureStatus(SignatureStatus.VERIFIED)
+
+
+def sign_manifest(manifest_path: Path) -> str:
+    """Compute a signature string suitable for embedding in a manifest.
+
+    This is the CLI-facing entry point for ``molt sign-manifest``.  It
+    returns a string in the format ``sha256:<hex_digest>`` that should be
+    written into the manifest's ``[signature]`` section (TOML) or
+    ``"signature"`` key (JSON/YAML).
+
+    Parameters
+    ----------
+    manifest_path : Path
+        Path to the manifest file.
+
+    Returns
+    -------
+    str
+        The signature string, e.g. ``"sha256:ab12cd..."``.
+    """
+    p = Path(manifest_path)
+    if not p.exists():
+        raise FileNotFoundError(f"manifest file not found: {p}")
+    digest = compute_manifest_hash(p)
+    return f"sha256:{digest}"
 
 
 # ---------------------------------------------------------------------------
@@ -686,6 +851,9 @@ def load_manifest(path: Union[str, Path]) -> CapabilityManifest:
     _warnings = validate_manifest(manifest)
     # Warnings are informational; callers who want them can call
     # validate_manifest() directly.
+
+    # Verify manifest integrity if a signature is present.
+    verify_manifest_signature(p, manifest)
 
     return manifest
 

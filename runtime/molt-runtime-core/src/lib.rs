@@ -150,9 +150,7 @@ macro_rules! with_gil_entry {
         let __py_token = $crate::PyToken::new();
         let $py = &__py_token;
 
-        match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
-            $body
-        })) {
+        match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body)) {
             Ok(val) => val,
             Err(payload) => {
                 let msg = if let Some(s) = payload.downcast_ref::<&str>() {
@@ -269,9 +267,7 @@ macro_rules! with_core_gil {
         let $py = _gil_guard.token();
         let $py = &$py;
 
-        match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
-            $body
-        })) {
+        match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body)) {
             Ok(val) => val,
             Err(payload) => {
                 let msg = if let Some(s) = payload.downcast_ref::<&str>() {

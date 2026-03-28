@@ -1,3 +1,4 @@
+use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_emit};
 use crate::{MoltObject, has_capability, is_trusted, raise_exception, string_obj_to_owned};
 
 #[unsafe(no_mangle)]
@@ -23,7 +24,26 @@ pub extern "C" fn molt_capabilities_require(name_bits: u64) -> u64 {
             Some(val) => val,
             None => return raise_exception::<_>(_py, "TypeError", "capability name must be str"),
         };
-        if !has_capability(_py, &name) {
+        let allowed = has_capability(_py, &name);
+        // Emit audit event for the explicit require() intrinsic.
+        // Because `name` is a runtime string we build the event manually.
+        {
+            let decision = if allowed {
+                AuditDecision::Allowed
+            } else {
+                AuditDecision::Denied {
+                    reason: format!("missing {name} capability"),
+                }
+            };
+            audit_emit(AuditEvent::new(
+                "capability.require",
+                "capability.require",
+                AuditArgs::Custom(name.clone()),
+                decision,
+                module_path!().to_string(),
+            ));
+        }
+        if !allowed {
             eprintln!(
                 "molt: PermissionError: missing '{name}' capability \
                  (set MOLT_TRUSTED=1 or MOLT_CAPABILITIES={name})"

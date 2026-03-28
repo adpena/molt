@@ -375,7 +375,8 @@ pub extern "C" fn molt_inplace_sub(a: u64, b: u64) -> u64 {
         // Int/float fast paths — avoid dunder dispatch overhead for numeric types.
         // Guard: skip int fast path if either operand is a float, because
         // to_i64 coerces exact-integer floats (e.g. 2.0 ** 3.0 must return 8.0, not 8).
-        if !lhs.is_float() && !rhs.is_float()
+        if !lhs.is_float()
+            && !rhs.is_float()
             && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
         {
             return int_bits_from_i128(_py, li as i128 - ri as i128);
@@ -654,7 +655,8 @@ pub extern "C" fn molt_inplace_mul(a: u64, b: u64) -> u64 {
         // Int/float fast paths — avoid dunder dispatch overhead for numeric types.
         // Guard: skip int fast path if either operand is a float, because
         // to_i64 coerces exact-integer floats (e.g. 2.0 ** 3.0 must return 8.0, not 8).
-        if !lhs.is_float() && !rhs.is_float()
+        if !lhs.is_float()
+            && !rhs.is_float()
             && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
         {
             return int_bits_from_i128(_py, li as i128 * ri as i128);
@@ -765,7 +767,8 @@ pub extern "C" fn molt_div(a: u64, b: u64) -> u64 {
         // Python true division: int / int always returns float
         // Guard: skip int fast path if either operand is a float, because
         // to_i64 coerces exact-integer floats (e.g. 2.0 ** 3.0 must return 8.0, not 8).
-        if !lhs.is_float() && !rhs.is_float()
+        if !lhs.is_float()
+            && !rhs.is_float()
             && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
         {
             if ri == 0 {
@@ -2133,7 +2136,8 @@ pub extern "C" fn molt_pow(a: u64, b: u64) -> u64 {
         }
         // Guard: skip int fast path if either operand is a float, because
         // to_i64 coerces exact-integer floats (e.g. 2.0 ** 3.0 must return 8.0, not 8).
-        if !lhs.is_float() && !rhs.is_float()
+        if !lhs.is_float()
+            && !rhs.is_float()
             && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
         {
             if ri >= 0 {
@@ -2161,7 +2165,8 @@ pub extern "C" fn molt_pow(a: u64, b: u64) -> u64 {
             }
             return MoltObject::from_float(out).bits();
         }
-        if !lhs.is_float() && !rhs.is_float()
+        if !lhs.is_float()
+            && !rhs.is_float()
             && let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs))
         {
             if let Some(exp) = r_big.to_u64() {
@@ -2844,7 +2849,8 @@ pub extern "C" fn molt_bit_or(a: u64, b: u64) -> u64 {
         let rhs = obj_from_bits(b);
         // Guard: skip int fast path if either operand is a float, because
         // to_i64 coerces exact-integer floats (e.g. 2.0 ** 3.0 must return 8.0, not 8).
-        if !lhs.is_float() && !rhs.is_float()
+        if !lhs.is_float()
+            && !rhs.is_float()
             && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
         {
             if lhs.is_bool() && rhs.is_bool() {
@@ -3019,7 +3025,8 @@ pub extern "C" fn molt_bit_and(a: u64, b: u64) -> u64 {
         let rhs = obj_from_bits(b);
         // Guard: skip int fast path if either operand is a float, because
         // to_i64 coerces exact-integer floats (e.g. 2.0 ** 3.0 must return 8.0, not 8).
-        if !lhs.is_float() && !rhs.is_float()
+        if !lhs.is_float()
+            && !rhs.is_float()
             && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
         {
             if lhs.is_bool() && rhs.is_bool() {
@@ -3143,7 +3150,8 @@ pub extern "C" fn molt_bit_xor(a: u64, b: u64) -> u64 {
         let rhs = obj_from_bits(b);
         // Guard: skip int fast path if either operand is a float, because
         // to_i64 coerces exact-integer floats (e.g. 2.0 ** 3.0 must return 8.0, not 8).
-        if !lhs.is_float() && !rhs.is_float()
+        if !lhs.is_float()
+            && !rhs.is_float()
             && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs))
         {
             if lhs.is_bool() && rhs.is_bool() {

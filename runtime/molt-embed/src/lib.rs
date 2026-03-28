@@ -239,14 +239,15 @@ impl MoltCompiler {
     pub fn new() -> Result<Self, CompileError> {
         let molt_home = std::env::var("MOLT_HOME")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                dirs_home().join(".molt")
-            });
+            .unwrap_or_else(|_| dirs_home().join(".molt"));
 
         // Try to find the molt CLI
         let molt_cli = which_molt();
 
-        Ok(Self { molt_home, molt_cli })
+        Ok(Self {
+            molt_home,
+            molt_cli,
+        })
     }
 
     /// Compile Python source code to the specified target.
@@ -280,11 +281,12 @@ impl MoltCompiler {
         path: &Path,
         options: &CompileOptions,
     ) -> Result<Vec<u8>, CompileError> {
-        let molt_cli = self.molt_cli.as_ref().ok_or_else(|| {
-            CompileError::BackendUnavailable {
+        let molt_cli = self
+            .molt_cli
+            .as_ref()
+            .ok_or_else(|| CompileError::BackendUnavailable {
                 message: "molt CLI not found in PATH or MOLT_HOME".into(),
-            }
-        })?;
+            })?;
 
         let tmp_out = std::env::temp_dir().join("molt-embed").join("output");
         std::fs::create_dir_all(&tmp_out)?;
@@ -297,7 +299,9 @@ impl MoltCompiler {
         // Target
         match options.target {
             CompileTarget::Native => {}
-            CompileTarget::Wasm => { cmd.arg("--target").arg("wasm"); }
+            CompileTarget::Wasm => {
+                cmd.arg("--target").arg("wasm");
+            }
             CompileTarget::WasmLinked => {
                 cmd.arg("--target").arg("wasm");
                 cmd.arg("--linked");
@@ -306,8 +310,12 @@ impl MoltCompiler {
 
         // Profile
         match options.profile {
-            Profile::Dev => { cmd.arg("--profile").arg("dev"); }
-            Profile::Release => { cmd.arg("--profile").arg("release"); }
+            Profile::Dev => {
+                cmd.arg("--profile").arg("dev");
+            }
+            Profile::Release => {
+                cmd.arg("--profile").arg("release");
+            }
         }
 
         // Capabilities
@@ -367,7 +375,9 @@ fn which_molt() -> Option<PathBuf> {
         .ok()
         .and_then(|o| {
             if o.status.success() {
-                String::from_utf8(o.stdout).ok().map(|s| PathBuf::from(s.trim()))
+                String::from_utf8(o.stdout)
+                    .ok()
+                    .map(|s| PathBuf::from(s.trim()))
             } else {
                 None
             }

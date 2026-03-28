@@ -45,6 +45,22 @@ for i in range(10):
 """
 
 
+def test_generate_split_worker_js_lifecycle_contract() -> None:
+    from molt.cli import _generate_split_worker_js
+
+    worker_js = _generate_split_worker_js(
+        shared_memory_initial_pages=8,
+        shared_table_initial=16,
+    )
+
+    assert "\x00" not in worker_js
+    assert 'encoder.encode(a + "\\0")' in worker_js
+    assert 'encoder.encode(e + "\\0")' in worker_js
+    assert "const stdoutDecoder = new TextDecoder();" in worker_js
+    assert "const stderrDecoder = new TextDecoder();" in worker_js
+    assert "rtInstance.exports.molt_runtime_shutdown" in worker_js
+
+
 def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedProcess:
     """Run ``molt build --target wasm --split-runtime`` and return the result."""
     env = os.environ.copy()
@@ -148,9 +164,16 @@ class TestSplitRuntimeArtifacts:
         out_dir, result = split_build_a
         if result.returncode != 0:
             pytest.skip("build failed")
-        expected = ["app.wasm", "molt_runtime.wasm", "worker.js", "manifest.json", "wrangler.toml"]
+        expected = [
+            "app.wasm",
+            "molt_runtime.wasm",
+            "worker.js",
+            "manifest.json",
+            "wrangler.jsonc",
+        ]
         for name in expected:
             assert (out_dir / name).exists(), f"Missing artifact: {name}"
+        assert not (out_dir / "wrangler.toml").exists()
 
     def test_app_wasm_size(self, split_build_a):
         out_dir, result = split_build_a
@@ -214,6 +237,12 @@ class TestWorkerJsContent:
         content = self._read_worker(split_build_a)
         assert "molt_isolate_import" in content, "worker.js must bridge runtime isolate imports"
 
+    def test_worker_runs_runtime_shutdown(self, split_build_a):
+        content = self._read_worker(split_build_a)
+        assert "molt_runtime_shutdown" in content, (
+            "worker.js must shut the runtime down so stdio buffers flush"
+        )
+
     def test_worker_provisions_shared_memory(self, split_build_a):
         content = self._read_worker(split_build_a)
         assert "new WebAssembly.Memory" in content, "worker.js must provision shared memory"
@@ -225,6 +254,12 @@ class TestWorkerJsContent:
     def test_app_wasm_import(self, split_build_a):
         content = self._read_worker(split_build_a)
         assert "app.wasm" in content, "worker.js must import app.wasm"
+
+    def test_worker_uses_escaped_nul_terminators(self, split_build_a):
+        content = self._read_worker(split_build_a)
+        assert "\x00" not in content, "worker.js must not embed literal NUL bytes"
+        assert 'encoder.encode(a + "\\0")' in content
+        assert 'encoder.encode(e + "\\0")' in content
 
 
 @pytest.mark.slow

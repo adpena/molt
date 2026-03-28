@@ -18,6 +18,8 @@ use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::GilGuard;
 #[cfg(not(target_arch = "wasm32"))]
+use crate::audit::{AuditArgs, audit_capability_decision};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::builtins::attr::attr_name_bits_from_bytes;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::builtins::modules::molt_module_cache_get;
@@ -507,7 +509,9 @@ pub(crate) fn configured_thread_stack_size() -> Option<usize> {
 /// `payload_bits` must reference a valid thread payload tuple allocated by this runtime.
 pub unsafe extern "C" fn molt_thread_spawn(payload_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "thread") && !has_capability(_py, "thread.spawn") {
+        let allowed = has_capability(_py, "thread") || has_capability(_py, "thread.spawn");
+        audit_capability_decision("thread.spawn", "thread", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing thread capability");
         }
         let isolated_override = matches!(
@@ -568,7 +572,9 @@ pub unsafe extern "C" fn molt_thread_spawn_shared(
     kwargs_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "thread") && !has_capability(_py, "thread.spawn") {
+        let allowed = has_capability(_py, "thread") || has_capability(_py, "thread.spawn");
+        audit_capability_decision("thread.spawn_shared", "thread", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing thread capability");
         }
         let isolated_override = matches!(

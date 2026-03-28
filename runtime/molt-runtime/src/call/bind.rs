@@ -14,8 +14,9 @@ use crate::{
     TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj,
     alloc_dict_with_pairs, alloc_exception_from_class_bits, alloc_instance_for_class, alloc_object,
     alloc_string, alloc_tuple, apply_class_slots_layout, attr_lookup_ptr,
-    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, bits_from_ptr,
-    bound_method_func_bits, bound_method_self_bits, builtin_classes, call_callable0,
+    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes,
+    audit::{AuditArgs, audit_capability_decision},
+    bits_from_ptr, bound_method_func_bits, bound_method_self_bits, builtin_classes, call_callable0,
     call_callable1, call_class_init_with_args, call_function_obj_vec, class_attr_lookup,
     class_attr_lookup_raw_mro, class_dict_bits, class_name_bits, class_name_for_error,
     code_argcount, code_filename_bits, code_name_bits, dec_ref_bits, dict_fromkeys_method,
@@ -1594,16 +1595,22 @@ pub extern "C" fn molt_invoke_ffi_ic(
     require_bridge_cap_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        if bool_flag_from_bits(require_bridge_cap_bits)
-            && !is_trusted(_py)
-            && !has_capability(_py, "python.bridge")
-        {
-            profile_hit_unchecked(&INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT);
-            return raise_exception::<_>(
-                _py,
-                "PermissionError",
-                "missing python.bridge capability",
+        if bool_flag_from_bits(require_bridge_cap_bits) && !is_trusted(_py) {
+            let bridge_allowed = has_capability(_py, "python.bridge");
+            audit_capability_decision(
+                "ffi.bridge",
+                "python.bridge",
+                AuditArgs::None,
+                bridge_allowed,
             );
+            if !bridge_allowed {
+                profile_hit_unchecked(&INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT);
+                return raise_exception::<_>(
+                    _py,
+                    "PermissionError",
+                    "missing python.bridge capability",
+                );
+            }
         }
         unsafe { call_bind_ic_dispatch(_py, site_bits, call_bits, builder_bits) }
     })

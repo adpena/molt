@@ -1,10 +1,9 @@
 use crate::intrinsics::generated::{INTRINSICS, resolve_symbol};
 use crate::{
     FUNC_DEFAULT_NONE, MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING,
-    alloc_dict_with_pairs, alloc_function_obj, alloc_string, builtin_classes, dec_ref_bits,
-    dict_get_in_place, dict_set_in_place, function_set_dict_bits, function_set_trampoline_ptr,
-    inc_ref_bits, module_dict_bits, obj_from_bits, object_set_class_bits, object_type_id,
-    raise_exception, string_bytes, string_len,
+    alloc_dict_with_pairs, alloc_string, builtin_classes, dec_ref_bits, dict_get_in_place,
+    dict_set_in_place, function_set_dict_bits, inc_ref_bits, module_dict_bits, obj_from_bits,
+    object_set_class_bits, object_type_id, raise_exception, string_bytes, string_len,
 };
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
@@ -31,14 +30,20 @@ static MANIFEST_SET: AtomicBool = AtomicBool::new(false);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_intrinsic_manifest(ptr: u64, len: u64) -> u64 {
+    // Store PTR and LEN *before* setting MANIFEST_SET so that any reader
+    // observing MANIFEST_SET=true is guaranteed to see the pointer values
+    // (Release on the CAS provides the happens-before edge).
+    INTRINSIC_MANIFEST_PTR.store(ptr as u32 as *mut u8, Ordering::Relaxed);
+    INTRINSIC_MANIFEST_LEN.store(len as u32, Ordering::Relaxed);
     if MANIFEST_SET
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .compare_exchange(false, true, Ordering::Release, Ordering::Acquire)
         .is_err()
     {
-        return 0; // already set — silently ignore subsequent calls
+        // Another thread won the race — revert our stores.
+        INTRINSIC_MANIFEST_PTR.store(core::ptr::null_mut(), Ordering::Relaxed);
+        INTRINSIC_MANIFEST_LEN.store(0, Ordering::Relaxed);
+        return 0;
     }
-    INTRINSIC_MANIFEST_PTR.store(ptr as u32 as *mut u8, Ordering::Release);
-    INTRINSIC_MANIFEST_LEN.store(len as u32, Ordering::Release);
     0
 }
 
@@ -345,12 +350,11 @@ fn build_runtime_function(
     arity: u8,
     default_kind: i64,
 ) -> Option<u64> {
-    let ptr = alloc_function_obj(_py, fn_ptr, arity as u64);
+    let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity as u64);
     if ptr.is_null() {
         return None;
     }
     unsafe {
-        function_set_trampoline_ptr(ptr, 0);
         if default_kind != 0 {
             function_set_dict_bits(ptr, MoltObject::from_int(default_kind).bits());
         }
@@ -367,12 +371,11 @@ fn build_bootstrap_function(
     arity: u8,
     default_kind: i64,
 ) -> Option<u64> {
-    let ptr = alloc_function_obj(_py, fn_ptr, arity as u64);
+    let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity as u64);
     if ptr.is_null() {
         return None;
     }
     unsafe {
-        function_set_trampoline_ptr(ptr, 0);
         if default_kind != 0 {
             function_set_dict_bits(ptr, MoltObject::from_int(default_kind).bits());
         }
