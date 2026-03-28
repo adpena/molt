@@ -1782,6 +1782,11 @@ struct LoopFrame {
     after_block: Block,
     index_name: Option<String>,
     next_index: Option<Value>,
+    /// True when the loop uses the linearized TIR path (no dedicated
+    /// Cranelift loop block; counter flows through phi variables).
+    /// `loop_end` must NOT decrement `loop_depth` for linearized loops
+    /// because `loop_index_start` did not increment it.
+    linearized: bool,
 }
 
 #[cfg(feature = "native-backend")]
