@@ -12713,6 +12713,7 @@ impl SimpleBackend {
                         after_block,
                         index_name: None,
                         next_index: None,
+                        linearized: false,
                     });
                     loop_depth += 1;
                 }
@@ -12810,9 +12811,7 @@ impl SimpleBackend {
                         };
 
                         let allow_linearized_loop = !has_structured_backedge
-                            && phi_value.is_some()
-                            && loop_depth == 0
-                            && !contains_nested_loop;
+                            && phi_value.is_some();
                         if debug_loop_cfg.is_some() {
                             eprintln!(
                                 "LOOP_CFG {} op{} loop_index_start filled={} depth={} linearized={} structured_backedge={} nested_loop={} phi={}",
@@ -12831,10 +12830,10 @@ impl SimpleBackend {
                             // phi variable.  The back-edge flows through
                             // store_var/load_var on the state label block, so
                             // SSA resolution handles the counter update.
-                            // This is only sound for top-level indexed loops
-                            // without nested loop bodies. Nested loops require
-                            // a structured frame so loop_depth and CFG sealing
-                            // remain coherent.
+                            // Each loop level discovers its own phi variable
+                            // independently, so this path is valid for nested
+                            // loops too.  The LoopFrame is marked linearized
+                            // so loop_end skips the loop_depth decrement.
                             def_var_named(
                                 &mut builder,
                                 &vars,
@@ -12848,8 +12847,10 @@ impl SimpleBackend {
                                 after_block: dummy,
                                 index_name: Some(out_name),
                                 next_index: None,
+                                linearized: true,
                             });
-                            // Note: loop_depth NOT incremented for linearized loops
+                            // Note: loop_depth NOT incremented for linearized loops;
+                            // loop_end checks frame.linearized to skip the decrement.
                             continue;
                         }
 
@@ -12887,6 +12888,7 @@ impl SimpleBackend {
                             after_block,
                             index_name: Some(out_name),
                             next_index: None,
+                            linearized: false,
                         });
                         if debug_loop_cfg.is_some() {
                             eprintln!(
@@ -12907,6 +12909,7 @@ impl SimpleBackend {
                             after_block,
                             index_name: Some(out_name),
                             next_index: None,
+                            linearized: false,
                         });
                         if debug_loop_cfg.is_some() {
                             eprintln!(
@@ -13292,7 +13295,9 @@ impl SimpleBackend {
                                 is_block_filled,
                             );
                         }
-                        loop_depth -= 1;
+                        if !frame.linearized {
+                            loop_depth -= 1;
+                        }
                         if !is_block_filled {
                             ensure_block_in_layout(&mut builder, frame.loop_block);
                             reachable_blocks.insert(frame.loop_block);
