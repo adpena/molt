@@ -30,6 +30,9 @@ static MANIFEST_SET: AtomicBool = AtomicBool::new(false);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_intrinsic_manifest(ptr: u64, len: u64) -> u64 {
+    // Save old values before overwriting so the loser can restore them.
+    let old_ptr = INTRINSIC_MANIFEST_PTR.load(Ordering::Relaxed);
+    let old_len = INTRINSIC_MANIFEST_LEN.load(Ordering::Relaxed);
     // Store PTR and LEN *before* setting MANIFEST_SET so that any reader
     // observing MANIFEST_SET=true is guaranteed to see the pointer values
     // (Release on the CAS provides the happens-before edge).
@@ -39,9 +42,9 @@ pub extern "C" fn molt_set_intrinsic_manifest(ptr: u64, len: u64) -> u64 {
         .compare_exchange(false, true, Ordering::Release, Ordering::Acquire)
         .is_err()
     {
-        // Another thread won the race — revert our stores.
-        INTRINSIC_MANIFEST_PTR.store(core::ptr::null_mut(), Ordering::Relaxed);
-        INTRINSIC_MANIFEST_LEN.store(0, Ordering::Relaxed);
+        // Another thread won the race — restore the winner's values.
+        INTRINSIC_MANIFEST_PTR.store(old_ptr, Ordering::Relaxed);
+        INTRINSIC_MANIFEST_LEN.store(old_len, Ordering::Relaxed);
         return 0;
     }
     0
@@ -138,42 +141,31 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
         }
     }
 
+    // On WASM with a manifest, eagerly register only the referenced
+    // intrinsics.  The manifest already filters to only the functions the
+    // compiled module uses, so this is safe and enables dead stripping.
+    // On native, skip eager registration — the lazy resolver handles it.
     #[cfg(target_arch = "wasm32")]
     {
         let manifest = parse_manifest();
-        // Lazy-only registration: the registry dict starts empty.
-        // Functions are resolved on first access via the lazy resolver
-        // (molt_lazy_resolve_intrinsic). This prevents the linker from
-        // marking all 2388 intrinsic functions as reachable at init time,
-        // enabling dead stripping to remove unused runtime code.
-        //
-        // For WASM with a manifest, we still do eager registration since
-        // the manifest already filters to only referenced functions.
-        #[cfg(target_arch = "wasm32")]
-        {
-            let manifest = parse_manifest();
-            if let Some(ref m) = manifest {
-                let mut count = 0u32;
-                for spec in INTRINSICS {
-                    if !m.contains(spec.name) {
-                        continue;
-                    }
-                    let Some(fn_ptr) = resolve_symbol(spec.symbol) else {
-                        continue;
-                    };
-                    let Some(func_bits) = build_intrinsic_func(_py, fn_ptr, spec.arity) else {
-                        continue;
-                    };
-                    set_intrinsic_entry(_py, registry_ptr, spec.name, func_bits);
-                    if let Some(alias) = alias_name(spec.name) {
-                        set_intrinsic_entry(_py, registry_ptr, &alias, func_bits);
-                    }
-                    dec_ref_bits(_py, func_bits);
-                    count += 1;
+        if let Some(ref m) = manifest {
+            for spec in INTRINSICS {
+                if !m.contains(spec.name) {
+                    continue;
                 }
+                let Some(fn_ptr) = resolve_symbol(spec.symbol) else {
+                    continue;
+                };
+                let Some(func_bits) = build_intrinsic_func(_py, fn_ptr, spec.arity) else {
+                    continue;
+                };
+                set_intrinsic_entry(_py, registry_ptr, spec.name, func_bits);
+                if let Some(alias) = alias_name(spec.name) {
+                    set_intrinsic_entry(_py, registry_ptr, &alias, func_bits);
+                }
+                dec_ref_bits(_py, func_bits);
             }
         }
-        // On native, skip eager registration entirely — lazy resolver handles it.
     }
 
     dec_ref_bits(_py, registry_bits);

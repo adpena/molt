@@ -1,4 +1,5 @@
 use crate::PyToken;
+use crate::audit::{AuditArgs, audit_capability_decision};
 use molt_obj_model::MoltObject;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -2866,7 +2867,9 @@ pub extern "C" fn molt_runpy_run_path(
     init_globals_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("runpy.run_path", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let path = match string_obj_to_owned(obj_from_bits(path_bits)) {

@@ -6,6 +6,7 @@
 // glob_escape, glob_has_magic, glob_translate already live in io.rs.
 // This file adds: glob() and iglob().
 
+use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::*;
 use std::path::Path;
 
@@ -59,7 +60,9 @@ pub extern "C" fn molt_glob_glob(
     recursive_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("glob.glob", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let pathname = match require_str(_py, pathname_bits, "pathname") {

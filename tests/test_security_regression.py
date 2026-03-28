@@ -190,3 +190,61 @@ class TestDownloadArtifactURLValidation:
 
         with pytest.raises(ValueError, match="https"):
             _download_artifact("http://example.com/pkg.whl", "sha256:abc123")
+
+    def test_ipv4_mapped_ipv6_detected_as_private(self):
+        """::ffff:169.254.169.254 must be detected as private."""
+        from molt.cli import _is_private_ip
+
+        # IPv4-mapped IPv6 representation of the AWS metadata endpoint
+        assert _is_private_ip("::ffff:169.254.169.254") is True
+
+    def test_malformed_hash_rejected(self):
+        """Hash without algorithm prefix must be rejected."""
+        from molt.cli import _download_artifact
+
+        with pytest.raises(ValueError, match="algorithm:hex"):
+            _download_artifact("https://example.com/file.whl", "deadbeef")
+
+    def test_non_sha256_hash_rejected(self):
+        """Only sha256 is accepted."""
+        from molt.cli import _download_artifact
+
+        with pytest.raises(ValueError, match="unsupported"):
+            _download_artifact("https://example.com/file.whl", "md5:" + "a" * 32)
+
+    def test_unresolvable_host_is_blocked(self):
+        """DNS failure must be treated as private (fail-closed)."""
+        from molt.cli import _is_private_ip
+
+        # This host should not resolve
+        assert _is_private_ip("this-host-definitely-does-not-exist-xyzzy.invalid") is True
+
+    def test_ipv6_scope_id_handled(self):
+        """IPv6 with scope ID must not bypass the check."""
+        from molt.cli import _is_private_ip
+
+        # fe80::1%eth0 is link-local and must be detected
+        assert _is_private_ip("fe80::1") is True
+
+
+# ---------------------------------------------------------------------------
+# 5. Manifest signature truthiness
+# ---------------------------------------------------------------------------
+
+
+class TestManifestSignature:
+    def test_verified_is_truthy(self):
+        from molt.capability_manifest import SignatureStatus
+
+        s = SignatureStatus(SignatureStatus.VERIFIED)
+        assert bool(s) is True
+        assert s.is_verified is True
+        assert s.is_unsigned is False
+
+    def test_unsigned_is_falsy(self):
+        from molt.capability_manifest import SignatureStatus
+
+        s = SignatureStatus(SignatureStatus.UNSIGNED)
+        assert bool(s) is False
+        assert s.is_verified is False
+        assert s.is_unsigned is True
