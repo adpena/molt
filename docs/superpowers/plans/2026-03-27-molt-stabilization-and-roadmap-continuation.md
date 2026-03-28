@@ -1,4 +1,6 @@
-# Molt Stabilization And Roadmap Continuation Implementation Plan
+# ~~Molt Stabilization And Roadmap Continuation Implementation Plan~~ [SUPERSEDED]
+
+> **SUPERSEDED** by Operation Greenfield (2026-03-27): see `docs/superpowers/specs/2026-03-27-operation-greenfield-design.md` and the Wave A/C/B plans.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -102,7 +104,9 @@ PYTHONPATH=src uv run --python 3.12 python3 tools/bench_wasm.py --bench tests/be
 - Modify: `tests/test_frontend_midend_passes.py`
 
 - [ ] **Step 1: Finish the remaining unchecked items in `docs/superpowers/plans/2026-03-26-stdlib-object-partition.md`**
-Specifically: cache-mode versioning, explicit native link fingerprinting, and `emit=obj` contract.
+Specifically: cache-mode versioning and explicit native link fingerprinting. The
+native `emit=obj` partial-link contract is already landed and should now be
+treated as baseline behavior, not an open design question.
 
 - [ ] **Step 2: Audit recent TIR/mid-end emergency bypass commits**
 Recent `main` history shows repeated `MOLT_TIR_SKIP` and loop/TIR bypass work. Reproduce the underlying failing cases and convert emergency skips into explicit, bounded policy with regression coverage.
