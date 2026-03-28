@@ -135,6 +135,15 @@ fn itertools_class(
             }
         }
         let _ = molt_class_set_base(class_bits, builtins.object);
+        // molt_class_set_base may fail during early initialisation (e.g. when
+        // builtins.object has not been fully wired up yet) and leave a pending
+        // exception.  Clear it so that subsequent calls from the iterator
+        // constructor do not see a stale exception and bail out early —
+        // the class dict already has __iter__ and __next__ so the iterator
+        // protocol works even without a fully-resolved base.
+        if exception_pending(_py) {
+            crate::builtins::exceptions::clear_exception(_py);
+        }
         let dict_bits = unsafe { class_dict_bits(class_ptr) };
         if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
             && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
