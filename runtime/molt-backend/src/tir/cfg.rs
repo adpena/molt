@@ -236,6 +236,32 @@ fn build_edges(
     // Pre-compute structural maps.
     let (if_else_map, else_end_if_map) = build_if_else_maps(ops);
 
+    // Pre-compute loop break targets: for each loop_start block, find the
+    // block immediately after the matching loop_end.  This is needed for
+    // `loop_break_if_true/false` ops that don't carry an explicit target
+    // label (molt's frontend omits the label, relying on the native
+    // backend's LoopFrame for the break target).
+    let loop_break_targets: HashMap<usize, usize> = {
+        let mut targets = HashMap::new();
+        let mut header_stack: Vec<usize> = Vec::new();
+        for (bid, block) in blocks.iter().enumerate() {
+            let first_kind = ops[block.start_op].kind.as_str();
+            match first_kind {
+                "loop_start" => header_stack.push(bid),
+                "loop_end" => {
+                    if let Some(header_bid) = header_stack.pop() {
+                        // The break target is the block after loop_end.
+                        if bid + 1 < n {
+                            targets.insert(header_bid, bid + 1);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        targets
+    };
+
     // For loop handling: track loop_start op-index → header block-id.
     let mut loop_header_stack: Vec<usize> = Vec::new();
 
@@ -323,15 +349,27 @@ fn build_edges(
 
             // Conditional loop break.
             "loop_break_if_true" | "loop_break_if_false" => {
-                // Fall-through.
+                // Fall-through (continue path).
                 if bid + 1 < n {
                     add_edge(&mut successors, &mut predecessors, bid, bid + 1);
                 }
-                // Break target.
+                // Break target: from explicit label, or inferred from the
+                // enclosing loop's post-loop_end block.
+                let mut break_added = false;
                 if let Some(target_label) = last_op.value {
                     if let Some(&target_op) = label_map.get(&target_label) {
                         if let Some(target_bid) = block_containing(blocks, target_op) {
                             add_edge(&mut successors, &mut predecessors, bid, target_bid);
+                            break_added = true;
+                        }
+                    }
+                }
+                if !break_added {
+                    // No explicit label — use the pre-computed break target
+                    // from the enclosing loop header.
+                    if let Some(&header_bid) = loop_header_stack.last() {
+                        if let Some(&post_loop_bid) = loop_break_targets.get(&header_bid) {
+                            add_edge(&mut successors, &mut predecessors, bid, post_loop_bid);
                         }
                     }
                 }

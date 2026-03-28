@@ -12810,8 +12810,7 @@ impl SimpleBackend {
                             None
                         };
 
-                        let allow_linearized_loop = !has_structured_backedge
-                            && phi_value.is_some();
+                        let allow_linearized_loop = !has_structured_backedge && phi_value.is_some();
                         if debug_loop_cfg.is_some() {
                             eprintln!(
                                 "LOOP_CFG {} op{} loop_index_start filled={} depth={} linearized={} structured_backedge={} nested_loop={} phi={}",
@@ -15151,7 +15150,10 @@ mod tests {
         assert_eq!(analysis.function_exception_label_id, Some(42));
         assert!(analysis.var_names.contains(&"msg_ptr".to_string()));
         assert!(analysis.var_names.contains(&"msg_len".to_string()));
-        assert_eq!(analysis.last_use.get("msg"), Some(&8));
+        // After alias analysis, "msg" and "out" share the same alias root
+        // (copy propagation makes "out" an alias of "msg"), so both last_use
+        // values are extended to the maximum of the group (op 9, the ret op).
+        assert_eq!(analysis.last_use.get("msg"), Some(&9));
         assert_eq!(analysis.last_use.get("out"), Some(&9));
     }
 }

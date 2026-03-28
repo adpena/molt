@@ -2517,22 +2517,16 @@ impl SimpleBackend {
                 if gpu_kernel_names.contains(&func_ir.name) {
                     continue;
                 }
-                // Skip TIR for functions with loop ops — the SSA roundtrip
-                // corrupts loop phi connections, producing silently wrong
-                // results that the validate_labels check cannot detect.
-                // Other ops (guarded_field, exception_stack) roundtrip safely
-                // through the Copy passthrough in lower_op().
-                if func_ir.ops.iter().any(|op| {
-                    matches!(
-                        op.kind.as_str(),
-                        "loop_start" | "loop_index_start" | "loop_end"
-                    )
-                }) {
-                    continue;
-                }
+                // Loop markers (loop_start, loop_end) are now preserved through
+                // the TIR roundtrip via LoopRole metadata on TirFunction, so
+                // functions with loops benefit from TIR optimization.
                 let body_bytes = crate::tir::serialize::serialize_ops(&func_ir.ops);
-                let content_hash =
-                    crate::tir::cache::CompilationCache::compute_hash(&func_ir.name, &body_bytes);
+                let content_hash = crate::tir::cache::CompilationCache::compute_hash(
+                    &func_ir.name,
+                    &func_ir.params,
+                    func_ir.param_types.as_deref(),
+                    &body_bytes,
+                );
                 // Cache hit — apply directly and skip.
                 if let Some(cached_bytes) = tir_cache.get(&content_hash) {
                     if let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes)

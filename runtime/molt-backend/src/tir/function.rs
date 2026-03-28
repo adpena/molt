@@ -10,6 +10,11 @@ use crate::tir::passes::cha::ClassHierarchy;
 #[derive(Debug)]
 pub struct TirFunction {
     pub name: String,
+    /// Original parameter names, aligned 1:1 with `param_types` and the entry
+    /// block arguments. These are preserved through the TIR round-trip so
+    /// backends do not have to recover parameter identity from synthetic
+    /// `load_param` temporaries.
+    pub param_names: Vec<String>,
     /// Parameter types (mapped 1:1 to entry block arguments).
     pub param_types: Vec<TirType>,
     /// Return type of this function.
@@ -64,7 +69,6 @@ impl TirFunction {
             args,
             ops: Vec::new(),
             terminator: Terminator::Unreachable,
-            loop_role: LoopRole::None,
         };
 
         let mut blocks = HashMap::new();
@@ -72,6 +76,11 @@ impl TirFunction {
 
         Self {
             name,
+            param_names: param_types
+                .iter()
+                .enumerate()
+                .map(|(idx, _)| format!("p{idx}"))
+                .collect(),
             param_types,
             return_type,
             blocks,

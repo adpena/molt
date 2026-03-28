@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::ir::OpIR;
 
-use super::blocks::{BlockId, LoopRole, Terminator, TirBlock};
+use super::blocks::{BlockId, Terminator, TirBlock};
 use super::cfg::CFG;
 use super::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use super::types::TirType;
@@ -317,7 +317,6 @@ impl<'a> SsaContext<'a> {
                 args: Vec::new(),
                 ops: Vec::new(),
                 terminator: Terminator::Unreachable,
-                loop_role: LoopRole::None,
             });
         }
 
