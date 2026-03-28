@@ -5,6 +5,19 @@ use super::values::{TirValue, ValueId};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockId(pub u32);
 
+/// Structural loop role for a basic block, used to preserve loop markers
+/// across the TIR roundtrip so downstream backends (Cranelift, WASM) can
+/// reconstruct structured loop constructs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoopRole {
+    /// Not part of loop boundary structure.
+    None,
+    /// This block is a loop header introduced by `loop_start`.
+    LoopHeader,
+    /// This block is a loop-end boundary (`loop_end`).
+    LoopEnd,
+}
+
 /// A basic block in SSA form with block arguments (MLIR-style, no phi nodes).
 #[derive(Debug, Clone)]
 pub struct TirBlock {

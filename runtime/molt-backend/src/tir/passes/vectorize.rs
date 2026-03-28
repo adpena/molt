@@ -729,6 +729,7 @@ mod tests {
 
         let mut func = TirFunction {
             name: "sum_loop".into(),
+            param_names: vec![],
             param_types: vec![],
             return_type: TirType::I64,
             blocks,
@@ -738,6 +739,7 @@ mod tests {
             attrs: crate::tir::ops::AttrDict::new(),
             has_exception_handling: false,
             label_id_map: std::collections::HashMap::new(),
+            loop_roles: std::collections::HashMap::new(),
         };
 
         let stats = run(&mut func);
@@ -831,6 +833,7 @@ mod tests {
 
         let mut func = TirFunction {
             name: "call_loop".into(),
+            param_names: vec![],
             param_types: vec![],
             return_type: TirType::None,
             blocks,
@@ -840,6 +843,7 @@ mod tests {
             attrs: crate::tir::ops::AttrDict::new(),
             has_exception_handling: false,
             label_id_map: std::collections::HashMap::new(),
+            loop_roles: std::collections::HashMap::new(),
         };
 
         run(&mut func);
@@ -930,6 +934,7 @@ mod tests {
 
         let mut func = TirFunction {
             name: "mixed_type_loop".into(),
+            param_names: vec![],
             param_types: vec![],
             return_type: TirType::None,
             blocks,
@@ -939,6 +944,7 @@ mod tests {
             attrs: crate::tir::ops::AttrDict::new(),
             has_exception_handling: false,
             label_id_map: std::collections::HashMap::new(),
+            loop_roles: std::collections::HashMap::new(),
         };
 
         run(&mut func);

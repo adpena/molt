@@ -71,6 +71,7 @@ mod tests {
         blocks.insert(entry_id, block);
         TirFunction {
             name: name.into(),
+            param_names: vec![],
             param_types: vec![],
             return_type: TirType::I64,
             blocks,
@@ -80,6 +81,7 @@ mod tests {
             attrs: AttrDict::new(),
             has_exception_handling: false,
             label_id_map: HashMap::new(),
+            loop_roles: HashMap::new(),
         }
     }
 
@@ -115,6 +117,7 @@ mod tests {
         blocks.insert(entry_id, block);
         TirFunction {
             name: name.into(),
+            param_names: vec!["p0".into(), "p1".into()],
             param_types: vec![TirType::I64, TirType::I64],
             return_type: TirType::I64,
             blocks,
@@ -124,6 +127,7 @@ mod tests {
             attrs: AttrDict::new(),
             has_exception_handling: false,
             label_id_map: HashMap::new(),
+            loop_roles: HashMap::new(),
         }
     }
 

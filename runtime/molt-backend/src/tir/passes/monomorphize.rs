@@ -99,6 +99,7 @@ fn callee_name(attrs: &HashMap<String, AttrValue>) -> Option<String> {
 fn clone_function(func: &TirFunction, new_name: String) -> TirFunction {
     TirFunction {
         name: new_name,
+        param_names: func.param_names.clone(),
         param_types: func.param_types.clone(),
         return_type: func.return_type.clone(),
         blocks: func.blocks.clone(),
@@ -108,6 +109,7 @@ fn clone_function(func: &TirFunction, new_name: String) -> TirFunction {
         attrs: func.attrs.clone(),
         has_exception_handling: func.has_exception_handling,
         label_id_map: func.label_id_map.clone(),
+        loop_roles: func.loop_roles.clone(),
     }
 }
 
