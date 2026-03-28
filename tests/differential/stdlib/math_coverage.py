@@ -1,0 +1,10 @@
+import math
+print(math.pi)
+print(math.e)
+print(math.floor(3.7))
+print(math.ceil(3.2))
+print(math.sqrt(16))
+print(math.isnan(float('nan')))
+print(math.isinf(float('inf')))
+print(math.gcd(12, 8))
+print(math.factorial(5))
