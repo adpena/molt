@@ -68,15 +68,29 @@ impl CompilationCache {
         cache
     }
 
+    /// Compute a content hash for a function body.
+    ///
+    /// This preserves the historical body-only contract for callers that do
+    /// not need signature-sensitive cache invalidation.
+    pub fn compute_hash(func_name: &str, body: &[u8]) -> String {
+        Self::compute_hash_with_signature(func_name, &[], None, body)
+    }
+
     /// Compute a content hash for a function.
     ///
-    /// The hash is derived from `func_name` and `body` (serialised body
-    /// bytes).  Uses [`DefaultHasher`] (SipHash-1-3) — not cryptographic,
-    /// but stable within a single Rust binary version and sufficient for
-    /// cache keys.
-    pub fn compute_hash(func_name: &str, body: &[u8]) -> String {
+    /// The hash is derived from the function signature surface plus the
+    /// serialized body bytes so cache hits remain valid when only parameter
+    /// metadata changes.
+    pub fn compute_hash_with_signature(
+        func_name: &str,
+        params: &[String],
+        param_types: Option<&[String]>,
+        body: &[u8],
+    ) -> String {
         let mut h = DefaultHasher::new();
         func_name.hash(&mut h);
+        params.hash(&mut h);
+        param_types.hash(&mut h);
         body.hash(&mut h);
         format!("{:016x}", h.finish())
     }
@@ -285,11 +299,15 @@ mod tests {
         CompilationCache::open(tmp_cache_dir())
     }
 
+    fn hash(func_name: &str, body: &[u8]) -> String {
+        CompilationCache::compute_hash_with_signature(func_name, &[], None, body)
+    }
+
     /// 1. put + get round-trip (in-memory)
     #[test]
     fn test_put_get_roundtrip() {
         let mut cache = make_cache();
-        let hash = CompilationCache::compute_hash("my_func", b"op1 op2 op3");
+        let hash = hash("my_func", b"op1 op2 op3");
         let artifact = b"compiled artifact bytes";
 
         cache.put(&hash, artifact, vec![]);
@@ -310,9 +328,9 @@ mod tests {
     fn test_invalidate_removes_dependents() {
         let mut cache = make_cache();
 
-        let dep_hash = CompilationCache::compute_hash("dep_func", b"dep body");
-        let caller_hash = CompilationCache::compute_hash("caller_func", b"caller body");
-        let other_hash = CompilationCache::compute_hash("other_func", b"other body");
+        let dep_hash = hash("dep_func", b"dep body");
+        let caller_hash = hash("caller_func", b"caller body");
+        let other_hash = hash("other_func", b"other body");
 
         cache.put(&dep_hash, b"dep artifact", vec![]);
         cache.put(&caller_hash, b"caller artifact", vec![dep_hash.clone()]);
@@ -337,7 +355,7 @@ mod tests {
     #[test]
     fn test_evict_stale() {
         let mut cache = make_cache();
-        let hash = CompilationCache::compute_hash("old_func", b"old body");
+        let hash = hash("old_func", b"old body");
         cache.put(&hash, b"old artifact", vec![]);
 
         cache.index.get_mut(&hash).unwrap().last_access = 1;
@@ -350,28 +368,49 @@ mod tests {
     /// 5. compute_hash produces consistent results for identical inputs
     #[test]
     fn test_compute_hash_consistent() {
-        let h1 = CompilationCache::compute_hash("func_a", b"body bytes");
-        let h2 = CompilationCache::compute_hash("func_a", b"body bytes");
+        let h1 = hash("func_a", b"body bytes");
+        let h2 = hash("func_a", b"body bytes");
         assert_eq!(h1, h2, "same inputs must produce the same hash");
     }
 
     /// compute_hash produces different results for different inputs
     #[test]
     fn test_compute_hash_different_inputs() {
-        let h1 = CompilationCache::compute_hash("func_a", b"body A");
-        let h2 = CompilationCache::compute_hash("func_a", b"body B");
+        let h1 = hash("func_a", b"body A");
+        let h2 = hash("func_a", b"body B");
         assert_ne!(h1, h2, "different bodies must produce different hashes");
 
-        let h3 = CompilationCache::compute_hash("func_x", b"body A");
-        let h4 = CompilationCache::compute_hash("func_y", b"body A");
+        let h3 = hash("func_x", b"body A");
+        let h4 = hash("func_y", b"body A");
         assert_ne!(h3, h4, "different names must produce different hashes");
+    }
+
+    #[test]
+    fn test_compute_hash_with_signature_tracks_param_surface() {
+        let params_a = vec!["lhs".to_string()];
+        let params_b = vec!["rhs".to_string()];
+        let types_a = vec!["module".to_string()];
+        let types_b = vec!["bool".to_string()];
+
+        let base =
+            CompilationCache::compute_hash_with_signature("func", &params_a, None, b"body");
+        let renamed =
+            CompilationCache::compute_hash_with_signature("func", &params_b, None, b"body");
+        let typed =
+            CompilationCache::compute_hash_with_signature("func", &params_a, Some(&types_a), b"body");
+        let typed_changed =
+            CompilationCache::compute_hash_with_signature("func", &params_a, Some(&types_b), b"body");
+
+        assert_ne!(base, renamed, "parameter names must affect the cache key");
+        assert_ne!(base, typed, "parameter types must affect the cache key");
+        assert_ne!(typed, typed_changed, "type metadata changes must invalidate cache");
     }
 
     /// Stale eviction does NOT remove recently-accessed entries
     #[test]
     fn test_evict_stale_keeps_recent_entries() {
         let mut cache = make_cache();
-        let hash = CompilationCache::compute_hash("recent_func", b"recent body");
+        let hash = hash("recent_func", b"recent body");
         cache.put(&hash, b"recent artifact", vec![]);
 
         cache.evict_stale(60);
@@ -390,8 +429,8 @@ mod tests {
         // Write entries to disk.
         {
             let mut cache = CompilationCache::open(dir.clone());
-            let h1 = CompilationCache::compute_hash("fn_a", b"body a");
-            let h2 = CompilationCache::compute_hash("fn_b", b"body b");
+            let h1 = hash("fn_a", b"body a");
+            let h2 = hash("fn_b", b"body b");
             cache.put(&h1, b"artifact a", vec![]);
             cache.put(&h2, b"artifact b", vec![h1.clone()]);
             cache.save_index();
@@ -399,8 +438,8 @@ mod tests {
 
         // Open a fresh cache from the same directory — index loads from disk.
         let mut cache2 = CompilationCache::open(dir);
-        let h1 = CompilationCache::compute_hash("fn_a", b"body a");
-        let h2 = CompilationCache::compute_hash("fn_b", b"body b");
+        let h1 = hash("fn_a", b"body a");
+        let h2 = hash("fn_b", b"body b");
 
         // Entries should be present (loaded lazily from disk).
         assert_eq!(cache2.get(&h1), Some(b"artifact a".to_vec()));

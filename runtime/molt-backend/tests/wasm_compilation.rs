@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use molt_backend::wasm::WasmBackend;
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
-use wasmparser::{Operator, Parser, Payload, TypeRef};
+use wasmparser::{Operator, Parser, Payload, TypeRef, Validator};
 
 fn op(kind: &str) -> OpIR {
     OpIR {
@@ -94,6 +94,10 @@ fn count_import(calls: &HashMap<String, usize>, name: &str) -> usize {
     calls.get(name).copied().unwrap_or(0)
 }
 
+fn validate_wasm(wasm: &[u8]) -> Result<(), wasmparser::BinaryReaderError> {
+    Validator::new().validate_all(wasm).map(|_| ())
+}
+
 // -----------------------------------------------------------------------
 // Empty / minimal module tests
 // -----------------------------------------------------------------------
@@ -113,6 +117,21 @@ fn empty_module_compiles_to_valid_wasm() {
     // Should start with WASM magic bytes
     assert!(wasm.len() > 8, "WASM output too short");
     assert_eq!(&wasm[0..4], b"\0asm", "missing WASM magic bytes");
+}
+
+#[test]
+fn empty_module_is_structurally_valid_wasm() {
+    let wasm = compile_ir(SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec![],
+            ops: vec![op("ret_void")],
+            param_types: None,
+        }],
+        profile: None,
+    });
+
+    validate_wasm(&wasm).expect("compiled wasm should validate structurally");
 }
 
 #[test]

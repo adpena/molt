@@ -129,7 +129,10 @@ const TAG_EXCEPTION_INDEX: u32 = 0;
 // ---------------------------------------------------------------------------
 
 /// First dynamic type index; must equal the count of all statically-defined types.
-const STATIC_TYPE_COUNT: u32 = 39;
+///
+/// Static signatures currently occupy indices 0..=54 inclusive. Dynamic user
+/// arity signatures and wrapper signatures must start after that fixed set.
+const STATIC_TYPE_COUNT: u32 = 55;
 
 #[derive(Clone, Copy)]
 struct DataSegmentInfo {
@@ -1520,7 +1523,12 @@ impl WasmBackend {
                 // Compute a stable content hash from the function name + input ops.
                 let body_bytes = crate::tir::serialize::serialize_ops(&func_ir.ops);
                 let content_hash =
-                    crate::tir::cache::CompilationCache::compute_hash(&func_ir.name, &body_bytes);
+                    crate::tir::cache::CompilationCache::compute_hash_with_signature(
+                        &func_ir.name,
+                        &func_ir.params,
+                        func_ir.param_types.as_deref(),
+                        &body_bytes,
+                    );
 
                 // Cache hit: restore previously optimized ops and skip the pipeline.
                 if let Some(cached_bytes) = tir_cache.get(&content_hash) {
@@ -2259,21 +2267,11 @@ impl WasmBackend {
             }
         }
 
-        let mut call_indirect_type_map: BTreeMap<usize, u32> = BTreeMap::new();
-        for arity in 0..=max_call_indirect + 1 {
-            self.types.function(
-                std::iter::repeat_n(ValType::I64, arity),
-                std::iter::once(ValType::I64),
-            );
-            call_indirect_type_map.insert(arity, next_type_idx);
-            next_type_idx += 1;
-        }
-
         for arity in 0..=max_call_indirect {
-            let sig_idx = *call_indirect_type_map.get(&(arity + 1)).unwrap_or_else(|| {
+            let sig_idx = *user_type_map.get(&(arity + 1)).unwrap_or_else(|| {
                 panic!("missing call_indirect signature for arity {}", arity + 1)
             });
-            let callee_idx = *call_indirect_type_map
+            let callee_idx = *user_type_map
                 .get(&arity)
                 .unwrap_or_else(|| panic!("missing call_indirect callee type for arity {}", arity));
             self.funcs.function(sig_idx);
