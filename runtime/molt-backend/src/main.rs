@@ -1128,17 +1128,18 @@ fn main() -> io::Result<()> {
         }
     };
 
-    // Replace __annotate__ typing stubs with trivial return-None bodies.
+    // Replace __annotate__ typing stubs with trivial empty-dict bodies.
     // The symbols must exist (trampolines and module chunks reference them)
     // but the bodies are typing metadata not needed at runtime.
+    // We return an empty dict (not None) so that callers using
+    // future_annotations=True can do SETATTR(__annotations__, {}) safely.
     for func in ir.functions.iter_mut() {
         if func.name.contains("__annotate__") {
             func.ops.clear();
             // Keep params unchanged so the function signature matches callers.
             func.ops.push(OpIR {
-                kind: "const_int".to_string(),
+                kind: "dict_new".to_string(),
                 out: Some("__ret".to_string()),
-                value: Some(0x7FF8_0000_0000_0000_u64 as i64),
                 ..OpIR::default()
             });
             func.ops.push(OpIR {
@@ -1263,6 +1264,14 @@ fn main() -> io::Result<()> {
                     );
                 } else {
                     // First build — compile stdlib separately, cache it
+                    // Ensure the parent directory exists — it may have been
+                    // cleaned by a prior backend rebuild (shutil.rmtree on
+                    // the cache root) between cache-setup and compilation.
+                    ensure_output_parent_dir(stdlib_path.to_str().unwrap_or("")).unwrap_or_else(
+                        |e| {
+                            eprintln!("warning: could not create stdlib cache parent dir: {e}");
+                        },
+                    );
                     let _total = ir.functions.len();
                     let user_funcs: Vec<_> = ir
                         .functions
