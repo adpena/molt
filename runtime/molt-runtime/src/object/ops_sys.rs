@@ -2752,7 +2752,7 @@ pub extern "C" fn molt_ord(val: u64) -> u64 {
                     let Some(code) = wtf8_codepoint_at(bytes, 0) else {
                         return MoltObject::none().bits();
                     };
-                    return MoltObject::from_int(code as i64).bits();
+                    return MoltObject::from_int(code.to_u32() as i64).bits();
                 }
                 if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
                     let len = bytes_len(ptr);
