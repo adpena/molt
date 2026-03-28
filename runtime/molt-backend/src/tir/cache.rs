@@ -392,18 +392,28 @@ mod tests {
         let types_a = vec!["module".to_string()];
         let types_b = vec!["bool".to_string()];
 
-        let base =
-            CompilationCache::compute_hash_with_signature("func", &params_a, None, b"body");
+        let base = CompilationCache::compute_hash_with_signature("func", &params_a, None, b"body");
         let renamed =
             CompilationCache::compute_hash_with_signature("func", &params_b, None, b"body");
-        let typed =
-            CompilationCache::compute_hash_with_signature("func", &params_a, Some(&types_a), b"body");
-        let typed_changed =
-            CompilationCache::compute_hash_with_signature("func", &params_a, Some(&types_b), b"body");
+        let typed = CompilationCache::compute_hash_with_signature(
+            "func",
+            &params_a,
+            Some(&types_a),
+            b"body",
+        );
+        let typed_changed = CompilationCache::compute_hash_with_signature(
+            "func",
+            &params_a,
+            Some(&types_b),
+            b"body",
+        );
 
         assert_ne!(base, renamed, "parameter names must affect the cache key");
         assert_ne!(base, typed, "parameter types must affect the cache key");
-        assert_ne!(typed, typed_changed, "type metadata changes must invalidate cache");
+        assert_ne!(
+            typed, typed_changed,
+            "type metadata changes must invalidate cache"
+        );
     }
 
     /// Stale eviction does NOT remove recently-accessed entries
