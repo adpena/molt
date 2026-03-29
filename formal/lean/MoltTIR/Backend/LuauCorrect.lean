@@ -283,11 +283,16 @@ theorem emitExpr_correct (names : VarNames) (ρ : MoltTIR.Env) (lenv : LuauEnv)
       all_goals (first
         | (subst heval; simp [emitBinOp, evalLuauBinOp, valueToLuau]; done)
         | (obtain ⟨hne, rfl⟩ := heval; simp [emitBinOp, evalLuauBinOp, valueToLuau, hne]; done)
-        | (split at heval <;> simp only [Option.some.injEq] at heval <;>
-           subst heval <;> simp [emitBinOp, evalLuauBinOp, valueToLuau] <;> done)
         | (split at heval <;> (first | subst heval | obtain ⟨_, rfl⟩ := heval) <;>
            simp_all [emitBinOp, evalLuauBinOp, valueToLuau]; done)
         | simp_all [emitBinOp, evalLuauBinOp, valueToLuau])
+      -- String repetition: mul.{int,str}.{str,int} — if-split on n ≤ 0
+      all_goals (split at heval
+        <;> simp only [Option.some.injEq] at heval
+        <;> subst heval
+        <;> (first | (simp_all [emitBinOp, evalLuauBinOp, valueToLuau]; done)
+                   | (simp only [emitBinOp, evalLuauBinOp, valueToLuau, ite_false, ite_true];
+                      split <;> (first | rfl | omega | (intro h; omega)))))
     | some _, none => simp [ha_eval, hb_eval] at heval
     | none, _ => simp [ha_eval] at heval
   | un op a iha =>
