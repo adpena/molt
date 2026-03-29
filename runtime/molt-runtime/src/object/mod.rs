@@ -58,6 +58,7 @@ pub(crate) mod ops_memoryview;
 pub(crate) mod ops_set;
 pub(crate) mod ops_slice;
 pub(crate) mod ops_string;
+pub(crate) mod ops_sys;
 pub(crate) mod ops_vec;
 pub(crate) mod refcount;
 pub(crate) mod refcount_opt;

@@ -998,6 +998,67 @@ pub(crate) fn alloc_bytes_like_with_len(_py: &PyToken<'_>, len: usize, type_id: 
 /// Cached empty string singleton. Uses AtomicU64 to avoid recursive init panics on WASM.
 static EMPTY_STRING_PTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Interned single-character ASCII strings (0x00..0x7F).  Lazily populated on first access.
+/// Each entry is an `AtomicU64` storing the raw object pointer (0 = not yet initialised).
+/// Using atomics avoids a mutex on the hot lookup path.
+static ASCII_CHARS: [std::sync::atomic::AtomicU64; 128] = {
+    // `AtomicU64::new(0)` is const, but array repeat syntax requires a const expression.
+    const ZERO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    [ZERO; 128]
+};
+
+/// Lazily initialise every slot in `ASCII_CHARS` that is still zero.  Called once (guarded
+/// by `OnceLock`) on the first single-ASCII-char allocation.
+fn init_ascii_chars(_py: &PyToken<'_>) {
+    for byte in 0u8..128 {
+        let slot = &ASCII_CHARS[byte as usize];
+        if slot.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+            continue;
+        }
+        let ptr = alloc_bytes_like_with_len(_py, 1, TYPE_ID_STRING);
+        if ptr.is_null() {
+            continue;
+        }
+        unsafe {
+            let data_ptr = ptr.add(std::mem::size_of::<usize>());
+            *data_ptr = byte;
+            let header = header_from_obj_ptr(ptr);
+            (*header).flags |=
+                crate::object::HEADER_FLAG_IMMORTAL | crate::object::HEADER_FLAG_INTERNED;
+            (*header)
+                .ref_count
+                .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+        }
+        // If another thread raced us, the first writer wins; second allocation leaks
+        // harmlessly (both are immortal).
+        let _ = slot.compare_exchange(
+            0,
+            ptr as u64,
+            std::sync::atomic::Ordering::Release,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+}
+
+/// Guard that ensures `init_ascii_chars` runs exactly once.
+static ASCII_CHARS_INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+/// Try to return an interned single-ASCII-character string.
+/// Returns the raw object pointer if the input is exactly one ASCII byte, else `None`.
+#[inline]
+fn try_intern_ascii_char(_py: &PyToken<'_>, bytes: &[u8]) -> Option<*mut u8> {
+    if bytes.len() != 1 {
+        return None;
+    }
+    let byte = bytes[0];
+    if byte > 127 {
+        return None;
+    }
+    ASCII_CHARS_INIT.get_or_init(|| init_ascii_chars(_py));
+    let raw = ASCII_CHARS[byte as usize].load(std::sync::atomic::Ordering::Acquire);
+    if raw != 0 { Some(raw as *mut u8) } else { None }
+}
+
 /// Molt-level string intern pool: maps identifier-like ASCII strings to their immortal
 /// Molt object pointer (stored as `usize` to be `Send`).
 ///
@@ -1038,6 +1099,12 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
             EMPTY_STRING_PTR.load(std::sync::atomic::Ordering::Relaxed)
         };
         return bits as *mut u8;
+    }
+
+    // Fast path: single ASCII character strings (space, digits, punctuation, etc.)
+    // are served from a dedicated 128-entry lookup table — no hashing, no locking.
+    if let Some(ptr) = try_intern_ascii_char(_py, bytes) {
+        return ptr;
     }
 
     // Auto-intern ASCII identifier-like strings (e.g. attribute names, keyword
