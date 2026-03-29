@@ -4103,6 +4103,9 @@ pub extern "C" fn molt_debug_trace(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 {
+    if std::env::var("MOLT_TRACE_GET_ATTR").is_ok() {
+        eprintln!("module_get_attr: mod=0x{:x} attr=0x{:x}", module_bits, attr_bits);
+    }
     crate::with_gil_entry!(_py, {
         let debug_attr = std::env::var("MOLT_DEBUG_MODULE_GET_ATTR").as_deref() == Ok("1");
         let module_obj = obj_from_bits(module_bits);
