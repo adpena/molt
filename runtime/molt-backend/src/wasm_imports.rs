@@ -1153,11 +1153,16 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
         "call_guarded",
         &[
             "call_bind_ic",
+            "call_func_dispatch",
             "callargs_new",
             "callargs_push_pos",
             "handle_resolve",
             "is_function_obj",
             "is_truthy",
+            "recursion_guard_enter",
+            "recursion_guard_exit",
+            "trace_enter_slot",
+            "trace_exit",
         ],
     ),
     (

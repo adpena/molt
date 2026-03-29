@@ -128,30 +128,6 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = function_trampoline_ptr(func_ptr);
-        #[cfg(target_arch = "wasm32")]
-        let debug_enabled = {
-            use std::sync::atomic::{AtomicU8, Ordering};
-            static CACHED: AtomicU8 = AtomicU8::new(2); // 2 = unchecked
-            let c = CACHED.load(Ordering::Relaxed);
-            if c == 2 {
-                let v = std::env::var("MOLT_WASM_CALL_DEBUG").as_deref() == Ok("1");
-                CACHED.store(v as u8, Ordering::Relaxed);
-                v
-            } else {
-                c == 1
-            }
-        };
-        #[cfg(target_arch = "wasm32")]
-        let debug_name = if debug_enabled {
-            let name_bits = function_name_bits(_py, func_ptr);
-            if name_bits != 0 {
-                string_obj_to_owned(obj_from_bits(name_bits))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
         let code_bits = ensure_function_code_bits(_py, func_ptr);
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
@@ -161,24 +137,12 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    if debug_enabled {
-                        eprintln!(
-                            "molt wasm call1 indirect2: name={} fn=0x{fn_ptr:x} tramp=0x{tramp_ptr:x}",
-                            debug_name.as_deref().unwrap_or("<unnamed>"),
-                        );
-                    }
                     molt_call_indirect2(
                         indirect_call_target_ptr(fn_ptr, tramp_ptr),
                         closure_bits,
                         arg0_bits,
                     ) as u64
                 } else {
-                    if debug_enabled {
-                        eprintln!(
-                            "molt wasm call1 direct2: name={} fn=0x{fn_ptr:x}",
-                            debug_name.as_deref().unwrap_or("<unnamed>"),
-                        );
-                    }
                     // SAFETY: `fn_ptr` was read from the function object via `function_fn_ptr`,
                     // which returns the code pointer set by the compiler during code generation
                     // (see `emit_call` in wasm.rs). The arity was verified to be 1 above, plus
@@ -202,21 +166,9 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    if debug_enabled {
-                        eprintln!(
-                            "molt wasm call1 indirect1: name={} fn=0x{fn_ptr:x} tramp=0x{tramp_ptr:x}",
-                            debug_name.as_deref().unwrap_or("<unnamed>"),
-                        );
-                    }
                     molt_call_indirect1(indirect_call_target_ptr(fn_ptr, tramp_ptr), arg0_bits)
                         as u64
                 } else {
-                    if debug_enabled {
-                        eprintln!(
-                            "molt wasm call1 direct1: name={} fn=0x{fn_ptr:x}",
-                            debug_name.as_deref().unwrap_or("<unnamed>"),
-                        );
-                    }
                     if is_void_wasm_call1_target(fn_ptr) {
                         // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
                         // `function_fn_ptr`. This branch handles void intrinsics (drop/close
@@ -1401,8 +1353,8 @@ unsafe fn call_function_obj10(
                         u64,
                         u64,
                         u64,
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
+                        // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
+                        // Arity verified above; signature matches. Compiler guarantees ABI match.
                     ) -> i64 = std::mem::transmute(fn_ptr as usize);
                     func(
                         closure_bits,
@@ -1433,8 +1385,8 @@ unsafe fn call_function_obj10(
                     u64,
                     u64,
                     u64,
-                // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                // Arity verified above; signature matches. Compiler guarantees ABI match.
+                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
+                    // Arity verified above; signature matches. Compiler guarantees ABI match.
                 ) -> i64 = std::mem::transmute(fn_ptr as usize);
                 func(
                     closure_bits,
@@ -1577,8 +1529,8 @@ unsafe fn call_function_obj11(
                         u64,
                         u64,
                         u64,
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
+                        // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
+                        // Arity verified above; signature matches. Compiler guarantees ABI match.
                     ) -> i64 = std::mem::transmute(fn_ptr as usize);
                     func(
                         closure_bits,
@@ -1611,8 +1563,8 @@ unsafe fn call_function_obj11(
                     u64,
                     u64,
                     u64,
-                // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                // Arity verified above; signature matches. Compiler guarantees ABI match.
+                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
+                    // Arity verified above; signature matches. Compiler guarantees ABI match.
                 ) -> i64 = std::mem::transmute(fn_ptr as usize);
                 func(
                     closure_bits,
@@ -1660,8 +1612,8 @@ unsafe fn call_function_obj11(
                         u64,
                         u64,
                         u64,
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
+                        // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
+                        // Arity verified above; signature matches. Compiler guarantees ABI match.
                     ) -> i64 = std::mem::transmute(fn_ptr as usize);
                     func(
                         arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
@@ -1683,8 +1635,8 @@ unsafe fn call_function_obj11(
                     u64,
                     u64,
                     u64,
-                // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                // Arity verified above; signature matches. Compiler guarantees ABI match.
+                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
+                    // Arity verified above; signature matches. Compiler guarantees ABI match.
                 ) -> i64 = std::mem::transmute(fn_ptr as usize);
                 func(
                     arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
@@ -1772,8 +1724,8 @@ unsafe fn call_function_obj12(
                         u64,
                         u64,
                         u64,
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
+                        // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
+                        // Arity verified above; signature matches. Compiler guarantees ABI match.
                     ) -> i64 = std::mem::transmute(fn_ptr as usize);
                     func(
                         closure_bits,
@@ -1808,8 +1760,8 @@ unsafe fn call_function_obj12(
                     u64,
                     u64,
                     u64,
-                // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                // Arity verified above; signature matches. Compiler guarantees ABI match.
+                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
+                    // Arity verified above; signature matches. Compiler guarantees ABI match.
                 ) -> i64 = std::mem::transmute(fn_ptr as usize);
                 func(
                     closure_bits,
@@ -1860,8 +1812,8 @@ unsafe fn call_function_obj12(
                         u64,
                         u64,
                         u64,
-                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                    // Arity verified above; signature matches. Compiler guarantees ABI match.
+                        // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
+                        // Arity verified above; signature matches. Compiler guarantees ABI match.
                     ) -> i64 = std::mem::transmute(fn_ptr as usize);
                     func(
                         arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
@@ -1884,8 +1836,8 @@ unsafe fn call_function_obj12(
                     u64,
                     u64,
                     u64,
-                // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                // Arity verified above; signature matches. Compiler guarantees ABI match.
+                    // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
+                    // Arity verified above; signature matches. Compiler guarantees ABI match.
                 ) -> i64 = std::mem::transmute(fn_ptr as usize);
                 func(
                     arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
