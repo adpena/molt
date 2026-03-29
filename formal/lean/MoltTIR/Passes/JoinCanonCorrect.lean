@@ -116,6 +116,14 @@ theorem joinCanonTerminator_preserves_vars (jmap : JoinMap) (t : Terminator) :
     generalize canonicalizeJump jmap el ea = p2 at h2
     obtain ⟨tl', ta'⟩ := p1; obtain ⟨el', ea'⟩ := p2
     simp at h1 h2; simp [h1, h2]
+  | yield val resume resumeArgs =>
+    simp only [joinCanonTerminator, termVars]
+    have h := canonicalizeJump_args jmap resume resumeArgs
+    generalize canonicalizeJump jmap resume resumeArgs = p at h
+    obtain ⟨resume', args'⟩ := p
+    simp at h; simp [h]
+  | switch scrutinee cases default_ => rfl
+  | unreachable => rfl
 
 /-- Join canonicalization preserves block instructions. -/
 theorem joinCanonBlock_instrs (jmap : JoinMap) (b : Block) :
@@ -172,6 +180,9 @@ private theorem buildJoinMap_fold_identity
           rw [hpair.2, hpair.1]
         | inr hmem => exact hacc sig' lbl' hmem
     | br _ _ _ _ _ => exact hacc
+    | yield _ _ _ => exact hacc
+    | switch _ _ _ => exact hacc
+    | unreachable => exact hacc
 
 /-- buildJoinMap produces a join map where every entry maps to the original target. -/
 theorem buildJoinMap_identity (f : Func) : JoinMapIdentity (buildJoinMap f) := by
@@ -211,6 +222,10 @@ theorem joinCanonTerminator_identity (jmap : JoinMap) (t : Terminator)
     simp only [joinCanonTerminator,
                canonicalizeJump_identity jmap tl ta hid,
                canonicalizeJump_identity jmap el ea hid]
+  | yield val resume resumeArgs =>
+    simp only [joinCanonTerminator, canonicalizeJump_identity jmap resume resumeArgs hid]
+  | switch scrutinee cases default_ => rfl
+  | unreachable => rfl
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 7: Function-level correctness
@@ -270,6 +285,24 @@ theorem joinCanon_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
     | some (.str _) => rfl
     | some .none => rfl
     | none => rfl
+  | yield _ _ _ => simp only [evalTerminator]
+  | switch scrutinee cases default_ =>
+    simp only [evalTerminator]
+    match evalExpr ρ scrutinee with
+    | some (.int n) =>
+      match (cases.find? (fun p => p.1 == n)) with
+      | some (_, lbl) =>
+        match hblk : f.blocks lbl with
+        | none => simp [joinCanonFunc_blocks_none f lbl hblk]
+        | some blk => simp [joinCanonFunc_blocks_some f lbl blk hblk,
+                             joinCanonFunc_block_params]
+      | none =>
+        match hblk : f.blocks default_ with
+        | none => simp [joinCanonFunc_blocks_none f default_ hblk]
+        | some blk => simp [joinCanonFunc_blocks_some f default_ blk hblk,
+                             joinCanonFunc_block_params]
+    | _ => rfl
+  | unreachable => rfl
 
 /-- joinCanonFunc preserves execFunc for all inputs.
     Proof by fuel induction, using the identity property of buildJoinMap. -/

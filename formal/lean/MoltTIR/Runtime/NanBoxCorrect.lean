@@ -692,7 +692,7 @@ private theorem uint64_xor_self_cancel (a b : UInt64) :
 /-- 0 ^^^ a = a. -/
 private theorem uint64_zero_xor (a : UInt64) : 0 ^^^ a = a := by
   apply UInt64.eq_of_toBitVec_eq
-  ext i; simp [UInt64.toBitVec_xor, BitVec.getLsbD_xor]
+  simp [UInt64.toBitVec_xor, BitVec.xor_zero, BitVec.zero_xor]
 
 /-- Concrete: (QNAN ||| TAG_INT) &&& (QNAN ||| TAG_MASK) = QNAN ||| TAG_INT. -/
 private theorem expected_int_and_tag_check :
@@ -980,9 +980,6 @@ private theorem nat_ushr47_or_zero_iff (a b : Nat) :
     have hbi : (b >>> 47).testBit i = false := by rw [hb, Nat.zero_testBit]
     rw [Nat.testBit_shiftRight] at hai hbi
     rw [hai, hbi]; rfl
-
-private theorem uint64_toNat_47_mod_64 : (47 : UInt64).toNat % 64 = 47 := by native_decide
-private theorem uint64_toNat_zero : (0 : UInt64).toNat = 0 := by native_decide
 
 private theorem ushr47_or_zero_iff (a b : UInt64) :
     (a ||| b) >>> (47 : UInt64) = (0 : UInt64) ↔
