@@ -19,6 +19,7 @@
 -/
 import MoltLowering.ASTtoTIR
 import MoltLowering.Properties
+import MoltLowering.EnvCorr
 
 set_option autoImplicit false
 
@@ -35,12 +36,15 @@ def envCorr (nm : NameMap) (pyEnv : MoltPython.PyEnv) (tirEnv : MoltTIR.Env) : P
     ∃ tv, lowerValue v = some tv ∧ tirEnv n = some tv
 
 theorem lowerEnv_corr (nm : NameMap) (pyEnv : MoltPython.PyEnv)
+    (hinj : NameMap.Injective nm)
     (hscalar : ∀ (x : MoltPython.Name) (n : MoltTIR.Var) (v : MoltPython.PyValue),
       nm.lookup x = some n →
       pyEnv.lookup x = some v →
       ∃ tv, lowerValue v = some tv) :
     envCorr nm pyEnv (lowerEnv nm pyEnv) := by
-  sorry
+  intro x n v hnm hlookup
+  obtain ⟨tv, htv⟩ := hscalar x n v hnm hlookup
+  exact ⟨tv, htv, lowerScopes_corr nm pyEnv.scopes MoltTIR.Env.empty x n v tv hnm hinj hlookup htv⟩
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Operator semantics correspondence
