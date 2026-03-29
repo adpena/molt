@@ -2097,13 +2097,9 @@ pub(crate) fn capability_fix_hint(name: &str) -> String {
         );
     }
     if TIER_FULL_EXTRA.contains(&name) {
-        return format!(
-            "Use --trusted, MOLT_TRUSTED=1, or MOLT_CAPABILITY_TIER=full"
-        );
+        return format!("Use --trusted, MOLT_TRUSTED=1, or MOLT_CAPABILITY_TIER=full");
     }
-    format!(
-        "Use --trusted, MOLT_TRUSTED=1, or MOLT_CAPABILITIES={name}"
-    )
+    format!("Use --trusted, MOLT_TRUSTED=1, or MOLT_CAPABILITIES={name}")
 }
 
 #[cfg(molt_has_net_io)]

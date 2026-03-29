@@ -1,5 +1,8 @@
 use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_emit};
-use crate::{MoltObject, capability_fix_hint, has_capability, is_trusted, raise_exception, string_obj_to_owned};
+use crate::{
+    MoltObject, capability_fix_hint, has_capability, is_trusted, raise_exception,
+    string_obj_to_owned,
+};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_capabilities_trusted() -> u64 {

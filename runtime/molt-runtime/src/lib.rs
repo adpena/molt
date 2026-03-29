@@ -180,8 +180,10 @@ pub(crate) use crate::state::RuntimeState;
 pub(crate) use molt_obj_model::MoltObject;
 
 pub use crate::async_rt::cancellation::*;
-pub(crate) use crate::async_rt::channels::{has_capability, capability_fix_hint, raise_capability_denied};
 pub use crate::async_rt::channels::*;
+pub(crate) use crate::async_rt::channels::{
+    capability_fix_hint, has_capability, raise_capability_denied,
+};
 pub use crate::async_rt::event_loop::*;
 #[allow(unused_imports)]
 pub use crate::async_rt::generators::*;

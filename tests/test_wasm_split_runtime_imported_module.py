@@ -133,3 +133,49 @@ def test_split_runtime_import_os_exposes_open_flags(tmp_path: Path) -> None:
         f"stderr:\n{run.stderr[-2000:]}"
     )
     assert run.stdout == "0\n"
+
+
+@pytest.mark.slow
+def test_split_runtime_typing_alias_bootstrap(tmp_path: Path) -> None:
+    main_src = tmp_path / "probe_main.py"
+    main_src.write_text(
+        "from __future__ import annotations\n"
+        "\n"
+        "TYPE_CHECKING = False\n"
+        "\n"
+        "if TYPE_CHECKING:\n"
+        "    from typing import Any, Iterator\n"
+        "else:\n"
+        "    class _TypingAlias:\n"
+        "        __slots__ = ()\n"
+        "\n"
+        "        def __getitem__(self, _item):\n"
+        "            return self\n"
+        "\n"
+        "    Any = object\n"
+        "    Iterator = _TypingAlias()\n"
+        "    ItemsView = _TypingAlias()\n"
+        "    KeysView = _TypingAlias()\n"
+        "    ValuesView = _TypingAlias()\n"
+        "\n"
+        "print('ok')\n"
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    target_dir = ROOT / "target" / "pytest" / tmp_path.name
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    build = _build_split(main_src, out_dir, cargo_target_dir=target_dir)
+    assert build.returncode == 0, (
+        f"split build failed (rc={build.returncode}).\n"
+        f"stdout:\n{build.stdout[-2000:]}\n"
+        f"stderr:\n{build.stderr[-2000:]}"
+    )
+
+    run = _run_split_direct(out_dir)
+    assert run.returncode == 0, (
+        f"direct-link run failed (rc={run.returncode}).\n"
+        f"stdout:\n{run.stdout[-2000:]}\n"
+        f"stderr:\n{run.stderr[-2000:]}"
+    )
+    assert run.stdout == "ok\n"
