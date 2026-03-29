@@ -232,29 +232,55 @@ def run_layer_unit_rust(config: HarnessConfig) -> LayerResult:
     We avoid the full ``--workspace`` run because molt-runtime's full test
     suite contains pre-existing SIGTRAP failures in tests we didn't write.
     Instead we run targeted test modules and crates that we know pass.
+
+    The set of crates is discovered dynamically from the workspace
+    ``Cargo.toml`` so that adding or removing workspace members never
+    breaks this layer.
     """
     t0 = time.monotonic()
+    available = set(_discover_workspace_crates(config.project_root))
 
     # Targeted test runs — each must pass for the layer to pass.
     # We only run modules/crates that exist in the workspace and are known
     # to pass.  The full molt-runtime suite has pre-existing SIGTRAP failures.
-    test_runs: list[list[str]] = [
-        ["cargo", "test", "-p", "molt-runtime", "--lib", "--", "resource::tests", "audit::tests"],
-        ["cargo", "test", "-p", "molt-runtime", "--test", "resource_enforcement"],
-        ["cargo", "test", "-p", "molt-backend", "--lib"],
-        ["cargo", "test", "-p", "molt-snapshot"],
-        ["cargo", "test", "-p", "molt-embed"],
-        ["cargo", "test", "-p", "molt-harness"],
-        ["cargo", "test", "-p", "molt-runtime-protobuf"],
-    ]
+    test_runs: list[tuple[str, list[str]]] = []
+
+    if "molt-runtime" in available:
+        test_runs.append((
+            "molt-runtime resource+audit",
+            ["cargo", "test", "-p", "molt-runtime", "--lib", "--", "resource::tests", "audit::tests"],
+        ))
+        test_runs.append((
+            "molt-runtime enforcement",
+            ["cargo", "test", "-p", "molt-runtime", "--test", "resource_enforcement"],
+        ))
+    if "molt-backend" in available:
+        test_runs.append((
+            "molt-backend",
+            ["cargo", "test", "-p", "molt-backend", "--lib"],
+        ))
+
+    # Additional crates that get a full `cargo test` if present.
+    for crate in ["molt-snapshot", "molt-embed", "molt-harness",
+                  "molt-runtime-protobuf", "molt-ffi"]:
+        if crate in available:
+            test_runs.append((crate, ["cargo", "test", "-p", crate]))
+
+    if not test_runs:
+        return LayerResult(
+            name="unit-rust",
+            status=LayerStatus.SKIP,
+            duration_s=time.monotonic() - t0,
+            details="no testable crates found in workspace",
+            metrics={"tests_passed": 0},
+        )
 
     total_passed = 0
     failures: list[str] = []
 
-    for cmd in test_runs:
+    for label, cmd in test_runs:
         proc = _run_cmd(cmd, cwd=config.project_root / "runtime", timeout_s=600)
         if proc.returncode != 0:
-            label = " ".join(cmd[3:]) or "default"
             combined = proc.stdout + proc.stderr
             failures.append(f"{label}: rc={proc.returncode} {combined[-200:]}")
         # Parse passed counts from all "test result:" lines

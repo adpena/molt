@@ -246,19 +246,19 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 _ => None,
             };
 
-            if let Some(expected) = expected_results {
-                if op.results.len() != expected {
-                    errors.push(VerifyError::op(
-                        *bid,
-                        op_idx,
-                        format!(
-                            "{:?} op has {} results but expected {}",
-                            op.opcode,
-                            op.results.len(),
-                            expected
-                        ),
-                    ));
-                }
+            if let Some(expected) = expected_results
+                && op.results.len() != expected
+            {
+                errors.push(VerifyError::op(
+                    *bid,
+                    op_idx,
+                    format!(
+                        "{:?} op has {} results but expected {}",
+                        op.opcode,
+                        op.results.len(),
+                        expected
+                    ),
+                ));
             }
         }
     }
