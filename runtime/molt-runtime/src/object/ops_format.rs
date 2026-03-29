@@ -1302,7 +1302,7 @@ fn format_int_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, Fo
     } else if let Some(ptr) = bigint_ptr_from_bits(obj.bits()) {
         unsafe { bigint_ref(ptr).clone() }
     } else {
-        return Err(("TypeError", Cow::Borrowed("format requires int")));
+        return Err(("ValueError", Cow::Borrowed("format requires int")));
     };
     if ty == 'c' {
         if value.is_negative() {
@@ -1372,7 +1372,7 @@ pub(crate) fn format_float_with_spec(
     } else if let Some(b) = obj.as_bool() {
         if b { 1.0 } else { 0.0 }
     } else {
-        return Err(("TypeError", Cow::Borrowed("format requires float")));
+        return Err(("ValueError", Cow::Borrowed("format requires float")));
     };
     let use_default = spec.ty.is_none() && spec.precision.is_none();
     let ty = spec.ty.unwrap_or('g');
