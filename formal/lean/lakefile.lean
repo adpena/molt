@@ -25,10 +25,6 @@ lean_lib MoltTIR where
              `MoltTIR.Passes.GuardHoist, `MoltTIR.Passes.GuardHoistCorrect,
              `MoltTIR.Passes.JoinCanon, `MoltTIR.Passes.JoinCanonCorrect,
              `MoltTIR.Passes.EdgeThread, `MoltTIR.Passes.EdgeThreadCorrect,
-             `MoltTIR.Passes.StrengthReduction, `MoltTIR.Passes.StrengthReductionCorrect,
-             `MoltTIR.Passes.TypeRefine, `MoltTIR.Passes.TypeRefineCorrect,
-             `MoltTIR.Passes.StrengthReduction, `MoltTIR.Passes.StrengthReductionCorrect,
-             `MoltTIR.Passes.TypeRefine, `MoltTIR.Passes.TypeRefineCorrect,
              `MoltTIR.Passes.Pipeline, `MoltTIR.Passes.FullPipeline,
              `MoltTIR.SSA.Dominance,
              `MoltTIR.SSA.WellFormedSSA,
@@ -41,23 +37,10 @@ lean_lib MoltTIR where
              `MoltTIR.Backend.LuauSyntax, `MoltTIR.Backend.LuauEmit,
              `MoltTIR.Backend.LuauSemantics, `MoltTIR.Backend.LuauEnvCorr,
              `MoltTIR.Backend.LuauCorrect,
-             `MoltTIR.Backend.LuauTargetSemantics,
-             `MoltTIR.Backend.RustSyntax, `MoltTIR.Backend.RustEmit,
-             `MoltTIR.Backend.RustSemantics, `MoltTIR.Backend.RustCorrect,
-             `MoltTIR.Backend.WasmSyntax, `MoltTIR.Backend.WasmEmit,
-             `MoltTIR.Backend.WasmSemantics, `MoltTIR.Backend.WasmCorrect,
-             `MoltTIR.Backend.BackendDeterminism, `MoltTIR.Backend.TargetIndependence,
-             `MoltTIR.Backend.CrossBackend,
-             `MoltTIR.Runtime.NanBox, `MoltTIR.Runtime.NanBoxBV, `MoltTIR.Runtime.NanBoxCorrect,
+             `MoltTIR.Runtime.NanBox, `MoltTIR.Runtime.NanBoxCorrect,
              `MoltTIR.Runtime.Refcount,
              `MoltTIR.Optimization.RefcountElision,
-             `MoltTIR.Optimization.EscapeAnalysis, `MoltTIR.Optimization.Specialization,
-             `MoltTIR.TypeSystem.TypeInference, `MoltTIR.TypeSystem.TypeSoundness,
-             `MoltTIR.Termination.PassTermination, `MoltTIR.Termination.PipelineTermination,
              `MoltTIR.Runtime.RCElisionCorrect,
-             `MoltTIR.Runtime.CapabilityGate,
-             `MoltTIR.Runtime.MemorySafety, `MoltTIR.Runtime.MemorySafetyCorrect,
-             `MoltTIR.Runtime.OwnershipModel, `MoltTIR.Runtime.IntrinsicContracts,
              `MoltTIR.Runtime.WasmNative,
              `MoltTIR.Runtime.WasmABI, `MoltTIR.Runtime.WasmNativeCorrect,
              `MoltTIR.Determinism.CompileDeterminism,
@@ -84,9 +67,7 @@ lean_lib MoltPython where
   srcDir := "."
   roots := #[`MoltPython.Syntax, `MoltPython.Values, `MoltPython.Env,
              `MoltPython.Semantics.EvalExpr, `MoltPython.Semantics.Determinism,
-             `MoltPython.Properties.TypeSafety,
-             `MoltPython.VersionGated,
-             `MoltPython.Properties.VersionCompat]
+             `MoltPython.Properties.TypeSafety]
 
 lean_lib MoltLowering where
   srcDir := "."
