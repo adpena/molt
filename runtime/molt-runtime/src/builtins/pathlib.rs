@@ -11,6 +11,7 @@
 use crate::libc_compat as libc;
 
 use crate::*;
+use crate::audit::{AuditArgs, audit_capability_decision};
 use std::fs;
 use std::path::{Component, MAIN_SEPARATOR, Path, PathBuf};
 
@@ -682,7 +683,9 @@ pub extern "C" fn molt_pathlib_home() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_resolve(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("pathlib.resolve", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -746,7 +749,9 @@ pub extern "C" fn molt_pathlib_expanduser(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_exists(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("pathlib.exists", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -761,7 +766,9 @@ pub extern "C" fn molt_pathlib_exists(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_is_file(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("pathlib.is_file", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -776,7 +783,9 @@ pub extern "C" fn molt_pathlib_is_file(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_is_dir(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("pathlib.is_dir", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -791,7 +800,9 @@ pub extern "C" fn molt_pathlib_is_dir(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_is_symlink(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("pathlib.is_symlink", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -806,7 +817,9 @@ pub extern "C" fn molt_pathlib_is_symlink(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_is_mount(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("pathlib.is_mount", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -846,7 +859,9 @@ pub extern "C" fn molt_pathlib_is_mount(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_stat(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("pathlib.stat", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -906,7 +921,9 @@ pub extern "C" fn molt_pathlib_stat(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_lstat(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("pathlib.lstat", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -966,7 +983,9 @@ pub extern "C" fn molt_pathlib_lstat(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_iterdir(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("pathlib.iterdir", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -992,7 +1011,9 @@ pub extern "C" fn molt_pathlib_iterdir(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_glob(path_bits: u64, pattern_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("pathlib.glob", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1039,7 +1060,9 @@ pub extern "C" fn molt_pathlib_glob(path_bits: u64, pattern_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_rglob(path_bits: u64, pattern_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("pathlib.rglob", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1086,7 +1109,9 @@ pub extern "C" fn molt_pathlib_rglob(path_bits: u64, pattern_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_mkdir(path_bits: u64, parents_bits: u64, exist_ok_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.write") {
+        let allowed = has_capability(_py, "fs.write");
+        audit_capability_decision("pathlib.mkdir", "fs.write", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1115,7 +1140,9 @@ pub extern "C" fn molt_pathlib_mkdir(path_bits: u64, parents_bits: u64, exist_ok
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_rmdir(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.write") {
+        let allowed = has_capability(_py, "fs.write");
+        audit_capability_decision("pathlib.rmdir", "fs.write", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1133,7 +1160,9 @@ pub extern "C" fn molt_pathlib_rmdir(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_unlink(path_bits: u64, missing_ok_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.write") {
+        let allowed = has_capability(_py, "fs.write");
+        audit_capability_decision("pathlib.unlink", "fs.write", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1155,7 +1184,9 @@ pub extern "C" fn molt_pathlib_unlink(path_bits: u64, missing_ok_bits: u64) -> u
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_rename(path_bits: u64, target_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.write") {
+        let allowed = has_capability(_py, "fs.write");
+        audit_capability_decision("pathlib.rename", "fs.write", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1178,7 +1209,9 @@ pub extern "C" fn molt_pathlib_rename(path_bits: u64, target_bits: u64) -> u64 {
 pub extern "C" fn molt_pathlib_replace(path_bits: u64, target_bits: u64) -> u64 {
     // replace is identical to rename on Unix; on Windows it's more permissive
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.write") {
+        let allowed = has_capability(_py, "fs.write");
+        audit_capability_decision("pathlib.replace", "fs.write", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1200,7 +1233,9 @@ pub extern "C" fn molt_pathlib_replace(path_bits: u64, target_bits: u64) -> u64 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_touch(path_bits: u64, exist_ok_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.write") {
+        let allowed = has_capability(_py, "fs.write");
+        audit_capability_decision("pathlib.touch", "fs.write", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1234,7 +1269,9 @@ pub extern "C" fn molt_pathlib_touch(path_bits: u64, exist_ok_bits: u64) -> u64 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_symlink_to(path_bits: u64, target_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.write") {
+        let allowed = has_capability(_py, "fs.write");
+        audit_capability_decision("pathlib.symlink_to", "fs.write", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1280,7 +1317,9 @@ pub extern "C" fn molt_pathlib_symlink_to(_path_bits: u64, _target_bits: u64) ->
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_hardlink_to(path_bits: u64, target_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.write") {
+        let allowed = has_capability(_py, "fs.write");
+        audit_capability_decision("pathlib.hardlink_to", "fs.write", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1310,7 +1349,9 @@ pub extern "C" fn molt_pathlib_hardlink_to(_path_bits: u64, _target_bits: u64) -
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_readlink(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("pathlib.readlink", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1328,7 +1369,9 @@ pub extern "C" fn molt_pathlib_readlink(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_read_text(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("pathlib.read_text", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1346,7 +1389,9 @@ pub extern "C" fn molt_pathlib_read_text(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_read_bytes(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("pathlib.read_bytes", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1371,7 +1416,9 @@ pub extern "C" fn molt_pathlib_read_bytes(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_write_text(path_bits: u64, data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.write") {
+        let allowed = has_capability(_py, "fs.write");
+        audit_capability_decision("pathlib.write_text", "fs.write", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1393,7 +1440,9 @@ pub extern "C" fn molt_pathlib_write_text(path_bits: u64, data_bits: u64) -> u64
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_write_bytes(path_bits: u64, data_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.write") {
+        let allowed = has_capability(_py, "fs.write");
+        audit_capability_decision("pathlib.write_bytes", "fs.write", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1422,7 +1471,9 @@ pub extern "C" fn molt_pathlib_write_bytes(path_bits: u64, data_bits: u64) -> u6
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_chmod(path_bits: u64, mode_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.write") {
+        let allowed = has_capability(_py, "fs.write");
+        audit_capability_decision("pathlib.chmod", "fs.write", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1454,7 +1505,9 @@ pub extern "C" fn molt_pathlib_chmod(path_bits: u64, mode_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_owner(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("pathlib.owner", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1492,7 +1545,9 @@ pub extern "C" fn molt_pathlib_owner(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_group(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("pathlib.group", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let s = match require_str(_py, path_bits, "path") {
@@ -1534,7 +1589,9 @@ pub extern "C" fn molt_pathlib_group(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_samefile(path_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed = has_capability(_py, "fs.read");
+        audit_capability_decision("pathlib.samefile", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let s = match require_str(_py, path_bits, "path") {

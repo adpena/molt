@@ -34,6 +34,7 @@ use crate::object::ops_bytes::{
 };
 use crate::state::runtime_state::PythonVersionInfo;
 use crate::*;
+use crate::audit::{AuditArgs, audit_capability_decision};
 use memchr::{memchr, memmem};
 use molt_obj_model::MoltObject;
 use num_bigint::{BigInt, Sign};
@@ -1530,45 +1531,6 @@ pub extern "C" fn molt_id(val: u64) -> u64 {
     crate::with_gil_entry!(_py, { int_bits_from_i64(_py, val as i64) })
 }
 
-fn ord_length_error(_py: &PyToken<'_>, len: usize) -> u64 {
-    let msg = format!("ord() expected a character, but string of length {len} found");
-    raise_exception::<_>(_py, "TypeError", &msg)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ord(val: u64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let obj = obj_from_bits(val);
-        if let Some(ptr) = obj.as_ptr() {
-            unsafe {
-                let type_id = object_type_id(ptr);
-                if type_id == TYPE_ID_STRING {
-                    let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
-                    let char_count = utf8_codepoint_count_cached(_py, bytes, Some(ptr as usize));
-                    if char_count != 1 {
-                        return ord_length_error(_py, char_count as usize);
-                    }
-                    let Some(code) = wtf8_codepoint_at(bytes, 0) else {
-                        return MoltObject::none().bits();
-                    };
-                    return MoltObject::from_int(code.to_u32() as i64).bits();
-                }
-                if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-                    let len = bytes_len(ptr);
-                    if len != 1 {
-                        return ord_length_error(_py, len);
-                    }
-                    let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
-                    return MoltObject::from_int(bytes[0] as i64).bits();
-                }
-            }
-        }
-        let type_name = class_name_for_error(type_of_bits(_py, val));
-        let msg = format!("ord() expected string of length 1, but {type_name} found");
-        raise_exception::<_>(_py, "TypeError", &msg)
-    })
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_chr(val: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -2479,67 +2441,7 @@ pub extern "C" fn molt_sys_executable() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-/// # Safety
-/// Caller must ensure `argv` points to `argc` null-terminated strings.
-pub unsafe extern "C" fn molt_set_argv(argc: i32, argv: *const *const u8) {
-    unsafe {
-        crate::with_gil_entry!(_py, {
-            let mut args = Vec::new();
-            if argc > 0 && !argv.is_null() {
-                for idx in 0..argc {
-                    let ptr = *argv.add(idx as usize);
-                    if ptr.is_null() {
-                        args.push(Vec::new());
-                        continue;
-                    }
-                    let bytes = CStr::from_ptr(ptr as *const i8).to_bytes();
-                    let (decoded, _) = decode_bytes_text("utf-8", "surrogateescape", bytes)
-                        .expect("argv decode must succeed for utf-8+surrogateescape");
-                    args.push(decoded);
-                }
-            }
-            let trace_argv = matches!(std::env::var("MOLT_TRACE_ARGV").ok().as_deref(), Some("1"));
-            if trace_argv {
-                eprintln!("molt_set_argv argc={argc} argv0={:?}", args.first());
-            }
-            *runtime_state(_py).argv.lock().unwrap() = args;
-        })
-    }
-}
-
-#[cfg(target_os = "windows")]
-#[unsafe(no_mangle)]
-/// # Safety
-/// Caller must ensure `argv` points to `argc` null-terminated UTF-16 strings.
-pub unsafe extern "C" fn molt_set_argv_utf16(argc: i32, argv: *const *const u16) {
-    crate::with_gil_entry!(_py, {
-        let mut args = Vec::new();
-        if argc > 0 && !argv.is_null() {
-            for idx in 0..argc {
-                let ptr = *argv.add(idx as usize);
-                if ptr.is_null() {
-                    args.push(Vec::new());
-                    continue;
-                }
-                let mut len = 0usize;
-                while *ptr.add(len) != 0 {
-                    len += 1;
-                }
-                let slice = std::slice::from_raw_parts(ptr, len);
-                let mut raw = Vec::with_capacity(slice.len() * 2);
-                for &unit in slice {
-                    raw.push((unit & 0x00FF) as u8);
-                    raw.push((unit >> 8) as u8);
-                }
-                let (decoded, _) = decode_bytes_text("utf-16-le", "surrogatepass", &raw)
-                    .expect("argv decode must succeed for utf-16-le+surrogatepass");
-                args.push(decoded);
-            }
-        }
-        *runtime_state(_py).argv.lock().unwrap() = args;
-    })
-}
+// molt_set_argv and molt_set_argv_utf16 live in ops_sys.rs
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_getpid() -> u64 {
@@ -4290,7 +4192,9 @@ fn traceback_source_line_native(_py: &PyToken<'_>, filename: &str, lineno: i64) 
     if lineno <= 0 {
         return String::new();
     }
-    if !has_capability(_py, "fs.read") {
+    let allowed = has_capability(_py, "fs.read");
+    audit_capability_decision("traceback.source_line", "fs.read", AuditArgs::None, allowed);
+    if !allowed {
         return String::new();
     }
     let Ok(file) = std::fs::File::open(filename) else {
