@@ -90,8 +90,18 @@ theorem constFold_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
     rw [constFoldExpr_correct ρ scrutinee]
     match evalExpr ρ scrutinee with
     | some (.int n) =>
-      dsimp only []
-      sorry -- block lookup congruence through let binding
+      simp only [switchTarget]
+      match hfind : cases.find? (fun p => p.fst == n) with
+      | some (_, lbl) =>
+        simp only [hfind]
+        match hblk : f.blocks lbl with
+        | none => simp [constFoldFunc_blocks_none f lbl hblk]
+        | some blk => simp [constFoldFunc_blocks_some f lbl blk hblk, constFoldBlock_params]
+      | none =>
+        simp only [hfind]
+        match hblk : f.blocks default_ with
+        | none => simp [constFoldFunc_blocks_none f default_ hblk]
+        | some blk => simp [constFoldFunc_blocks_some f default_ blk hblk, constFoldBlock_params]
     | some (.bool _) | some (.float _) | some (.str _) | some .none | none => rfl
   | unreachable =>
     -- Both sides evaluate to none
