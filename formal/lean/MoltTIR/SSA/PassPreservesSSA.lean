@@ -684,6 +684,23 @@ theorem cseBlock_defs (b : Block) :
     blockAllDefs (cseBlock b) = blockAllDefs b := by
   simp only [blockAllDefs, cseBlock, cseInstrs_dsts]
 
+
+/-- CSE preserves terminator successors (only changes expressions). -/
+private theorem cseTerminator_successors (avail : AvailMap) (t : Terminator) :
+    termSuccessors (cseTerminator avail t) = termSuccessors t := by
+  cases t with
+  | ret _ => simp [cseTerminator, termSuccessors]
+  | jmp _ _ => simp [cseTerminator, termSuccessors]
+  | br _ _ _ _ _ => simp [cseTerminator, termSuccessors]
+  | yield _ _ _ => simp [cseTerminator, termSuccessors]
+  | switch _ _ _ => simp [cseTerminator, termSuccessors]
+  | unreachable => simp [cseTerminator, termSuccessors]
+
+/-- cseBlock preserves terminator successors. -/
+private theorem cseBlock_successors (b : Block) :
+    termSuccessors (cseBlock b).term = termSuccessors b.term := by
+  simp [cseBlock, cseTerminator_successors]
+
 /-- CSE preserves SSA: it replaces RHS expressions with variable
     references to equivalent earlier computations, but never changes
     which variables are defined or their defining blocks. -/
@@ -694,7 +711,53 @@ theorem cse_preserves_ssa (f : Func) (h : SSAWellFormed f) :
       DefinedIn (cseFunc f) v lbl₂ → lbl₁ = lbl₂
     unfold cseFunc
     exact unique_defs_of_mapFunc f cseBlock cseBlock_defs h.unique_defs
-  · sorry  -- Dominance unchanged; new uses reference earlier defs which dominate
+  · -- use_dom_def: CSE may introduce new uses (.var v from avail map),
+    -- but those variables are defined in the same block → Dom reflexive.
+    -- Original uses transfer via dom_mapFunc_iff (terminators unchanged).
+    intro v b_use b_def huse hdef
+    unfold cseFunc at huse hdef
+    have hdef_orig := (definedIn_mapFunc_iff f cseBlock cseBlock_defs v b_def).mp hdef
+    obtain ⟨blk', hblk', hv_use⟩ := huse
+    obtain ⟨blk, hblk, rfl⟩ := blocks_map_some_rev f cseBlock b_use blk' hblk'
+    by_cases hv_orig : v ∈ blockAllUses blk
+    · -- v was used in the original block
+      have huse_orig : UsedIn f v b_use := ⟨blk, hblk, hv_orig⟩
+      have hdom_orig := h.use_dom_def v b_use b_def huse_orig hdef_orig
+      exact (dom_mapFunc_iff f cseBlock cseBlock_successors b_def b_use).mpr hdom_orig
+    · -- v is a NEW use introduced by CSE. CSE only introduces uses of
+      -- variables from the availability map, which are instruction dsts
+      -- of the same block. So v ∈ blockAllDefs blk.
+      have hv_in_defs : v ∈ blockAllDefs blk := by
+        -- CSE block uses ⊆ original uses ∪ instruction dsts
+        -- v ∉ original uses, so v ∈ instruction dsts ⊆ blockAllDefs
+        simp only [blockAllUses, cseBlock] at hv_use
+        rcases List.mem_append.mp hv_use with hi | ht
+        · simp only [blockAllDefs]
+          apply List.mem_append_right
+          -- Any new use in cseInstrs comes from avail map entries,
+          -- which are instruction dsts. We prove this by induction on instrs.
+          have hv_not_orig_instr : v ∉ blk.instrs.flatMap (fun i => exprVars i.rhs) := by
+            intro hc; exact hv_orig (List.mem_append_left _ hc)
+          suffices hsuff : ∀ (avail : AvailMap) (instrs : List Instr),
+            (∀ e, e ∈ avail → e.dst ∈ instrs.map Instr.dst) →
+            ∀ w, w ∈ (cseInstrs avail instrs).flatMap (fun i => exprVars i.rhs) →
+            w ∈ instrs.flatMap (fun i => exprVars i.rhs) ∨ w ∈ instrs.map Instr.dst by
+            rcases hsuff [] blk.instrs (by simp) v hi with h_orig | h_dst
+            · exact absurd h_orig hv_not_orig_instr
+            · exact h_dst
+          sorry /- cseInstrs introduces uses only from original or instruction dsts -/
+        · -- v in termVars of cseTerminator but not in original termVars
+          -- cseTerminator only uses cseExpr which can introduce avail dsts
+          -- The avail for the terminator is buildAvail [] b.instrs
+          -- whose entries' dsts are instruction dsts ⊆ blockAllDefs
+          simp only [blockAllDefs]
+          have hv_not_orig_term : v ∉ termVars blk.term := by
+            intro hc; exact hv_orig (List.mem_append_right _ hc)
+          sorry /- cseTerminator introduces uses only from instruction dsts -/
+      have hdef_at_use : DefinedIn f v b_use := ⟨blk, hblk, hv_in_defs⟩
+      have heq : b_def = b_use := h.unique_defs v b_def b_use hdef_orig hdef_at_use
+      rw [heq]
+      exact (dom_mapFunc_iff f cseBlock cseBlock_successors b_use b_use).mpr (Dom.refl f b_use)
   · -- Entry preserved
     show ((cseFunc f).blocks (cseFunc f).entry).isSome
     unfold cseFunc

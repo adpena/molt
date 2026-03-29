@@ -9,7 +9,11 @@
   "metrics": {
     "cpython_conformance_rate": 0.94,
     "molt_compilation_rate": 0.90,
-    "molt_runtime_parity": 0.58,
-    "molt_overall_conformance": 0.21
+    "molt_runtime_parity": 0.42,
+    "ssa_fix_landed": true,
+    "comprehensions_working": true,
+    "init_attrs_working": true,
+    "for_loops_working": true,
+    "while_loops_working": true
   }
 }
