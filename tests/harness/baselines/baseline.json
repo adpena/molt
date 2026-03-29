@@ -3,13 +3,18 @@
     "unit-rust": 375,
     "unit-python": 69,
     "conformance_cpython": 385,
-    "conformance_molt_compile": 416,
-    "conformance_molt_runtime": 16
+    "conformance_molt_compile": 232,
+    "conformance_molt_runtime_pass": 67,
+    "conformance_molt_compat_reject": 18
   },
   "metrics": {
     "cpython_conformance_rate": 0.94,
-    "molt_compilation_rate": 0.90,
-    "molt_runtime_parity": 0.53,
-    "molt_conformance_sample": "16/30 (53%) on 30-file diverse sample"
+    "molt_compilation_rate": 0.57,
+    "molt_runtime_sample_parity": 0.60,
+    "isinstance_exception_fixed": true,
+    "range_equality_fixed": true,
+    "function_repr_fixed": true,
+    "str_object_kwarg_fixed": true,
+    "split_sep_kwarg_fixed": true
   }
 }
