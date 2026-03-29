@@ -78,9 +78,10 @@ fn is_false(value: &bool) -> bool {
 fn ensure_output_parent_dir(output_file: &str) -> io::Result<()> {
     let path = Path::new(output_file);
     if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
     Ok(())
 }
 
@@ -1005,9 +1006,7 @@ fn main() -> io::Result<()> {
             // msgpack binary format — deserialize directly via serde
             if let Some(ir_path) = ir_file_path {
                 let file = std::fs::File::open(ir_path).map_err(|e| {
-                    io::Error::other(
-                        format!("failed to open IR file '{}': {}", ir_path, e),
-                    )
+                    io::Error::other(format!("failed to open IR file '{}': {}", ir_path, e))
                 })?;
                 let reader = io::BufReader::new(file);
                 match rmp_serde::from_read(reader) {
@@ -1072,9 +1071,7 @@ fn main() -> io::Result<()> {
             // NDJSON streaming format — one function per line
             if let Some(ir_path) = ir_file_path {
                 let file = std::fs::File::open(ir_path).map_err(|e| {
-                    io::Error::other(
-                        format!("failed to open IR file '{}': {}", ir_path, e),
-                    )
+                    io::Error::other(format!("failed to open IR file '{}': {}", ir_path, e))
                 })?;
                 let reader = io::BufReader::new(file);
                 match SimpleIR::from_ndjson_reader(reader) {
@@ -1097,9 +1094,7 @@ fn main() -> io::Result<()> {
         } else if let Some(ir_path) = ir_file_path {
             // Stream JSON directly from file — never holds raw JSON string in memory.
             let file = std::fs::File::open(ir_path).map_err(|e| {
-                io::Error::other(
-                    format!("failed to open IR file '{}': {}", ir_path, e),
-                )
+                io::Error::other(format!("failed to open IR file '{}': {}", ir_path, e))
             })?;
             let reader = io::BufReader::with_capacity(1 << 20, file);
             match serde_json::from_reader::<_, SimpleIR>(reader) {
@@ -1248,6 +1243,11 @@ fn main() -> io::Result<()> {
 
             if let Some(ref stdlib_path) = stdlib_obj_path {
                 let stdlib_path = std::path::Path::new(stdlib_path);
+                // Ensure parent directory exists for stdlib cache path —
+                // --rebuild may have cleared the build directory tree.
+                ensure_output_parent_dir(stdlib_path.to_str().unwrap_or("")).unwrap_or_else(|e| {
+                    eprintln!("MOLT_BACKEND: warning: failed to create stdlib parent: {e}");
+                });
                 if stdlib_path.exists() {
                     // Cached stdlib exists — compile only user functions
                     let total = ir.functions.len();
@@ -1493,15 +1493,11 @@ fn main() -> io::Result<()> {
                         cmd.arg(p);
                     }
                     let ld_result = cmd.output().map_err(|e| {
-                        io::Error::other(
-                            format!("failed to run ld -r for batch merge: {e}"),
-                        )
+                        io::Error::other(format!("failed to run ld -r for batch merge: {e}"))
                     })?;
                     if !ld_result.status.success() {
                         let stderr = String::from_utf8_lossy(&ld_result.stderr);
-                        return Err(io::Error::other(
-                            format!("ld -r failed: {stderr}"),
-                        ));
+                        return Err(io::Error::other(format!("ld -r failed: {stderr}")));
                     }
                 }
 

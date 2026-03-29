@@ -19328,6 +19328,9 @@ def _ensure_backend_binary(
         ]:
             if cache_dir.is_dir():
                 shutil.rmtree(cache_dir, ignore_errors=True)
+                # Recreate the directory so later build steps don't fail
+                # with ENOENT when writing output artifacts.
+                cache_dir.mkdir(parents=True, exist_ok=True)
                 if not json_output:
                     print(f"  Cleared stale cache: {cache_dir}", file=sys.stderr)
         # Remove cached .o and .wasm artifacts from the cache root without

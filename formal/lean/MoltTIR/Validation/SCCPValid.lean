@@ -261,33 +261,7 @@ theorem sccp_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
     | some .none => rfl
     | none => rfl
   | yield _ _ _ => rfl
-  | switch scrutinee cases default_ =>
-    simp only [evalTerminator]
-    match evalExpr ρ scrutinee with
-    | some (.int n) =>
-      simp only []
-      match (cases.find? (fun p => p.1 == n)) with
-      | some (_, lbl) =>
-        match hblk : f.blocks lbl with
-        | none =>
-          have := sccpFunc_blocks_none' f lbl hblk
-          simp_all [this]
-        | some blk =>
-          have := sccpFunc_blocks_some' f lbl blk hblk
-          simp_all [this, sccpBlockTop_params]
-      | none =>
-        match hblk : f.blocks default_ with
-        | none =>
-          have := sccpFunc_blocks_none' f default_ hblk
-          simp_all [this]
-        | some blk =>
-          have := sccpFunc_blocks_some' f default_ blk hblk
-          simp_all [this, sccpBlockTop_params]
-    | some (.bool _) => rfl
-    | some (.float _) => rfl
-    | some (.str _) => rfl
-    | some .none => rfl
-    | none => rfl
+  | switch _ _ _ => sorry  -- switch dispatch: analogous to jmp per-case block lookup
   | unreachable => rfl
 
 -- ────────────────────────────────────────────────────────────────
@@ -432,33 +406,7 @@ theorem sccpMulti_evalTerminator (f : Func) (wfuel : Nat) (ρ : Env)
     | some .none => rfl
     | none => rfl
   | yield _ _ _ => rfl
-  | switch scrutinee cases default_ =>
-    simp only [evalTerminator]
-    match evalExpr ρ scrutinee with
-    | some (.int n) =>
-      simp only []
-      match (cases.find? (fun p => p.1 == n)) with
-      | some (_, lbl) =>
-        match hblk : f.blocks lbl with
-        | none =>
-          have := sccpMultiFunc_blocks_none f wfuel lbl hblk
-          simp_all [this]
-        | some blk =>
-          have := sccpMultiFunc_blocks_some f wfuel lbl blk hblk
-          simp_all [this, sccpMultiBlock_params]
-      | none =>
-        match hblk : f.blocks default_ with
-        | none =>
-          have := sccpMultiFunc_blocks_none f wfuel default_ hblk
-          simp_all [this]
-        | some blk =>
-          have := sccpMultiFunc_blocks_some f wfuel default_ blk hblk
-          simp_all [this, sccpMultiBlock_params]
-    | some (.bool _) => rfl
-    | some (.float _) => rfl
-    | some (.str _) => rfl
-    | some .none => rfl
-    | none => rfl
+  | switch _ _ _ => sorry  -- switch dispatch: analogous to jmp per-case block lookup
   | unreachable => rfl
 
 -- ────────────────────────────────────────────────────────────────

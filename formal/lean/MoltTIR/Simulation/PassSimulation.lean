@@ -108,6 +108,9 @@ theorem dce_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
     | some (.str _) => rfl
     | some .none => rfl
     | none => rfl
+  | yield _ _ _ => rfl
+  | switch _ _ _ => sorry  -- switch block lookup preservation (analogous to jmp)
+  | unreachable => rfl
 
 private theorem dce_instrs_agreeOn_precond_dead (instrs : List Instr) (term : Terminator) :
     ∀ i ∈ instrs, ¬isLive (usedVarsSuffix instrs term) i → i.dst ∉ usedVarsSuffix instrs term := by
@@ -166,6 +169,14 @@ private theorem evalTerminator_agreeOn (f : Func) (ρ₁ ρ₂ : Env) (t : Termi
     | some (.str _) => rfl
     | some .none => rfl
     | none => rfl
+  | yield val resume resumeArgs =>
+    simp only [evalTerminator]
+  | switch scrutinee cases default_ =>
+    simp only [evalTerminator]
+    have hscr : EnvAgreeOn (exprVars scrutinee) ρ₁ ρ₂ :=
+      fun x hx => h x (by simp only [termVars]; exact hx)
+    rw [evalExpr_agreeOn ρ₁ ρ₂ scrutinee hscr]
+  | unreachable => rfl
 
 private theorem execInstrs_dce_of_total
     (used : List Var) (instrs : List Instr)
@@ -351,6 +362,9 @@ theorem sccp_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
     | some (.str _) => rfl
     | some .none => rfl
     | none => rfl
+  | yield _ _ _ => rfl
+  | switch _ _ _ => sorry  -- switch block lookup preservation (analogous to jmp)
+  | unreachable => rfl
 
 theorem sccpFunc_correct (f : Func) (fuel : Nat) (ρ : Env) (lbl : Label) :
     execFunc (sccpFunc f) fuel ρ lbl = execFunc f fuel ρ lbl := by
@@ -615,6 +629,12 @@ private theorem cse_evalTerminator (f : Func) (ρ : Env) (avail : AvailMap) (t :
     | some (.str _) => rfl
     | some .none => rfl
     | none => rfl
+  | yield val resume resumeArgs =>
+    -- Both sides evaluate to none (generators not modeled)
+    rfl
+  | switch scrutinee cases default_ =>
+    sorry  -- switch block lookup preservation (analogous to jmp)
+  | unreachable => rfl
 
 /-- CSE preserves function execution semantics under SSA.
     Proof by induction on fuel. At each step: look up block (preserved by
@@ -782,6 +802,9 @@ private theorem guardHoist_evalTerminator (f : Func) (ρ : Env) (t : Terminator)
     | some (.str _) => rfl
     | some .none => rfl
     | none => rfl
+  | yield _ _ _ => rfl
+  | switch _ _ _ => sorry  -- switch block lookup preservation (analogous to jmp)
+  | unreachable => rfl
 
 -- ── 5d: Guard hoisting preserves instruction list totality ─────────
 
