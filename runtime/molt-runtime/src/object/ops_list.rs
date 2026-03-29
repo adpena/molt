@@ -348,7 +348,10 @@ pub extern "C" fn molt_list_init_method(list_bits: u64, iterable_bits: u64) -> u
             return raise_exception::<_>(_py, "TypeError", "list.__init__ expects list");
         };
         unsafe {
-            if object_type_id(list_ptr) != TYPE_ID_LIST {
+            let tid = object_type_id(list_ptr);
+            // Accept exact list AND subclasses of list (TYPE_ID_OBJECT
+            // instances whose class inherits from list).
+            if tid != TYPE_ID_LIST && tid != crate::object::TYPE_ID_OBJECT {
                 return raise_exception::<_>(_py, "TypeError", "list.__init__ expects list");
             }
         }
