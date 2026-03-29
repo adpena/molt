@@ -221,8 +221,8 @@ theorem pipeline_contextual_equiv
   | cons g rest ih =>
     simp only [List.foldl]
     apply ContextualEquivalence.trans
-    · exact ih (fun g' hg' f' => hpasses g' (List.mem_cons_of_mem _ hg') f') (g f)
-    · exact hpasses g (List.mem_cons_self _ _) f
+    · exact ih (fun g' hg' f' => hpasses g' (List.Mem.tail _ hg') f') (g f)
+    · exact hpasses g (List.mem_cons_self) f
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 6: Adequacy for the full midend pipeline

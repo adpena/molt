@@ -162,9 +162,9 @@ theorem evalGuards_isSome (ρ : Env) (guards : List TypeGuard)
   | nil => simp [evalGuards]
   | cons g gs ih =>
     simp [evalGuards]
-    have hg_def := hdef g (List.mem_cons_self _ _)
+    have hg_def := hdef g (List.mem_cons_self)
     have hgs_def : ∀ g' ∈ gs, (ρ g'.var).isSome = true :=
-      fun g' hg' => hdef g' (List.mem_cons_of_mem _ hg')
+      fun g' hg' => hdef g' (List.Mem.tail _ hg')
     cases heg : evalGuard ρ g with
     | none =>
       have := evalGuard_isSome ρ g hg_def
@@ -292,11 +292,11 @@ theorem deopt_chain_equiv
     match hg : evalGuards ρ op.guards with
     | some true =>
       simp [hg]
-      have ⟨_, hspec⟩ := hcorrect op (List.mem_cons_self _ _)
+      have ⟨_, hspec⟩ := hcorrect op (List.mem_cons_self)
       exact Or.inl (hspec ρ hg)
     | some false =>
       simp [hg]
-      exact ih (fun o ho => hcorrect o (List.mem_cons_of_mem _ ho))
+      exact ih (fun o ho => hcorrect o (List.Mem.tail _ ho))
     | none =>
       simp [hg]
       exact Or.inr rfl

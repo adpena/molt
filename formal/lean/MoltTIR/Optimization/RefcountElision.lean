@@ -120,9 +120,9 @@ theorem execRcOps_no_touch (h : Heap) (a : Addr) (ops : List RcOp)
   | nil => rfl
   | cons op rest ih =>
     simp only [execRcOps]
-    have hop : op.addr? ≠ some a := hno op (List.mem_cons_self _ _)
+    have hop : op.addr? ≠ some a := hno op (List.mem_cons_self)
     have hrest : noInterveningUse a rest :=
-      fun o ho => hno o (List.mem_cons_of_mem _ ho)
+      fun o ho => hno o (List.Mem.tail _ ho)
     rw [ih (execRcOp h op) hrest]
     exact execRcOp_no_touch h a op hop
 

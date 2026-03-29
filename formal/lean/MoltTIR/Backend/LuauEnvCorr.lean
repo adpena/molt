@@ -74,7 +74,7 @@ theorem envCorr_set (names : VarNames) (ρ : MoltTIR.Env) (lenv : LuauEnv)
         refine ⟨w, hw, ?_⟩
         have hne_name : names y ≠ names x := by
           apply hinj_names y
-          rw [hw]; exact Option.noConfusion
+          rw [hw]; exact nofun
         simp only [LuauEnv.set, hne_name, ite_false]
         exact hlenv
   · intro a b ha hb hab

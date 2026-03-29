@@ -157,9 +157,9 @@ theorem heap_survives_all_ops (s : AllocState) (a : Addr)
   | nil => simp [execScopeOps]; exact halloc
   | cons op rest ih =>
     simp [execScopeOps]
-    have hne_free : op ≠ .freeHeap a := hno_free op (List.mem_cons_self _ _)
+    have hne_free : op ≠ .freeHeap a := hno_free op (List.mem_cons_self)
     have hrest_free : ∀ op ∈ rest, op ≠ .freeHeap a :=
-      fun o ho => hno_free o (List.mem_cons_of_mem _ ho)
+      fun o ho => hno_free o (List.Mem.tail _ ho)
     apply ih (execScopeOp s op) _ hrest_free
     cases op with
     | alloc addr' kind =>
@@ -199,12 +199,12 @@ theorem stack_live_before_exit (s : AllocState) (a : Addr) (scope : ScopeId)
   | nil => simp [execScopeOps]; exact halloc
   | cons op rest ih =>
     simp [execScopeOps]
-    have hne_exit : op ≠ .exitScope scope := hno_exit op (List.mem_cons_self _ _)
-    have hne_free : op ≠ .freeHeap a := hno_free op (List.mem_cons_self _ _)
+    have hne_exit : op ≠ .exitScope scope := hno_exit op (List.mem_cons_self)
+    have hne_free : op ≠ .freeHeap a := hno_free op (List.mem_cons_self)
     have hrest_exit : ∀ op ∈ rest, op ≠ .exitScope scope :=
-      fun o ho => hno_exit o (List.mem_cons_of_mem _ ho)
+      fun o ho => hno_exit o (List.Mem.tail _ ho)
     have hrest_free : ∀ op ∈ rest, op ≠ .freeHeap a :=
-      fun o ho => hno_free o (List.mem_cons_of_mem _ ho)
+      fun o ho => hno_free o (List.Mem.tail _ ho)
     apply ih (execScopeOp s op)
     · cases op with
       | alloc addr' kind =>
@@ -293,8 +293,8 @@ theorem escape_analysis_sound
     (hne : DoesNotEscape a scope escapeCheck)
     (ops : List ScopeOp)
     (hno_exit_before_use : ∀ (i j : Nat),
-      ops.get? i = some (.use a) →
-      ops.get? j = some (.exitScope scope) →
+      ops[i]? = some (.use a) →
+      ops[j]? = some (.exitScope scope) →
       i < j)
     (hno_free : ∀ op ∈ ops, op ≠ .freeHeap a) :
     -- The object is live for every use

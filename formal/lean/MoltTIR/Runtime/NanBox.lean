@@ -60,21 +60,20 @@ def IsPending (v : UInt64) : Prop := v &&& TAG_CHECK = QNAN ||| TAG_PEND
 -- ══════════════════════════════════════════════════════════════════
 
 private theorem uint64_and_assoc (a b c : UInt64) : a &&& b &&& c = a &&& (b &&& c) := by
-  cases a with | mk av => cases b with | mk bv => cases c with | mk cv =>
-  show UInt64.mk _ = UInt64.mk _; congr 1; exact BitVec.and_assoc av bv cv
+  cases a with | ofBitVec av => cases b with | ofBitVec bv => cases c with | ofBitVec cv =>
+  show UInt64.ofBitVec _ = UInt64.ofBitVec _; congr 1; exact BitVec.and_assoc av bv cv
 
 private theorem uint64_and_or_distrib_right (a b c : UInt64) :
     (a ||| b) &&& c = (a &&& c) ||| (b &&& c) := by
   apply UInt64.eq_of_toBitVec_eq
   simp only [UInt64.toBitVec_and, UInt64.toBitVec_or]
-  ext i; simp only [BitVec.getLsbD_and, BitVec.getLsbD_or]
-  cases a.toBitVec.getLsbD i <;> cases b.toBitVec.getLsbD i <;> cases c.toBitVec.getLsbD i <;> rfl
+  exact BitVec.and_or_distrib_right
 
 private theorem uint64_or_zero (a : UInt64) : a ||| 0 = a := by
-  cases a with | mk av => show UInt64.mk _ = UInt64.mk _; congr 1; exact BitVec.or_zero
+  cases a with | ofBitVec av => show UInt64.ofBitVec _ = UInt64.ofBitVec _; congr 1; exact BitVec.or_zero
 
 private theorem uint64_and_zero (a : UInt64) : a &&& 0 = 0 := by
-  cases a with | mk av => show UInt64.mk _ = UInt64.mk _; congr 1; exact BitVec.and_zero
+  cases a with | ofBitVec av => show UInt64.ofBitVec _ = UInt64.ofBitVec _; congr 1; exact BitVec.and_zero
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 4: Tag constant disjointness (concrete computations)
@@ -229,7 +228,7 @@ theorem fromInt_isInt_aux (raw : UInt64) :
     Uses BitVec.ofInt for correct two's complement conversion of negatives
     (matching Rust's `i as u64`). -/
 def fromInt (i : Int) : UInt64 :=
-  QNAN ||| TAG_INT ||| (UInt64.mk (BitVec.ofInt 64 i) &&& INT_MASK)
+  QNAN ||| TAG_INT ||| (UInt64.ofBitVec (BitVec.ofInt 64 i) &&& INT_MASK)
 
 /-- Decode a NaN-boxed integer value. Returns none if not an int. -/
 def asInt (v : UInt64) : Option Int :=
@@ -245,7 +244,7 @@ def asInt (v : UInt64) : Option Int :=
 /-- Values produced by fromInt are recognized as ints. -/
 theorem fromInt_isInt (i : Int) : IsInt (fromInt i) := by
   unfold IsInt fromInt
-  exact fromInt_isInt_aux (UInt64.mk (BitVec.ofInt 64 i))
+  exact fromInt_isInt_aux (UInt64.ofBitVec (BitVec.ofInt 64 i))
 
 /-- Int roundtrip for concrete values (validated by native computation). -/
 theorem int_roundtrip_0 : asInt (fromInt 0) = some 0 := by native_decide

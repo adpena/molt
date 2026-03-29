@@ -14,7 +14,7 @@ namespace MoltTIR
 
 /-- Collect all variables used by a suffix of the instruction list and the terminator. -/
 def usedVarsSuffix (instrs : List Instr) (term : Terminator) : List Var :=
-  instrs.bind (fun i => exprVars i.rhs) ++ termVars term
+  instrs.flatMap (fun i => exprVars i.rhs) ++ termVars term
 
 /-- An instruction is live if its destination appears in the used-variables set. -/
 def isLive (used : List Var) (i : Instr) : Bool :=

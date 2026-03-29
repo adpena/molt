@@ -122,7 +122,7 @@ structure AnnotatedFunc where
 
 /-- Predicate: parameter at index `idx` is marked borrowed. -/
 def isBorrowed (f : AnnotatedFunc) (paramIdx : Nat) : Prop :=
-  f.modes.get? paramIdx = some .borrowed
+  f.modes[paramIdx]? = some .borrowed
 
 /-- Predicate: an instruction stores `obj` into the heap. -/
 def storesIntoHeap (instr : RCInstr) (obj : ObjRef) : Prop :=
@@ -142,7 +142,7 @@ def noRCOps (body : RCFunc) (obj : ObjRef) : Prop :=
 
 /-- The parameter value: look up the param address by index. -/
 def paramValue (f : AnnotatedFunc) (paramIdx : Nat) : Option ObjRef :=
-  f.params.get? paramIdx
+  f.params[paramIdx]?
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 3: Borrowing soundness
@@ -191,15 +191,15 @@ theorem execRCInstrs_no_touch (σ : RCState) (body : RCFunc) (a : ObjRef)
   | nil => rfl
   | cons instr rest ih =>
     simp [execRCInstrs]
-    have ⟨h_ni, h_nd⟩ := h_no_rc instr (List.mem_cons_self _ _)
-    have h_ns := h_no_store instr (List.mem_cons_self _ _)
-    have h_na := h_no_alloc instr (List.mem_cons_self _ _)
+    have ⟨h_ni, h_nd⟩ := h_no_rc instr (List.mem_cons_self)
+    have h_ns := h_no_store instr (List.mem_cons_self)
+    have h_na := h_no_alloc instr (List.mem_cons_self)
     have h_rest_no_rc : noRCOps rest a :=
-      fun i hi => h_no_rc i (List.mem_cons_of_mem _ hi)
+      fun i hi => h_no_rc i (List.Mem.tail _ hi)
     have h_rest_no_store : neverStoredIntoHeap rest a :=
-      fun i hi => h_no_store i (List.mem_cons_of_mem _ hi)
+      fun i hi => h_no_store i (List.Mem.tail _ hi)
     have h_rest_no_alloc : ∀ i ∈ rest, ∀ sc, i ≠ .alloc a sc :=
-      fun i hi => h_no_alloc i (List.mem_cons_of_mem _ hi)
+      fun i hi => h_no_alloc i (List.Mem.tail _ hi)
     rw [ih (execRCInstr σ instr) h_rest_no_rc h_rest_no_store h_rest_no_alloc]
     exact execRCInstr_no_touch σ instr a h_ni h_nd h_na h_ns
 
@@ -358,9 +358,9 @@ theorem execRCInstrs_middle_preserves (σ : RCState) (middle : RCFunc) (a : ObjR
   | nil => rfl
   | cons instr rest ih =>
     simp [execRCInstrs]
-    have h_instr := h instr (List.mem_cons_self _ _)
+    have h_instr := h instr (List.mem_cons_self)
     have h_rest : noInterveningUseRC a rest :=
-      fun i hi => h i (List.mem_cons_of_mem _ hi)
+      fun i hi => h i (List.Mem.tail _ hi)
     rw [ih (execRCInstr σ instr) h_rest]
     exact execRCInstr_no_touch_RC σ instr a h_instr
 
@@ -382,9 +382,9 @@ theorem execRCInstrs_agree_off_a (σ₁ σ₂ : RCState) (ops : RCFunc) (a : Obj
   | cons instr rest ih =>
     intro z hz
     simp only [execRCInstrs]
-    have h_instr := h_niu instr (List.mem_cons_self _ _)
+    have h_instr := h_niu instr (List.mem_cons_self)
     have h_rest : noInterveningUseRC a rest :=
-      fun i hi => h_niu i (List.mem_cons_of_mem _ hi)
+      fun i hi => h_niu i (List.Mem.tail _ hi)
     apply ih (execRCInstr σ₁ instr) (execRCInstr σ₂ instr) h_rest
     · intro w hw
       cases instr with
@@ -476,11 +476,11 @@ theorem elision_safe (original optimized : RCFunc) (σ : RCState)
 
 /-- Predicate: instruction at index `i` is a dec_ref (drop) on `obj`. -/
 def isDrop (body : RCFunc) (i : OpIdx) (obj : ObjRef) : Prop :=
-  body.get? i = some (.dec_ref obj)
+  body[i]? = some (.dec_ref obj)
 
 /-- Predicate: instruction at index `i` uses (dereferences) `obj`. -/
 def isUse (body : RCFunc) (i : OpIdx) (obj : ObjRef) : Prop :=
-  body.get? i = some (.use obj)
+  body[i]? = some (.use obj)
 
 /-- Well-formed RC: drops always come after all uses. This is the
     scheduling invariant maintained by the compiler's last-use analysis

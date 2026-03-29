@@ -34,7 +34,7 @@ theorem evalArgs_agreeOn (ρ₁ ρ₂ : Env) (es : List Expr)
   | cons e rest ih =>
     simp only [evalArgs]
     have he : EnvAgreeOn (exprVars e) ρ₁ ρ₂ :=
-      fun x hx => h x (List.mem_flatMap.mpr ⟨e, List.mem_cons_self _ _, hx⟩)
+      fun x hx => h x (List.mem_flatMap.mpr ⟨e, List.mem_cons_self, hx⟩)
     have hrest : EnvAgreeOn (rest.flatMap exprVars) ρ₁ ρ₂ :=
       fun x hx => h x (by
         simp only [List.flatMap_cons]

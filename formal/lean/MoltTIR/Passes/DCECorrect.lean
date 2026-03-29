@@ -25,7 +25,7 @@ theorem evalExpr_agreeOn (ρ₁ ρ₂ : Env) (e : Expr)
   | val _ => rfl
   | var y =>
     simp only [evalExpr]
-    exact h y (List.mem_cons_self y [])
+    exact h y (List.mem_cons_self)
   | bin op a b iha ihb =>
     simp only [evalExpr]
     have ha : EnvAgreeOn (exprVars a) ρ₁ ρ₂ :=
@@ -95,7 +95,7 @@ theorem dce_instrs_agreeOn
     simp only [execInstrs] at h2
     -- RHS vars are in used, so agreement holds for the RHS
     have hrhs_i : ∀ x ∈ exprVars i.rhs, x ∈ used :=
-      hrhs i (List.mem_cons_self _ _)
+      hrhs i (List.mem_cons_self)
     have hagree_rhs : EnvAgreeOn (exprVars i.rhs) ρ₁ ρ₂ :=
       fun x hx => hagree x (hrhs_i x hx)
     have heval_eq : evalExpr ρ₁ i.rhs = evalExpr ρ₂ i.rhs :=
@@ -108,9 +108,9 @@ theorem dce_instrs_agreeOn
       have hm1 : evalExpr ρ₁ i.rhs = some val := by rw [heval_eq, hm]
       -- Set up rest-specific hypotheses
       have hdead_rest : ∀ j ∈ rest, ¬isLive used j → j.dst ∉ used :=
-        fun j hj => hdead j (List.mem_cons_of_mem _ hj)
+        fun j hj => hdead j (List.Mem.tail _ hj)
       have hrhs_rest : ∀ j ∈ rest, ∀ x ∈ exprVars j.rhs, x ∈ used :=
-        fun j hj => hrhs j (List.mem_cons_of_mem _ hj)
+        fun j hj => hrhs j (List.Mem.tail _ hj)
       -- Case split on whether i is live
       simp only [dceInstrs, List.filter] at h1
       by_cases hlive : isLive used i
@@ -121,7 +121,7 @@ theorem dce_instrs_agreeOn
         exact ih hdead_rest hrhs_rest (ρ₁.set i.dst val) (ρ₂.set i.dst val) hagree' ρ₁' ρ₂' h1 h2
       · -- Dead instruction: DCE skips, full executes
         simp [hlive] at h1
-        have hdst_unused : i.dst ∉ used := hdead i (List.mem_cons_self _ _) hlive
+        have hdst_unused : i.dst ∉ used := hdead i (List.mem_cons_self) hlive
         -- ρ₂ gets extended with i.dst, but i.dst ∉ used, so agreement is preserved
         have hagree' : EnvAgreeOn used ρ₁ (ρ₂.set i.dst val) :=
           envAgreeOn_set_right_irrelevant used ρ₁ ρ₂ i.dst val hagree hdst_unused

@@ -132,25 +132,25 @@ theorem partitionInstrs_complete (f : Func) (loop : NaturalLoop)
     (instrs : List Instr) (j : Instr) (hj : j ∈ instrs) :
     j ∈ (partitionInstrs f loop instrs).1 ∨ j ∈ (partitionInstrs f loop instrs).2 := by
   induction instrs with
-  | nil => exact absurd hj (List.not_mem_nil _)
+  | nil => exact nomatch hj
   | cons i rest ih =>
     simp only [partitionInstrs]
     cases hb : isLoopInvariantExprBool f loop i.rhs with
     | false =>
       simp only [hb, Bool.false_eq_true, ↓reduceIte]
       cases hj with
-      | head => exact Or.inr (List.mem_cons_self _ _)
+      | head => exact Or.inr (List.mem_cons_self)
       | tail _ hrest =>
         match ih hrest with
         | Or.inl h => exact Or.inl h
-        | Or.inr h => exact Or.inr (List.mem_cons_of_mem _ h)
+        | Or.inr h => exact Or.inr (List.Mem.tail _ h)
     | true =>
       simp only [hb, ↓reduceIte]
       cases hj with
-      | head => exact Or.inl (List.mem_cons_self _ _)
+      | head => exact Or.inl (List.mem_cons_self)
       | tail _ hrest =>
         match ih hrest with
-        | Or.inl h => exact Or.inl (List.mem_cons_of_mem _ h)
+        | Or.inl h => exact Or.inl (List.Mem.tail _ h)
         | Or.inr h => exact Or.inr h
 
 -- ══════════════════════════════════════════════════════════════════

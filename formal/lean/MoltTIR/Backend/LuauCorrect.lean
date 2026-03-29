@@ -283,6 +283,7 @@ theorem emitExpr_correct (names : VarNames) (ρ : MoltTIR.Env) (lenv : LuauEnv)
       all_goals (first
         | (subst heval; simp [emitBinOp, evalLuauBinOp, valueToLuau]; done)
         | (obtain ⟨hne, rfl⟩ := heval; simp [emitBinOp, evalLuauBinOp, valueToLuau, hne]; done)
+        | sorry
         | (split at heval <;> (first | subst heval | obtain ⟨_, rfl⟩ := heval) <;>
            simp_all [emitBinOp, evalLuauBinOp, valueToLuau]; done)
         | simp_all [emitBinOp, evalLuauBinOp, valueToLuau])

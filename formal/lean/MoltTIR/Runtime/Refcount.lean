@@ -74,7 +74,7 @@ theorem decRefAll_absent (h : Heap) (addrs : List Addr) (a : Addr)
   | nil => rfl
   | cons x rest ih =>
     simp only [decRefAll]
-    have hne : a ≠ x := fun heq => habs (heq ▸ List.mem_cons_self x rest)
+    have hne : a ≠ x := fun heq => habs (heq ▸ List.Mem.head (as := rest))
     have hrest : a ∉ rest := fun hm => habs (List.mem_cons_of_mem x hm)
     rw [ih (decRef h x) hrest]
     simp [decRef, hne]
