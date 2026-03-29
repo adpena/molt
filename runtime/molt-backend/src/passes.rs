@@ -520,26 +520,27 @@ pub fn fold_constants(ops: &mut [OpIR]) {
                 if op.fast_int.unwrap_or(false) =>
             {
                 if let Some(ref args) = op.args
-                    && args.len() == 2 {
-                        let a_val = const_ints.get(&args[0]).copied();
-                        let b_val = const_ints.get(&args[1]).copied();
-                        if let (Some(a), Some(b)) = (a_val, b_val) {
-                            let result = match op.kind.as_str() {
-                                "add" | "inplace_add" => a.wrapping_add(b),
-                                "sub" | "inplace_sub" => a.wrapping_sub(b),
-                                "mul" | "inplace_mul" => a.wrapping_mul(b),
-                                _ => unreachable!(),
-                            };
-                            op.kind = "const".to_string();
-                            op.value = Some(result);
-                            op.args = None;
-                            op.fast_int = None;
-                            if let Some(ref out) = op.out {
-                                const_ints.insert(out.clone(), result);
-                            }
-                            continue;
+                    && args.len() == 2
+                {
+                    let a_val = const_ints.get(&args[0]).copied();
+                    let b_val = const_ints.get(&args[1]).copied();
+                    if let (Some(a), Some(b)) = (a_val, b_val) {
+                        let result = match op.kind.as_str() {
+                            "add" | "inplace_add" => a.wrapping_add(b),
+                            "sub" | "inplace_sub" => a.wrapping_sub(b),
+                            "mul" | "inplace_mul" => a.wrapping_mul(b),
+                            _ => unreachable!(),
+                        };
+                        op.kind = "const".to_string();
+                        op.value = Some(result);
+                        op.args = None;
+                        op.fast_int = None;
+                        if let Some(ref out) = op.out {
+                            const_ints.insert(out.clone(), result);
                         }
+                        continue;
                     }
+                }
                 // Output variable is no longer a known constant.
                 if let Some(ref out) = op.out {
                     const_ints.remove(out);
@@ -553,26 +554,27 @@ pub fn fold_constants(ops: &mut [OpIR]) {
                 if op.fast_int.unwrap_or(false) =>
             {
                 if let Some(ref args) = op.args
-                    && args.len() == 2 {
-                        let a_val = const_ints.get(&args[0]).copied();
-                        let b_val = const_ints.get(&args[1]).copied();
-                        if let (Some(a), Some(b)) = (a_val, b_val) {
-                            let result = match op.kind.as_str() {
-                                "bit_and" | "inplace_bit_and" => a & b,
-                                "bit_or" | "inplace_bit_or" => a | b,
-                                "bit_xor" | "inplace_bit_xor" => a ^ b,
-                                _ => unreachable!(),
-                            };
-                            op.kind = "const".to_string();
-                            op.value = Some(result);
-                            op.args = None;
-                            op.fast_int = None;
-                            if let Some(ref out) = op.out {
-                                const_ints.insert(out.clone(), result);
-                            }
-                            continue;
+                    && args.len() == 2
+                {
+                    let a_val = const_ints.get(&args[0]).copied();
+                    let b_val = const_ints.get(&args[1]).copied();
+                    if let (Some(a), Some(b)) = (a_val, b_val) {
+                        let result = match op.kind.as_str() {
+                            "bit_and" | "inplace_bit_and" => a & b,
+                            "bit_or" | "inplace_bit_or" => a | b,
+                            "bit_xor" | "inplace_bit_xor" => a ^ b,
+                            _ => unreachable!(),
+                        };
+                        op.kind = "const".to_string();
+                        op.value = Some(result);
+                        op.args = None;
+                        op.fast_int = None;
+                        if let Some(ref out) = op.out {
+                            const_ints.insert(out.clone(), result);
                         }
+                        continue;
                     }
+                }
                 if let Some(ref out) = op.out {
                     const_ints.remove(out);
                     const_bools.remove(out);
@@ -583,17 +585,18 @@ pub fn fold_constants(ops: &mut [OpIR]) {
             "not" => {
                 if let Some(ref args) = op.args
                     && args.len() == 1
-                        && let Some(&val) = const_bools.get(&args[0]) {
-                            let result = !val;
-                            op.kind = "const_bool".to_string();
-                            op.value = Some(if result { 1 } else { 0 });
-                            op.args = None;
-                            if let Some(ref out) = op.out {
-                                const_bools.insert(out.clone(), result);
-                                const_ints.remove(out);
-                            }
-                            continue;
-                        }
+                    && let Some(&val) = const_bools.get(&args[0])
+                {
+                    let result = !val;
+                    op.kind = "const_bool".to_string();
+                    op.value = Some(if result { 1 } else { 0 });
+                    op.args = None;
+                    if let Some(ref out) = op.out {
+                        const_bools.insert(out.clone(), result);
+                        const_ints.remove(out);
+                    }
+                    continue;
+                }
                 if let Some(ref out) = op.out {
                     const_ints.remove(out);
                     const_bools.remove(out);
@@ -671,26 +674,27 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
                 if op.fast_int.unwrap_or(false) =>
             {
                 if let Some(ref args) = op.args
-                    && args.len() == 2 {
-                        let a_val = const_ints.get(&args[0]).copied();
-                        let b_val = const_ints.get(&args[1]).copied();
-                        if let (Some(a), Some(b)) = (a_val, b_val) {
-                            let result = match op.kind.as_str() {
-                                "add" | "inplace_add" => a.wrapping_add(b),
-                                "sub" | "inplace_sub" => a.wrapping_sub(b),
-                                "mul" | "inplace_mul" => a.wrapping_mul(b),
-                                _ => unreachable!(),
-                            };
-                            op.kind = "const".to_string();
-                            op.value = Some(result);
-                            op.args = None;
-                            op.fast_int = None;
-                            if let Some(ref out) = op.out {
-                                const_ints.insert(out.clone(), result);
-                            }
-                            continue;
+                    && args.len() == 2
+                {
+                    let a_val = const_ints.get(&args[0]).copied();
+                    let b_val = const_ints.get(&args[1]).copied();
+                    if let (Some(a), Some(b)) = (a_val, b_val) {
+                        let result = match op.kind.as_str() {
+                            "add" | "inplace_add" => a.wrapping_add(b),
+                            "sub" | "inplace_sub" => a.wrapping_sub(b),
+                            "mul" | "inplace_mul" => a.wrapping_mul(b),
+                            _ => unreachable!(),
+                        };
+                        op.kind = "const".to_string();
+                        op.value = Some(result);
+                        op.args = None;
+                        op.fast_int = None;
+                        if let Some(ref out) = op.out {
+                            const_ints.insert(out.clone(), result);
                         }
+                        continue;
                     }
+                }
                 if let Some(ref out) = op.out {
                     const_ints.remove(out);
                     const_bools.remove(out);
@@ -703,26 +707,27 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
                 if op.fast_int.unwrap_or(false) =>
             {
                 if let Some(ref args) = op.args
-                    && args.len() == 2 {
-                        let a_val = const_ints.get(&args[0]).copied();
-                        let b_val = const_ints.get(&args[1]).copied();
-                        if let (Some(a), Some(b)) = (a_val, b_val) {
-                            let result = match op.kind.as_str() {
-                                "bit_and" | "inplace_bit_and" => a & b,
-                                "bit_or" | "inplace_bit_or" => a | b,
-                                "bit_xor" | "inplace_bit_xor" => a ^ b,
-                                _ => unreachable!(),
-                            };
-                            op.kind = "const".to_string();
-                            op.value = Some(result);
-                            op.args = None;
-                            op.fast_int = None;
-                            if let Some(ref out) = op.out {
-                                const_ints.insert(out.clone(), result);
-                            }
-                            continue;
+                    && args.len() == 2
+                {
+                    let a_val = const_ints.get(&args[0]).copied();
+                    let b_val = const_ints.get(&args[1]).copied();
+                    if let (Some(a), Some(b)) = (a_val, b_val) {
+                        let result = match op.kind.as_str() {
+                            "bit_and" | "inplace_bit_and" => a & b,
+                            "bit_or" | "inplace_bit_or" => a | b,
+                            "bit_xor" | "inplace_bit_xor" => a ^ b,
+                            _ => unreachable!(),
+                        };
+                        op.kind = "const".to_string();
+                        op.value = Some(result);
+                        op.args = None;
+                        op.fast_int = None;
+                        if let Some(ref out) = op.out {
+                            const_ints.insert(out.clone(), result);
                         }
+                        continue;
                     }
+                }
                 if let Some(ref out) = op.out {
                     const_ints.remove(out);
                     const_bools.remove(out);
@@ -733,17 +738,18 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
             "not" => {
                 if let Some(ref args) = op.args
                     && args.len() == 1
-                        && let Some(&val) = const_bools.get(&args[0]) {
-                            let result = !val;
-                            op.kind = "const_bool".to_string();
-                            op.value = Some(if result { 1 } else { 0 });
-                            op.args = None;
-                            if let Some(ref out) = op.out {
-                                const_bools.insert(out.clone(), result);
-                                const_ints.remove(out);
-                            }
-                            continue;
-                        }
+                    && let Some(&val) = const_bools.get(&args[0])
+                {
+                    let result = !val;
+                    op.kind = "const_bool".to_string();
+                    op.value = Some(if result { 1 } else { 0 });
+                    op.args = None;
+                    if let Some(ref out) = op.out {
+                        const_bools.insert(out.clone(), result);
+                        const_ints.remove(out);
+                    }
+                    continue;
+                }
                 if let Some(ref out) = op.out {
                     const_ints.remove(out);
                     const_bools.remove(out);
@@ -781,17 +787,19 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
                         let mut merged_ints = BTreeMap::new();
                         for (name, then_val) in &then_ints {
                             if let Some(&else_val) = else_ints.get(name)
-                                && then_val == &else_val {
-                                    merged_ints.insert(name.clone(), *then_val);
-                                }
+                                && then_val == &else_val
+                            {
+                                merged_ints.insert(name.clone(), *then_val);
+                            }
                         }
 
                         let mut merged_bools = BTreeMap::new();
                         for (name, then_val) in &then_bools {
                             if let Some(&else_val) = else_bools.get(name)
-                                && then_val == &else_val {
-                                    merged_bools.insert(name.clone(), *then_val);
-                                }
+                                && then_val == &else_val
+                            {
+                                merged_bools.insert(name.clone(), *then_val);
+                            }
                         }
 
                         const_ints = merged_ints;
@@ -803,17 +811,19 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
                         let mut merged_ints = BTreeMap::new();
                         for (name, pre_val) in &snapshot.pre_ints {
                             if let Some(&then_val) = then_ints.get(name)
-                                && pre_val == &then_val {
-                                    merged_ints.insert(name.clone(), *pre_val);
-                                }
+                                && pre_val == &then_val
+                            {
+                                merged_ints.insert(name.clone(), *pre_val);
+                            }
                         }
 
                         let mut merged_bools = BTreeMap::new();
                         for (name, pre_val) in &snapshot.pre_bools {
                             if let Some(&then_val) = then_bools.get(name)
-                                && pre_val == &then_val {
-                                    merged_bools.insert(name.clone(), *pre_val);
-                                }
+                                && pre_val == &then_val
+                            {
+                                merged_bools.insert(name.clone(), *pre_val);
+                            }
                         }
 
                         const_ints = merged_ints;
@@ -933,9 +943,10 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
     let mut alloc_sites: BTreeMap<String, usize> = BTreeMap::new();
     for (idx, op) in func_ir.ops.iter().enumerate() {
         if alloc_kinds.contains(&op.kind.as_str())
-            && let Some(ref out) = op.out {
-                alloc_sites.insert(out.clone(), idx);
-            }
+            && let Some(ref out) = op.out
+        {
+            alloc_sites.insert(out.clone(), idx);
+        }
     }
 
     if alloc_sites.is_empty() {
@@ -961,9 +972,10 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
         if kind == "copy" {
             if let (Some(args), Some(out)) = (&op.args, &op.out)
                 && args.len() == 1
-                    && let Some(root) = alias_to_alloc.get(&args[0]).cloned() {
-                        alias_to_alloc.insert(out.clone(), root);
-                    }
+                && let Some(root) = alias_to_alloc.get(&args[0]).cloned()
+            {
+                alias_to_alloc.insert(out.clone(), root);
+            }
             continue;
         }
 
@@ -995,9 +1007,10 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
         // Also check `var` field (used by ret and some other ops).
         if let Some(ref var) = op.var
             && let Some(root) = alias_to_alloc.get(var).cloned()
-                && (kind == "ret" || escaping_ops.contains(kind)) {
-                    escaped.insert(root);
-                }
+            && (kind == "ret" || escaping_ops.contains(kind))
+        {
+            escaped.insert(root);
+        }
     }
 
     // Phase 3: Mark non-escaping allocations as stack-eligible.
@@ -1161,9 +1174,10 @@ pub fn propagate_loop_fast_int(func_ir: &mut FunctionIR) {
                 if op.fast_int.unwrap_or(false) {
                     if !is_comparison
                         && let Some(ref out) = op.out
-                            && known_int.insert(out.clone()) {
-                                made_progress = true;
-                            }
+                        && known_int.insert(out.clone())
+                    {
+                        made_progress = true;
+                    }
                     continue;
                 }
                 // Check if all operands are known-int.
@@ -1174,10 +1188,9 @@ pub fn propagate_loop_fast_int(func_ir: &mut FunctionIR) {
                     // Promote to fast_int.
                     func_ir.ops[idx].fast_int = Some(true);
                     // Comparisons produce bool, not int — don't add to known_int.
-                    if !is_comparison
-                        && let Some(ref out) = func_ir.ops[idx].out {
-                            known_int.insert(out.clone());
-                        }
+                    if !is_comparison && let Some(ref out) = func_ir.ops[idx].out {
+                        known_int.insert(out.clone());
+                    }
                     made_progress = true;
                     changed_any = true;
                 }
@@ -1206,10 +1219,11 @@ pub fn build_const_int_map(ops: &[OpIR]) -> BTreeMap<String, i64> {
     let mut map = BTreeMap::new();
     for op in ops {
         if op.kind == "const"
-            && let (Some(out), Some(val)) = (op.out.as_ref(), op.value) {
-                // Only store the first definition (SSA correctness).
-                map.entry(out.clone()).or_insert(val);
-            }
+            && let (Some(out), Some(val)) = (op.out.as_ref(), op.value)
+        {
+            // Only store the first definition (SSA correctness).
+            map.entry(out.clone()).or_insert(val);
+        }
     }
     map
 }
@@ -1810,9 +1824,10 @@ fn build_last_use_map(ops: &[OpIR]) -> BTreeMap<String, usize> {
     let mut last_use = BTreeMap::new();
     for (i, op) in ops.iter().enumerate() {
         if let Some(var) = &op.var
-            && var != "none" {
-                last_use.insert(var.clone(), i);
-            }
+            && var != "none"
+        {
+            last_use.insert(var.clone(), i);
+        }
         if let Some(args) = &op.args {
             for name in args {
                 if name != "none" {
@@ -1821,9 +1836,10 @@ fn build_last_use_map(ops: &[OpIR]) -> BTreeMap<String, usize> {
             }
         }
         if let Some(out) = &op.out
-            && out != "none" {
-                last_use.insert(out.clone(), i);
-            }
+            && out != "none"
+        {
+            last_use.insert(out.clone(), i);
+        }
     }
     last_use
 }
@@ -1865,9 +1881,10 @@ pub fn rc_coalescing(func_ir: &mut FunctionIR) {
         // must be removed too).
         if matches!(op.kind.as_str(), "dec_ref" | "release")
             && let Some(arg) = op.args.as_ref().and_then(|a| a.first())
-                && skip_dec_ref.contains(arg.as_str()) {
-                    continue;
-                }
+            && skip_dec_ref.contains(arg.as_str())
+        {
+            continue;
+        }
         new_ops.push(op.clone());
     }
     func_ir.ops = new_ops;
@@ -2022,9 +2039,10 @@ pub fn hoist_loop_invariants(func_ir: &mut FunctionIR) {
             if !is_hoistable(op) {
                 continue;
             }
-            let inputs_outside = op.args.as_ref().is_none_or(|args| {
-                args.iter().all(|arg| !defined_in_loop.contains(arg))
-            });
+            let inputs_outside = op
+                .args
+                .as_ref()
+                .is_none_or(|args| args.iter().all(|arg| !defined_in_loop.contains(arg)));
             if !inputs_outside {
                 continue;
             }
@@ -2095,15 +2113,17 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
                 "call" | "call_internal" | "func_new" | "func_new_closure" | "func_new_builtin"
                 | "code_new" | "call_guarded" => {
                     if let Some(name) = op.s_value.as_ref()
-                        && defined.contains(name.as_str()) {
-                            refs.insert(name.clone());
-                        }
+                        && defined.contains(name.as_str())
+                    {
+                        refs.insert(name.clone());
+                    }
                 }
                 "call_indirect" => {
                     if let Some(name) = op.s_value.as_ref()
-                        && defined.contains(name.as_str()) {
-                            refs.insert(name.clone());
-                        }
+                        && defined.contains(name.as_str())
+                    {
+                        refs.insert(name.clone());
+                    }
                 }
                 // alloc_task's s_value is the poll function name directly
                 // (e.g., "foo_poll"). generator_create/coro_create reference
@@ -2127,18 +2147,20 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
                 // Ops that take a function pointer address via s_value.
                 "fn_ptr_code_set" | "asyncgen_locals_register" | "gen_locals_register" => {
                     if let Some(name) = op.s_value.as_ref()
-                        && defined.contains(name.as_str()) {
-                            refs.insert(name.clone());
-                        }
+                        && defined.contains(name.as_str())
+                    {
+                        refs.insert(name.clone());
+                    }
                 }
                 // Other op kinds that legitimately reference functions by name.
                 "task_new" | "generator_send" | "spawn" | "call_func" | "call_method"
                 | "import_from" | "import_name" | "class_def" | "make_function" | "decorator"
                 | "super_call" | "yield_from" | "await" => {
                     if let Some(name) = op.s_value.as_ref()
-                        && defined.contains(name.as_str()) {
-                            refs.insert(name.clone());
-                        }
+                        && defined.contains(name.as_str())
+                    {
+                        refs.insert(name.clone());
+                    }
                 }
                 _ => {}
             }
@@ -2195,13 +2217,12 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
     ir.functions.retain(|f| reachable.contains(&f.name));
     let eliminated = original_count - ir.functions.len();
 
-    if eliminated > 0
-        && std::env::var("MOLT_DEBUG_DEAD_FUNC_ELIM").is_ok() {
-            eprintln!(
-                "dead-func-elim: removed {eliminated} of {original_count} functions ({} retained)",
-                ir.functions.len()
-            );
-        }
+    if eliminated > 0 && std::env::var("MOLT_DEBUG_DEAD_FUNC_ELIM").is_ok() {
+        eprintln!(
+            "dead-func-elim: removed {eliminated} of {original_count} functions ({} retained)",
+            ir.functions.len()
+        );
+    }
 }
 
 fn is_protected_runtime_entrypoint(name: &str) -> bool {
@@ -2413,9 +2434,10 @@ pub fn split_large_function(
         // These are dead code — the target label is in another chunk.
         chunk_ops.retain(|op| {
             if op.kind == "check_exception"
-                && let Some(target_id) = op.value {
-                    return chunk_labels.contains(&target_id);
-                }
+                && let Some(target_id) = op.value
+            {
+                return chunk_labels.contains(&target_id);
+            }
             true
         });
 
@@ -2536,9 +2558,10 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
                     | "label"
                     | "chan_send_yield"
                     | "chan_recv_yield"
-            ) {
-                max_state_id = max_state_id.max(id);
-            }
+            )
+        {
+            max_state_id = max_state_id.max(id);
+        }
     }
     let mut next_state_id = max_state_id + 100; // leave headroom
 

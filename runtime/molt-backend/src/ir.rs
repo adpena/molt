@@ -110,9 +110,10 @@ impl SimpleIR {
             match value.get("kind").and_then(|v| v.as_str()) {
                 Some("ir_stream_start") => {
                     if let Some(p) = value.get("profile")
-                        && !p.is_null() {
-                            profile = Some(PgoProfileIR::from_json_value(p, "stream.profile")?);
-                        }
+                        && !p.is_null()
+                    {
+                        profile = Some(PgoProfileIR::from_json_value(p, "stream.profile")?);
+                    }
                 }
                 Some("function") => {
                     functions.push(FunctionIR::from_json_value(&value, "stream.function")?);

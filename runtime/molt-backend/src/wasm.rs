@@ -1600,6 +1600,16 @@ impl WasmBackend {
                             );
                         }
                     }
+                    // If no pass changed anything, skip the lower_to_simple roundtrip.
+                    // The roundtrip through TIR → SimpleIR can introduce subtle codegen
+                    // differences even when the IR is semantically identical (see issue:
+                    // comprehensions return empty when roundtrip runs on unchanged functions).
+                    let any_changed = stats.iter().any(|s| {
+                        s.values_changed > 0 || s.ops_removed > 0 || s.ops_added > 0
+                    });
+                    if !any_changed {
+                        return None; // Use original ops — roundtrip is lossy
+                    }
                     Some(crate::tir::lower_to_simple::lower_to_simple_ir(
                         &tir_func, &type_map,
                     ))
@@ -1636,6 +1646,7 @@ impl WasmBackend {
             // Persist the updated cache index so future runs benefit.
             tir_cache.save_index();
         }
+
         crate::inline_functions(&mut ir);
 
         // Megafunction splitting: prevent O(n²) in wasm-encoder for huge functions.
@@ -1643,6 +1654,14 @@ impl WasmBackend {
 
         // Dead function elimination: remove unreachable functions after inlining.
         crate::eliminate_dead_functions(&mut ir);
+
+        if let Some(config) = crate::should_dump_ir() {
+            for func_ir in &ir.functions {
+                if crate::dump_ir_matches(&config, &func_ir.name) {
+                    crate::dump_ir_ops(func_ir, &config.mode);
+                }
+            }
+        }
 
         // Multi-value return candidate detection (§3.1).
         // This analysis identifies internal functions whose call sites always

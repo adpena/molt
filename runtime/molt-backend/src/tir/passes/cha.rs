@@ -99,9 +99,10 @@ impl ClassHierarchy {
         let mut current: Option<String> = Some(class_name.to_string());
         while let Some(cls) = current {
             if let Some(method_set) = self.methods.get(&cls)
-                && method_set.contains(method_name) {
-                    return Some(cls);
-                }
+                && method_set.contains(method_name)
+            {
+                return Some(cls);
+            }
             // Ascend to parent; if not in the map, stop.
             current = self
                 .parent

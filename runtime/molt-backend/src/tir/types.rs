@@ -83,10 +83,11 @@ impl TirType {
 
         // Tuple meet: same arity → element-wise meet; different arity → Union/DynBox
         if let (TirType::Tuple(a), TirType::Tuple(b)) = (self, other)
-            && a.len() == b.len() {
-                let merged: Vec<TirType> = a.iter().zip(b.iter()).map(|(x, y)| x.meet(y)).collect();
-                return TirType::Tuple(merged);
-            }
+            && a.len() == b.len()
+        {
+            let merged: Vec<TirType> = a.iter().zip(b.iter()).map(|(x, y)| x.meet(y)).collect();
+            return TirType::Tuple(merged);
+        }
 
         // Flatten unions when building the join.
         // Max possible size: 3 (self union) + 3 (other union) = 6, so this is bounded.

@@ -333,9 +333,10 @@ fn fuse_sum(func: &mut TirFunction, chain: &IteratorChain, stats: &mut PassStats
 
     // 3. Replace the CallBuiltin in the consumer block with the Copy.
     if let Some(consumer) = func.blocks.get_mut(&chain.consumer_block)
-        && chain.consumer_op_idx < consumer.ops.len() {
-            consumer.ops[chain.consumer_op_idx] = copy_op;
-        }
+        && chain.consumer_op_idx < consumer.ops.len()
+    {
+        consumer.ops[chain.consumer_op_idx] = copy_op;
+    }
 
     stats.values_changed += 1;
     stats.ops_added += 2; // init + add
@@ -402,9 +403,10 @@ fn fuse_any_all(
         header.ops.insert(chain.for_iter_op_idx, init_op);
     }
     if let Some(consumer) = func.blocks.get_mut(&chain.consumer_block)
-        && chain.consumer_op_idx < consumer.ops.len() {
-            consumer.ops[chain.consumer_op_idx] = copy_op;
-        }
+        && chain.consumer_op_idx < consumer.ops.len()
+    {
+        consumer.ops[chain.consumer_op_idx] = copy_op;
+    }
 
     stats.values_changed += 1;
     stats.ops_added += 1;
@@ -467,9 +469,10 @@ fn fuse_min_max(
         body.ops.push(cmp_op);
     }
     if let Some(consumer) = func.blocks.get_mut(&chain.consumer_block)
-        && chain.consumer_op_idx < consumer.ops.len() {
-            consumer.ops[chain.consumer_op_idx] = copy_op;
-        }
+        && chain.consumer_op_idx < consumer.ops.len()
+    {
+        consumer.ops[chain.consumer_op_idx] = copy_op;
+    }
 
     stats.values_changed += 1;
     stats.ops_added += 2;
@@ -525,9 +528,10 @@ fn fuse_list(func: &mut TirFunction, chain: &IteratorChain, stats: &mut PassStat
         body.ops.push(store_op);
     }
     if let Some(consumer) = func.blocks.get_mut(&chain.consumer_block)
-        && chain.consumer_op_idx < consumer.ops.len() {
-            consumer.ops[chain.consumer_op_idx] = copy_op;
-        }
+        && chain.consumer_op_idx < consumer.ops.len()
+    {
+        consumer.ops[chain.consumer_op_idx] = copy_op;
+    }
 
     stats.values_changed += 1;
     stats.ops_added += 2;

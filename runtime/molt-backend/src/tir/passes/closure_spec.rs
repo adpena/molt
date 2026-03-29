@@ -39,11 +39,12 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     for block in func.blocks.values() {
         for op in &block.ops {
             if op.opcode == OpCode::ConstStr
-                && let Some(AttrValue::Str(s)) = op.attrs.get("value") {
-                    for &res in &op.results {
-                        known_func_refs.insert(res, s.clone());
-                    }
+                && let Some(AttrValue::Str(s)) = op.attrs.get("value")
+            {
+                for &res in &op.results {
+                    known_func_refs.insert(res, s.clone());
                 }
+            }
         }
     }
 
