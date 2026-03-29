@@ -986,6 +986,34 @@ fn format_bytes(bytes: &[u8]) -> String {
     out
 }
 
+/// Return a CPython-style type name for format error messages.
+fn type_name_for_format_error(obj: MoltObject) -> &'static str {
+    if obj.as_int().is_some() {
+        "int"
+    } else if obj.as_float().is_some() {
+        "float"
+    } else if obj.as_bool().is_some() {
+        "bool"
+    } else if obj.is_none() {
+        "NoneType"
+    } else if let Some(ptr) = obj.as_ptr() {
+        unsafe {
+            match object_type_id(ptr) {
+                TYPE_ID_STRING => "str",
+                TYPE_ID_BYTES => "bytes",
+                TYPE_ID_LIST => "list",
+                TYPE_ID_TUPLE => "tuple",
+                TYPE_ID_DICT => "dict",
+                TYPE_ID_SET => "set",
+                TYPE_ID_FROZENSET => "frozenset",
+                _ => "object",
+            }
+        }
+    } else {
+        "object"
+    }
+}
+
 fn format_string_repr_bytes(bytes: &[u8]) -> String {
     let use_double = bytes.contains(&b'\'') && !bytes.contains(&b'"');
     let quote = if use_double { '"' } else { '\'' };
@@ -1309,7 +1337,14 @@ fn format_int_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, Fo
     } else if let Some(ptr) = bigint_ptr_from_bits(obj.bits()) {
         unsafe { bigint_ref(ptr).clone() }
     } else {
-        return Err(("ValueError", Cow::Borrowed("format requires int")));
+        return Err((
+            "ValueError",
+            Cow::Owned(format!(
+                "Unknown format code '{}' for object of type '{}'",
+                spec.ty.unwrap_or('d'),
+                type_name_for_format_error(obj),
+            )),
+        ));
     };
     if ty == 'c' {
         if value.is_negative() {
@@ -1379,7 +1414,14 @@ pub(crate) fn format_float_with_spec(
     } else if let Some(b) = obj.as_bool() {
         if b { 1.0 } else { 0.0 }
     } else {
-        return Err(("ValueError", Cow::Borrowed("format requires float")));
+        return Err((
+            "ValueError",
+            Cow::Owned(format!(
+                "Unknown format code '{}' for object of type '{}'",
+                spec.ty.unwrap_or('f'),
+                type_name_for_format_error(obj),
+            )),
+        ));
     };
     let use_default = spec.ty.is_none() && spec.precision.is_none();
     let ty = spec.ty.unwrap_or('g');

@@ -669,10 +669,10 @@ def fusedIsInt (bits : UInt64) : Bool :=
   that were produced by the compiler's int encoding path.
 -/
 
-/-- Forward direction: fusedIsInt implies IsInt.
-    If the XOR-shift check passes (bits 47..63 match QNAN|TAG_INT after XOR),
-    then the TAG_CHECK mask also matches (since TAG_CHECK tests a subset of
-    those bits). -/
+-- Forward direction: fusedIsInt implies IsInt.
+-- If the XOR-shift check passes (bits 47..63 match QNAN|TAG_INT after XOR),
+-- then the TAG_CHECK mask also matches (since TAG_CHECK tests a subset of
+-- those bits).
 
 /-- XOR distributes over AND for UInt64. -/
 private theorem uint64_xor_and_distrib (a b c : UInt64) :
@@ -692,12 +692,15 @@ private theorem uint64_xor_self_cancel (a b : UInt64) :
 /-- 0 ^^^ a = a. -/
 private theorem uint64_zero_xor (a : UInt64) : 0 ^^^ a = a := by
   apply UInt64.eq_of_toBitVec_eq
-  ext i; simp only [UInt64.toBitVec_xor, BitVec.getLsbD_xor, BitVec.getLsbD_zero]
-  cases a.toBitVec.getLsbD i <;> rfl
+  ext i; simp [UInt64.toBitVec_xor, BitVec.getLsbD_xor]
 
 /-- Concrete: (QNAN ||| TAG_INT) &&& (QNAN ||| TAG_MASK) = QNAN ||| TAG_INT. -/
 private theorem expected_int_and_tag_check :
     (QNAN ||| TAG_INT) &&& (QNAN ||| TAG_MASK) = QNAN ||| TAG_INT := by native_decide
+
+private theorem uint64_toNat_47_mod_64 : (47 : UInt64).toNat % 64 = 47 := by native_decide
+
+private theorem uint64_toNat_zero : (0 : UInt64).toNat = 0 := by native_decide
 
 /-- If x >>> 47 = 0 (as UInt64), then x &&& INT_MASK = x.
     Because x has no bits at position ≥ 47, and INT_MASK = 2^47 - 1 covers bits 0..46. -/
@@ -714,6 +717,9 @@ private theorem ushr47_eq_zero_and_int_mask (x : UInt64)
   have hint_mask_val : INT_MASK.toNat = 2 ^ 47 - 1 := by native_decide
   rw [hint_mask_val, Nat.and_pow_two_sub_one_eq_mod]
   omega
+
+private theorem int_mask_and_tag_check :
+    INT_MASK &&& (QNAN ||| TAG_MASK) = 0 := by native_decide
 
 /-- If x >>> 47 = 0 (as UInt64), then x &&& TAG_CHECK = 0.
     Proof: x = x &&& INT_MASK (from shift condition), so

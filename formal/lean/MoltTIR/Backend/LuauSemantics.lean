@@ -139,13 +139,13 @@ def evalLuauBinOp (op : LuauBinOp) (a b : LuauValue) : Option LuauValue :=
   -- string concatenation
   | .concat, .str x, .str y => some (.str (x ++ y))
   -- bitwise (models bit32.band/bor/bxor/lshift/rshift on integers)
-  | .band, .number x, .number y => some (.number (Int.land x y))
-  | .bor,  .number x, .number y => some (.number (Int.lor x y))
-  | .bxor, .number x, .number y => some (.number (Int.xor x y))
+  | .band, .number x, .number y => some (.number (x &&& y))
+  | .bor,  .number x, .number y => some (.number (x ||| y))
+  | .bxor, .number x, .number y => some (.number (x ^^^ y))
   | .lshl, .number x, .number y =>
-      if y < 0 then none else some (.number (Int.shiftLeft x y.toNat))
+      if y < 0 then none else some (.number (x <<< y.toNat))
   | .lshr, .number x, .number y =>
-      if y < 0 then none else some (.number (Int.shiftRight x y.toNat))
+      if y < 0 then none else some (.number (x >>> y.toNat))
   -- catch-all for type mismatches and unmodeled ops
   | _, _, _ => none
 

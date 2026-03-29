@@ -44,6 +44,11 @@ def constFoldTerminator : Terminator → Terminator
   | .jmp target args => .jmp target (args.map constFoldExpr)
   | .br cond tl ta el ea =>
       .br (constFoldExpr cond) tl (ta.map constFoldExpr) el (ea.map constFoldExpr)
+  | .yield val resume resumeArgs =>
+      .yield (constFoldExpr val) resume (resumeArgs.map constFoldExpr)
+  | .switch scrutinee cases default_ =>
+      .switch (constFoldExpr scrutinee) cases default_
+  | .unreachable => .unreachable
 
 /-- Apply constant folding to a block. -/
 def constFoldBlock (b : Block) : Block :=

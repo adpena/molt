@@ -79,5 +79,20 @@ def evalTerminator (f : Func) (ρ : Env) : Terminator → Option TermResult
                   | none => none
                   | some ρ' => some (.jump elseLbl ρ')
       | _ => none
+  | .yield _ _ _ => none   -- generators not modeled in formal semantics
+  | .switch scrutinee cases default_ =>
+      match evalExpr ρ scrutinee with
+      | some (.int n) =>
+          let target := match cases.find? (fun p => p.1 == n) with
+            | some (_, lbl) => lbl
+            | none => default_
+          match f.blocks target with
+          | none => none
+          | some blk =>
+              match bindParams blk.params [] with
+              | none => none
+              | some ρ' => some (.jump target ρ')
+      | _ => none
+  | .unreachable => none
 
 end MoltTIR
