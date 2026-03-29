@@ -42,7 +42,7 @@ def ProvenGuardsSound (proven : ProvenGuards) (ρ : Env) : Prop :=
 
 /-- Empty proven set is trivially sound. -/
 theorem provenGuardsSound_empty (ρ : Env) : ProvenGuardsSound [] ρ :=
-  fun _ he => absurd he (List.not_mem_nil _)
+  fun _ he => nomatch he
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 2: Identity replacement preserves semantics

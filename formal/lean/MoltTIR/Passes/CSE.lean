@@ -39,10 +39,10 @@ theorem availLookup_mem (avail : AvailMap) (op : BinOp) (a b v : Var)
     simp only [availLookup] at h
     split at h
     · case isTrue hm =>
-      exact ⟨e, List.mem_cons_self _ _, hm.1, hm.2.1, hm.2.2, by simp_all⟩
+      exact ⟨e, List.mem_cons_self, hm.1, hm.2.1, hm.2.2, by simp_all⟩
     · case isFalse _ =>
       obtain ⟨e', he', hops⟩ := ih h
-      exact ⟨e', List.mem_cons_of_mem _ he', hops⟩
+      exact ⟨e', List.Mem.tail _ he', hops⟩
 
 /-- One-step evalExpr unfolding for bin (avoids deep simp). -/
 theorem evalExpr_bin (ρ : Env) (op : BinOp) (a b : Expr) :

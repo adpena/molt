@@ -39,12 +39,12 @@ def DefinedIn (f : Func) (v : Var) (lbl : Label) : Prop :=
 
 /-- Collect all (variable, label) definition pairs in a function. -/
 def allDefSites (f : Func) : List (Var × Label) :=
-  f.blockList.bind fun (lbl, blk) =>
+  f.blockList.flatMap fun (lbl, blk) =>
     (blockAllDefs blk).map fun v => (v, lbl)
 
 /-- All variables used in a block (in instruction RHS + terminator). -/
 def blockAllUses (b : Block) : List Var :=
-  b.instrs.bind (fun i => exprVars i.rhs) ++ termVars b.term
+  b.instrs.flatMap (fun i => exprVars i.rhs) ++ termVars b.term
 
 /-- Variable v is used in block labeled lbl. -/
 def UsedIn (f : Func) (v : Var) (lbl : Label) : Prop :=
@@ -188,7 +188,7 @@ theorem ssa_implies_wellformed {f : Func} (hssa : SSAWellFormed f)
     -- is either a param or defined by instruction j < i in the same block.
     -- The unique_defs property ensures no shadowing, and blockSSA ensures
     -- params and instruction dsts are disjoint with no duplicates.
-    simp only [List.all_eq_true, List.mem_enum]
+    simp only [List.all_eq_true, List.mem_zipIdx]
     intro ⟨i, instr⟩ hmem
     -- instr is the i-th instruction in blk.instrs
     -- Need: exprVarsIn (params ++ (instrs.take i).map dst) instr.rhs = true

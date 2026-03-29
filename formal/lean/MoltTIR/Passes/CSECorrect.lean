@@ -30,11 +30,11 @@ def AvailFreshWrt (avail : AvailMap) (x : Var) : Prop :=
 
 /-- Empty availability map is trivially sound. -/
 theorem availMapSound_empty (ρ : Env) : AvailMapSound [] ρ :=
-  fun _ he => absurd he (List.not_mem_nil _)
+  fun _ he => nomatch he
 
 /-- Empty availability map is trivially fresh. -/
 theorem availFreshWrt_empty (x : Var) : AvailFreshWrt [] x :=
-  fun _ he => absurd he (List.not_mem_nil _)
+  fun _ he => nomatch he
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 2: Lookup soundness

@@ -453,7 +453,7 @@ private theorem scan_candidates (f : Func) (l : Label)
   | nil =>
     intro d hd hbest
     exact find_idom f l hreach hS_full hS_complete d hd
-      (fun d' hd' hd'_in => hbest d' hd' hd'_in (List.not_mem_nil _))
+      (fun d' hd' hd'_in => hbest d' hd' hd'_in (nofun))
   | cons c rest ih =>
     intro d hd hbest
     by_cases hc_sdom : SDom f c l

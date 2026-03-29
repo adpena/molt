@@ -153,7 +153,7 @@ private theorem dce_instrs_agreeOn_precond_rhs (instrs : List Instr) (term : Ter
     ∀ i ∈ instrs, ∀ x ∈ exprVars i.rhs, x ∈ usedVarsSuffix instrs term := by
   intro i hi x hx
   simp only [usedVarsSuffix]
-  exact List.mem_append_left _ (List.mem_bind.mpr ⟨i, hi, hx⟩)
+  exact List.mem_append_left _ (List.mem_flatMap.mpr ⟨i, hi, hx⟩)
 
 private theorem termVars_sub_usedVarsSuffix (instrs : List Instr) (term : Terminator) :
     ∀ x ∈ termVars term, x ∈ usedVarsSuffix instrs term := by
@@ -223,15 +223,15 @@ private theorem execInstrs_dce_of_total
     | some val =>
       simp [hm] at htotal
       have hrhs_i : ∀ x ∈ exprVars i.rhs, x ∈ used :=
-        hrhs i (List.mem_cons_self _ _)
+        hrhs i (List.mem_cons_self)
       have hagree_rhs : EnvAgreeOn (exprVars i.rhs) ρ₁ ρ₂ :=
         fun x hx => hagree x (hrhs_i x hx)
       have hm1 : evalExpr ρ₁ i.rhs = some val := by
         rw [evalExpr_agreeOn ρ₁ ρ₂ i.rhs hagree_rhs, hm]
       have hdead_rest : ∀ j ∈ rest, ¬isLive used j → j.dst ∉ used :=
-        fun j hj => hdead j (List.mem_cons_of_mem _ hj)
+        fun j hj => hdead j (List.Mem.tail _ hj)
       have hrhs_rest : ∀ j ∈ rest, ∀ x ∈ exprVars j.rhs, x ∈ used :=
-        fun j hj => hrhs j (List.mem_cons_of_mem _ hj)
+        fun j hj => hrhs j (List.Mem.tail _ hj)
       simp only [dceInstrs, List.filter]
       by_cases hlive : isLive used i
       · simp [hlive, execInstrs, hm1]
@@ -239,7 +239,7 @@ private theorem execInstrs_dce_of_total
           envAgreeOn_set_both used ρ₁ ρ₂ i.dst val hagree
         exact ih hdead_rest hrhs_rest (ρ₁.set i.dst val) (ρ₂.set i.dst val) hagree' htotal
       · simp [hlive]
-        have hdst_unused : i.dst ∉ used := hdead i (List.mem_cons_self _ _) hlive
+        have hdst_unused : i.dst ∉ used := hdead i (List.mem_cons_self) hlive
         have hagree' : EnvAgreeOn used ρ₁ (ρ₂.set i.dst val) :=
           envAgreeOn_set_right_irrelevant used ρ₁ ρ₂ i.dst val hagree hdst_unused
         exact ih hdead_rest hrhs_rest ρ₁ (ρ₂.set i.dst val) hagree' htotal
@@ -566,13 +566,13 @@ private theorem buildAvail_sound_after_exec (instrs : List Instr) (ρ ρ' : Env)
       match hssa with
       | .cons _ _ hfresh_i hssa_tail =>
         have havail_i : AvailFreshWrt avail i.dst :=
-          havail_fresh i (List.mem_cons_self _ _)
+          havail_fresh i (List.mem_cons_self)
         have hsound' : AvailMapSound (cseInstr avail i).2 (ρ.set i.dst val) :=
           cseInstr_avail_sound avail ρ i val hsound hm havail_i hfresh_i.dst_not_in_rhs
         have havail_rest : ∀ j ∈ rest, AvailFreshWrt (cseInstr avail i).2 j.dst := by
           intro j hj
           exact availFreshWrt_cseInstr avail i j.dst
-            (havail_fresh j (List.mem_cons_of_mem _ hj))
+            (havail_fresh j (List.Mem.tail _ hj))
             (hfresh_i.dst_distinct j hj)
             (hfresh_i.later_dst_not_in_rhs j hj)
         show AvailMapSound (buildAvail _ rest) ρ'
@@ -602,11 +602,11 @@ theorem cseInstrs_correct (avail : AvailMap) (ρ : Env) (instrs : List Instr)
     | some val =>
       match hssa with
       | .cons _ _ hfresh_i hssa_tail =>
-        have havail_i := havail_fresh i (List.mem_cons_self _ _)
+        have havail_i := havail_fresh i (List.mem_cons_self)
         have havail_rest : ∀ j ∈ rest, AvailFreshWrt (cseInstr avail i).2 j.dst := by
           intro j hj
           exact availFreshWrt_cseInstr avail i j.dst
-            (havail_fresh j (List.mem_cons_of_mem _ hj))
+            (havail_fresh j (List.Mem.tail _ hj))
             (hfresh_i.dst_distinct j hj)
             (hfresh_i.later_dst_not_in_rhs j hj)
         exact ih (cseInstr avail i).2 (ρ.set i.dst val)
@@ -866,7 +866,7 @@ private theorem execInstrs_guardHoist_total
     simp only [guardHoistInstrs]
     -- The hoisted instruction's RHS evaluates (by guardHoistInstr_rhs_total)
     have hi_total : (evalExpr ρ i.rhs).isSome :=
-      htotal i (List.mem_cons_self _ _) ρ
+      htotal i (List.mem_cons_self) ρ
     have hi_hoisted : (evalExpr ρ (guardHoistInstr proven i).1.rhs).isSome :=
       guardHoistInstr_rhs_total proven i ρ hi_total
     -- Extract the value
@@ -878,7 +878,7 @@ private theorem execInstrs_guardHoist_total
     simp only [execInstrs, hval]
     -- Apply IH to the rest
     have hrest : ∀ (j : Instr), j ∈ rest → ∀ (ρ' : Env), (evalExpr ρ' j.rhs).isSome :=
-      fun j hj => htotal j (List.mem_cons_of_mem _ hj)
+      fun j hj => htotal j (List.Mem.tail _ hj)
     rw [hdst]
     exact ih (guardHoistInstr proven i).2 (ρ.set i.dst val) hrest
 

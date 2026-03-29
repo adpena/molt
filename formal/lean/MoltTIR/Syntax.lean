@@ -152,25 +152,25 @@ def exprVars : Expr → List Var
 /-- Collect all variables referenced in a terminator. -/
 def termVars : Terminator → List Var
   | .ret e => exprVars e
-  | .jmp _ args => args.bind exprVars
+  | .jmp _ args => args.flatMap exprVars
   | .br cond _ thenArgs _ elseArgs =>
-      exprVars cond ++ thenArgs.bind exprVars ++ elseArgs.bind exprVars
+      exprVars cond ++ thenArgs.flatMap exprVars ++ elseArgs.flatMap exprVars
   | .yield val _ resumeArgs =>
-      exprVars val ++ resumeArgs.bind exprVars
+      exprVars val ++ resumeArgs.flatMap exprVars
   | .switch scrutinee _ _ => exprVars scrutinee
   | .unreachable => []
 
 /-- Collect all variables referenced in a side-effecting operation. -/
 def sideEffectVars : SideEffectOp → List Var
-  | .call _ args _ => args.bind exprVars
-  | .callMethod receiver _ args _ => exprVars receiver ++ args.bind exprVars
+  | .call _ args _ => args.flatMap exprVars
+  | .callMethod receiver _ args _ => exprVars receiver ++ args.flatMap exprVars
   | .loadAttr obj _ _ => exprVars obj
   | .storeAttr obj _ val => exprVars obj ++ exprVars val
   | .index obj idx _ => exprVars obj ++ exprVars idx
   | .storeIndex obj idx val => exprVars obj ++ exprVars idx ++ exprVars val
-  | .buildList elems _ => elems.bind exprVars
-  | .buildDict keys vals _ => keys.bind exprVars ++ vals.bind exprVars
-  | .buildTuple elems _ => elems.bind exprVars
+  | .buildList elems _ => elems.flatMap exprVars
+  | .buildDict keys vals _ => keys.flatMap exprVars ++ vals.flatMap exprVars
+  | .buildTuple elems _ => elems.flatMap exprVars
   | .getIter obj _ => exprVars obj
   | .iterNext iter _ => exprVars iter
   | .raise exc => exprVars exc

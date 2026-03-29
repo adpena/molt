@@ -37,7 +37,7 @@ def termVarsIn (scope : List Var) : Terminator → Bool
 def blockWellFormed (b : Block) : Bool :=
   let scope := definedVars b.params b.instrs
   -- Check each instruction incrementally
-  let instrOk := b.instrs.enum.all fun (i, instr) =>
+  let instrOk := (b.instrs.zipIdx).all fun (instr, i) =>
     let scopeAt := b.params ++ (b.instrs.take i).map Instr.dst
     exprVarsIn scopeAt instr.rhs
   instrOk && termVarsIn scope b.term
