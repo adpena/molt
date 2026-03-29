@@ -55,14 +55,15 @@ use crate::object::ops_builtins::{molt_object_init, molt_object_init_subclass, m
 const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 33;
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn reserved_wasm_runtime_callable_ptr(fn_ptr: u64) -> Option<u64> {
-    let base = crate::wasm_table_base();
+pub(crate) fn reserved_wasm_runtime_callable_info(
+    fn_ptr: u64,
+) -> Option<(u64, &'static str, &'static str, usize)> {
     macro_rules! entry_list {
         ($(($idx:expr, $sym:ident, $import:literal, $arity:expr))+) => {
             {
                 $(
                     if fn_ptr == fn_addr!($sym) {
-                        return Some(base + RESERVED_WASM_RUNTIME_CALLABLE_BASE + ($idx as u64));
+                        return Some(($idx as u64, stringify!($sym), $import, $arity));
                     }
                 )+
             }
@@ -73,6 +74,18 @@ pub(crate) fn reserved_wasm_runtime_callable_ptr(fn_ptr: u64) -> Option<u64> {
         "/../wasm_runtime_callables.inc"
     ));
     None
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn reserved_wasm_runtime_callable_ptr(fn_ptr: u64) -> Option<u64> {
+    let base = crate::wasm_table_base();
+    reserved_wasm_runtime_callable_info(fn_ptr)
+        .map(|(idx, _sym, _import, _arity)| base + RESERVED_WASM_RUNTIME_CALLABLE_BASE + idx)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn reserved_wasm_runtime_callable_arity(fn_ptr: u64) -> Option<usize> {
+    reserved_wasm_runtime_callable_info(fn_ptr).map(|(_idx, _sym, _import, arity)| arity)
 }
 
 #[cfg(target_arch = "wasm32")]

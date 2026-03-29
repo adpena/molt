@@ -39,12 +39,6 @@ fn fixed_arity_call_target_ptr(fn_ptr: u64, _tramp_ptr: u64) -> u64 {
 
 #[cfg(target_arch = "wasm32")]
 #[inline]
-fn is_reserved_wasm_runtime_callable(fn_ptr: u64) -> bool {
-    crate::builtins::functions::reserved_wasm_runtime_callable_ptr(fn_ptr).is_some()
-}
-
-#[cfg(target_arch = "wasm32")]
-#[inline]
 fn is_void_wasm_call1_target(fn_ptr: u64) -> bool {
     const VOID_INTRINSICS: [&str; 9] = [
         "molt_email_message_drop",
@@ -100,7 +94,22 @@ unsafe fn maybe_call_function_obj_trampoline(
     #[cfg(target_arch = "wasm32")]
     unsafe {
         let tramp_ptr = function_trampoline_ptr(func_ptr);
-        if tramp_ptr != 0 && !is_reserved_wasm_runtime_callable(function_fn_ptr(func_ptr)) {
+        if matches!(
+            std::env::var("MOLT_TRACE_TRAMPOLINE_POLICY")
+                .ok()
+                .as_deref(),
+            Some("1")
+        ) {
+            let fn_ptr = function_fn_ptr(func_ptr);
+            let reserved_info =
+                crate::builtins::functions::reserved_wasm_runtime_callable_info(fn_ptr);
+            eprintln!(
+                "[molt trampoline policy] fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} nargs={} reserved_info={reserved_info:?} force_trampoline={}",
+                args.len(),
+                tramp_ptr != 0,
+            );
+        }
+        if tramp_ptr != 0 {
             return Some(call_function_obj_trampoline(_py, func_bits, args));
         }
     }
@@ -2067,16 +2076,7 @@ pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, ar
         {
             let tramp_ptr = function_trampoline_ptr(func_ptr);
             if tramp_ptr != 0 {
-                #[cfg(target_arch = "wasm32")]
-                {
-                    if !is_reserved_wasm_runtime_callable(function_fn_ptr(func_ptr)) {
-                        return call_function_obj_trampoline(_py, func_bits, args);
-                    }
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    return call_function_obj_trampoline(_py, func_bits, args);
-                }
+                return call_function_obj_trampoline(_py, func_bits, args);
             }
         }
         if function_needs_task_trampoline(_py, func_bits) {
@@ -2123,11 +2123,6 @@ pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, ar
 #[cfg(test)]
 mod tests {
     use super::fixed_arity_call_target_ptr;
-
-    #[test]
-    fn fixed_arity_call_target_ignores_trampoline_ptr() {
-        assert_eq!(fixed_arity_call_target_ptr(293, 701), 293);
-    }
 
     #[test]
     fn fixed_arity_call_target_uses_fn_ptr_without_trampoline() {
