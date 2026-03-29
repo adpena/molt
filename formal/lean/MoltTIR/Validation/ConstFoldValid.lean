@@ -162,6 +162,12 @@ private theorem constFoldTerminator_idempotent (t : Terminator) :
   | br cond tl ta el ea =>
     simp only [constFoldTerminator, constFoldExpr_idempotent]
     congr 1 <;> exact constFoldExpr_map_idempotent _
+  | yield val resume resumeArgs =>
+    simp only [constFoldTerminator, constFoldExpr_idempotent]
+    rw [constFoldExpr_map_idempotent]
+  | switch scrutinee cases default_ =>
+    simp [constFoldTerminator, constFoldExpr_idempotent]
+  | unreachable => rfl
 
 /-- Constant folding a block is idempotent. -/
 private theorem constFoldBlock_idempotent (b : Block) :
