@@ -957,14 +957,7 @@ impl<'a> SsaContext<'a> {
                 // We also store args for the handler block here so that when
                 // lower_to_simple emits the fallthrough jump, the handler
                 // block's arguments are still correct.
-                if succs.len() >= 2 {
-                    let fallthrough_bid = succs[0];
-                    let fallthrough_args = self.collect_branch_args(fallthrough_bid, var_stacks);
-                    Terminator::Branch {
-                        target: BlockId(fallthrough_bid as u32),
-                        args: fallthrough_args,
-                    }
-                } else if succs.len() == 1 {
+                if !succs.is_empty() {
                     let target_bid = succs[0];
                     let args = self.collect_branch_args(target_bid, var_stacks);
                     Terminator::Branch {

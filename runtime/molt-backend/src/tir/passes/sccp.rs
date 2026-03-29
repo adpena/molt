@@ -314,11 +314,11 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 let targets_loop = func
                     .loop_roles
                     .get(then_block)
-                    .map_or(false, |r| *r == LoopRole::LoopHeader)
+                    .is_some_and(|r| *r == LoopRole::LoopHeader)
                     || func
                         .loop_roles
                         .get(else_block)
-                        .map_or(false, |r| *r == LoopRole::LoopHeader);
+                        .is_some_and(|r| *r == LoopRole::LoopHeader);
                 if targets_loop {
                     None
                 } else {
