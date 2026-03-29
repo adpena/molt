@@ -23720,11 +23720,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             emit_loop_body()
             self._pop_loop_guard_assumptions()
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            # Re-evict module-backed mutation names (same fix as below)
+            if self.current_func_name == "molt_main":
+                for name in assigned:
+                    if name in self.module_global_mutations:
+                        self.locals.pop(name, None)
             if break_name is not None:
                 self._emit_loop_orelse(break_name, node.orelse)
             return None
 
         emit_loop_body()
+        # Re-evict module-backed mutation names from self.locals.
+        # The loop body may have re-added them via _store_local_value,
+        # but post-loop code must read them via module_get_attr to see
+        # the correct value (the loop body may not have executed).
+        if self.current_func_name == "molt_main":
+            for name in assigned:
+                if name in self.module_global_mutations:
+                    self.locals.pop(name, None)
         if break_name is not None:
             self._emit_loop_orelse(break_name, node.orelse)
         return None
