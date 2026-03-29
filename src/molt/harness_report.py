@@ -114,10 +114,13 @@ class Baseline:
         test_counts: dict[str, int] = {}
         metrics: dict[str, float] = {}
         for r in report.results:
-            if "test_count" in r.metrics:
-                test_counts[r.name] = int(r.metrics["test_count"])
+            # Accept either "test_count" or "tests_passed" as the canonical
+            # test-count metric for baseline ratcheting.
+            tc_key = "test_count" if "test_count" in r.metrics else "tests_passed"
+            if tc_key in r.metrics:
+                test_counts[r.name] = int(r.metrics[tc_key])
             for k, v in r.metrics.items():
-                if k != "test_count" and isinstance(v, (int, float)):
+                if k not in ("test_count", "tests_passed") and isinstance(v, (int, float)):
                     metrics[k] = float(v)
         return cls(test_counts=test_counts, metrics=metrics)
 

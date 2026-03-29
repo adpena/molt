@@ -1,0 +1,40 @@
+{
+  "profile": "quick",
+  "timestamp": "2026-03-29T00:41:55.018760+00:00",
+  "all_passed": false,
+  "total_duration_s": 59.75025475100847,
+  "pass_count": 2,
+  "fail_count": 2,
+  "results": [
+    {
+      "name": "compile",
+      "status": "pass",
+      "duration_s": 4.133501542004524,
+      "details": "compiled OK with 95 warnings (enforced in lint layer)",
+      "metrics": {}
+    },
+    {
+      "name": "lint",
+      "status": "fail",
+      "duration_s": 4.05115429199941,
+      "details": "              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `(compiled as usize).is_multiple_of(progress_interval)`\n     |\n     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#manual_is_multiple_of\n     = note: `-D clippy::manual-is-multiple-of` implied by `-D warnings`\n     = help: to override `-D warnings` add `#[allow(clippy::manual_is_multiple_of)]`\n\nerror: could not compile `molt-backend` (lib) due to 160 previous errors\n",
+      "metrics": {}
+    },
+    {
+      "name": "unit-rust",
+      "status": "fail",
+      "duration_s": 51.49396925000474,
+      "details": "default: rc=101 led, waiting for other jobs to finish...\nwarning: `molt-lang-obj-model` (test \"kani_intrinsic_contracts\") generated 1 warning\nwarning: `molt-lang-obj-model` (test \"kani_refcount\") generated 1 warning\n; molt-runtime --features refcount_verify: rc=101 ror\nwarning: build failed, waiting for other jobs to finish...\nwarning: `molt-runtime` (test \"test_float\") generated 1 warning\nwarning: `molt-runtime` (lib test) generated 92 warnings (92 duplicates)\n; molt-runtime --features audit: rc=101 ting for other jobs to finish...\nwarning: `molt-runtime` (lib test) generated 6 warnings (6 duplicates)\nerror: could not compile `molt-runtime` (lib test) due to 3 previous errors; 6 warnings emitted\n",
+      "metrics": {
+        "tests_passed": 0
+      }
+    },
+    {
+      "name": "unit-python",
+      "status": "pass",
+      "duration_s": 0.07162966699979734,
+      "details": "manifest + import ok",
+      "metrics": {}
+    }
+  ]
+}
