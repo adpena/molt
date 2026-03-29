@@ -96,7 +96,22 @@ private theorem evalTerminator_switch_congr (f g : Func) (ρ : Env)
     -- For none: g.blocks target = none by hblocks_none, so both sides are none.
     -- For some blk: g.blocks target = some blk' with blk'.params = blk.params,
     --   so bindParams produces the same result.
-    sorry -- dsimp doesn't inline let on 4.28 either
+    simp only [switchTarget]
+    match hfind : cases_.find? (fun p => p.fst == n) with
+    | some (_, lbl) =>
+      simp only [hfind]
+      cases hblk : f.blocks lbl with
+      | none => simp [hblocks_none _ hblk]
+      | some blk =>
+        obtain ⟨blk', hblk', hparams⟩ := hblocks_params _ blk hblk
+        simp [hblk', hparams]
+    | none =>
+      simp only [hfind]
+      cases hblk : f.blocks default_ with
+      | none => simp [hblocks_none _ hblk]
+      | some blk =>
+        obtain ⟨blk', hblk', hparams⟩ := hblocks_params _ blk hblk
+        simp [hblk', hparams]
   | some (.bool _) | some (.float _) | some (.str _) | some .none | none => rfl
 
 theorem dce_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :

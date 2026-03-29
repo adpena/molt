@@ -113,6 +113,27 @@ fn reserved_wasm_runtime_trampoline_ptr(fn_ptr: u64) -> Option<u64> {
     None
 }
 
+#[inline]
+pub(crate) fn runtime_callable_represents_symbol(
+    fn_ptr: u64,
+    _tramp_ptr: u64,
+    symbol_fn_ptr: u64,
+) -> bool {
+    if fn_ptr == symbol_fn_ptr {
+        return true;
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        if reserved_wasm_runtime_callable_ptr(symbol_fn_ptr) == Some(fn_ptr) {
+            return true;
+        }
+        if reserved_wasm_runtime_trampoline_ptr(symbol_fn_ptr) == Some(_tramp_ptr) {
+            return true;
+        }
+    }
+    false
+}
+
 pub(crate) fn alloc_runtime_function_obj(
     _py: &crate::PyToken<'_>,
     fn_ptr: u64,

@@ -10282,7 +10282,11 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
             if ltype == TYPE_ID_LIST {
                 // Recursion guard for nested/self-referential containers
                 if !crate::state::recursion::recursion_guard_enter_fast() {
-                    raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded in comparison");
+                    raise_exception::<u64>(
+                        _py,
+                        "RecursionError",
+                        "maximum recursion depth exceeded in comparison",
+                    );
                     return false;
                 }
                 let l_elems = seq_vec_ref(lp);
@@ -10308,7 +10312,11 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
             }
             if ltype == TYPE_ID_DICT {
                 if !crate::state::recursion::recursion_guard_enter_fast() {
-                    raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded in comparison");
+                    raise_exception::<u64>(
+                        _py,
+                        "RecursionError",
+                        "maximum recursion depth exceeded in comparison",
+                    );
                     return false;
                 }
                 let l_pairs = dict_order(lp);

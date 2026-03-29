@@ -1,5 +1,6 @@
 use crate::call::type_policy::{
-    InitArgPolicy, resolved_constructor_init_policy, resolved_new_is_default_object_new,
+    InitArgPolicy, callable_matches_runtime_symbol, resolved_constructor_init_policy,
+    resolved_new_is_default_object_new,
 };
 use crate::state::tls::FRAME_STACK;
 use crate::{
@@ -25,6 +26,7 @@ use crate::{
     dict_update_apply, dict_update_method, dict_update_set_in_place, dict_update_set_via_store,
     exception_class_bits, exception_pending, exception_type_bits_from_name, function_arity,
     function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
+    function_trampoline_ptr,
     generic_alias_origin_bits, has_capability, inc_ref_bits, init_atomic_bits, intern_static_name,
     is_builtin_class_bits, is_trusted, is_truthy, isinstance_bits, issubclass_bits, list_len,
     lookup_call_attr, maybe_ptr_from_bits, missing_bits, molt_bytearray_count_slice,
@@ -151,7 +153,11 @@ unsafe fn is_default_type_call(_py: &PyToken<'_>, call_bits: u64) -> bool {
                 let func_bits = bound_method_func_bits(call_ptr);
                 is_default_type_call(_py, func_bits)
             }
-            TYPE_ID_FUNCTION => function_fn_ptr(call_ptr) == fn_addr!(molt_type_call),
+            TYPE_ID_FUNCTION => crate::builtins::functions::runtime_callable_represents_symbol(
+                function_fn_ptr(call_ptr),
+                function_trampoline_ptr(call_ptr),
+                fn_addr!(molt_type_call),
+            ),
             _ => false,
         }
     }
@@ -1725,7 +1731,7 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "TypeError", "call expects function object");
             }
             let fn_ptr = function_fn_ptr(func_ptr);
-            if fn_ptr == fn_addr!(molt_type_call) {
+            if callable_matches_runtime_symbol(Some(func_bits), fn_addr!(molt_type_call)) {
                 let Some(self_bits) = self_bits else {
                     return raise_exception::<_>(_py, "TypeError", "type.__call__ expects type");
                 };
@@ -2202,7 +2208,13 @@ unsafe fn bind_builtin_call(
         {
             return bind_builtin_exception_args(_py, args);
         }
-        if fn_ptr == fn_addr!(molt_object_init) || fn_ptr == fn_addr!(molt_object_init_subclass) {
+        if callable_matches_runtime_symbol(
+            Some(MoltObject::from_ptr(func_ptr).bits()),
+            fn_addr!(molt_object_init),
+        ) || callable_matches_runtime_symbol(
+            Some(MoltObject::from_ptr(func_ptr).bits()),
+            fn_addr!(molt_object_init_subclass),
+        ) {
             let self_bits = args
                 .pos
                 .first()
@@ -2210,7 +2222,10 @@ unsafe fn bind_builtin_call(
                 .unwrap_or_else(|| MoltObject::none().bits());
             return Some(vec![self_bits]);
         }
-        if fn_ptr == fn_addr!(molt_object_new_bound) {
+        if callable_matches_runtime_symbol(
+            Some(MoltObject::from_ptr(func_ptr).bits()),
+            fn_addr!(molt_object_new_bound),
+        ) {
             let self_bits = args
                 .pos
                 .first()

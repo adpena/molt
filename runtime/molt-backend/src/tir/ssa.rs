@@ -309,8 +309,10 @@ impl<'a> SsaContext<'a> {
 
     /// Exception handlers are reached via implicit `check_exception` edges,
     /// not ordinary block terminators. Preserve a conservative environment
-    /// vector for those targets so handler/join code sees the pre-throw state
-    /// instead of the unreachable-block `ConstNone` fallback.
+    /// vector for those targets based on true live-in variables across normal
+    /// and exceptional edges. Threading every variable into every handler is
+    /// both expensive and unsound: unresolved future vars collapse to
+    /// `ValueId(0)` and can corrupt downstream lowering.
     fn insert_exception_handler_arguments(&mut self) {
         let mut handler_blocks: HashSet<usize> = HashSet::new();
         for &(_, handler_bid) in &self.cfg.exception_edges {
@@ -320,15 +322,61 @@ impl<'a> SsaContext<'a> {
             return;
         }
 
-        let mut vars: Vec<String> = self.all_vars.iter().cloned().collect();
-        vars.sort();
+        let live_in = self.compute_live_in_vars_with_exception_edges();
         for bid in handler_blocks {
+            let mut vars: Vec<String> = live_in[bid].iter().cloned().collect();
+            vars.sort();
             for var in &vars {
                 if !self.block_arg_vars[bid].contains(var) {
                     self.block_arg_vars[bid].push(var.clone());
                 }
             }
         }
+    }
+
+    fn compute_live_in_vars_with_exception_edges(&self) -> Vec<HashSet<String>> {
+        let n = self.cfg.blocks.len();
+        let mut succs = self.cfg.successors.clone();
+        for &(from_bid, handler_bid) in &self.cfg.exception_edges {
+            if from_bid >= n || handler_bid >= n {
+                continue;
+            }
+            if !succs[from_bid].contains(&handler_bid) {
+                succs[from_bid].push(handler_bid);
+            }
+        }
+        for block_succs in &mut succs {
+            block_succs.sort_unstable();
+            block_succs.dedup();
+        }
+
+        let mut live_in: Vec<HashSet<String>> = vec![HashSet::new(); n];
+        let mut live_out: Vec<HashSet<String>> = vec![HashSet::new(); n];
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for bid in (0..n).rev() {
+                let mut new_live_out: HashSet<String> = HashSet::new();
+                for succ_bid in &succs[bid] {
+                    new_live_out.extend(live_in[*succ_bid].iter().cloned());
+                }
+
+                let mut new_live_in = self.block_info[bid].uses.clone();
+                for var in &new_live_out {
+                    if !self.block_info[bid].defs.contains(var) {
+                        new_live_in.insert(var.clone());
+                    }
+                }
+
+                if new_live_out != live_out[bid] || new_live_in != live_in[bid] {
+                    live_out[bid] = new_live_out;
+                    live_in[bid] = new_live_in;
+                    changed = true;
+                }
+            }
+        }
+
+        live_in
     }
 
     // -- Phase 4: rename variables and emit TIR blocks -----------------------
@@ -1470,7 +1518,104 @@ mod tests {
     }
 
     // =======================================================================
-    // Test 8: All output values are typed as DynBox
+    // Test 8: Exception handlers should not receive dead future vars
+    // =======================================================================
+    #[test]
+    fn check_exception_does_not_capture_future_dead_vars() {
+        let ops = vec![
+            op_val_out("const", 1, "x"),
+            op_val("try_start", 100),
+            OpIR {
+                kind: "check_exception".to_string(),
+                value: Some(100),
+                ..OpIR::default()
+            },
+            op_val_out("const", 2, "y"),
+            op_val("try_end", 100),
+            op("ret_void"),
+            op_val("label", 100),
+            op("ret_void"),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let handler_bid = cfg
+            .blocks
+            .iter()
+            .position(|b| b.start_op <= 6 && b.end_op > 6)
+            .expect("handler block should exist");
+        let handler_block = &output.blocks[handler_bid];
+        assert!(
+            handler_block.args.is_empty(),
+            "handler block should not receive dead future vars, got {} args",
+            handler_block.args.len()
+        );
+
+        let check_op = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| op.opcode == OpCode::CheckException)
+            .expect("check_exception op should survive SSA conversion");
+        assert!(
+            check_op.operands.is_empty(),
+            "check_exception should not carry dead handler args, got operands {:?}",
+            check_op.operands
+        );
+    }
+
+    #[test]
+    fn check_exception_in_multi_block_try_does_not_capture_dead_vars() {
+        let ops = vec![
+            op_val_out("const", 1, "c"),
+            op_val("try_start", 100),
+            op_args("if", &["c"]),
+            op_val_out("const", 1, "x"),
+            op("else"),
+            op_val_out("const", 2, "x"),
+            op("end_if"),
+            OpIR {
+                kind: "check_exception".to_string(),
+                value: Some(100),
+                ..OpIR::default()
+            },
+            op_val_out("const", 3, "y"),
+            op_val("try_end", 100),
+            op("ret_void"),
+            op_val("label", 100),
+            op("ret_void"),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let handler_bid = cfg
+            .blocks
+            .iter()
+            .position(|b| b.start_op <= 11 && b.end_op > 11)
+            .expect("handler block should exist");
+        let handler_block = &output.blocks[handler_bid];
+        assert!(
+            handler_block.args.is_empty(),
+            "multi-block handler should not receive dead vars, got {} args",
+            handler_block.args.len()
+        );
+
+        let check_ops: Vec<_> = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .filter(|op| op.opcode == OpCode::CheckException)
+            .collect();
+        assert_eq!(check_ops.len(), 1, "expected exactly one check_exception op");
+        assert!(
+            check_ops[0].operands.is_empty(),
+            "check_exception should not carry dead handler args, got operands {:?}",
+            check_ops[0].operands
+        );
+    }
+
+    // =======================================================================
+    // Test 9: All output values are typed as DynBox
     // =======================================================================
     #[test]
     fn all_values_typed_dynbox() {

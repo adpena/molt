@@ -3108,7 +3108,9 @@ def _resolve_build_entry(
         entry_module = _module_name_from_path(source_path, module_roots, stdlib_root)
     if source_path is None or entry_module is None:
         return None, _fail(
-            "Failed to resolve entry module.", json_output, command=command
+            "No entry point found. Provide a Python file path or use --module to specify a package entry point.",
+            json_output,
+            command=command
         )
     try:
         entry_source = _read_module_source(source_path)
@@ -10356,7 +10358,8 @@ def _backend_daemon_compile_request_bytes(
                 "MOLT_MAX_FUNCTION_OPS", "MOLT_DISABLE_RC_COALESCING", "TIR_DUMP", "TIR_OPT_STATS",
                 "MOLT_DUMP_CLIF", "MOLT_DUMP_CLIF_ON_ERROR", "MOLT_DUMP_IR",
                 "MOLT_DEBUG_BIND", "MOLT_TIR_SKIP", "MOLT_BACKEND",
-                "MOLT_LLVM_DUMP_IR", "MOLT_BACKEND_TIMING"):
+                "MOLT_LLVM_DUMP_IR", "MOLT_BACKEND_TIMING",
+                "MOLT_TIR_NO_TYPES"):
         val = os.environ.get(key)
         if val is not None:
             env_passthrough[key] = val
@@ -15843,11 +15846,16 @@ def _execute_backend_compile(
             # cleared the cache tree, and the backend's own
             # ensure_output_parent_dir may race with ld -r timing.
             backend_output.parent.mkdir(parents=True, exist_ok=True)
-            # Progress indicator: show compilation start on stderr so the
-            # user knows something is happening during multi-minute builds.
+            # Progress indicator for long builds (Issue 2.2 / 7.1).
             if not json_output:
-                _entry_stem = entry_module.rsplit(".", 1)[-1] if entry_module else "program"
-                print(f"Compiling {_entry_stem}...", end="", flush=True, file=sys.stderr)
+                import sys as _sys
+                _entry_name = Path(entry_file).stem if entry_file else "program"
+                print(
+                    f"Compiling {_entry_name}...",
+                    end="",
+                    flush=True,
+                    file=_sys.stderr,
+                )
             ir_bytes = _ensure_backend_ir_bytes()
             ir_fmt = _get_backend_ir_fmt()
             if ir_fmt != "json":
@@ -15944,16 +15952,14 @@ def _execute_backend_compile(
                     print(backend_stderr, end="", file=sys.stderr)
             backend_output_written = True
             if not json_output:
-                print(" done", file=sys.stderr)
+                import sys as _sys
+                print(" done", file=_sys.stderr)
         if backend_output_written and not (
             daemon_ready and backend_compiled and backend_output_exists
         ):
             if not backend_output.exists():
                 return None, _fail(
-                    f"Backend output missing at {backend_output}. "
-                    f"Run with --verbose to see full build output, or try --rebuild to bypass cached state.",
-                    json_output,
-                    command="build",
+                    "Backend output missing", json_output, command="build"
                 )
         if backend_output_written:
             if diagnostics_enabled and "backend_artifact_stage" not in phase_starts:
@@ -26953,10 +26959,6 @@ def main() -> int:
             "  molt build app.py --target wasm    Build for WebAssembly\n"
             "  molt deploy cloudflare app.py      Deploy to Cloudflare Workers\n"
             "  molt test                          Run test suites\n"
-            "  molt doctor                        Check toolchain health\n"
-            "\n"
-            "Use --trusted to disable capability checks for local development.\n"
-            "Set MOLT_CAPABILITY_TIER=safe|standard|full to control permissions.\n"
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True, title="commands")

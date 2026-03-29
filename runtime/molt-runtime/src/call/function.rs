@@ -26,10 +26,7 @@ fn wasm_direct_call_table_idx(fn_ptr: u64) -> u64 {
 }
 
 #[inline]
-fn indirect_call_target_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
-    if tramp_ptr != 0 {
-        return tramp_ptr;
-    }
+fn fixed_arity_call_target_ptr(fn_ptr: u64, _tramp_ptr: u64) -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
         wasm_direct_call_table_idx(fn_ptr)
@@ -138,7 +135,7 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect2(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         closure_bits,
                         arg0_bits,
                     ) as u64
@@ -166,7 +163,7 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect1(indirect_call_target_ptr(fn_ptr, tramp_ptr), arg0_bits)
+                    molt_call_indirect1(fixed_arity_call_target_ptr(fn_ptr, tramp_ptr), arg0_bits)
                         as u64
                 } else {
                     if is_void_wasm_call1_target(fn_ptr) {
@@ -313,7 +310,7 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect1(indirect_call_target_ptr(fn_ptr, tramp_ptr), closure_bits)
+                    molt_call_indirect1(fixed_arity_call_target_ptr(fn_ptr, tramp_ptr), closure_bits)
                         as u64
                 } else {
                     // SAFETY: `fn_ptr` is a valid extern "C" function pointer obtained from
@@ -339,7 +336,7 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect0(indirect_call_target_ptr(fn_ptr, tramp_ptr)) as u64
+                    molt_call_indirect0(fixed_arity_call_target_ptr(fn_ptr, tramp_ptr)) as u64
                 } else {
                     // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
                     // `function_fn_ptr`. Arity == 0, no closure, so the nullary signature
@@ -407,7 +404,7 @@ pub(crate) unsafe fn call_function_obj2(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect3(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -439,7 +436,7 @@ pub(crate) unsafe fn call_function_obj2(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect2(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         arg0_bits,
                         arg1_bits,
                     ) as u64
@@ -509,7 +506,7 @@ pub(crate) unsafe fn call_function_obj3(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect4(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -536,7 +533,7 @@ pub(crate) unsafe fn call_function_obj3(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect3(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         arg0_bits,
                         arg1_bits,
                         arg2_bits,
@@ -599,7 +596,7 @@ pub(crate) unsafe fn call_function_obj4(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect5(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -627,7 +624,7 @@ pub(crate) unsafe fn call_function_obj4(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect4(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         arg0_bits,
                         arg1_bits,
                         arg2_bits,
@@ -692,7 +689,7 @@ unsafe fn call_function_obj5(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect6(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -735,7 +732,7 @@ unsafe fn call_function_obj5(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect5(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         arg0_bits,
                         arg1_bits,
                         arg2_bits,
@@ -803,7 +800,7 @@ unsafe fn call_function_obj6(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect7(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -849,7 +846,7 @@ unsafe fn call_function_obj6(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect6(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         arg0_bits,
                         arg1_bits,
                         arg2_bits,
@@ -923,7 +920,7 @@ unsafe fn call_function_obj7(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect8(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -972,7 +969,7 @@ unsafe fn call_function_obj7(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect7(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         arg0_bits,
                         arg1_bits,
                         arg2_bits,
@@ -1048,7 +1045,7 @@ unsafe fn call_function_obj8(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect9(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -1100,7 +1097,7 @@ unsafe fn call_function_obj8(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect8(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         arg0_bits,
                         arg1_bits,
                         arg2_bits,
@@ -1180,7 +1177,7 @@ unsafe fn call_function_obj9(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect10(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -1245,7 +1242,7 @@ unsafe fn call_function_obj9(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect9(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         arg0_bits,
                         arg1_bits,
                         arg2_bits,
@@ -1327,7 +1324,7 @@ unsafe fn call_function_obj10(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect11(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -1407,7 +1404,7 @@ unsafe fn call_function_obj10(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect10(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         arg0_bits,
                         arg1_bits,
                         arg2_bits,
@@ -1501,7 +1498,7 @@ unsafe fn call_function_obj11(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect12(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -1586,7 +1583,7 @@ unsafe fn call_function_obj11(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect11(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         arg0_bits,
                         arg1_bits,
                         arg2_bits,
@@ -1694,7 +1691,7 @@ unsafe fn call_function_obj12(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect13(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         closure_bits,
                         arg0_bits,
                         arg1_bits,
@@ -1784,7 +1781,7 @@ unsafe fn call_function_obj12(
             {
                 if tramp_ptr != 0 {
                     molt_call_indirect12(
-                        indirect_call_target_ptr(fn_ptr, tramp_ptr),
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         arg0_bits,
                         arg1_bits,
                         arg2_bits,
@@ -2013,15 +2010,15 @@ pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, ar
 
 #[cfg(test)]
 mod tests {
-    use super::indirect_call_target_ptr;
+    use super::fixed_arity_call_target_ptr;
 
     #[test]
-    fn indirect_call_target_prefers_trampoline_ptr() {
-        assert_eq!(indirect_call_target_ptr(293, 701), 701);
+    fn fixed_arity_call_target_ignores_trampoline_ptr() {
+        assert_eq!(fixed_arity_call_target_ptr(293, 701), 293);
     }
 
     #[test]
-    fn indirect_call_target_uses_fn_ptr_without_trampoline() {
-        assert_eq!(indirect_call_target_ptr(293, 0), 293);
+    fn fixed_arity_call_target_uses_fn_ptr_without_trampoline() {
+        assert_eq!(fixed_arity_call_target_ptr(293, 0), 293);
     }
 }

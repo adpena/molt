@@ -139,3 +139,33 @@ def test_dotted_import_alias_uses_runtime_module_import_when_parent_allowlisted(
     )
     targets = _module_import_targets(main_ops)
     assert "os.path" in targets
+
+
+def test_local_user_class_ctor_lowers_via_call_bind() -> None:
+    ir = compile_to_tir("class A:\n    pass\n\nA()\n")
+    main_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+    )
+    const_str = {
+        op["out"]: op["s_value"]
+        for op in main_ops
+        if op.get("kind") == "const_str" and isinstance(op.get("out"), str)
+    }
+    class_vars = {
+        op["out"]
+        for op in main_ops
+        if op.get("kind") == "module_get_attr"
+        and len(op.get("args") or []) == 2
+        and const_str.get(op["args"][1]) == "A"
+    }
+    assert class_vars, "expected local class lookup in lowered module chunk"
+    assert any(
+        op.get("kind") == "call_bind"
+        and len(op.get("args") or []) >= 1
+        and op["args"][0] in class_vars
+        for op in main_ops
+    ), "expected local class constructor to lower via call_bind on the class object"
+    assert all(
+        op.get("kind") not in {"alloc_class", "alloc_class_static", "alloc_class_trusted"}
+        for op in main_ops
+    ), "local class constructor should not lower via synthetic object allocation"

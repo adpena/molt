@@ -2806,8 +2806,11 @@ impl SimpleBackend {
                                 let mut tir_func =
                                     crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
                                 crate::tir::type_refine::refine_types(&mut tir_func);
-                                let type_map =
-                                    crate::tir::type_refine::extract_type_map(&tir_func);
+                                let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
+                                        std::collections::HashMap::new()
+                                    } else {
+                                        crate::tir::type_refine::extract_type_map(&tir_func)
+                                    };
                                 let stats = crate::tir::passes::run_pipeline(&mut tir_func);
                                 if stats.is_empty() {
                                     return None;
