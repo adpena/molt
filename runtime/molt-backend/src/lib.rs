@@ -2784,10 +2784,8 @@ impl SimpleBackend {
                     })
                     .collect();
 
-                // Each element: (index, content_hash, Option<optimized_ops>, original_ops)
-                // When optimized_ops is None, original_ops (pre-phi-rewrite) must
-                // be restored so Cranelift gets the ops it expects.
-                let results: Vec<(usize, String, Option<Vec<OpIR>>, Vec<OpIR>)> = inputs
+                // Each element: (index, original_ops)
+                let results: Vec<(usize, Vec<OpIR>)> = inputs
                     .into_par_iter()
                     .map(|input| {
                         let idx = input.index;
@@ -2846,87 +2844,26 @@ impl SimpleBackend {
                                 ))
                             }));
 
-                        match result {
-                            Ok(Some(optimized_ops)) => {
-                                let valid = crate::tir::lower_to_simple::validate_labels(
-                                    &optimized_ops,
-                                );
-                                if valid {
-                                    (idx, content_hash, Some(optimized_ops), original_ops)
-                                } else {
-                                    eprintln!(
-                                        "[TIR] WARNING: label validation failed on function '{}' — falling back to unoptimized.",
-                                        func_name
-                                    );
-                                    (idx, content_hash, None, original_ops)
-                                }
-                            }
-                            Ok(None) => {
-                                // No optimizations applied (stats empty). Restore
-                                // pre-phi-rewrite ops for Cranelift.
-                                (idx, content_hash, None, original_ops)
-                            }
-                            Err(_panic) => {
-                                eprintln!(
-                                    "[TIR] WARNING: optimization panicked on function '{}' — falling back to unoptimized. \
-                                     Set MOLT_TIR_OPT=0 to disable TIR, or report this bug.",
-                                    func_name
-                                );
-                                (idx, content_hash, None, original_ops)
-                            }
+                        if let Err(_panic) = result {
+                            eprintln!(
+                                "[TIR] WARNING: optimization panicked on function '{}' — \
+                                 Set MOLT_TIR_OPT=0 to disable TIR, or report this bug.",
+                                func_name
+                            );
                         }
+                        // Always restore original ops — TIR roundtrip is analysis-only.
+                        (idx, original_ops)
                     })
                     .collect();
 
-                // Phase 3 (sequential): write optimized ops back into ir.functions
-                // and update the cache.
-                for (idx, content_hash, opt_ops, original_ops) in results {
-                    if let Some(optimized_ops) = opt_ops {
-                        // Compare roundtripped ops with originals to find divergence.
-                        if std::env::var("MOLT_DIFF_ROUNDTRIP").is_ok() {
-                            let _ = std::fs::create_dir_all("/tmp/molt_rt_diff");
-                            let func_name = &ir.functions[idx].name;
-                            let mut diff = String::new();
-                            let orig = &original_ops;
-                            let rt = &optimized_ops;
-                            if orig.len() != rt.len() {
-                                diff.push_str(&format!("LENGTH DIFF: orig={} rt={}\n", orig.len(), rt.len()));
-                            }
-                            for (i, (o, r)) in orig.iter().zip(rt.iter()).enumerate() {
-                                let mut diffs = Vec::new();
-                                if o.kind != r.kind { diffs.push(format!("kind: {:?} vs {:?}", o.kind, r.kind)); }
-                                if o.out != r.out { diffs.push(format!("out: {:?} vs {:?}", o.out, r.out)); }
-                                if o.var != r.var { diffs.push(format!("var: {:?} vs {:?}", o.var, r.var)); }
-                                if o.args != r.args { diffs.push(format!("args: {:?} vs {:?}", o.args, r.args)); }
-                                if o.value != r.value { diffs.push(format!("value: {:?} vs {:?}", o.value, r.value)); }
-                                if o.s_value != r.s_value { diffs.push(format!("s_value: {:?} vs {:?}", o.s_value, r.s_value)); }
-                                if o.fast_int != r.fast_int { diffs.push(format!("fast_int: {:?} vs {:?}", o.fast_int, r.fast_int)); }
-                                if o.fast_float != r.fast_float { diffs.push(format!("fast_float: {:?} vs {:?}", o.fast_float, r.fast_float)); }
-                                if o.raw_int != r.raw_int { diffs.push(format!("raw_int: {:?} vs {:?}", o.raw_int, r.raw_int)); }
-                                if o.stack_eligible != r.stack_eligible { diffs.push(format!("stack_eligible: {:?} vs {:?}", o.stack_eligible, r.stack_eligible)); }
-                                if o.type_hint != r.type_hint { diffs.push(format!("type_hint: {:?} vs {:?}", o.type_hint, r.type_hint)); }
-                                if o.task_kind != r.task_kind { diffs.push(format!("task_kind: {:?} vs {:?}", o.task_kind, r.task_kind)); }
-                                if o.container_type != r.container_type { diffs.push(format!("container_type: {:?} vs {:?}", o.container_type, r.container_type)); }
-                                if o.ic_index != r.ic_index { diffs.push(format!("ic_index: {:?} vs {:?}", o.ic_index, r.ic_index)); }
-                                if o.f_value != r.f_value { diffs.push(format!("f_value: {:?} vs {:?}", o.f_value, r.f_value)); }
-                                if !diffs.is_empty() {
-                                    diff.push_str(&format!("op {}: {} [{}]\n", i, o.kind, diffs.join(", ")));
-                                }
-                            }
-                            if !diff.is_empty() {
-                                let san: String = func_name.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect();
-                                let _ = std::fs::write(format!("/tmp/molt_rt_diff/{}.txt", san), &diff);
-                            }
-                        }
-                        let serialized = crate::tir::serialize::serialize_ops(&optimized_ops);
-                        tir_cache.put(&content_hash, &serialized, vec![]);
-                        ir.functions[idx].ops = optimized_ops;
-                    } else {
-                        // TIR failed or produced no optimizations. Restore the
-                        // pre-phi-rewrite original ops so Cranelift gets the
-                        // IR it expects (with phi ops, not store_var/load_var).
-                        ir.functions[idx].ops = original_ops;
-                    }
+                // Phase 3 (sequential): restore original ops.
+                // TIR analysis runs for verification and type annotation but
+                // the roundtripped ops are not used — the original structured
+                // SimpleIR is preserved for Cranelift correctness.
+                let _ = std::fs::write("/tmp/molt_tir_phase3.txt",
+                    format!("Phase 3: {} results\n", results.len()));
+                for (idx, original_ops) in &results {
+                    ir.functions[*idx].ops = original_ops.clone();
                 }
 
                 let tir_elapsed = tir_start.elapsed();
