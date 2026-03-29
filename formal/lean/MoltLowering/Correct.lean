@@ -189,6 +189,12 @@ private theorem evalBinOp_comm
         (try subst_vars; try (simp at heval; subst heval)) <;>
         simp [lowerValue] at hlv <;> subst hlv <;>
         simp_all [lowerBinOp, MoltTIR.evalBinOp]; done)
+    -- floordiv conditional: heval is ⟨guard, conditional_result⟩
+    | (obtain ⟨hcond, hrest⟩ := heval;
+       split at hrest <;>
+       (try subst_vars; simp [lowerValue] at hlv; subst_vars;
+        simp [lowerBinOp, MoltTIR.evalBinOp, hcond]; done) <;>
+       sorry)
     | sorry)
 
 private theorem evalUnaryOp_comm
