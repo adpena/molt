@@ -4,6 +4,7 @@
 //! internal function.  The http crate declares matching `extern "C"` imports
 //! and they are resolved at link time.
 
+use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_emit};
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
 use crate::*;
 
@@ -431,11 +432,24 @@ pub extern "C" fn __molt_http_has_capability(name_ptr: *const u8, name_len: usiz
         let name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
         };
-        if crate::has_capability(_py, name) {
-            1
-        } else {
-            0
+        let allowed = crate::has_capability(_py, name);
+        {
+            let decision = if allowed {
+                AuditDecision::Allowed
+            } else {
+                AuditDecision::Denied {
+                    reason: format!("missing {name} capability"),
+                }
+            };
+            audit_emit(AuditEvent::new(
+                "http.has_capability",
+                "http.has_capability",
+                AuditArgs::Custom(name.to_string()),
+                decision,
+                module_path!().to_string(),
+            ));
         }
+        if allowed { 1 } else { 0 }
     })
 }
 

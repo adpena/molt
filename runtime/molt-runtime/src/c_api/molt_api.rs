@@ -801,6 +801,8 @@ pub extern "C" fn molt_capi_method_dispatch(
                     } else {
                         args_tuple_bits
                     };
+                    // SAFETY: `fn_ptr` is a C-API METH_VARARGS callback registered via the
+                    // extension module. The method flags guarantee a (self, args) -> obj signature.
                     let func: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fn_ptr);
                     func(callback_self_bits, callback_args_bits)
                 }
@@ -815,6 +817,8 @@ pub extern "C" fn molt_capi_method_dispatch(
                     } else {
                         args_tuple_bits
                     };
+                    // SAFETY: `fn_ptr` is a C-API METH_VARARGS|METH_KEYWORDS callback. The method
+                    // flags guarantee a (self, args, kwargs) -> obj signature. UB if fn_ptr is invalid.
                     let func: extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr);
                     func(callback_self_bits, callback_args_bits, kwargs_for_callback)
                 }
@@ -834,6 +838,8 @@ pub extern "C" fn molt_capi_method_dispatch(
                             "C-API noargs method expects no positional arguments",
                         );
                     }
+                    // SAFETY: `fn_ptr` is a C-API METH_NOARGS callback. The method flags guarantee
+                    // a (self, null) -> obj signature. Arg count validated above. UB if fn_ptr is invalid.
                     let func: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fn_ptr);
                     func(callback_self_bits, 0)
                 }
@@ -858,6 +864,8 @@ pub extern "C" fn molt_capi_method_dispatch(
                     } else {
                         args_vec[0]
                     };
+                    // SAFETY: `fn_ptr` is a C-API METH_O callback. The method flags guarantee
+                    // a (self, arg) -> obj signature. Arg count validated above. UB if fn_ptr is invalid.
                     let func: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fn_ptr);
                     func(callback_self_bits, arg0_bits)
                 }
