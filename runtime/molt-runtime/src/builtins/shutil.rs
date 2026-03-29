@@ -33,6 +33,28 @@ fn shutil_err(_py: &PyToken<'_>, err: std::io::Error, ctx: &str) -> u64 {
 }
 
 #[inline]
+/// Try to extract a path string from NaN-boxed bits for audit enrichment.
+/// Cheap and infallible — returns `AuditArgs::None` if bits don't decode.
+fn audit_path_arg(bits: u64) -> AuditArgs {
+    match string_obj_to_owned(obj_from_bits(bits)) {
+        Some(s) => AuditArgs::Path(s),
+        None => AuditArgs::None,
+    }
+}
+
+/// Build a `Custom` audit arg recording both src and dst paths when available.
+fn audit_src_dst_arg(src_bits: u64, dst_bits: u64) -> AuditArgs {
+    match (
+        string_obj_to_owned(obj_from_bits(src_bits)),
+        string_obj_to_owned(obj_from_bits(dst_bits)),
+    ) {
+        (Some(src), Some(dst)) => AuditArgs::Custom(format!("{src} -> {dst}")),
+        (Some(src), None) => AuditArgs::Path(src),
+        (None, Some(dst)) => AuditArgs::Path(dst),
+        (None, None) => AuditArgs::None,
+    }
+}
+
 fn require_path_local(_py: &PyToken<'_>, bits: u64, _label: &str) -> Result<PathBuf, u64> {
     match path_from_bits(_py, bits) {
         Ok(p) => Ok(p),
@@ -137,9 +159,10 @@ fn rmtree_recursive(path: &Path) -> std::io::Result<()> {
 pub extern "C" fn molt_shutil_copy(src_bits: u64, dst_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed_r = has_capability(_py, "fs.read");
-        audit_capability_decision("shutil.copy", "fs.read", AuditArgs::None, allowed_r);
+        let audit_args = audit_src_dst_arg(src_bits, dst_bits);
+        audit_capability_decision("shutil.copy", "fs.read", audit_args.clone(), allowed_r);
         let allowed_w = has_capability(_py, "fs.write");
-        audit_capability_decision("shutil.copy", "fs.write", AuditArgs::None, allowed_w);
+        audit_capability_decision("shutil.copy", "fs.write", audit_args, allowed_w);
         if !allowed_r || !allowed_w {
             return raise_exception::<_>(
                 _py,
@@ -178,9 +201,10 @@ pub extern "C" fn molt_shutil_copy(src_bits: u64, dst_bits: u64) -> u64 {
 pub extern "C" fn molt_shutil_copy2(src_bits: u64, dst_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed_r = has_capability(_py, "fs.read");
-        audit_capability_decision("shutil.copy2", "fs.read", AuditArgs::None, allowed_r);
+        let audit_args = audit_src_dst_arg(src_bits, dst_bits);
+        audit_capability_decision("shutil.copy2", "fs.read", audit_args.clone(), allowed_r);
         let allowed_w = has_capability(_py, "fs.write");
-        audit_capability_decision("shutil.copy2", "fs.write", AuditArgs::None, allowed_w);
+        audit_capability_decision("shutil.copy2", "fs.write", audit_args, allowed_w);
         if !allowed_r || !allowed_w {
             return raise_exception::<_>(
                 _py,
@@ -218,9 +242,10 @@ pub extern "C" fn molt_shutil_copytree(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed_r = has_capability(_py, "fs.read");
-        audit_capability_decision("shutil.copytree", "fs.read", AuditArgs::None, allowed_r);
+        let audit_args = audit_src_dst_arg(src_bits, dst_bits);
+        audit_capability_decision("shutil.copytree", "fs.read", audit_args.clone(), allowed_r);
         let allowed_w = has_capability(_py, "fs.write");
-        audit_capability_decision("shutil.copytree", "fs.write", AuditArgs::None, allowed_w);
+        audit_capability_decision("shutil.copytree", "fs.write", audit_args, allowed_w);
         if !allowed_r || !allowed_w {
             return raise_exception::<_>(
                 _py,
@@ -249,7 +274,7 @@ pub extern "C" fn molt_shutil_copytree(
 pub extern "C" fn molt_shutil_rmtree(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.write");
-        audit_capability_decision("shutil.rmtree", "fs.write", AuditArgs::None, allowed);
+        audit_capability_decision("shutil.rmtree", "fs.write", audit_path_arg(path_bits), allowed);
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }
@@ -270,9 +295,10 @@ pub extern "C" fn molt_shutil_rmtree(path_bits: u64) -> u64 {
 pub extern "C" fn molt_shutil_move(src_bits: u64, dst_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed_r = has_capability(_py, "fs.read");
-        audit_capability_decision("shutil.move", "fs.read", AuditArgs::None, allowed_r);
+        let audit_args = audit_src_dst_arg(src_bits, dst_bits);
+        audit_capability_decision("shutil.move", "fs.read", audit_args.clone(), allowed_r);
         let allowed_w = has_capability(_py, "fs.write");
-        audit_capability_decision("shutil.move", "fs.write", AuditArgs::None, allowed_w);
+        audit_capability_decision("shutil.move", "fs.write", audit_args, allowed_w);
         if !allowed_r || !allowed_w {
             return raise_exception::<_>(
                 _py,
@@ -325,7 +351,7 @@ pub extern "C" fn molt_shutil_move(src_bits: u64, dst_bits: u64) -> u64 {
 pub extern "C" fn molt_shutil_disk_usage(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("shutil.disk_usage", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision("shutil.disk_usage", "fs.read", audit_path_arg(path_bits), allowed);
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -562,12 +588,13 @@ pub extern "C" fn molt_shutil_make_archive(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed_r = has_capability(_py, "fs.read");
-        audit_capability_decision("shutil.make_archive", "fs.read", AuditArgs::None, allowed_r);
+        let audit_args = audit_path_arg(base_name_bits);
+        audit_capability_decision("shutil.make_archive", "fs.read", audit_args.clone(), allowed_r);
         let allowed_w = has_capability(_py, "fs.write");
         audit_capability_decision(
             "shutil.make_archive",
             "fs.write",
-            AuditArgs::None,
+            audit_args,
             allowed_w,
         );
         if !allowed_r || !allowed_w {
@@ -635,7 +662,7 @@ pub extern "C" fn molt_shutil_make_archive(
                 audit_capability_decision(
                     "shutil.make_archive",
                     "process",
-                    AuditArgs::None,
+                    AuditArgs::Path(archive_path.clone()),
                     allowed,
                 );
                 if !allowed {
@@ -720,17 +747,18 @@ pub extern "C" fn molt_shutil_make_archive(
 pub extern "C" fn molt_shutil_unpack_archive(filename_bits: u64, extract_dir_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed_r = has_capability(_py, "fs.read");
+        let audit_args = audit_path_arg(filename_bits);
         audit_capability_decision(
             "shutil.unpack_archive",
             "fs.read",
-            AuditArgs::None,
+            audit_args.clone(),
             allowed_r,
         );
         let allowed_w = has_capability(_py, "fs.write");
         audit_capability_decision(
             "shutil.unpack_archive",
             "fs.write",
-            AuditArgs::None,
+            audit_args,
             allowed_w,
         );
         if !allowed_r || !allowed_w {
@@ -772,7 +800,7 @@ pub extern "C" fn molt_shutil_unpack_archive(filename_bits: u64, extract_dir_bit
         {
             // tar requires spawning a subprocess — gate on "process" capability.
             let allowed = has_capability(_py, "process");
-            audit_capability_decision("shutil.unpack_archive", "process", AuditArgs::None, allowed);
+            audit_capability_decision("shutil.unpack_archive", "process", AuditArgs::Path(filename.to_string_lossy().into_owned()), allowed);
             if !allowed {
                 return raise_exception::<u64>(
                     _py,
@@ -838,7 +866,7 @@ pub extern "C" fn molt_shutil_unpack_archive(_filename_bits: u64, _extract_dir_b
 pub extern "C" fn molt_shutil_chown(path_bits: u64, user_bits: u64, group_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.write");
-        audit_capability_decision("shutil.chown", "fs.write", AuditArgs::None, allowed);
+        audit_capability_decision("shutil.chown", "fs.write", audit_path_arg(path_bits), allowed);
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }

@@ -3187,6 +3187,7 @@ def _prepare_build_config(
     runtime_feedback: str | None,
     capabilities: CapabilityInput | None,
     capability_manifest: str | None = None,
+    require_signed_manifest: bool = False,
 ) -> tuple[_PreparedBuildConfig | None, dict[str, Any] | None]:
     pgo_profile_summary: PgoProfileSummary | None = None
     pgo_profile_path: Path | None = None
@@ -3308,7 +3309,7 @@ def _prepare_build_config(
     if capability_manifest is not None:
         from molt.capability_manifest import load_manifest
         try:
-            manifest = load_manifest(capability_manifest)
+            manifest = load_manifest(capability_manifest, require_signed=require_signed_manifest)
             manifest_env_vars = manifest.to_env_vars()
             # Merge manifest capabilities with --capabilities flag
             if capabilities_list is None:
@@ -3519,6 +3520,7 @@ def _prepare_build_inputs(
     runtime_feedback: str | None,
     capabilities: CapabilityInput | None,
     capability_manifest: str | None = None,
+    require_signed_manifest: bool = False,
     respect_pythonpath: bool = False,
     lib_paths: list[str] | None = None,
 ) -> tuple[
@@ -3563,6 +3565,7 @@ def _prepare_build_inputs(
         runtime_feedback=runtime_feedback,
         capabilities=capabilities,
         capability_manifest=capability_manifest,
+        require_signed_manifest=require_signed_manifest,
     )
     if prepared_build_config_error is not None:
         return None, prepared_build_config_error
@@ -21677,6 +21680,7 @@ def build(
     lib_paths: list[str] | None = None,
     split_runtime: bool = False,
     capability_manifest: str | None = None,
+    require_signed_manifest: bool = False,
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
@@ -21717,6 +21721,7 @@ def build(
         runtime_feedback=runtime_feedback,
         capabilities=capabilities,
         capability_manifest=capability_manifest,
+        require_signed_manifest=require_signed_manifest,
         respect_pythonpath=respect_pythonpath,
         lib_paths=lib_paths or [],
     )
@@ -21793,6 +21798,7 @@ def _run_script_cross(
     trusted: bool = False,
     capabilities: CapabilityInput | None = None,
     capability_manifest: str | None = None,
+    require_signed_manifest: bool = False,
     build_args: list[str] | None = None,
     build_profile: BuildProfile | None = None,
 ) -> int:
@@ -21844,7 +21850,7 @@ def _run_script_cross(
     if capability_manifest is not None:
         from molt.capability_manifest import load_manifest
         try:
-            manifest_obj = load_manifest(capability_manifest)
+            manifest_obj = load_manifest(capability_manifest, require_signed=require_signed_manifest)
             env.update(manifest_obj.to_env_vars())
         except Exception as e:
             return _fail(
@@ -22125,6 +22131,7 @@ def run_script(
     trusted: bool = False,
     capabilities: CapabilityInput | None = None,
     capability_manifest: str | None = None,
+    require_signed_manifest: bool = False,
     build_args: list[str] | None = None,
     build_profile: BuildProfile | None = None,
 ) -> int:
@@ -22176,7 +22183,7 @@ def run_script(
     if capability_manifest is not None:
         from molt.capability_manifest import load_manifest
         try:
-            manifest_obj = load_manifest(capability_manifest)
+            manifest_obj = load_manifest(capability_manifest, require_signed=require_signed_manifest)
             env.update(manifest_obj.to_env_vars())
         except Exception as e:
             return _fail(
@@ -27077,6 +27084,12 @@ def main() -> int:
         help="Path to a capability manifest file (toml/json/yaml) for build-time configuration.",
     )
     build_parser.add_argument(
+        "--require-signed-manifest",
+        action="store_true",
+        default=False,
+        help="Reject unsigned capability manifests. Requires --capability-manifest.",
+    )
+    build_parser.add_argument(
         "--diagnostics",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -27349,6 +27362,12 @@ def main() -> int:
     run_parser.add_argument(
         "--capability-manifest",
         help="Path to a capability manifest file (toml/json/yaml) for runtime configuration.",
+    )
+    run_parser.add_argument(
+        "--require-signed-manifest",
+        action="store_true",
+        default=False,
+        help="Reject unsigned capability manifests. Requires --capability-manifest.",
     )
     run_parser.add_argument(
         "--trusted",
@@ -28436,6 +28455,7 @@ def main() -> int:
             lib_paths=lib_paths or None,
             split_runtime=getattr(args, "split_runtime", False),
             capability_manifest=getattr(args, "capability_manifest", None),
+            require_signed_manifest=getattr(args, "require_signed_manifest", False),
         )
     if args.command == "extension":
         if args.extension_command == "build":
@@ -28579,6 +28599,7 @@ def main() -> int:
                 trusted,
                 capabilities,
                 getattr(args, "capability_manifest", None),
+                getattr(args, "require_signed_manifest", False),
                 build_args,
                 cast(BuildProfile | None, run_profile),
             )
@@ -28592,6 +28613,7 @@ def main() -> int:
             trusted,
             capabilities,
             getattr(args, "capability_manifest", None),
+            getattr(args, "require_signed_manifest", False),
             build_args,
             cast(BuildProfile | None, run_profile),
         )
