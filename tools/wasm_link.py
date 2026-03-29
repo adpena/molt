@@ -47,10 +47,11 @@ CALL_INDIRECT_MANGLED_RE = re.compile(r"molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA
 #
 #   python3 -c "import hashlib, sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" molt_runtime.wasm
 #
-# Leave the dict empty during development — the linker will emit a warning for
-# files not listed here rather than rejecting them outright.
+# Pin SHA-256 hashes of known-good runtime binaries.  The linker will reject
+# any runtime whose hash does not match.  Update this dict when cutting a
+# release or after rebuilding the runtime (run: shasum -a 256 molt_runtime.wasm).
 RUNTIME_EXPECTED_HASHES: dict[str, str] = {
-    # "molt_runtime.wasm": "<sha256-hex-digest>",
+    "molt_runtime.wasm": "7b4934916082053de410200114efbcc3e19c6d7d04c76dc8c6aeb200f1e25353",
 }
 _OUTPUT_RUNTIME_EXPORT_ALIASES = (
     "molt_isolate_bootstrap",
