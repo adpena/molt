@@ -153,7 +153,7 @@ theorem sccp_preserves_total (f : Func) (ht : InstrTotal f) :
     blocks_map_some_rev' f (fun b => (sccpBlock AbsEnv.top b).2) lbl blk' hblk'
   have h_orig := ht lbl blk ρ hblk
   simp only [sccpBlock]
-  rw [sccpInstrs_correct AbsEnv.top ρ blk.instrs (absEnvTop_sound ρ)]
+  rw [sccpInstrs_correct AbsEnv.top ρ blk.instrs (absEnvTop_strongSound ρ)]
   exact h_orig
 
 /-- CSE preserves InstrTotal. cseInstrs_correct (under the SSA axiom) gives

@@ -45,7 +45,7 @@ namespace MoltTIR.Meta
 
   | # | File                 | Theorem / location                  | Difficulty | Deps                                    | Priority | Status     |
   |---|----------------------|--------------------------------------|------------|-----------------------------------------|----------|------------|
-  | 1 | SCCPCorrect.lean     | absEvalExpr_sound (var case)         | Medium     | Definedness assumption for AbsEnv       | P1       | Has strong-sound alternative |
+  | 1 | SCCPCorrect.lean     | absEvalExpr_sound (var case)         | Medium     | Definedness assumption for AbsEnv       | P1       | CLOSED (AbsEnvStrongSound) |
   | 2 | SCCPMultiCorrect     | (deferred — documented note)         | Hard       | Multi-block fixpoint convergence        | P2       | Deferred   |
 
   ### SSA/
