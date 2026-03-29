@@ -138,7 +138,10 @@ theorem dce_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
     | some .none => rfl
     | none => rfl
   | yield _ _ _ => rfl
-  | switch _ _ _ => sorry  -- switch evalTerminator congruence
+  | switch s cs d =>
+    exact evalTerminator_switch_congr f (dceFunc f) ρ s cs d
+      (fun lbl h => dceFunc_blocks_none f lbl h)
+      (fun lbl blk h => ⟨_, dceFunc_blocks_some f lbl blk h, dceBlock_params blk⟩)
   | unreachable => rfl
 
 private theorem dce_instrs_agreeOn_precond_dead (instrs : List Instr) (term : Terminator) :
@@ -392,7 +395,10 @@ theorem sccp_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
     | some .none => rfl
     | none => rfl
   | yield _ _ _ => rfl
-  | switch _ _ _ => sorry  -- switch evalTerminator congruence
+  | switch s cs d =>
+    exact evalTerminator_switch_congr f (sccpFunc f) ρ s cs d
+      (fun lbl h => sccpFunc_blocks_none' f lbl h)
+      (fun lbl blk h => ⟨_, sccpFunc_blocks_some' f lbl blk h, sccpBlock_params AbsEnv.top blk⟩)
   | unreachable => rfl
 
 theorem sccpFunc_correct (f : Func) (fuel : Nat) (ρ : Env) (lbl : Label) :
@@ -661,7 +667,7 @@ private theorem cse_evalTerminator (f : Func) (ρ : Env) (avail : AvailMap) (t :
   | yield val resume resumeArgs =>
     -- Both sides evaluate to none (generators not modeled)
     rfl
-  | switch _ _ _ => sorry  -- switch evalTerminator congruence
+  | switch _ _ _ => sorry  -- CSE: cseTerminator transforms scrutinee, needs cseExpr_correct
   | unreachable => rfl
 
 /-- CSE preserves function execution semantics under SSA.
@@ -831,7 +837,10 @@ private theorem guardHoist_evalTerminator (f : Func) (ρ : Env) (t : Terminator)
     | some .none => rfl
     | none => rfl
   | yield _ _ _ => rfl
-  | switch _ _ _ => sorry  -- switch evalTerminator congruence
+  | switch s cs d =>
+    exact evalTerminator_switch_congr f (guardHoistFunc f) ρ s cs d
+      (fun lbl h => guardHoistFunc_blocks_none f lbl h)
+      (fun lbl blk h => ⟨_, guardHoistFunc_blocks_some f lbl blk h, guardHoistBlock_params_preserved blk⟩)
   | unreachable => rfl
 
 -- ── 5d: Guard hoisting preserves instruction list totality ─────────
