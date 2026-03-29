@@ -1703,9 +1703,17 @@ mod tests {
         assert_eq!(stub.name, "user_large");
         assert!(!chunks.is_empty());
         assert!(
+            stub.ops.iter().all(|op| op.args.as_ref() == Some(&vec!["p0".to_string()])),
+            "split stub must forward original params into each chunk call"
+        );
+        assert!(
             chunks
                 .iter()
                 .all(|chunk| chunk.name.starts_with("__molt_chunk_user_large_"))
+        );
+        assert!(
+            chunks.iter().all(|chunk| chunk.params == vec!["p0".to_string()]),
+            "split chunks must preserve original params"
         );
     }
 }
@@ -2441,9 +2449,9 @@ pub fn split_large_function(
         let chunk_name = format!("__molt_chunk_{sanitized_name}_{i}");
         chunks.push(FunctionIR {
             name: chunk_name,
-            params: Vec::new(),
+            params: func.params.clone(),
             ops: chunk_ops,
-            param_types: None,
+            param_types: func.param_types.clone(),
         });
     }
 
@@ -2455,7 +2463,7 @@ pub fn split_large_function(
         stub_ops.push(OpIR {
             kind: "call_internal".to_string(),
             s_value: Some(chunk.name.clone()),
-            args: Some(Vec::new()),
+            args: Some(func.params.clone()),
             out: Some("none".to_string()),
             ..OpIR::default()
         });

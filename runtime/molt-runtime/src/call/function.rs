@@ -98,7 +98,12 @@ unsafe fn maybe_call_function_obj_trampoline(
         }
     }
     #[cfg(target_arch = "wasm32")]
-    let _ = (_py, func_bits, func_ptr, args);
+    unsafe {
+        let tramp_ptr = function_trampoline_ptr(func_ptr);
+        if tramp_ptr != 0 && !is_reserved_wasm_runtime_callable(function_fn_ptr(func_ptr)) {
+            return Some(call_function_obj_trampoline(_py, func_bits, args));
+        }
+    }
     None
 }
 
@@ -125,6 +130,24 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = function_trampoline_ptr(func_ptr);
+        #[cfg(target_arch = "wasm32")]
+        if matches!(
+            std::env::var("MOLT_TRACE_CALL_FUNCTION_OBJ1")
+                .ok()
+                .as_deref(),
+            Some("1")
+        ) {
+            let name_bits = function_name_bits(_py, func_ptr);
+            let name = if name_bits != 0 {
+                string_obj_to_owned(obj_from_bits(name_bits))
+                    .unwrap_or_else(|| "<unnamed>".to_string())
+            } else {
+                "<unnamed>".to_string()
+            };
+            eprintln!(
+                "[molt call_function_obj1] name={name} fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} closure_bits={closure_bits} arity={arity}"
+            );
+        }
         let code_bits = ensure_function_code_bits(_py, func_ptr);
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
