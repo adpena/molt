@@ -18,13 +18,19 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Re-use the expectation parser from the CPython runner.
-from run_monty_conformance import parse_expectation
+# Ensure the harness directory is on sys.path so the import works
+# regardless of the caller's working directory.
+_HARNESS_DIR = Path(__file__).resolve().parent
+if str(_HARNESS_DIR) not in sys.path:
+    sys.path.insert(0, str(_HARNESS_DIR))
 
-CORPUS_DIR = Path(__file__).resolve().parent / "corpus" / "monty_compat"
+from run_monty_conformance import parse_expectation  # noqa: E402
 
-COMPILE_TIMEOUT = 30  # seconds per file
-RUN_TIMEOUT = 5       # seconds per binary
+CORPUS_DIR = _HARNESS_DIR / "corpus" / "monty_compat"
+
+COMPILE_TIMEOUT = 30   # seconds per file (after warmup)
+WARMUP_TIMEOUT = 300   # seconds for the very first build (may trigger Rust recompile)
+RUN_TIMEOUT = 5        # seconds per binary
 
 
 # ---------------------------------------------------------------------------
@@ -49,33 +55,69 @@ class Stats:
 
 def find_molt() -> str | None:
     """Return the path to the molt CLI, or None."""
-    # Explicit env override
     if os.environ.get("MOLT_BIN"):
         return os.environ["MOLT_BIN"]
-    # Common locations
     for candidate in ("molt", "/opt/homebrew/bin/molt", "/usr/local/bin/molt"):
-        if shutil.which(candidate):
-            return shutil.which(candidate)
+        found = shutil.which(candidate)
+        if found:
+            return found
     return None
 
 
-def preflight(molt: str, corpus: Path, n: int = 5) -> bool:
-    """Compile a handful of trivial files to verify Molt works."""
-    candidates = sorted(corpus.glob("*.py"))[:n]
+def _pick_preflight_files(corpus: Path, n: int = 5) -> list[Path]:
+    """Choose files with 'success' expectations for the preflight check.
+
+    We specifically avoid files that are *expected* to fail at compile
+    time (e.g. args__* which test CPython error paths), because Molt
+    legitimately rejects those at compile time.
+    """
+    success_files: list[Path] = []
+    for f in sorted(corpus.glob("*.py")):
+        kind, _ = parse_expectation(f)
+        if kind in ("success", "refcount"):
+            success_files.append(f)
+            if len(success_files) >= n:
+                break
+    return success_files
+
+
+def preflight(molt: str, corpus: Path, tmpdir: Path) -> bool:
+    """Compile a handful of trivial files to verify Molt works.
+
+    The very first compilation may trigger a full Rust recompile of the
+    runtime library, so we use a generous timeout for the warmup build.
+    """
+    candidates = _pick_preflight_files(corpus)
     if not candidates:
-        print("ERROR: no test files found for preflight", file=sys.stderr)
+        print("ERROR: no success-expectation files found for preflight",
+              file=sys.stderr)
         return False
+
     ok = 0
-    for f in candidates:
+    for i, f in enumerate(candidates):
+        timeout = WARMUP_TIMEOUT if i == 0 else COMPILE_TIMEOUT
+        out = tmpdir / f"preflight_{f.stem}"
         try:
+            t0 = time.monotonic()
             r = subprocess.run(
-                [molt, "build", str(f), "--output", os.devnull],
-                capture_output=True, text=True, timeout=COMPILE_TIMEOUT,
+                [molt, "build", str(f), "--output", str(out)],
+                capture_output=True, text=True, timeout=timeout,
             )
-            if r.returncode == 0:
+            elapsed = time.monotonic() - t0
+            if r.returncode == 0 and out.exists():
                 ok += 1
+                print(f"  preflight [{i+1}/{len(candidates)}] "
+                      f"{f.name}: OK ({elapsed:.1f}s)")
+            else:
+                detail = (r.stderr or r.stdout or "").strip()[-200:]
+                print(f"  preflight [{i+1}/{len(candidates)}] "
+                      f"{f.name}: FAIL ({elapsed:.1f}s) {detail}")
         except subprocess.TimeoutExpired:
-            pass
+            print(f"  preflight [{i+1}/{len(candidates)}] "
+                  f"{f.name}: TIMEOUT ({timeout}s)")
+        finally:
+            out.unlink(missing_ok=True)
+
     print(f"Preflight: {ok}/{len(candidates)} compiled successfully")
     return ok > 0
 
@@ -154,7 +196,8 @@ def main() -> int:
 
     molt = find_molt()
     if molt is None:
-        print("ERROR: molt CLI not found. Install Molt or set MOLT_BIN.", file=sys.stderr)
+        print("ERROR: molt CLI not found. Install Molt or set MOLT_BIN.",
+              file=sys.stderr)
         return 1
     print(f"Using Molt at: {molt}")
 
@@ -175,17 +218,20 @@ def main() -> int:
 
     print(f"Selected {len(test_files)} test files\n")
 
-    # Preflight
-    if not preflight(molt, CORPUS_DIR):
-        print("ERROR: preflight failed -- Molt cannot compile any files.", file=sys.stderr)
-        return 1
-    print()
-
-    stats = Stats()
-    t0 = time.monotonic()
-
     with tempfile.TemporaryDirectory(prefix="molt_conform_") as tmpdir:
         tmp = Path(tmpdir)
+
+        # Preflight -- also warms up the runtime build cache
+        print("Running preflight (first build may take minutes if runtime "
+              "needs recompilation)...")
+        if not preflight(molt, CORPUS_DIR, tmp):
+            print("ERROR: preflight failed -- Molt cannot compile any files.",
+                  file=sys.stderr)
+            return 1
+        print()
+
+        stats = Stats()
+        t0 = time.monotonic()
 
         for i, filepath in enumerate(test_files, 1):
             kind, _ = parse_expectation(filepath)
@@ -234,7 +280,7 @@ def main() -> int:
                     if args.verbose:
                         print(f"  [{i:3d}] FAIL   {filepath.name}: {detail}")
 
-            # Clean up binary between runs
+            # Clean up binary between runs to save disk space
             binary.unlink(missing_ok=True)
 
     elapsed = time.monotonic() - t0
@@ -250,7 +296,8 @@ def main() -> int:
     print(f"  Timeout:       {stats.timeout:4d}")
     print(f"  Skipped:       {stats.skipped:4d}")
     if total_run > 0:
-        print(f"  Pass rate:     {pct:.0f}% ({stats.passed}/{total_run} of those that compiled & ran)")
+        print(f"  Pass rate:     {pct:.0f}% "
+              f"({stats.passed}/{total_run} of those that compiled & ran)")
 
     if stats.failures:
         print(f"\nFailed ({len(stats.failures)}):")
