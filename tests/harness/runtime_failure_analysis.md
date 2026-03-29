@@ -168,3 +168,22 @@ pass 10+ additional tests.
 Need to dump the IR to verify that `module_get_attr` post-loop reads
 the correct variable, and that `module_set_attr` inside the loop writes
 to the correct attribute name on the correct module object.
+
+## TIR Pass Interaction Bug: Comprehensions Return Empty
+
+### Symptom
+```python
+[x * 2 for x in range(5)]  → []  (should be [0, 2, 4, 6, 8])
+{x for x in [1, 2, 3]}     → set()  (should be {1, 2, 3})
+```
+
+Same bug as the `while False` corruption — with MOLT_TIR_OPT=0 it works.
+Skipping any single pass also works. Same pass-interaction root cause.
+
+This is the HIGHEST IMPACT bug — it blocks ALL comprehension, set/frozenset
+construction from iterables, and likely dict comprehension too.
+
+### Impact
+Directly blocks: comprehension__all.py, frozenset__ops.py, dict__ops.py,
+and any test using list/set/dict comprehension or frozenset(iterable).
+Estimated 15-20 conformance tests would pass if fixed.

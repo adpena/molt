@@ -88,6 +88,31 @@ theorem constFold_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
   | switch scrutinee cases default_ =>
     simp only [constFoldTerminator, evalTerminator]
     rw [constFoldExpr_correct ρ scrutinee]
+    match evalExpr ρ scrutinee with
+    | some (.int n) =>
+      simp only []
+      match (cases.find? (fun p => p.1 == n)) with
+      | some (_, lbl) =>
+        match hblk : f.blocks lbl with
+        | none =>
+          have := constFoldFunc_blocks_none f lbl hblk
+          simp_all [this]
+        | some blk =>
+          have := constFoldFunc_blocks_some f lbl blk hblk
+          simp_all [this, constFoldBlock_params]
+      | none =>
+        match hblk : f.blocks default_ with
+        | none =>
+          have := constFoldFunc_blocks_none f default_ hblk
+          simp_all [this]
+        | some blk =>
+          have := constFoldFunc_blocks_some f default_ blk hblk
+          simp_all [this, constFoldBlock_params]
+    | some (.bool _) => rfl
+    | some (.float _) => rfl
+    | some (.str _) => rfl
+    | some .none => rfl
+    | none => rfl
   | unreachable =>
     -- Both sides evaluate to none
     rfl
