@@ -88,11 +88,11 @@ theorem constFold_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
   | switch scrutinee cases default_ =>
     simp only [constFoldTerminator, evalTerminator]
     rw [constFoldExpr_correct ρ scrutinee]
-    -- After rewrite, both sides match on evalExpr ρ scrutinee.
-    -- For non-int cases, both return none = none (rfl).
-    -- For int n, both compute the same target label (cases/default unchanged),
-    -- then look up blocks. constFoldFunc preserves block lookups.
-    sorry
+    match evalExpr ρ scrutinee with
+    | some (.int n) =>
+      dsimp only []
+      sorry -- block lookup congruence through let binding
+    | some (.bool _) | some (.float _) | some (.str _) | some .none | none => rfl
   | unreachable =>
     -- Both sides evaluate to none
     rfl
