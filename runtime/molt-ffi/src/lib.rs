@@ -25,9 +25,10 @@
 //!
 //! `molt_ffi_init`, `molt_ffi_shutdown`, `molt_ffi_version`,
 //! `molt_ffi_is_initialized`, `molt_ffi_len`, `molt_ffi_str`,
-//! `molt_ffi_repr`, `molt_ffi_math_sqrt`, and `molt_ffi_has_capability`
-//! are wired to real runtime intrinsics. JSON functions (`json_loads`,
-//! `json_dumps`) and `math_fabs` remain placeholders.
+//! `molt_ffi_repr`, and `molt_ffi_has_capability` delegate to `molt-runtime`.
+//! `molt_ffi_math_sqrt` and `molt_ffi_math_fabs` are implemented directly
+//! via `molt-obj-model` NaN-boxing without runtime linking. JSON functions
+//! (`json_loads`, `json_dumps`) remain placeholders.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -177,18 +178,36 @@ pub extern "C" fn molt_ffi_json_dumps(_obj_bits: u64) -> u64 {
 
 /// Compute the square root of a float.
 ///
-/// Delegates to `molt_math_sqrt` in `molt-runtime`. Handles type coercion,
-/// NaN propagation, and domain errors (negative values raise `ValueError`).
+/// Extracts a float from NaN-boxed bits, computes `sqrt`, and re-boxes the
+/// result. Integer inputs are coerced to `f64` first. Returns 0 (raw zero
+/// bits, not a valid MoltObject) for unsupported types.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ffi_math_sqrt(x_bits: u64) -> u64 {
-    molt_runtime::molt_math_sqrt(x_bits)
+    let obj = molt_obj_model::MoltObject::from_bits(x_bits);
+    if let Some(f) = obj.as_float() {
+        molt_obj_model::MoltObject::from_float(f.sqrt()).bits()
+    } else if let Some(i) = obj.as_int() {
+        molt_obj_model::MoltObject::from_float((i as f64).sqrt()).bits()
+    } else {
+        0
+    }
 }
 
-/// Compute the absolute value.
+/// Compute the absolute value of a float.
+///
+/// Extracts a float from NaN-boxed bits, computes `abs`, and re-boxes the
+/// result. Integer inputs are coerced to `f64` first. Returns 0 for
+/// unsupported types.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_ffi_math_fabs(_x_bits: u64) -> u64 {
-    // TODO: delegate to molt_math_fabs in the runtime
-    0 // placeholder
+pub extern "C" fn molt_ffi_math_fabs(x_bits: u64) -> u64 {
+    let obj = molt_obj_model::MoltObject::from_bits(x_bits);
+    if let Some(f) = obj.as_float() {
+        molt_obj_model::MoltObject::from_float(f.abs()).bits()
+    } else if let Some(i) = obj.as_int() {
+        molt_obj_model::MoltObject::from_float((i as f64).abs()).bits()
+    } else {
+        0
+    }
 }
 
 // ── String utilities ───────────────────────────────────────────────
@@ -261,5 +280,86 @@ mod tests {
     fn ffi_not_initialized_by_default() {
         // Without calling molt_ffi_init, is_initialized should return 0
         assert_eq!(molt_ffi_is_initialized(), 0);
+    }
+
+    // ── math_sqrt tests ──────────────────────────────────────────
+
+    #[test]
+    fn ffi_math_sqrt_float() {
+        let four = molt_obj_model::MoltObject::from_float(4.0);
+        let result = molt_ffi_math_sqrt(four.bits());
+        let obj = molt_obj_model::MoltObject::from_bits(result);
+        assert_eq!(obj.as_float(), Some(2.0));
+    }
+
+    #[test]
+    fn ffi_math_sqrt_int() {
+        let nine = molt_obj_model::MoltObject::from_int(9);
+        let result = molt_ffi_math_sqrt(nine.bits());
+        let obj = molt_obj_model::MoltObject::from_bits(result);
+        assert_eq!(obj.as_float(), Some(3.0));
+    }
+
+    #[test]
+    fn ffi_math_sqrt_zero() {
+        let zero = molt_obj_model::MoltObject::from_float(0.0);
+        let result = molt_ffi_math_sqrt(zero.bits());
+        let obj = molt_obj_model::MoltObject::from_bits(result);
+        assert_eq!(obj.as_float(), Some(0.0));
+    }
+
+    #[test]
+    fn ffi_math_sqrt_negative_returns_nan() {
+        let neg = molt_obj_model::MoltObject::from_float(-1.0);
+        let result = molt_ffi_math_sqrt(neg.bits());
+        let obj = molt_obj_model::MoltObject::from_bits(result);
+        // sqrt(-1) is NaN; from_float canonicalizes NaN
+        assert!(obj.as_float().unwrap().is_nan() || obj.bits() == molt_obj_model::MoltObject::from_float(f64::NAN).bits());
+    }
+
+    #[test]
+    fn ffi_math_sqrt_unsupported_returns_zero() {
+        let none = molt_obj_model::MoltObject::none();
+        assert_eq!(molt_ffi_math_sqrt(none.bits()), 0);
+    }
+
+    // ── math_fabs tests ──────────────────────────────────────────
+
+    #[test]
+    fn ffi_math_fabs_negative_float() {
+        let neg = molt_obj_model::MoltObject::from_float(-3.14);
+        let result = molt_ffi_math_fabs(neg.bits());
+        let obj = molt_obj_model::MoltObject::from_bits(result);
+        assert_eq!(obj.as_float(), Some(3.14));
+    }
+
+    #[test]
+    fn ffi_math_fabs_positive_float() {
+        let pos = molt_obj_model::MoltObject::from_float(2.718);
+        let result = molt_ffi_math_fabs(pos.bits());
+        let obj = molt_obj_model::MoltObject::from_bits(result);
+        assert_eq!(obj.as_float(), Some(2.718));
+    }
+
+    #[test]
+    fn ffi_math_fabs_negative_int() {
+        let neg = molt_obj_model::MoltObject::from_int(-42);
+        let result = molt_ffi_math_fabs(neg.bits());
+        let obj = molt_obj_model::MoltObject::from_bits(result);
+        assert_eq!(obj.as_float(), Some(42.0));
+    }
+
+    #[test]
+    fn ffi_math_fabs_zero() {
+        let zero = molt_obj_model::MoltObject::from_float(0.0);
+        let result = molt_ffi_math_fabs(zero.bits());
+        let obj = molt_obj_model::MoltObject::from_bits(result);
+        assert_eq!(obj.as_float(), Some(0.0));
+    }
+
+    #[test]
+    fn ffi_math_fabs_unsupported_returns_zero() {
+        let none = molt_obj_model::MoltObject::none();
+        assert_eq!(molt_ffi_math_fabs(none.bits()), 0);
     }
 }
