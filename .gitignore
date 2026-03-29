@@ -82,3 +82,4 @@ type_facts.json
 *.profraw
 .claire/
 output_linked.cwasm
+tests/harness/corpus/molt_adapted/
