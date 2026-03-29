@@ -665,7 +665,17 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 return "<file_handle>".to_string();
             }
             if type_id == TYPE_ID_FUNCTION {
-                return "<function>".to_string();
+                // Match CPython: <function NAME at 0xADDR>
+                let name_bits = function_name_bits(_py, ptr);
+                let name = if name_bits != 0 {
+                    string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                if name.is_empty() {
+                    return format!("<function at 0x{:x}>", ptr as usize);
+                }
+                return format!("<function {} at 0x{:x}>", name, ptr as usize);
             }
             if type_id == TYPE_ID_CODE {
                 let name =
