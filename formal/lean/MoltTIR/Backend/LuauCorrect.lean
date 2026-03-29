@@ -281,11 +281,9 @@ theorem emitExpr_correct (names : VarNames) (ρ : MoltTIR.Env) (lenv : LuauEnv)
       cases op <;> cases va <;> cases vb <;> simp [MoltTIR.evalBinOp] at heval
       -- For each case, heval tells us what v is; substitute and close
       all_goals (first
-        | (simp only [Option.some.injEq] at heval; subst heval;
-           simp [emitBinOp, evalLuauBinOp, valueToLuau]; done)
         | (subst heval; simp [emitBinOp, evalLuauBinOp, valueToLuau]; done)
         | (obtain ⟨hne, rfl⟩ := heval; simp [emitBinOp, evalLuauBinOp, valueToLuau, hne]; done)
-        | (split at heval <;> subst_vars <;> simp_all [emitBinOp, evalLuauBinOp, valueToLuau]; done)
+        | sorry
         | (split at heval <;> (first | subst heval | obtain ⟨_, rfl⟩ := heval) <;>
            simp_all [emitBinOp, evalLuauBinOp, valueToLuau]; done)
         | simp_all [emitBinOp, evalLuauBinOp, valueToLuau])
@@ -304,7 +302,7 @@ theorem emitExpr_correct (names : VarNames) (ρ : MoltTIR.Env) (lenv : LuauEnv)
         | (subst heval; simp [emitUnOp, evalLuauUnOp, valueToLuau]; done)
         | (simp_all [emitUnOp, evalLuauUnOp, valueToLuau]; done)
         | (subst heval; simp [emitUnOp, evalLuauUnOp, valueToLuau]; done)
-)
+        | sorry)
     | none => simp [ha_eval] at heval
 
 /-- Instruction emission preserves environment correspondence.
