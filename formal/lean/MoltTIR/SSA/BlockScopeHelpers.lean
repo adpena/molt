@@ -6,9 +6,9 @@ import MoltTIR.WellFormed
 
 namespace MoltTIR
 
--- Lean 4.28 compatibility: List.enum was replaced by List.zipIdx with swapped tuple order.
+-- Lean 4.28 compatibility: List.zipIdx was replaced by List.zipIdx with swapped tuple order.
 -- We define a local enum for backward compatibility.
-private def List.enum' (l : List α) : List (Nat × α) :=
+private def List.zipIdx' {α : Type} (l : List α) : List (Nat × α) :=
   l.zipIdx.map fun (a, i) => (i, a)
 
 -- ══════════════════════════════════════════════════════════════════
@@ -64,6 +64,16 @@ theorem termVarsIn_var (scope : List Var) (t : Terminator)
         exact (exprVarsIn_iff scope e).mp (h.1.2 e he) v hve
     · obtain ⟨e, he, hve⟩ := List.mem_flatMap.mp hea
       exact (exprVarsIn_iff scope e).mp (h.2 e he) v hve
+  | yield val _ resumeArgs =>
+    simp only [termVars, termVarsIn, Bool.and_eq_true, List.all_eq_true] at h hv ⊢
+    rcases List.mem_append.mp hv with hval | hresume
+    · exact (exprVarsIn_iff scope val).mp h.1 v hval
+    · obtain ⟨e, he, hve⟩ := List.mem_flatMap.mp hresume
+      exact (exprVarsIn_iff scope e).mp (h.2 e he) v hve
+  | switch scrutinee _ _ =>
+    simp only [termVars, termVarsIn] at h hv
+    exact (exprVarsIn_iff scope scrutinee).mp h v hv
+  | unreachable => simp [termVars] at hv
 
 /-- Build termVarsIn from per-var evidence. -/
 theorem termVarsIn_of_forall (scope : List Var) (t : Terminator)
@@ -95,6 +105,18 @@ theorem termVarsIn_of_forall (scope : List Var) (t : Terminator)
 
 /-- blockWellFormed for a block that only changes the terminator.
     Instructions and params are identical, terminator vars are a subset. -/
+  | yield val _ resumeArgs =>
+    simp only [termVarsIn, Bool.and_eq_true, List.all_eq_true]
+    refine ⟨?_, ?_⟩
+    · exact (exprVarsIn_iff scope val).mpr fun v hv =>
+        h v (by simp only [termVars]; exact List.mem_append.mpr (Or.inl hv))
+    · intro e he; exact (exprVarsIn_iff scope e).mpr fun v hv =>
+        h v (by simp only [termVars]; exact List.mem_append.mpr (Or.inr (List.mem_flatMap.mpr ⟨e, he, hv⟩)))
+  | switch scrutinee _ _ =>
+    exact (exprVarsIn_iff scope scrutinee).mpr fun v hv =>
+      h v (by simp only [termVars]; exact hv)
+  | unreachable => simp [termVarsIn]
+
 theorem blockWellFormed_of_term_only (b : Block) (term' : Terminator)
     (hterm_sub : ∀ v ∈ termVars term', v ∈ termVars b.term)
     (hwf : blockWellFormed b = true) :
@@ -114,9 +136,9 @@ private theorem instrOk_of_map (params : List Var) (instrs : List Instr)
     (f : Instr → Instr)
     (hdst : ∀ i, (f i).dst = i.dst)
     (hrhs : ∀ i, ∀ v ∈ exprVars (f i).rhs, v ∈ exprVars i.rhs)
-    (h : instrs.enum.all (fun p =>
+    (h : instrs.zipIdx.all (fun p =>
       exprVarsIn (params ++ (instrs.take p.1).map Instr.dst) p.2.rhs) = true) :
-    (instrs.map f).enum.all (fun p =>
+    (instrs.map f).zipIdx.all (fun p =>
       exprVarsIn (params ++ ((instrs.map f).take p.1).map Instr.dst) p.2.rhs) = true := by
   -- The key: ((instrs.map f).take j).map dst = (instrs.take j).map dst
   -- And: for each (j, f instrs[j]) in enum of mapped list,
@@ -140,8 +162,8 @@ private theorem instrOk_of_map (params : List Var) (instrs : List Instr)
     congr 1; apply List.map_congr_left; intro a _; exact hdst a
   rw [hscope]
   -- Original instruction at idx passes the check
-  -- Need to construct membership in instrs.enum
-  have hmem_orig : (idx, instrs[idx]) ∈ instrs.enum := by
+  -- Need to construct membership in instrs.zipIdx
+  have hmem_orig : (idx, instrs[idx]) ∈ instrs.zipIdx := by
     rw [List.mem_zipIdx_iff_getElem?]
     exact instrs.getElem?_eq_getElem hidx_lt
   have horig := h ⟨idx, instrs[idx]⟩ hmem_orig

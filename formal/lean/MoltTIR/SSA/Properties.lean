@@ -140,7 +140,9 @@ theorem not_liveAt_of_dead_after {f : Func}
       simp [List.length_drop]
     have hj_abs : i₂ + j < blk.instrs.length := by omega
     have hget_eq : blk.instrs.get ⟨i₂ + j, hj_abs⟩ = i := by
-      sorry -- needs: (l.drop n).get ⟨j,_⟩ = l.get ⟨n+j,_⟩ (List.get_drop removed in 4.28)
+      have : (blk.instrs.drop i₂).get ⟨j, hj_lt⟩ = blk.instrs.get ⟨i₂ + j, hj_abs⟩ := by
+        simp [List.get_eq_getElem, List.getElem_drop]
+      rw [← this, hj_eq]
     exact hnot_used_after (i₂ + j) hj_abs (by omega) (hget_eq ▸ hv)
   | inr hor =>
     cases hor with
