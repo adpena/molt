@@ -8599,3 +8599,26 @@ def test_link_fingerprint_changes_when_stdlib_artifact_content_changes(
     assert fp1["hash"] != fp2["hash"], (
         "Link fingerprint must change when stdlib artifact content changes"
     )
+
+
+def test_stdlib_partition_mode_changes_cache_identity():
+    """Cache identity must differ when stdlib partition mode changes."""
+    import sys
+    sys.path.insert(0, "src")
+    from molt.cli import _build_cache_variant
+
+    variant_mono = _build_cache_variant(
+        profile="dev", runtime_cargo="debug", backend_cargo="debug",
+        emit="bin", stdlib_split=False, codegen_env="x", linked=False,
+        partition_mode=False,
+    )
+    variant_part = _build_cache_variant(
+        profile="dev", runtime_cargo="debug", backend_cargo="debug",
+        emit="bin", stdlib_split=False, codegen_env="x", linked=False,
+        partition_mode=True,
+    )
+    assert variant_mono != variant_part, (
+        "Cache variant must change when partition mode changes"
+    )
+    assert "partitioned" in variant_part
+    assert "partitioned" not in variant_mono
