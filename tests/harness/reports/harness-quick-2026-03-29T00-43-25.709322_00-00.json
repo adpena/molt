@@ -1,0 +1,42 @@
+{
+  "profile": "quick",
+  "timestamp": "2026-03-29T00:43:25.709322+00:00",
+  "all_passed": false,
+  "total_duration_s": 50.17108504199132,
+  "pass_count": 1,
+  "fail_count": 3,
+  "results": [
+    {
+      "name": "compile",
+      "status": "fail",
+      "duration_s": 10.39522933299304,
+      "details": "/ops_sys.rs:5:26: warning: unused imports: `range_components_bigint` and `range_len_bigint`\nmolt-runtime/src/object/ops_sys.rs:6:33: warning: unused import: `push_wtf8_codepoint`\nmolt-runtime/src/object/ops_sys.rs:16:5: warning: unused import: `std::ffi::CString`\nmolt-runtime/src/object/ops_sys.rs:18:36: warning: unused import: `Ordering as AtomicOrdering`\nwarning: `molt-runtime` (lib) generated 5 warnings\nerror: could not compile `molt-runtime` (lib) due to 1 previous error; 5 warnings emitted\n",
+      "metrics": {}
+    },
+    {
+      "name": "lint",
+      "status": "fail",
+      "duration_s": 6.935979249989032,
+      "details": "              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `(compiled as usize).is_multiple_of(progress_interval)`\n     |\n     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#manual_is_multiple_of\n     = note: `-D clippy::manual-is-multiple-of` implied by `-D warnings`\n     = help: to override `-D warnings` add `#[allow(clippy::manual_is_multiple_of)]`\n\nerror: could not compile `molt-backend` (lib) due to 160 previous errors\n",
+      "metrics": {}
+    },
+    {
+      "name": "unit-rust",
+      "status": "fail",
+      "duration_s": 32.75317658401036,
+      "details": "default: rc=101 ut this error, try `rustc --explain E0432`.\nerror: could not compile `molt-lang-obj-model` (test \"nan_boxing_props\") due to 1 previous error\nwarning: build failed, waiting for other jobs to finish...\n; molt-runtime --features refcount_verify: rc=101 uld not compile `molt-runtime` (test \"compile_fail\") due to 1 previous error\nwarning: build failed, waiting for other jobs to finish...\nwarning: `molt-runtime` (test \"test_float\") generated 1 warning\n; molt-runtime --features audit: rc=101 ror\nwarning: build failed, waiting for other jobs to finish...\nwarning: `molt-runtime` (test \"test_float\") generated 1 warning\nwarning: `molt-runtime` (lib test) generated 92 warnings (92 duplicates)\n",
+      "metrics": {
+        "tests_passed": 0
+      }
+    },
+    {
+      "name": "unit-python",
+      "status": "pass",
+      "duration_s": 0.0866998749988852,
+      "details": "manifest (69 tests) + import ok",
+      "metrics": {
+        "tests_passed": 69
+      }
+    }
+  ]
+}

@@ -61,6 +61,26 @@ def test_generate_split_worker_js_lifecycle_contract() -> None:
     assert "rtInstance.exports.molt_runtime_shutdown" in worker_js
 
 
+def test_build_isolate_import_ops_initializes_code_slots() -> None:
+    from molt.cli import _build_isolate_import_ops
+
+    ops = _build_isolate_import_ops(
+        code_slot_count=17,
+        module_order=["sys"],
+        register_global_code_id=lambda _symbol: 123,
+        per_module_code_ops={
+            "sys": [
+                {"kind": "const_none", "out": "v0"},
+                {"kind": "code_slot_set", "value": 9, "args": ["v0"]},
+            ]
+        },
+    )
+
+    assert ops[0] == {"kind": "code_slots_init", "value": 17}
+    assert any(op.get("kind") == "code_slot_set" for op in ops)
+    assert any(op.get("s_value") == "molt_init_sys" for op in ops)
+
+
 def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedProcess:
     """Run ``molt build --target wasm --split-runtime`` and return the result."""
     env = os.environ.copy()
@@ -236,6 +256,19 @@ class TestWorkerJsContent:
     def test_worker_bridges_isolate_import(self, split_build_a):
         content = self._read_worker(split_build_a)
         assert "molt_isolate_import" in content, "worker.js must bridge runtime isolate imports"
+
+    def test_worker_remaps_runtime_abi_exports(self, split_build_a):
+        content = self._read_worker(split_build_a)
+        assert "runtimeAbiExports" in content, (
+            "worker.js must remap prefixed runtime exports onto the molt_runtime ABI"
+        )
+        assert 'name.startsWith("molt_")' in content
+
+    def test_worker_sets_runtime_table_base(self, split_build_a):
+        content = self._read_worker(split_build_a)
+        assert "molt_set_wasm_table_base" in content, (
+            "worker.js must propagate the computed wasm table base into the runtime"
+        )
 
     def test_worker_runs_runtime_shutdown(self, split_build_a):
         content = self._read_worker(split_build_a)

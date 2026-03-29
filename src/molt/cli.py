@@ -8969,6 +8969,7 @@ def _generate_split_worker_js(
     *,
     shared_memory_initial_pages: int,
     shared_table_initial: int,
+    shared_table_base: int | None,
 ) -> str:
     """Generate a Cloudflare Workers shim for split-runtime deployment.
 
@@ -9188,6 +9189,17 @@ export default {
     // Shared table for indirect calls — both modules reference the same table.
     const sharedTable = new WebAssembly.Table({ initial: __MOLT_SHARED_TABLE_INITIAL__, element: "anyfunc" });
 
+    const runtimeAbiExports = (exports) => {
+      const abi = {};
+      for (const [name, value] of Object.entries(exports)) {
+        abi[name] = value;
+        if (name.startsWith("molt_")) {
+          abi[name.slice(5)] = value;
+        }
+      }
+      return abi;
+    };
+
     let rtInstance = null;
     let pendingError = null;
     let procExit = null;
@@ -9199,6 +9211,9 @@ export default {
         env: { ...hostEnv, __indirect_function_table: sharedTable },
       };
       rtInstance = await WebAssembly.instantiate(runtimeModule, rtImports);
+      if (__MOLT_SHARED_TABLE_BASE__ !== null && rtInstance.exports.molt_set_wasm_table_base) {
+        rtInstance.exports.molt_set_wasm_table_base(BigInt(__MOLT_SHARED_TABLE_BASE__));
+      }
 
       // 2. Instantiate the app module.
       //    It imports the runtime ABI exports plus the same host-owned memory/table.
@@ -9209,7 +9224,7 @@ export default {
           memory: wasmMemory,
           __indirect_function_table: sharedTable,
         },
-        molt_runtime: rtInstance.exports,
+        molt_runtime: runtimeAbiExports(rtInstance.exports),
       };
       appInstance = await WebAssembly.instantiate(appModule, appImports);
 
@@ -9253,6 +9268,10 @@ export default {
     return (
         worker_js.replace("__MOLT_SHARED_MEMORY_PAGES__", str(shared_memory_initial_pages))
         .replace("__MOLT_SHARED_TABLE_INITIAL__", str(shared_table_initial))
+        .replace(
+            "__MOLT_SHARED_TABLE_BASE__",
+            "null" if shared_table_base is None else str(shared_table_base),
+        )
     )
 
 
@@ -16775,6 +16794,7 @@ def _prepare_non_native_build_result(
                 _generate_split_worker_js(
                     shared_memory_initial_pages=shared_memory_initial_pages,
                     shared_table_initial=shared_table_initial,
+                    shared_table_base=app_table_min,
                 )
             )
 

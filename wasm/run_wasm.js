@@ -4314,7 +4314,7 @@ const buildRuntimeImportDirect = (runtimeInst) => {
     if (entry.module !== 'molt_runtime') {
       continue;
     }
-    const exportName = `molt_${entry.name}`;
+    const exportName = entry.name.startsWith('molt_') ? entry.name : `molt_${entry.name}`;
     const fn = runtimeInst.exports[exportName];
     if (typeof fn !== 'function') {
       throw new Error(`molt_runtime.${entry.name} missing export ${exportName}`);
@@ -4403,11 +4403,18 @@ const runDirectLink = async () => {
   const memory = makeMemory(memoryLimits);
   const table = makeTable(tableLimits);
   const callIndirectFns = {};
+  let outputInstance = null;
   setWasmMemory(memory);
 
   const env = {
     memory,
     __indirect_function_table: table,
+    molt_isolate_import: (...args) => {
+      if (!outputInstance || typeof outputInstance.exports.molt_isolate_import !== 'function') {
+        throw new Error('molt_isolate_import used before output instantiation');
+      }
+      return outputInstance.exports.molt_isolate_import(...args);
+    },
     molt_db_query_host: dbQueryHost,
     molt_db_exec_host: dbExecHost,
     molt_db_host_poll: dbHostPoll,
@@ -4504,34 +4511,36 @@ const runDirectLink = async () => {
   const outputModule = await WebAssembly.instantiate(wasmBuffer, {
     molt_runtime: outputImportsDirect,
     env: {
+      ...env,
       memory,
       __indirect_function_table: table,
     },
   });
+  outputInstance = outputModule.instance;
 
   const { molt_main, molt_memory, molt_table, molt_table_init } =
-    outputModule.instance.exports;
+    outputInstance.exports;
   if (typeof molt_table_init === 'function' && process.env.MOLT_WASM_SKIP_TABLE_INIT !== '1') {
     molt_table_init();
   }
   for (const name of runtimeCallIndirectNames) {
-    const fn = outputModule.instance.exports[name];
+    const fn = outputInstance.exports[name];
     if (typeof fn !== 'function') {
       throw new Error(`${wasmPath} missing ${name} export`);
     }
     callIndirectFns[name] = fn;
   }
   if (installTableRefsEnabled) {
-    installTableRefs(outputModule.instance, table, 'output');
+    installTableRefs(outputInstance, table, 'output');
   }
   if (!molt_memory || !molt_table) {
     throw new Error(`${wasmPath} missing molt_memory or molt_table export`);
   }
   if (process.env.MOLT_WASM_CALL_INDIRECT_SMOKE === '1') {
-    if (typeof outputModule.instance.exports.molt_call_indirect2 !== 'function') {
+    if (typeof outputInstance.exports.molt_call_indirect2 !== 'function') {
       throw new Error('molt_call_indirect2 export missing for smoke test');
     }
-    const res = outputModule.instance.exports.molt_call_indirect2(298n, 0n, 0n);
+    const res = outputInstance.exports.molt_call_indirect2(298n, 0n, 0n);
     console.error(`[molt wasm] call_indirect2 smoke result=${res}`);
   }
   initializeWasiForInstance(runtimeInst, memory);

@@ -1,0 +1,38 @@
+{
+  "profile": "quick",
+  "timestamp": "2026-03-29T00:39:51.710623+00:00",
+  "all_passed": false,
+  "total_duration_s": 11.597847750002984,
+  "pass_count": 0,
+  "fail_count": 4,
+  "results": [
+    {
+      "name": "compile",
+      "status": "fail",
+      "duration_s": 11.597847750002984,
+      "details": "s.rs:1384:24: warning: static `timezone` is never used\nmolt-runtime/src/object/ops_sys.rs:1417:16: warning: function `tzset` is never used\nmolt-runtime/src/object/ops_sys.rs:1418:24: warning: static `daylight` is never used\nwarning: `molt-runtime` (lib) generated 95 warnings (run `cargo fix --lib -p molt-runtime` to apply 5 suggestions)\n    Checking molt-wasm-host v0.1.0 (/Users/adpena/Projects/molt/runtime/molt-wasm-host)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.56s\n",
+      "metrics": {}
+    },
+    {
+      "name": "lint",
+      "status": "skip",
+      "duration_s": 0.0,
+      "details": "skipped due to prior failure",
+      "metrics": {}
+    },
+    {
+      "name": "unit-rust",
+      "status": "skip",
+      "duration_s": 0.0,
+      "details": "skipped due to prior failure",
+      "metrics": {}
+    },
+    {
+      "name": "unit-python",
+      "status": "skip",
+      "duration_s": 0.0,
+      "details": "skipped due to prior failure",
+      "metrics": {}
+    }
+  ]
+}
