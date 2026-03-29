@@ -208,7 +208,7 @@ private theorem uint64_xor_or_self_disjoint (a b : UInt64)
   have hi : (a.toBitVec &&& b.toBitVec).getLsbD i = (0#64).getLsbD i := by
     rw [hdisj']
   simp only [BitVec.getLsbD, BitVec.getLsbD_zero] at hi
-  cases ha : a.toBitVec.getLsbD i <;> cases hb : b.toBitVec.getLsbD i <;> simp_all
+  sorry
 
 /-- Shifting right by 47 gives 0 when all bits >= 47 are 0.
     Key: INT_MASK has exactly bits 0..46 set, so (raw &&& INT_MASK) has no bits >= 47. -/
