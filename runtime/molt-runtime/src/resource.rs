@@ -171,7 +171,9 @@ impl OperationEstimate {
                 let result_bits = (*value_bits as u64) + (*shift as u64);
                 let result_bytes = result_bits.div_ceil(8);
                 // 2x safety multiplier for BigInt intermediate allocation during shift
-                result_bytes.checked_mul(2).and_then(|v| usize::try_from(v).ok())
+                result_bytes
+                    .checked_mul(2)
+                    .and_then(|v| usize::try_from(v).ok())
             }
             Self::StringReplace {
                 input_len,

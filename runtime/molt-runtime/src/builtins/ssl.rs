@@ -178,7 +178,8 @@ fn return_bytes_val(_py: &PyToken<'_>, data: &[u8]) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ssl_create_default_context(purpose_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if let Err(err) = require_net_capability(_py, "ssl.create_default_context", AuditArgs::None) {
+        if let Err(err) = require_net_capability(_py, "ssl.create_default_context", AuditArgs::None)
+        {
             return err;
         }
         let purpose = to_i64(obj_from_bits(purpose_bits)).unwrap_or(PURPOSE_SERVER_AUTH);

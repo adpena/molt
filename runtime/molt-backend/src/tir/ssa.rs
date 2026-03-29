@@ -151,7 +151,22 @@ impl<'a> SsaContext<'a> {
                 op_indices.push(idx);
 
                 // Uses: args and var (when used as input).
-                if let Some(args) = &op.args {
+                if op.kind == "unpack_sequence" {
+                    if let Some(args) = &op.args {
+                        if let Some(seq) = args.first()
+                            && is_variable(seq)
+                            && !defs.contains(seq)
+                        {
+                            uses.insert(seq.clone());
+                        }
+                        for out in args.iter().skip(1) {
+                            if is_variable(out) {
+                                defs.insert(out.clone());
+                                self.all_vars.insert(out.clone());
+                            }
+                        }
+                    }
+                } else if let Some(args) = &op.args {
                     for a in args {
                         if is_variable(a) && !defs.contains(a) {
                             uses.insert(a.clone());
@@ -394,16 +409,12 @@ impl<'a> SsaContext<'a> {
                 let op = &self.ops[op_idx];
                 let tir_op = self.translate_op(op, &var_stacks);
 
-                // If this op defines a variable via `out`, create a new ValueId.
-                let def_var = self.get_def_var(op);
-                if let Some(ref var) = def_var {
-                    // The result ValueId of the TIR op.
-                    let vid = if let Some(result_vid) = tir_op.results.first() {
-                        *result_vid
-                    } else {
-                        // Op with no result but has a def — create a synthetic value.
-                        self.fresh_value_typed()
-                    };
+                for (idx, var) in self.get_def_vars(op).iter().enumerate() {
+                    let vid = tir_op
+                        .results
+                        .get(idx)
+                        .copied()
+                        .unwrap_or_else(|| self.fresh_value_typed());
                     var_stacks.entry(var.clone()).or_default().push(vid);
                     let entry = block_pushed.iter_mut().find(|(v, _)| v == var);
                     if let Some((_, c)) = entry {
@@ -498,13 +509,12 @@ impl<'a> SsaContext<'a> {
                     let op = &self.ops[op_idx];
                     let tir_op = self.translate_op(op, &local_stacks);
 
-                    // If this op defines a variable, create a ValueId for it.
-                    if let Some(ref var) = self.get_def_var(op) {
-                        let vid = if let Some(result_vid) = tir_op.results.first() {
-                            *result_vid
-                        } else {
-                            self.fresh_value_typed()
-                        };
+                    for (idx, var) in self.get_def_vars(op).iter().enumerate() {
+                        let vid = tir_op
+                            .results
+                            .get(idx)
+                            .copied()
+                            .unwrap_or_else(|| self.fresh_value_typed());
                         local_stacks.entry(var.clone()).or_default().push(vid);
                     }
 
@@ -530,6 +540,23 @@ impl<'a> SsaContext<'a> {
         op.out.clone().filter(|v| is_variable(v))
     }
 
+    fn get_def_vars(&self, op: &OpIR) -> Vec<String> {
+        if op.kind == "unpack_sequence" {
+            return op
+                .args
+                .as_ref()
+                .map(|args| {
+                    args.iter()
+                        .skip(1)
+                        .filter(|v| is_variable(v))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+        self.get_def_var(op).into_iter().collect()
+    }
+
     /// Resolve a variable name to its current SSA ValueId.
     fn resolve_var(var: &str, var_stacks: &HashMap<String, Vec<ValueId>>) -> Option<ValueId> {
         var_stacks.get(var).and_then(|s| s.last().copied())
@@ -552,7 +579,12 @@ impl<'a> SsaContext<'a> {
         // Variables resolve via var_stacks; constants get a fresh ConstInt/ConstFloat value.
         let mut operands = Vec::new();
         if let Some(args) = &op.args {
-            for a in args {
+            let args_iter: Box<dyn Iterator<Item = &String> + '_> = if op.kind == "unpack_sequence" {
+                Box::new(args.iter().take(1))
+            } else {
+                Box::new(args.iter())
+            };
+            for a in args_iter {
                 if let Some(vid) = Self::resolve_var(a, var_stacks) {
                     // Resolved as a variable
                     operands.push(vid);
@@ -632,8 +664,7 @@ impl<'a> SsaContext<'a> {
 
         // Create result value if this op produces an output.
         let mut results = Vec::new();
-        let def_var = self.get_def_var(op);
-        if def_var.is_some() {
+        for _ in self.get_def_vars(op) {
             let vid = self.fresh_value_typed();
             results.push(vid);
         }

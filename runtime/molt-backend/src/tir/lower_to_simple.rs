@@ -387,6 +387,24 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         // whose original kind was preserved in attrs.
         OpCode::Copy => {
             if let Some(original_kind) = attr_str(&op.attrs, "_original_kind") {
+                if original_kind == "unpack_sequence" {
+                    let mut args = operand_args(op);
+                    args.extend(op.results.iter().map(|v| value_var(*v)));
+                    return Some(OpIR {
+                        kind: original_kind,
+                        args: Some(args),
+                        value: attr_int(&op.attrs, "value"),
+                        f_value: attr_float(&op.attrs, "f_value"),
+                        s_value: attr_str(&op.attrs, "s_value"),
+                        bytes: attr_bytes(&op.attrs, "bytes"),
+                        var: attr_str(&op.attrs, "_var"),
+                        task_kind: attr_str(&op.attrs, "task_kind"),
+                        container_type: attr_str(&op.attrs, "container_type"),
+                        ic_index: attr_int(&op.attrs, "ic_index"),
+                        raw_int: attr_bool(&op.attrs, "raw_int"),
+                        ..OpIR::default()
+                    });
+                }
                 // Passthrough: reconstruct the original SimpleIR op with all fields.
                 Some(OpIR {
                     kind: original_kind,

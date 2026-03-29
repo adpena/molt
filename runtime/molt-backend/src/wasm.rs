@@ -1601,14 +1601,14 @@ impl WasmBackend {
                         }
                     }
                     // If no pass changed anything, skip the lower_to_simple roundtrip.
-                    // The roundtrip through TIR → SimpleIR can introduce subtle codegen
+                    // The roundtrip through TIR -> SimpleIR can introduce subtle codegen
                     // differences even when the IR is semantically identical (see issue:
                     // comprehensions return empty when roundtrip runs on unchanged functions).
-                    let any_changed = stats.iter().any(|s| {
-                        s.values_changed > 0 || s.ops_removed > 0 || s.ops_added > 0
-                    });
+                    let any_changed = stats
+                        .iter()
+                        .any(|s| s.values_changed > 0 || s.ops_removed > 0 || s.ops_added > 0);
                     if !any_changed {
-                        return None; // Use original ops — roundtrip is lossy
+                        return None; // Use original ops; roundtrip is lossy.
                     }
                     Some(crate::tir::lower_to_simple::lower_to_simple_ir(
                         &tir_func, &type_map,
@@ -1627,9 +1627,8 @@ impl WasmBackend {
                         }
                     }
                     Ok(None) => {
-                        // TIR verification failed — fall back to unoptimized.
                         eprintln!(
-                            "[TIR] WARNING: verification failed on function '{}' (WASM) — falling back to unoptimized.",
+                            "[TIR] WARNING: verification failed on function '{}' (WASM); falling back to unoptimized.",
                             func_name
                         );
                         func_ir.ops = original_ops;

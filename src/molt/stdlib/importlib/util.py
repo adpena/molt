@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-from typing import TYPE_CHECKING as _TYPE_CHECKING
-
 import abc as _abc
 import sys
 
 import importlib.machinery as _machinery
 
-if _TYPE_CHECKING:
+if False:
     from importlib.machinery import ModuleSpec
 
 _require_intrinsic("molt_stdlib_probe")

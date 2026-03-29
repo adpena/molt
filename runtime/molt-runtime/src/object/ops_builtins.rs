@@ -667,19 +667,16 @@ pub extern "C" fn molt_call_func_dispatch(
         // --- Step 2: Check if it's a plain function object ---
         let func_ptr = match maybe_ptr_from_bits(effective_func) {
             Some(ptr) if unsafe { object_type_id(ptr) == TYPE_ID_FUNCTION } => ptr,
-            _ => {
-                // Not a function — use the generic callargs dispatch.
-                return molt_call_func_via_callargs(func_bits, effective_args);
-            }
+            _ => return molt_call_func_via_callargs(func_bits, effective_args),
         };
 
         // --- Step 3: Check for closure ---
         // Closures need the full callargs path for env capture setup.
         let has_closure = unsafe { function_closure_bits(func_ptr) } != 0;
+        let has_trampoline = unsafe { function_trampoline_ptr(func_ptr) } != 0;
         if has_closure {
             return molt_call_func_via_callargs(func_bits, effective_args);
         }
-        let has_trampoline = unsafe { function_trampoline_ptr(func_ptr) } != 0;
         if has_trampoline {
             return unsafe { call_function_obj_vec(_py, effective_func, effective_args) };
         }
