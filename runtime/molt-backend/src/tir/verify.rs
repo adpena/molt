@@ -154,10 +154,7 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                         errors.push(VerifyError::op(
                             *bid,
                             op_idx,
-                            format!(
-                                "{:?} op has no callee (attr or operand)",
-                                op.opcode
-                            ),
+                            format!("{:?} op has no callee (attr or operand)", op.opcode),
                         ));
                     }
                 }
@@ -330,17 +327,18 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
         match &block.terminator {
             Terminator::Branch { target, args } => {
                 if let Some(expected) = arg_count(target)
-                    && args.len() != expected {
-                        errors.push(VerifyError::block(
-                            *bid,
-                            format!(
-                                "branch to ^{} passes {} args but block expects {}",
-                                target,
-                                args.len(),
-                                expected
-                            ),
-                        ));
-                    }
+                    && args.len() != expected
+                {
+                    errors.push(VerifyError::block(
+                        *bid,
+                        format!(
+                            "branch to ^{} passes {} args but block expects {}",
+                            target,
+                            args.len(),
+                            expected
+                        ),
+                    ));
+                }
             }
             Terminator::CondBranch {
                 then_block,
@@ -350,29 +348,31 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 ..
             } => {
                 if let Some(expected) = arg_count(then_block)
-                    && then_args.len() != expected {
-                        errors.push(VerifyError::block(
-                            *bid,
-                            format!(
-                                "cond_branch to ^{} passes {} then_args but block expects {}",
-                                then_block,
-                                then_args.len(),
-                                expected
-                            ),
-                        ));
-                    }
+                    && then_args.len() != expected
+                {
+                    errors.push(VerifyError::block(
+                        *bid,
+                        format!(
+                            "cond_branch to ^{} passes {} then_args but block expects {}",
+                            then_block,
+                            then_args.len(),
+                            expected
+                        ),
+                    ));
+                }
                 if let Some(expected) = arg_count(else_block)
-                    && else_args.len() != expected {
-                        errors.push(VerifyError::block(
-                            *bid,
-                            format!(
-                                "cond_branch to ^{} passes {} else_args but block expects {}",
-                                else_block,
-                                else_args.len(),
-                                expected
-                            ),
-                        ));
-                    }
+                    && else_args.len() != expected
+                {
+                    errors.push(VerifyError::block(
+                        *bid,
+                        format!(
+                            "cond_branch to ^{} passes {} else_args but block expects {}",
+                            else_block,
+                            else_args.len(),
+                            expected
+                        ),
+                    ));
+                }
             }
             Terminator::Switch {
                 cases,
@@ -381,31 +381,33 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 ..
             } => {
                 if let Some(expected) = arg_count(default)
-                    && default_args.len() != expected {
+                    && default_args.len() != expected
+                {
+                    errors.push(VerifyError::block(
+                        *bid,
+                        format!(
+                            "switch default ^{} passed {} args but block expects {}",
+                            default,
+                            default_args.len(),
+                            expected
+                        ),
+                    ));
+                }
+                for (case_val, target, args) in cases {
+                    if let Some(expected) = arg_count(target)
+                        && args.len() != expected
+                    {
                         errors.push(VerifyError::block(
                             *bid,
                             format!(
-                                "switch default ^{} passed {} args but block expects {}",
-                                default,
-                                default_args.len(),
+                                "switch case {} to ^{} passes {} args but block expects {}",
+                                case_val,
+                                target,
+                                args.len(),
                                 expected
                             ),
                         ));
                     }
-                for (case_val, target, args) in cases {
-                    if let Some(expected) = arg_count(target)
-                        && args.len() != expected {
-                            errors.push(VerifyError::block(
-                                *bid,
-                                format!(
-                                    "switch case {} to ^{} passes {} args but block expects {}",
-                                    case_val,
-                                    target,
-                                    args.len(),
-                                    expected
-                                ),
-                            ));
-                        }
                 }
             }
             Terminator::Return { .. } | Terminator::Unreachable => {}
@@ -440,50 +442,50 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
     }
 
     // Check every operand use.
-    let check_use = |bid: BlockId,
-                     op_idx: Option<usize>,
-                     used: ValueId,
-                     errors: &mut Vec<VerifyError>| {
-        match def_block.get(&used) {
-            None => {
-                let msg = format!("{} used but never defined", used);
-                match op_idx {
-                    Some(i) => errors.push(VerifyError::op(bid, i, msg)),
-                    None => errors.push(VerifyError::block(bid, msg)),
+    let check_use =
+        |bid: BlockId, op_idx: Option<usize>, used: ValueId, errors: &mut Vec<VerifyError>| {
+            match def_block.get(&used) {
+                None => {
+                    let msg = format!("{} used but never defined", used);
+                    match op_idx {
+                        Some(i) => errors.push(VerifyError::op(bid, i, msg)),
+                        None => errors.push(VerifyError::block(bid, msg)),
+                    }
                 }
-            }
-            Some(&def_bid) => {
-                if def_bid == bid {
-                    // Same block: ensure definition comes before use.
-                    if let (Some(use_idx), Some(def_idx_opt)) = (op_idx, def_op_index.get(&used))
-                        && let Some(def_idx) = def_idx_opt
-                            && *def_idx >= use_idx {
-                                errors.push(VerifyError::op(
-                                    bid,
-                                    use_idx,
-                                    format!(
-                                        "{} used at op#{} but defined later at op#{}",
-                                        used, use_idx, def_idx
-                                    ),
-                                ));
-                            }
+                Some(&def_bid) => {
+                    if def_bid == bid {
+                        // Same block: ensure definition comes before use.
+                        if let (Some(use_idx), Some(def_idx_opt)) =
+                            (op_idx, def_op_index.get(&used))
+                            && let Some(def_idx) = def_idx_opt
+                            && *def_idx >= use_idx
+                        {
+                            errors.push(VerifyError::op(
+                                bid,
+                                use_idx,
+                                format!(
+                                    "{} used at op#{} but defined later at op#{}",
+                                    used, use_idx, def_idx
+                                ),
+                            ));
+                        }
                         // def_idx_opt == None means it's a block arg, always dominates.
-                } else {
-                    // Different block: def_bid must dominate bid.
-                    if !dominates(&dom, def_bid, bid) {
-                        let msg = format!(
-                            "{} defined in ^{} does not dominate use in ^{}",
-                            used, def_bid, bid
-                        );
-                        match op_idx {
-                            Some(i) => errors.push(VerifyError::op(bid, i, msg)),
-                            None => errors.push(VerifyError::block(bid, msg)),
+                    } else {
+                        // Different block: def_bid must dominate bid.
+                        if !dominates(&dom, def_bid, bid) {
+                            let msg = format!(
+                                "{} defined in ^{} does not dominate use in ^{}",
+                                used, def_bid, bid
+                            );
+                            match op_idx {
+                                Some(i) => errors.push(VerifyError::op(bid, i, msg)),
+                                None => errors.push(VerifyError::block(bid, msg)),
+                            }
                         }
                     }
                 }
             }
-        }
-    };
+        };
 
     for (bid, block) in &func.blocks {
         for (op_idx, op) in block.ops.iter().enumerate() {
