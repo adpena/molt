@@ -309,8 +309,8 @@ theorem closing_strategy_is_sound : True := trivial
     | Theorems fully proven (no sorry)        | ~80   |
     | Theorems with sorry (any)               | ~40   |
     | Total sorry occurrences                 | ~73   |
-    | Expression-level sorry count            | 1     |
-    |   (absEvalExpr_sound var case — has strong-sound alternative) |
+    | Expression-level sorry count            | 0     |
+    |   (absEvalExpr_sound var case closed via AbsEnvStrongSound)   |
     | Function-level sorry count (midend)     | 3     |
     |   (dceSim, sccpSim, cseSim)                                  |
     | SSA preservation sorry count            | ~27   |

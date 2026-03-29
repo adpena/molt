@@ -55,7 +55,7 @@ def fullPipelineExpr (σ : AbsEnv) (avail : AvailMap) (e : Expr) : Expr :=
     = evalExpr ρ e                                       -- by constFoldExpr_correct -/
 theorem fullPipelineExpr_correct (σ : AbsEnv) (ρ : Env) (e : Expr)
     (avail : AvailMap)
-    (hsound : AbsEnvSound σ ρ)
+    (hsound : AbsEnvStrongSound σ ρ)
     (havail : AvailMapSound avail ρ) :
     evalExpr ρ (fullPipelineExpr σ avail e) = evalExpr ρ e := by
   simp only [fullPipelineExpr]
@@ -70,7 +70,7 @@ def fullPipelineExprSimple (σ : AbsEnv) (e : Expr) : Expr :=
 
 /-- Simplified pipeline correctness with empty avail map. -/
 theorem fullPipelineExprSimple_correct (σ : AbsEnv) (ρ : Env) (e : Expr)
-    (hsound : AbsEnvSound σ ρ) :
+    (hsound : AbsEnvStrongSound σ ρ) :
     evalExpr ρ (fullPipelineExprSimple σ e) = evalExpr ρ e := by
   exact fullPipelineExpr_correct σ ρ e [] hsound (availMapSound_empty ρ)
 
@@ -140,11 +140,11 @@ theorem fullPipelineExpr_top_correct (ρ : Env) (e : Expr)
     (avail : AvailMap)
     (havail : AvailMapSound avail ρ) :
     evalExpr ρ (fullPipelineExpr AbsEnv.top avail e) = evalExpr ρ e :=
-  fullPipelineExpr_correct AbsEnv.top ρ e avail (absEnvTop_sound ρ) havail
+  fullPipelineExpr_correct AbsEnv.top ρ e avail (absEnvTop_strongSound ρ) havail
 
 /-- Full pipeline with both top env and empty avail map. -/
 theorem fullPipelineExpr_default_correct (ρ : Env) (e : Expr) :
     evalExpr ρ (fullPipelineExprSimple AbsEnv.top e) = evalExpr ρ e :=
-  fullPipelineExprSimple_correct AbsEnv.top ρ e (absEnvTop_sound ρ)
+  fullPipelineExprSimple_correct AbsEnv.top ρ e (absEnvTop_strongSound ρ)
 
 end MoltTIR

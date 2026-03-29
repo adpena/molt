@@ -25,7 +25,7 @@ def pipelineExpr (σ : AbsEnv) (e : Expr) : Expr :=
     = evalExpr ρ (constFoldExpr e)         -- by sccpExpr_correct
     = evalExpr ρ e                          -- by constFoldExpr_correct -/
 theorem pipelineExpr_correct (σ : AbsEnv) (ρ : Env) (e : Expr)
-    (hsound : AbsEnvSound σ ρ) :
+    (hsound : AbsEnvStrongSound σ ρ) :
     evalExpr ρ (pipelineExpr σ e) = evalExpr ρ e := by
   simp only [pipelineExpr]
   rw [sccpExpr_correct σ ρ (constFoldExpr e) hsound]
@@ -34,7 +34,7 @@ theorem pipelineExpr_correct (σ : AbsEnv) (ρ : Env) (e : Expr)
 /-- Pipeline with top (all-unknown) abstract env is always sound. -/
 theorem pipelineExpr_top_correct (ρ : Env) (e : Expr) :
     evalExpr ρ (pipelineExpr AbsEnv.top e) = evalExpr ρ e :=
-  pipelineExpr_correct AbsEnv.top ρ e (absEnvTop_sound ρ)
+  pipelineExpr_correct AbsEnv.top ρ e (absEnvTop_strongSound ρ)
 
 /-- Compose constant folding then SCCP on an instruction list. -/
 def pipelineInstrs (σ : AbsEnv) (instrs : List Instr) : AbsEnv × List Instr :=

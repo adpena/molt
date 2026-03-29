@@ -375,7 +375,7 @@ structure MidendSimulation where
   preserves_expr :
     ∀ (σ : AbsEnv) (ρ : MoltTIR.Env) (e : MoltTIR.Expr)
       (avail : AvailMap)
-      (hsound : AbsEnvSound σ ρ)
+      (hsound : AbsEnvStrongSound σ ρ)
       (havail : AvailMapSound avail ρ),
     evalExpr ρ (fullPipelineExpr σ avail e) = evalExpr ρ e
   /-- The midend pipeline produces behaviorally equivalent functions

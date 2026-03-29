@@ -213,25 +213,9 @@ private theorem tag_check_as_mul : TAG_CHECK.toBitVec.toNat = 2 ^ 48 * 0x7fff :=
 private theorem u32_to_u64_le_ptr_mask (addr : UInt32) :
     addr.toUInt64 &&& TAG_CHECK = 0 := by
   cases addr with | ofBitVec av =>
-  apply UInt64.eq_of_toBitVec_eq
-  simp only [UInt64.toBitVec_and, UInt64.toBitVec_ofNat]
-  ext i
-  simp only [BitVec.getLsbD_and, BitVec.getLsbD_zero]
-  simp only [TAG_CHECK, TAG_MASK, QNAN, UInt32.toUInt64, UInt64.toBitVec_ofNat]
-  simp only [BitVec.getLsbD_or, BitVec.getLsbD_ofNat]
-  by_cases hi : i.val < 48
-  · -- TAG_CHECK has bits 0-47 = false
-    -- QNAN = 0x7ff8000000000000, TAG_MASK = 0x0007000000000000
-    -- Their OR = 0x7fff000000000000 which has bits 0-47 all zero
-    simp only [Bool.and_eq_false_iff]
-    right
-    simp only [Bool.or_eq_false_iff]
-    constructor <;> omega
-  · -- For i >= 48, addr.toUInt64 bit is false (addr is 32-bit)
-    simp only [Bool.and_eq_false_iff]
-    left
-    simp only [BitVec.getLsbD]
-    sorry
+  show UInt64.ofBitVec _ = UInt64.ofBitVec _; congr 1
+  simp only [TAG_CHECK, TAG_MASK, QNAN]
+  bv_decide
 
 /-- A boxed WASM32 pointer is recognized as IsPtr. -/
 theorem boxWasm32Ptr_isPtr (addr : UInt32) : IsPtr (boxWasm32Ptr addr) := by

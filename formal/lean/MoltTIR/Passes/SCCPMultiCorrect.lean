@@ -90,6 +90,28 @@ theorem absExecInstr_sound (σ : AbsEnv) (ρ : Env) (i : Instr) (v : Value)
   exact absEnvSound_set σ ρ i.dst v (absEvalExpr σ i.rhs) hsound
     (absEvalExpr_concretizes σ ρ i.rhs v hsound heval)
 
+/-- Strong version: executing one instruction abstractly preserves strong soundness. -/
+theorem absExecInstr_strongSound (σ : AbsEnv) (ρ : Env) (i : Instr) (v : Value)
+    (hsound : AbsEnvStrongSound σ ρ)
+    (heval : evalExpr ρ i.rhs = some v) :
+    AbsEnvStrongSound (absExecInstr σ i) (ρ.set i.dst v) := by
+  unfold absExecInstr
+  constructor
+  · exact absEnvSound_set σ ρ i.dst v (absEvalExpr σ i.rhs) hsound.1
+      (absEvalExpr_concretizes σ ρ i.rhs v hsound.1 heval)
+  · intro y w hy
+    unfold AbsEnv.set at hy
+    unfold Env.set
+    by_cases heq : y = i.dst
+    · simp [heq] at hy ⊢
+      -- hy : absEvalExpr σ i.rhs = .known w
+      -- From absEvalExpr_sound: evalExpr ρ i.rhs = some w
+      have h := absEvalExpr_sound σ ρ i.rhs hsound w hy
+      rw [h] at heval
+      exact Option.some.inj heval |>.symm
+    · simp [heq] at hy ⊢
+      exact hsound.2 y w hy
+
 -- ══════════════════════════════════════════════════════════════════
 -- Section 3: Monotonicity of abstract operations
 -- ══════════════════════════════════════════════════════════════════
@@ -156,7 +178,7 @@ theorem absVal_height_bounded (a : AbsVal) : a.height ≤ 2 := by
     when the abstract environment is sound. This lifts the single-block
     sccpExpr_correct to the block level via sccpInstrs. -/
 theorem sccpMultiBlock_expr_correct (σ : AbsEnv) (ρ : Env) (_b : Block) (e : Expr)
-    (hsound : AbsEnvSound σ ρ) :
+    (hsound : AbsEnvStrongSound σ ρ) :
     evalExpr ρ (sccpExpr σ e) = evalExpr ρ e :=
   sccpExpr_correct σ ρ e hsound
 

@@ -117,7 +117,7 @@ theorem phase1_lowering_correct
     Re-export of fullPipelineExpr_correct. -/
 theorem phase2_midend_correct (σ : AbsEnv) (ρ : Env) (e : Expr)
     (avail : AvailMap)
-    (hsound : AbsEnvSound σ ρ)
+    (hsound : AbsEnvStrongSound σ ρ)
     (havail : AvailMapSound avail ρ) :
     evalExpr ρ (fullPipelineExpr σ avail e) = evalExpr ρ e :=
   fullPipelineExpr_correct σ ρ e avail hsound havail
@@ -192,7 +192,7 @@ theorem full_pipeline_preserves_semantics
     (tv : Value) (hlv : MoltLowering.lowerValue pv = some tv)
     -- Phase 2 inputs: TIR midend optimization
     (σ : AbsEnv) (avail : AvailMap)
-    (hsound : AbsEnvSound σ tirEnv)
+    (hsound : AbsEnvStrongSound σ tirEnv)
     (havail : AvailMapSound avail tirEnv)
     -- Phase 3 inputs: Backend emission
     (names : Backend.VarNames) (lenv : Backend.LuauEnv)
