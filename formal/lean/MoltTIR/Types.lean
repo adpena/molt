@@ -101,17 +101,55 @@ mutual
         have := Ty.listBeq_eq ps1 ps2 hp; have := Ty.beq_eq r1 r2 hr; subst_vars; rfl
     | .union_ as_, .union_ bs, h => by
         unfold Ty.beq at h; exact congrArg Ty.union_ (Ty.listBeq_eq as_ bs h)
-    | _, _, h => by
-        -- Cross-constructor: beq returns false. By contrapositive of beq_refl,
-        -- if beq a b = true were provable, then a = b, which contradicts the
-        -- cross-constructor pattern. Since h : false = true, exact absurd.
-        sorry -- cross-constructor: wildcards prevent tactic reduction
+    -- Cross-constructor: beq returns false for all non-matching constructor pairs.
+    -- Enumerate first argument to force definitional reduction of Ty.beq.
+    | .int, b, h       => by cases b <;> simp_all [Ty.beq]
+    | .float, b, h     => by cases b <;> simp_all [Ty.beq]
+    | .bool, b, h      => by cases b <;> simp_all [Ty.beq]
+    | .none, b, h      => by cases b <;> simp_all [Ty.beq]
+    | .str, b, h       => by cases b <;> simp_all [Ty.beq]
+    | .bytes, b, h     => by cases b <;> simp_all [Ty.beq]
+    | .dynBox, b, h    => by cases b <;> simp_all [Ty.beq]
+    | .bigInt, b, h    => by cases b <;> simp_all [Ty.beq]
+    | .never, b, h     => by cases b <;> simp_all [Ty.beq]
+    | .obj, b, h       => by cases b <;> simp_all [Ty.beq]
+    | .list _, b, h    => by
+        cases b <;> unfold Ty.beq at h <;>
+          first | exact congrArg Ty.list (Ty.beq_eq _ _ h) | exact absurd h (by decide)
+    | .set _, b, h     => by
+        cases b <;> unfold Ty.beq at h <;>
+          first | exact congrArg Ty.set (Ty.beq_eq _ _ h) | exact absurd h (by decide)
+    | .box_ _, b, h    => by
+        cases b <;> unfold Ty.beq at h <;>
+          first | exact congrArg Ty.box_ (Ty.beq_eq _ _ h) | exact absurd h (by decide)
+    | .ptr _, b, h     => by
+        cases b <;> unfold Ty.beq at h <;>
+          first | exact congrArg Ty.ptr (Ty.beq_eq _ _ h) | exact absurd h (by decide)
+    | .dict _ _, b, h  => by
+        cases b <;> unfold Ty.beq at h <;>
+          first
+          | (have ⟨hk, hv⟩ := band_split' h
+             have := Ty.beq_eq _ _ hk; have := Ty.beq_eq _ _ hv; subst_vars; rfl)
+          | exact absurd h (by decide)
+    | .tuple _, b, h   => by
+        cases b <;> unfold Ty.beq at h <;>
+          first | exact congrArg Ty.tuple (Ty.listBeq_eq _ _ h) | exact absurd h (by decide)
+    | .func _ _, b, h  => by
+        cases b <;> unfold Ty.beq at h <;>
+          first
+          | (have ⟨hp, hr⟩ := band_split' h
+             have := Ty.listBeq_eq _ _ hp; have := Ty.beq_eq _ _ hr; subst_vars; rfl)
+          | exact absurd h (by decide)
+    | .union_ _, b, h  => by
+        cases b <;> unfold Ty.beq at h <;>
+          first | exact congrArg Ty.union_ (Ty.listBeq_eq _ _ h) | exact absurd h (by decide)
   theorem Ty.listBeq_eq : (as_ bs : List Ty) → Ty.listBeq as_ bs = true → as_ = bs
     | [], [], _ => rfl
     | a :: as_, b :: bs, h => by
         unfold Ty.listBeq at h; have ⟨hab, habs⟩ := band_split' h
         have := Ty.beq_eq a b hab; have := Ty.listBeq_eq as_ bs habs; subst_vars; rfl
-    | [], _ :: _, h | _ :: _, [], h => by sorry -- length mismatch: wildcards prevent tactic reduction
+    | [], _ :: _, h => by unfold Ty.listBeq at h; exact absurd h (by decide)
+    | _ :: _, [], h => by unfold Ty.listBeq at h; exact absurd h (by decide)
 end
 
 -- DecidableEq via beq_refl (falsity direction) and beq_eq (truth direction).

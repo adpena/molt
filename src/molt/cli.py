@@ -9438,7 +9438,10 @@ def _resolve_cargo_profile_name_cached(
         else "MOLT_RELEASE_CARGO_PROFILE"
     )
     normalized_raw = raw.strip()
-    default_profile = "dev" if build_profile == "dev" else "release"
+    # dev-fast is the correct default for development — it has debug info
+    # + incremental compilation. The plain "dev" profile is unoptimized and
+    # produces a much larger binary. release-fast is the release default.
+    default_profile = "dev-fast" if build_profile == "dev" else "release-fast"
     profile_name = normalized_raw or default_profile
     if not _CARGO_PROFILE_NAME_RE.match(profile_name):
         return build_profile, f"Invalid {env_var} value: {raw}"
