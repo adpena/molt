@@ -53,8 +53,15 @@ def _run_cmd(
     *,
     cwd: Path | None = None,
     timeout_s: int = 300,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a subprocess, handling common failure modes."""
+    import os
+
+    run_env: dict[str, str] | None = None
+    if env:
+        run_env = {**os.environ, **env}
+
     try:
         return subprocess.run(
             args,
@@ -62,6 +69,7 @@ def _run_cmd(
             capture_output=True,
             text=True,
             timeout=timeout_s,
+            env=run_env,
         )
     except FileNotFoundError as exc:
         return subprocess.CompletedProcess(
@@ -94,19 +102,29 @@ def run_layer_compile(config: HarnessConfig) -> LayerResult:
     elapsed = time.monotonic() - t0
 
     combined = proc.stdout + proc.stderr
-    has_warnings = "warning" in combined.lower() and "generated" in combined.lower()
-    if proc.returncode != 0 or has_warnings:
+    if proc.returncode != 0:
         return LayerResult(
             name="compile",
             status=LayerStatus.FAIL,
             duration_s=elapsed,
             details=combined[-500:] if combined else "cargo check failed",
         )
+
+    # Count warnings for reporting but don't fail on them — clippy (lint layer)
+    # is the proper place to enforce warning-free builds.
+    has_warnings = "warning" in combined.lower() and "generated" in combined.lower()
+    detail = "clean compile, no warnings"
+    if has_warnings:
+        import re as _re
+        m = _re.search(r"generated (\d+) warning", combined)
+        count = m.group(1) if m else "some"
+        detail = f"compiled OK with {count} warnings (enforced in lint layer)"
+
     return LayerResult(
         name="compile",
         status=LayerStatus.PASS,
         duration_s=elapsed,
-        details="clean compile, no warnings",
+        details=detail,
     )
 
 
@@ -145,10 +163,12 @@ def run_layer_unit_rust(config: HarnessConfig) -> LayerResult:
     Parses "test result:" lines to count total passed tests.
     """
     t0 = time.monotonic()
+    # Default features: test the whole workspace.
+    # Feature-specific modes: only test molt-runtime (which defines those features).
     feature_modes: list[list[str]] = [
         ["cargo", "test", "--workspace"],
-        ["cargo", "test", "--workspace", "--features", "refcount_verify"],
-        ["cargo", "test", "--workspace", "--features", "audit"],
+        ["cargo", "test", "-p", "molt-runtime", "--features", "refcount_verify"],
+        ["cargo", "test", "-p", "molt-runtime", "--features", "audit"],
     ]
     total_passed = 0
     failures: list[str] = []
@@ -157,9 +177,10 @@ def run_layer_unit_rust(config: HarnessConfig) -> LayerResult:
         proc = _run_cmd(cmd, cwd=config.project_root / "runtime", timeout_s=600)
         if proc.returncode != 0:
             label = " ".join(cmd[3:]) or "default"
-            failures.append(f"{label}: rc={proc.returncode}")
+            combined = proc.stdout + proc.stderr
+            failures.append(f"{label}: rc={proc.returncode} {combined[-200:]}")
         # Parse passed counts from all "test result:" lines
-        for match in _TEST_RESULT_RE.finditer(proc.stdout):
+        for match in _TEST_RESULT_RE.finditer(proc.stdout + proc.stderr):
             total_passed += int(match.group(1))
 
     elapsed = time.monotonic() - t0
@@ -180,40 +201,56 @@ def run_layer_unit_rust(config: HarnessConfig) -> LayerResult:
     )
 
 
+_PY_TEST_COUNT_RE = re.compile(r"(\d+)/\d+ tests passed")
+
+
 def run_layer_unit_python(config: HarnessConfig) -> LayerResult:
     """Run Python-side checks: capability manifest + REPL import verification."""
     t0 = time.monotonic()
     errors: list[str] = []
+    test_count = 0
+
+    py_env = {"PYTHONPATH": str(config.project_root / "src")}
 
     # 1. Run capability manifest
     proc = _run_cmd(
         ["python3", "-m", "molt.capability_manifest"],
         cwd=config.project_root,
+        env=py_env,
     )
     if proc.returncode != 0:
         errors.append(f"capability_manifest: {proc.stderr[:200]}")
+    else:
+        combined = proc.stdout + proc.stderr
+        m = _PY_TEST_COUNT_RE.search(combined)
+        if m:
+            test_count += int(m.group(1))
 
     # 2. Verify REPL import
     proc = _run_cmd(
         ["python3", "-c", "import molt; print('ok')"],
         cwd=config.project_root,
+        env=py_env,
     )
     if proc.returncode != 0:
         errors.append(f"repl import: {proc.stderr[:200]}")
 
     elapsed = time.monotonic() - t0
+    metrics = {"tests_passed": test_count}
     if errors:
         return LayerResult(
             name="unit-python",
             status=LayerStatus.FAIL,
             duration_s=elapsed,
             details="; ".join(errors),
+            metrics=metrics,
         )
     return LayerResult(
         name="unit-python",
         status=LayerStatus.PASS,
         duration_s=elapsed,
-        details="manifest + import ok",
+        details=f"manifest ({test_count} tests) + import ok",
+        metrics=metrics,
     )
 
 
