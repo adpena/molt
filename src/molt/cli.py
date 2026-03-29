@@ -21754,6 +21754,9 @@ def build(
     if profile not in {"dev", "release"}:
         return _fail(f"Invalid build profile: {profile}", json_output, command="build")
     # --audit-log: propagate audit config via environment variables.
+    # TODO(review-I2): build() mutates os.environ globally; should use a local
+    # env dict like _run_script_cross(). Deferred: requires refactoring the
+    # entire build() env handling (MOLT_PORTABLE, MOLT_SPLIT_RUNTIME, etc.).
     if audit_log is not None:
         os.environ.update(_parse_audit_log_flag(audit_log))
     # --io-mode: propagate IO mode via environment variable.

@@ -146,6 +146,10 @@ def run_layer_lint(config: HarnessConfig) -> LayerResult:
     clean_crates = [
         "molt-backend",
         "molt-db",
+        "molt-snapshot",
+        "molt-embed",
+        "molt-harness",
+        "molt-runtime-protobuf",
     ]
 
     cmd: list[str] = ["cargo", "clippy"]
@@ -191,6 +195,10 @@ def run_layer_unit_rust(config: HarnessConfig) -> LayerResult:
         ["cargo", "test", "-p", "molt-runtime", "--lib", "--", "resource::tests", "audit::tests"],
         ["cargo", "test", "-p", "molt-runtime", "--test", "resource_enforcement"],
         ["cargo", "test", "-p", "molt-backend", "--lib"],
+        ["cargo", "test", "-p", "molt-snapshot"],
+        ["cargo", "test", "-p", "molt-embed"],
+        ["cargo", "test", "-p", "molt-harness"],
+        ["cargo", "test", "-p", "molt-runtime-protobuf"],
     ]
 
     total_passed = 0
