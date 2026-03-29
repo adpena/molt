@@ -220,3 +220,28 @@ This requires modifying the Rust backend with debug prints.
 ### Impact
 This single bug blocks ALL comprehensions, frozenset construction, and
 module-level loop mutations. Fixing it would likely pass 20+ conformance tests.
+
+## Non-Loop Bugs Found (2026-03-29)
+
+### 1. Builtin function equality: `len == len` → False
+- CPython: True (same object from builtins module)
+- Molt: False (each lookup creates a new wrapper)
+- Fix: intern builtin function lookups or add code-pointer equality check
+- Difficulty: Medium (requires changes to module attribute lookup)
+
+### 2. Dict self-referential equality: `d["self"] = d; d == d` → no error
+- CPython: RecursionError (infinite recursion detected)
+- Molt: returns True (no cycle detection in dict equality)
+- Fix: add recursion guard to dict/list/set comparison
+- Difficulty: Medium
+
+### 3. Class attribute access: `self.x` → AttributeError
+- CPython: works correctly
+- Molt: "'object' object has no attribute 'x'" in __repr__
+- Fix: investigate instance attribute storage in class init
+- Difficulty: Unknown (could be a fundamental class model issue)
+
+### Most failures are loop-related
+The SSA back-edge threading bug (being fixed by partner in ssa.rs) blocks
+ALL loop, comprehension, and iteration tests. Once fixed, the conformance
+rate should jump significantly.
