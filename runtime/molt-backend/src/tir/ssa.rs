@@ -128,6 +128,7 @@ impl<'a> SsaContext<'a> {
         self.gather_defs_uses();
         self.compute_dominance_frontiers();
         self.insert_block_arguments();
+        self.insert_exception_handler_arguments();
         self.rename_and_emit();
     }
 
@@ -162,27 +163,30 @@ impl<'a> SsaContext<'a> {
                 // Heuristic: if `out` is set, `var` is likely an input;
                 // if only `var` is set with no `out`, it could be a store target.
                 if let Some(v) = &op.var
-                    && is_variable(v) {
-                        // For "store_var" the var is the destination and args[0] is input.
-                        // For most ops, var is read.
-                        if op.kind != "store_var" && !defs.contains(v) {
-                            uses.insert(v.clone());
-                        }
+                    && is_variable(v)
+                {
+                    // For "store_var" the var is the destination and args[0] is input.
+                    // For most ops, var is read.
+                    if op.kind != "store_var" && !defs.contains(v) {
+                        uses.insert(v.clone());
                     }
+                }
 
                 // Definitions: `out` field names the variable being assigned.
                 if let Some(out) = &op.out
-                    && is_variable(out) {
-                        defs.insert(out.clone());
-                        self.all_vars.insert(out.clone());
-                    }
+                    && is_variable(out)
+                {
+                    defs.insert(out.clone());
+                    self.all_vars.insert(out.clone());
+                }
                 // `store_var` with `var` field is a definition of that variable.
                 if op.kind == "store_var"
                     && let Some(v) = &op.var
-                        && is_variable(v) {
-                            defs.insert(v.clone());
-                            self.all_vars.insert(v.clone());
-                        }
+                    && is_variable(v)
+                {
+                    defs.insert(v.clone());
+                    self.all_vars.insert(v.clone());
+                }
             }
 
             // Function parameters are implicit definitions in the entry block.
@@ -282,6 +286,30 @@ impl<'a> SsaContext<'a> {
             // Record that these blocks need a block argument for this variable.
             for &bid in &phi_blocks {
                 if !self.block_arg_vars[bid].contains(&var) {
+                    self.block_arg_vars[bid].push(var.clone());
+                }
+            }
+        }
+    }
+
+    /// Exception handlers are reached via implicit `check_exception` edges,
+    /// not ordinary block terminators. Preserve a conservative environment
+    /// vector for those targets so handler/join code sees the pre-throw state
+    /// instead of the unreachable-block `ConstNone` fallback.
+    fn insert_exception_handler_arguments(&mut self) {
+        let mut handler_blocks: HashSet<usize> = HashSet::new();
+        for &(_, handler_bid) in &self.cfg.exception_edges {
+            handler_blocks.insert(handler_bid);
+        }
+        if handler_blocks.is_empty() {
+            return;
+        }
+
+        let mut vars: Vec<String> = self.all_vars.iter().cloned().collect();
+        vars.sort();
+        for bid in handler_blocks {
+            for var in &vars {
+                if !self.block_arg_vars[bid].contains(var) {
                     self.block_arg_vars[bid].push(var.clone());
                 }
             }
@@ -507,6 +535,16 @@ impl<'a> SsaContext<'a> {
         var_stacks.get(var).and_then(|s| s.last().copied())
     }
 
+    fn block_for_label(&self, label_id: i64) -> Option<usize> {
+        self.cfg.blocks.iter().enumerate().find_map(|(bid, block)| {
+            let has_label = (block.start_op..block.end_op).any(|op_idx| {
+                let op = &self.ops[op_idx];
+                matches!(op.kind.as_str(), "label" | "state_label") && op.value == Some(label_id)
+            });
+            has_label.then_some(bid)
+        })
+    }
+
     /// Translate a single SimpleIR op into a TIR op.
     fn translate_op(&mut self, op: &OpIR, var_stacks: &HashMap<String, Vec<ValueId>>) -> TirOp {
         // Resolve operands from args.
@@ -567,20 +605,30 @@ impl<'a> SsaContext<'a> {
         // If `var` is an input (not store_var), resolve it too.
         if op.kind != "store_var"
             && let Some(v) = &op.var
-                && is_variable(v)
-                    && let Some(vid) = Self::resolve_var(v, var_stacks) {
-                        operands.push(vid);
-                    }
+            && is_variable(v)
+            && let Some(vid) = Self::resolve_var(v, var_stacks)
+        {
+            operands.push(vid);
+        }
         // For store_var, the source is in args.
         if op.kind == "store_var"
-            && let Some(args) = &op.args {
-                for a in args {
-                    if is_variable(a)
-                        && let Some(vid) = Self::resolve_var(a, var_stacks) {
-                            operands.push(vid);
-                        }
+            && let Some(args) = &op.args
+        {
+            for a in args {
+                if is_variable(a)
+                    && let Some(vid) = Self::resolve_var(a, var_stacks)
+                {
+                    operands.push(vid);
                 }
             }
+        }
+
+        if op.kind == "check_exception"
+            && let Some(label_id) = op.value
+            && let Some(target_bid) = self.block_for_label(label_id)
+        {
+            operands.extend(self.collect_branch_args(target_bid, var_stacks));
+        }
 
         // Create result value if this op produces an output.
         let mut results = Vec::new();
@@ -661,14 +709,17 @@ impl<'a> SsaContext<'a> {
         // metadata (a non-variable string) rather than an SSA reference.  For
         // such ops, the var was NOT resolved to an operand above (it was either
         // not a variable or failed resolution), so we store it as an attr.
-        if op.kind != "store_var" && op.kind != "load_var" && op.kind != "copy_var"
-            && let Some(ref v) = op.var {
-                // Only store as attr if it wasn't already resolved as an SSA operand.
-                // We can detect this: if the var is a variable name that resolved,
-                // it's already in operands; if it's not a variable or didn't resolve,
-                // we need to preserve it as an attr.
-                attrs.insert("_var".into(), AttrValue::Str(v.clone()));
-            }
+        if op.kind != "store_var"
+            && op.kind != "load_var"
+            && op.kind != "copy_var"
+            && let Some(ref v) = op.var
+        {
+            // Only store as attr if it wasn't already resolved as an SSA operand.
+            // We can detect this: if the var is a variable name that resolved,
+            // it's already in operands; if it's not a variable or didn't resolve,
+            // we need to preserve it as an attr.
+            attrs.insert("_var".into(), AttrValue::Str(v.clone()));
+        }
 
         // For ops that map to OpCode::Copy as a fallback (unknown ops),
         // preserve the original kind string so the back-conversion can
@@ -741,26 +792,28 @@ impl<'a> SsaContext<'a> {
             "ret" | "ret_void" | "return" => {
                 let mut values = Vec::new();
                 if (kind == "ret" || kind == "return")
-                    && let Some(op) = last_op {
-                        // The frontend emits `ret` with the return value in
-                        // `op.var` (not `op.args`).  Check both locations so
-                        // the return value is never silently dropped.
-                        let mut candidates: Vec<&String> = Vec::new();
-                        if let Some(ref v) = op.var {
-                            candidates.push(v);
-                        }
-                        if let Some(ref args) = op.args {
-                            for a in args {
-                                candidates.push(a);
-                            }
-                        }
-                        for a in candidates {
-                            if is_variable(a)
-                                && let Some(vid) = Self::resolve_var(a, var_stacks) {
-                                    values.push(vid);
-                                }
+                    && let Some(op) = last_op
+                {
+                    // The frontend emits `ret` with the return value in
+                    // `op.var` (not `op.args`).  Check both locations so
+                    // the return value is never silently dropped.
+                    let mut candidates: Vec<&String> = Vec::new();
+                    if let Some(ref v) = op.var {
+                        candidates.push(v);
+                    }
+                    if let Some(ref args) = op.args {
+                        for a in args {
+                            candidates.push(a);
                         }
                     }
+                    for a in candidates {
+                        if is_variable(a)
+                            && let Some(vid) = Self::resolve_var(a, var_stacks)
+                        {
+                            values.push(vid);
+                        }
+                    }
+                }
                 Terminator::Return { values }
             }
 
@@ -814,6 +867,36 @@ impl<'a> SsaContext<'a> {
                 }
             }
 
+            "check_exception" => {
+                // check_exception terminates the block with an implicit branch
+                // to both the fallthrough (no exception) and the exception
+                // handler. The check_exception OP itself (emitted in the block
+                // body) carries the handler branch args via its operands
+                // (see translate_op). The terminator only needs to branch to
+                // the fallthrough successor — the handler edge is implicit.
+                //
+                // We also store args for the handler block here so that when
+                // lower_to_simple emits the fallthrough jump, the handler
+                // block's arguments are still correct.
+                if succs.len() >= 2 {
+                    let fallthrough_bid = succs[0];
+                    let fallthrough_args = self.collect_branch_args(fallthrough_bid, var_stacks);
+                    Terminator::Branch {
+                        target: BlockId(fallthrough_bid as u32),
+                        args: fallthrough_args,
+                    }
+                } else if succs.len() == 1 {
+                    let target_bid = succs[0];
+                    let args = self.collect_branch_args(target_bid, var_stacks);
+                    Terminator::Branch {
+                        target: BlockId(target_bid as u32),
+                        args,
+                    }
+                } else {
+                    Terminator::Unreachable
+                }
+            }
+
             _ => {
                 // Default: fall-through to successor(s).
                 match succs.len() {
@@ -827,8 +910,9 @@ impl<'a> SsaContext<'a> {
                         }
                     }
                     _ => {
-                        // Multiple successors from a non-branch op (shouldn't
-                        // normally happen but handle gracefully).
+                        // Multiple successors from a non-branch op — branch to
+                        // fallthrough, exception handler args are passed via the
+                        // check_exception op's inline branch arguments.
                         let target_bid = succs[0];
                         let args = self.collect_branch_args(target_bid, var_stacks);
                         Terminator::Branch {
@@ -903,8 +987,8 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "bit_or" => OpCode::BitOr,
         "bit_xor" => OpCode::BitXor,
         "bit_not" => OpCode::BitNot,
-        "shl" => OpCode::Shl,
-        "shr" => OpCode::Shr,
+        "shl" | "lshift" => OpCode::Shl,
+        "shr" | "rshift" => OpCode::Shr,
         "and" => OpCode::And,
         "or" => OpCode::Or,
         "not" => OpCode::Not,
