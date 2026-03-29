@@ -10274,10 +10274,21 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                 let r_args = union_type_args_bits(rp);
                 return obj_eq(_py, obj_from_bits(l_args), obj_from_bits(r_args));
             }
+            // Identity check: if pointers are equal, the objects are equal
+            // (handles self-referential containers without infinite recursion).
+            if lp == rp {
+                return true;
+            }
             if ltype == TYPE_ID_LIST {
+                // Recursion guard for nested/self-referential containers
+                if !crate::state::recursion::recursion_guard_enter_fast() {
+                    raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded in comparison");
+                    return false;
+                }
                 let l_elems = seq_vec_ref(lp);
                 let r_elems = seq_vec_ref(rp);
                 if l_elems.len() != r_elems.len() {
+                    crate::state::recursion::recursion_guard_exit_fast();
                     return false;
                 }
                 // SIMD fast path: skip past identity-equal prefix
@@ -10288,15 +10299,22 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                         obj_from_bits(l_elems[idx]),
                         obj_from_bits(r_elems[idx]),
                     ) {
+                        crate::state::recursion::recursion_guard_exit_fast();
                         return false;
                     }
                 }
+                crate::state::recursion::recursion_guard_exit_fast();
                 return true;
             }
             if ltype == TYPE_ID_DICT {
+                if !crate::state::recursion::recursion_guard_enter_fast() {
+                    raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded in comparison");
+                    return false;
+                }
                 let l_pairs = dict_order(lp);
                 let r_pairs = dict_order(rp);
                 if l_pairs.len() != r_pairs.len() {
+                    crate::state::recursion::recursion_guard_exit_fast();
                     return false;
                 }
                 let r_table = dict_table(rp);
@@ -10306,13 +10324,16 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                     let val_bits = l_pairs[entry_idx * 2 + 1];
                     let Some(r_entry_idx) = dict_find_entry_fast(_py, r_pairs, r_table, key_bits)
                     else {
+                        crate::state::recursion::recursion_guard_exit_fast();
                         return false;
                     };
                     let r_val_bits = r_pairs[r_entry_idx * 2 + 1];
                     if !obj_eq(_py, obj_from_bits(val_bits), obj_from_bits(r_val_bits)) {
+                        crate::state::recursion::recursion_guard_exit_fast();
                         return false;
                     }
                 }
+                crate::state::recursion::recursion_guard_exit_fast();
                 return true;
             }
             if ltype == TYPE_ID_SET || ltype == TYPE_ID_FROZENSET {
@@ -10361,6 +10382,15 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                     }
                 }
                 return true;
+            }
+            // Function equality: two functions with the same code object
+            // are equal (CPython parity: len == len is True).
+            if ltype == TYPE_ID_FUNCTION {
+                let l_code = function_code_bits(lp);
+                let r_code = function_code_bits(rp);
+                if l_code != 0 && l_code == r_code {
+                    return true;
+                }
             }
         }
         return lp == rp;

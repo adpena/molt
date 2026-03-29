@@ -16144,16 +16144,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if method == "split":
                 if len(node.args) > 2:
                     raise NotImplementedError("split expects 0-2 arguments")
+                # Support keyword args: split(sep=',') and split(sep=',', maxsplit=2)
+                kw_sep = next((kw.value for kw in node.keywords if kw.arg == "sep"), None)
+                kw_maxsplit = next((kw.value for kw in node.keywords if kw.arg == "maxsplit"), None)
                 if node.args:
                     needle = self.visit(node.args[0])
+                elif kw_sep is not None:
+                    needle = self.visit(kw_sep)
                 else:
                     needle = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=needle))
+                maxsplit = None
                 if len(node.args) == 2:
                     maxsplit = self.visit(node.args[1])
+                elif kw_maxsplit is not None:
+                    maxsplit = self.visit(kw_maxsplit)
                 res = MoltValue(self.next_var(), type_hint="list")
                 if receiver.type_hint == "str":
-                    if len(node.args) == 2:
+                    if maxsplit is not None:
                         self.emit(
                             MoltOp(
                                 kind="STRING_SPLIT_MAX",
@@ -16169,7 +16177,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     return res
                 if receiver.type_hint == "bytes":
-                    if len(node.args) == 2:
+                    if maxsplit is not None:
                         self.emit(
                             MoltOp(
                                 kind="BYTES_SPLIT_MAX",
@@ -16185,7 +16193,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     return res
                 if receiver.type_hint == "bytearray":
-                    if len(node.args) == 2:
+                    if maxsplit is not None:
                         self.emit(
                             MoltOp(
                                 kind="BYTEARRAY_SPLIT_MAX",
@@ -18685,16 +18693,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="IS_CALLABLE", args=[arg], result=res))
                 return res
             if func_id == "str":
-                if node.keywords or len(node.args) > 1:
+                # Support str(object=x) keyword argument (CPython compat)
+                kw_object = next((kw.value for kw in node.keywords if kw.arg == "object"), None)
+                has_unsupported_kw = any(kw.arg not in ("object",) for kw in node.keywords if kw.arg is not None)
+                has_star_kw = any(kw.arg is None for kw in node.keywords)
+                if has_unsupported_kw or has_star_kw or len(node.args) > 1:
                     callee = self.visit(node.func)
                     if callee is None:
                         raise NotImplementedError("Unsupported call target")
                     return self._emit_dynamic_call(node, callee, True)
-                if not node.args:
+                if not node.args and kw_object is None:
                     res = MoltValue(self.next_var(), type_hint="str")
                     self.emit(MoltOp(kind="CONST_STR", args=[""], result=res))
                     return res
-                arg = self.visit(node.args[0])
+                if node.args:
+                    arg = self.visit(node.args[0])
+                elif kw_object is not None:
+                    arg = self.visit(kw_object)
+                else:
+                    arg = None
                 if arg is None:
                     arg = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=arg))

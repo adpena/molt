@@ -234,9 +234,7 @@ private theorem int_mask_ushr47_zero (raw : UInt64) :
   exact Nat.shiftRight_eq_zero _ _ (by omega)
 
 private theorem uint64_and_comm (a b : UInt64) : a &&& b = b &&& a := by
-  apply UInt64.eq_of_toBitVec_eq
-  ext i
-  sorry
+  apply UInt64.eq_of_toBitVec_eq; exact BitVec.and_comm ..
 
 /-- If a &&& c = 0 then a &&& (b &&& c) = 0 (because b &&& c is a submask of c). -/
 private theorem uint64_and_masked_zero (a b c : UInt64) (h : a &&& c = 0) :
@@ -667,12 +665,18 @@ def fusedIsInt (bits : UInt64) : Bool :=
 /-- XOR distributes over AND for UInt64. -/
 private theorem uint64_xor_and_distrib (a b c : UInt64) :
     (a ^^^ b) &&& c = (a &&& c) ^^^ (b &&& c) := by
-  sorry
+  cases a with | ofBitVec av => cases b with | ofBitVec bv => cases c with | ofBitVec cv =>
+  show UInt64.ofBitVec _ = UInt64.ofBitVec _; congr 1
+  ext i; simp [BitVec.getLsbD_and, BitVec.getLsbD_xor]
+  cases av.getLsbD i <;> cases bv.getLsbD i <;> cases cv.getLsbD i <;> simp
 
 /-- XOR self-inverse: (a ^^^ b) ^^^ b = a. -/
 private theorem uint64_xor_self_cancel (a b : UInt64) :
     (a ^^^ b) ^^^ b = a := by
-  sorry
+  cases a with | ofBitVec av => cases b with | ofBitVec bv =>
+  show UInt64.ofBitVec _ = UInt64.ofBitVec _; congr 1
+  ext i; simp [BitVec.getLsbD_xor]
+  cases av.getLsbD i <;> cases bv.getLsbD i <;> rfl
 
 /-- 0 ^^^ a = a. -/
 private theorem uint64_zero_xor (a : UInt64) : 0 ^^^ a = a := by
@@ -1210,7 +1214,7 @@ theorem tag_bool_bit : TAG_BOOL = (1 : UInt64) <<< 49 := by native_decide
 
 /-- TAG_NONE occupies bits 48+49. -/
 theorem tag_none_bits : TAG_NONE = ((1 : UInt64) <<< 48) ||| ((1 : UInt64) <<< 49) := by
-  sorry /- native_decide -/
+  native_decide
 
 /-- TAG_PTR occupies bit 50. -/
 theorem tag_ptr_bit : TAG_PTR = (1 : UInt64) <<< 50 := by native_decide
