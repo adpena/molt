@@ -85,7 +85,7 @@ unsafe fn raise_call_arity_mismatch(
 }
 
 #[inline]
-unsafe fn maybe_call_function_obj_trampoline_native(
+unsafe fn maybe_call_function_obj_trampoline(
     _py: &PyToken<'_>,
     func_bits: u64,
     func_ptr: *mut u8,
@@ -117,7 +117,7 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
             return raise_call_arity_mismatch(_py, func_ptr, arity, 1);
         }
         if let Some(res) =
-            maybe_call_function_obj_trampoline_native(_py, func_bits, func_ptr, &[arg0_bits])
+            maybe_call_function_obj_trampoline(_py, func_bits, func_ptr, &[arg0_bits])
         {
             return res;
         }
@@ -293,8 +293,7 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
         if arity != 0 {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 0);
         }
-        if let Some(res) = maybe_call_function_obj_trampoline_native(_py, func_bits, func_ptr, &[])
-        {
+        if let Some(res) = maybe_call_function_obj_trampoline(_py, func_bits, func_ptr, &[]) {
             return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
@@ -310,8 +309,10 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    molt_call_indirect1(fixed_arity_call_target_ptr(fn_ptr, tramp_ptr), closure_bits)
-                        as u64
+                    molt_call_indirect1(
+                        fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
+                        closure_bits,
+                    ) as u64
                 } else {
                     // SAFETY: `fn_ptr` is a valid extern "C" function pointer obtained from
                     // `function_fn_ptr(func_ptr)`, which reads the code pointer stored in the
@@ -382,12 +383,9 @@ pub(crate) unsafe fn call_function_obj2(
         if arity != 2 {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 2);
         }
-        if let Some(res) = maybe_call_function_obj_trampoline_native(
-            _py,
-            func_bits,
-            func_ptr,
-            &[arg0_bits, arg1_bits],
-        ) {
+        if let Some(res) =
+            maybe_call_function_obj_trampoline(_py, func_bits, func_ptr, &[arg0_bits, arg1_bits])
+        {
             return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
@@ -484,7 +482,7 @@ pub(crate) unsafe fn call_function_obj3(
         if arity != 3 {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 3);
         }
-        if let Some(res) = maybe_call_function_obj_trampoline_native(
+        if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
             func_bits,
             func_ptr,
@@ -582,6 +580,14 @@ pub(crate) unsafe fn call_function_obj4(
         if arity != 4 {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 4);
         }
+        if let Some(res) = maybe_call_function_obj_trampoline(
+            _py,
+            func_bits,
+            func_ptr,
+            &[arg0_bits, arg1_bits, arg2_bits, arg3_bits],
+        ) {
+            return res;
+        }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
@@ -674,6 +680,14 @@ unsafe fn call_function_obj5(
         let arity = function_arity(func_ptr);
         if arity != 5 {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 5);
+        }
+        if let Some(res) = maybe_call_function_obj_trampoline(
+            _py,
+            func_bits,
+            func_ptr,
+            &[arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits],
+        ) {
+            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
@@ -785,6 +799,16 @@ unsafe fn call_function_obj6(
         let arity = function_arity(func_ptr);
         if arity != 6 {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 6);
+        }
+        if let Some(res) = maybe_call_function_obj_trampoline(
+            _py,
+            func_bits,
+            func_ptr,
+            &[
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
+            ],
+        ) {
+            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
@@ -905,6 +929,16 @@ unsafe fn call_function_obj7(
         let arity = function_arity(func_ptr);
         if arity != 7 {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 7);
+        }
+        if let Some(res) = maybe_call_function_obj_trampoline(
+            _py,
+            func_bits,
+            func_ptr,
+            &[
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+            ],
+        ) {
+            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
@@ -1030,6 +1064,17 @@ unsafe fn call_function_obj8(
         let arity = function_arity(func_ptr);
         if arity != 8 {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 8);
+        }
+        if let Some(res) = maybe_call_function_obj_trampoline(
+            _py,
+            func_bits,
+            func_ptr,
+            &[
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                arg7_bits,
+            ],
+        ) {
+            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
@@ -1162,6 +1207,17 @@ unsafe fn call_function_obj9(
         let arity = function_arity(func_ptr);
         if arity != 9 {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 9);
+        }
+        if let Some(res) = maybe_call_function_obj_trampoline(
+            _py,
+            func_bits,
+            func_ptr,
+            &[
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                arg7_bits, arg8_bits,
+            ],
+        ) {
+            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
@@ -1309,6 +1365,17 @@ unsafe fn call_function_obj10(
         let arity = function_arity(func_ptr);
         if arity != 10 {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 10);
+        }
+        if let Some(res) = maybe_call_function_obj_trampoline(
+            _py,
+            func_bits,
+            func_ptr,
+            &[
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                arg7_bits, arg8_bits, arg9_bits,
+            ],
+        ) {
+            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
@@ -1483,6 +1550,17 @@ unsafe fn call_function_obj11(
         let arity = function_arity(func_ptr);
         if arity != 11 {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 11);
+        }
+        if let Some(res) = maybe_call_function_obj_trampoline(
+            _py,
+            func_bits,
+            func_ptr,
+            &[
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                arg7_bits, arg8_bits, arg9_bits, arg10_bits,
+            ],
+        ) {
+            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
@@ -1676,6 +1754,17 @@ unsafe fn call_function_obj12(
         let arity = function_arity(func_ptr);
         if arity != 12 {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 12);
+        }
+        if let Some(res) = maybe_call_function_obj_trampoline(
+            _py,
+            func_bits,
+            func_ptr,
+            &[
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                arg7_bits, arg8_bits, arg9_bits, arg10_bits, arg11_bits,
+            ],
+        ) {
+            return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);

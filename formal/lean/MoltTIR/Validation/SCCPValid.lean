@@ -466,7 +466,7 @@ private theorem sccpPropagateStep_sound_at (lbl : Label) (outEnv : AbsEnv)
   intro ρ'
   unfold sccpPropagateStep BlockStateMap.set
   by_cases hs : lbl = s
-  · simp [hs]; sorry  -- needs absEnvJoin_strongSound (joins sound for all ρ')
+  · subst hs; simp; exact absEnvJoin_strongSound _ _ ρ' (hbsm ρ') (hout ρ')
   · simp [hs]; exact hbsm ρ'
 
 private theorem sccpStep_fold_preserves_sound

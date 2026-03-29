@@ -685,6 +685,21 @@ pub extern "C" fn molt_call_func_dispatch(
         let fn_ptr_val = unsafe { function_fn_ptr(func_ptr) };
         let func_arity = unsafe { function_arity(func_ptr) } as usize;
         let eff_nargs = effective_args.len();
+        let trace_dispatch = matches!(
+            std::env::var("MOLT_TRACE_CALL_DISPATCH").ok().as_deref(),
+            Some("1")
+        );
+        if trace_dispatch {
+            let name = unsafe {
+                function_name_bits(_py, func_ptr)
+                    .checked_sub(0)
+                    .and_then(|bits| string_obj_to_owned(obj_from_bits(bits)))
+                    .unwrap_or_else(|| "<unnamed>".to_string())
+            };
+            eprintln!(
+                "[molt dispatch] call_func_dispatch name={name} fn_ptr={fn_ptr_val} has_trampoline={has_trampoline} has_closure={has_closure} arity={func_arity} nargs={eff_nargs}"
+            );
+        }
 
         if func_arity == eff_nargs {
             // Exact arity match — fast path.

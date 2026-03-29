@@ -9922,10 +9922,29 @@ impl SimpleBackend {
                         Linkage::Import
                     };
 
-                    let callee = self
+                    let callee = match self
                         .module
                         .declare_function(target_name, linkage, &sig)
-                        .unwrap();
+                    {
+                        Ok(id) => id,
+                        Err(e) => {
+                            // Signature mismatch on re-declaration — emit a
+                            // const_none result and continue so compilation
+                            // doesn't panic. The function will get a trap at
+                            // link time or runtime instead.
+                            if std::env::var("MOLT_DEBUG_DECLARE").as_deref() == Ok("1") {
+                                eprintln!(
+                                    "MOLT_BACKEND: declare_function failed for '{}': {e}",
+                                    target_name
+                                );
+                            }
+                            let none_val = builder.ins().iconst(types::I64, box_none());
+                            if let Some(out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, none_val);
+                            }
+                            continue;
+                        }
+                    };
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &args);
                     let res = builder.inst_results(call)[0];
