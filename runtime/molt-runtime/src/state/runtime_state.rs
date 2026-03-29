@@ -516,6 +516,17 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     crate::object::ops_sys::molt_runtime_init_audit();
     crate::object::ops_sys::molt_runtime_init_io_mode();
 
+    // SECURITY: Eagerly load capabilities and trusted flag from environment
+    // BEFORE any user code runs.  Lazy loading (OnceLock::get_or_init) would
+    // allow a program to write MOLT_TRUSTED=1 to the process environment
+    // before the first capability check, escalating privileges.
+    {
+        let py = crate::concurrency::GilGuard::new();
+        let tok = py.token();
+        let _ = crate::is_trusted(&tok);
+        let _ = crate::has_capability(&tok, "_init");
+    }
+
     1
 }
 
