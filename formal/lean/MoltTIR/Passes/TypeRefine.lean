@@ -97,7 +97,7 @@ theorem Ty.isSubtype_any_of_exists (x : Ty) (ms : List Ty)
     (h : ∃ m, m ∈ ms ∧ Ty.isSubtype x m = true) :
     Ty.isSubtype_any x ms = true := by
   induction ms with
-  | nil => obtain ⟨_, hm, _⟩ := h; exact absurd hm (List.not_mem_nil _)
+  | nil => obtain ⟨_, hm, _⟩ := h; exact nomatch hm
   | cons m ms ih =>
     unfold Ty.isSubtype_any
     obtain ⟨w, hw_mem, hw_sub⟩ := h
@@ -171,7 +171,7 @@ mutual
   /-- Reflexivity for all types in a list (helper for nested inductive). -/
   private theorem Ty.isSubtype_refl_list : (ts : List Ty) →
       ∀ t, t ∈ ts → t.isSubtype t = true
-    | [], t, ht => absurd ht (List.not_mem_nil _)
+    | [], t, ht => nomatch ht
     | t :: ts, x, hx => by
         cases hx with
         | head => exact Ty.isSubtype_refl t

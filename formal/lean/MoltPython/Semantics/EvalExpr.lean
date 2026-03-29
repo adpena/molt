@@ -99,7 +99,7 @@ def evalCompareOp (op : CompareOp) (a b : PyValue) : Option Bool :=
 def listSubscript (elts : List PyValue) (idx : Int) : Option PyValue :=
   let len : Int := elts.length
   let i := if idx < 0 then idx + len else idx
-  if 0 ≤ i ∧ i < len then elts.get? i.toNat else none
+  if 0 ≤ i ∧ i < len then elts[i.toNat]? else none
 
 /-- Dict lookup by key equality. -/
 def dictLookup (entries : List (PyValue × PyValue)) (key : PyValue) : Option PyValue :=

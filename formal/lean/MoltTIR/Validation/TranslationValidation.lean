@@ -128,8 +128,8 @@ def BlockEquiv (b1 b2 : Block) : Prop :=
   b1.params = b2.params ∧
   b1.instrs.length = b2.instrs.length ∧
   (∀ (i : Nat) (i1 i2 : Instr),
-    b1.instrs.get? i = some i1 →
-    b2.instrs.get? i = some i2 →
+    b1.instrs[i]? = some i1 →
+    b2.instrs[i]? = some i2 →
     InstrEquiv i1 i2) ∧
   TermEquiv b1.term b2.term
 where
@@ -139,14 +139,14 @@ where
     | .jmp t1 a1, .jmp t2 a2 =>
         t1 = t2 ∧ a1.length = a2.length ∧
         ∀ (i : Nat) (e1 e2 : Expr),
-          a1.get? i = some e1 → a2.get? i = some e2 → ExprEquiv e1 e2
+          a1[i]? = some e1 → a2[i]? = some e2 → ExprEquiv e1 e2
     | .br c1 tl1 ta1 el1 ea1, .br c2 tl2 ta2 el2 ea2 =>
         ExprEquiv c1 c2 ∧ tl1 = tl2 ∧ el1 = el2 ∧
         ta1.length = ta2.length ∧ ea1.length = ea2.length ∧
         (∀ (i : Nat) (e1 e2 : Expr),
-          ta1.get? i = some e1 → ta2.get? i = some e2 → ExprEquiv e1 e2) ∧
+          ta1[i]? = some e1 → ta2[i]? = some e2 → ExprEquiv e1 e2) ∧
         (∀ (i : Nat) (e1 e2 : Expr),
-          ea1.get? i = some e1 → ea2.get? i = some e2 → ExprEquiv e1 e2)
+          ea1[i]? = some e1 → ea2[i]? = some e2 → ExprEquiv e1 e2)
     | _, _ => False
 
 -- ══════════════════════════════════════════════════════════════════

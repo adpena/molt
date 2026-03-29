@@ -227,7 +227,7 @@ theorem constFoldExpr_vars_subset : ∀ (e : Expr) (v : Var),
     split at hv
     · -- (.val va, .val vb): need to split on evalBinOp
       split at hv
-      · exact absurd hv (List.not_mem_nil _)
+      · exact nomatch hv
       · exact key hv
     · -- catch-all: result is .bin op a' b'
       exact key hv
@@ -237,7 +237,7 @@ theorem constFoldExpr_vars_subset : ∀ (e : Expr) (v : Var),
     split at hv
     · -- (.val va): split on evalUnOp
       split at hv
-      · exact absurd hv (List.not_mem_nil _)
+      · exact nomatch hv
       · simp only [exprVars] at hv; exact ih v hv
     · -- catch-all: result is .un op a'
       simp only [exprVars] at hv; exact ih v hv
@@ -295,7 +295,7 @@ theorem constFoldTerminator_vars_subset (t : Terminator) :
     exact constFoldExpr_vars_subset scrutinee v hv
   | unreachable =>
     simp only [constFoldTerminator, termVars] at hv
-    exact absurd hv (List.not_mem_nil _)
+    exact nomatch hv
 
 /-- constFoldBlock uses are a subset of original block uses. -/
 theorem constFoldBlock_uses_subset (b : Block) :
@@ -414,7 +414,7 @@ theorem dceBlock_defs_subset (b : Block) :
     have hmem_orig : i ∈ b.instrs := by
       simp only [List.mem_filter] at hmem
       exact hmem.1
-    exact List.mem_map_of_mem Instr.dst hmem_orig
+    exact List.mem_map.mpr ⟨i, hmem_orig, rfl⟩
 
 /-- Every definition in the DCE'd function was a definition in the original. -/
 private theorem definedIn_dceFunc_imp (f : Func) (v : Var) (lbl : Label)
@@ -432,7 +432,7 @@ theorem dceBlock_uses_subset (b : Block) :
   | inl hi =>
     apply List.mem_append_left
     -- v is in bind exprVars of filtered instructions
-    simp only [List.mem_bind] at hi ⊢
+    simp only [List.mem_flatMap] at hi ⊢
     obtain ⟨i, hmem_filt, hv_rhs⟩ := hi
     have hmem_orig : i ∈ b.instrs := by
       simp only [List.mem_filter] at hmem_filt
@@ -501,8 +501,8 @@ private theorem sccpInstr_rhs_vars_subset (σ : AbsEnv) (i : Instr) :
   | overdefined => simp [habsRhs] at hv; exact hv
 
 theorem sccpInstrs_uses_subset (σ : AbsEnv) (instrs : List Instr) :
-    ∀ v, v ∈ (sccpInstrs σ instrs).2.bind (fun i => exprVars i.rhs) →
-         v ∈ instrs.bind (fun i => exprVars i.rhs) := by
+    ∀ v, v ∈ (sccpInstrs σ instrs).2.flatMap (fun i => exprVars i.rhs) →
+         v ∈ instrs.flatMap (fun i => exprVars i.rhs) := by
   induction instrs generalizing σ with
   | nil => simp [sccpInstrs]
   | cons i rest ih =>
@@ -834,11 +834,11 @@ theorem guardHoist_preserves_ssa (f : Func) (h : SSAWellFormed f) :
                 split at hw_hd
                 · simp only [exprVars] at hw_hd
                   -- RHS is .val (.bool true), exprVars = [], so hw_hd is False
-                  exact absurd hw_hd (List.not_mem_nil _)
+                  exact nomatch hw_hd
                 · left; exact List.mem_append_left _ hw_hd
             · rcases ih _ w hw_tl with h_rest | h_dst_rest
               · left; exact List.mem_append_right _ h_rest
-              · right; exact List.mem_cons_of_mem _ h_dst_rest
+              · right; exact List.Mem.tail _ h_dst_rest
         · -- v in termVars (unchanged), contradicts hv_orig
           exact absurd (List.mem_append_right _ ht) hv_orig
       have hdef_at_use : DefinedIn f v b_use := ⟨blk, hblk, hv_in_defs⟩
@@ -886,7 +886,7 @@ private theorem buildJoinMap_entries (f : Func) :
           | some _ => jmap
           | none => (sig, target) :: jmap
       | _ => jmap) acc → l = s.target from
-    hinv f.blockList [] (fun _ _ h => absurd h (List.not_mem_nil _))
+    hinv f.blockList [] (fun _ _ h => nomatch h)
   intro bl
   induction bl with
   | nil => intro acc hacc; simpa
@@ -924,10 +924,10 @@ private theorem joinLookup_some_eq {jmap : JoinMap} {sig : JoinSig} {l : Label}
     split at hl
     · rename_i heq
       have hlbl := Option.some.inj hl
-      have hmem := hmap s' l' (List.mem_cons_self _ _)
+      have hmem := hmap s' l' (List.mem_cons_self)
       have hsig := beq_iff_eq.mp heq
       rw [← hlbl, hmem, hsig]
-    · exact ih (fun s l hm => hmap s l (List.mem_cons_of_mem _ hm)) hl
+    · exact ih (fun s l hm => hmap s l (List.Mem.tail _ hm)) hl
 
 /-- canonicalizeJump with a well-formed map preserves the target label. -/
 private theorem canonicalizeJump_target {jmap : JoinMap}

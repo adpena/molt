@@ -29,7 +29,7 @@ def JoinMapSound (jmap : JoinMap) (f : Func) : Prop :=
 
 /-- Empty join map is trivially sound. -/
 theorem joinMapSound_empty (f : Func) : JoinMapSound [] f :=
-  fun _ _ he => absurd he (List.not_mem_nil _)
+  fun _ _ he => nomatch he
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 2: canonicalizeJump preserves arguments
@@ -62,7 +62,7 @@ theorem joinLookup_mem (jmap : JoinMap) (target : Label) (args : List Expr)
       have heq' : entry.1 = { target := target, args := args : JoinSig } :=
         beq_iff_eq.mp heq
       rw [← heq', ← h]
-      exact List.mem_cons_self _ _
+      exact List.mem_cons_self
     · case isFalse _ =>
       exact List.mem_cons_of_mem _ (ih h)
 
@@ -187,7 +187,7 @@ private theorem buildJoinMap_fold_identity
 /-- buildJoinMap produces a join map where every entry maps to the original target. -/
 theorem buildJoinMap_identity (f : Func) : JoinMapIdentity (buildJoinMap f) := by
   simp only [buildJoinMap]
-  exact buildJoinMap_fold_identity f.blockList [] (fun _ _ h => absurd h (List.not_mem_nil _))
+  exact buildJoinMap_fold_identity f.blockList [] (fun _ _ h => nomatch h)
 
 /-- If all map entries are identity, joinLookup returns the original target. -/
 theorem joinLookup_identity (jmap : JoinMap) (sig : JoinSig)

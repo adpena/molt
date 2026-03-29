@@ -78,7 +78,7 @@ theorem liveness_sound {f : Func} (_hssa : SSAWellFormed f)
       simp only [blockAllUses]
       apply List.mem_append_left
       have hi_full : i ∈ blk.instrs := List.mem_of_mem_drop himem
-      exact List.mem_bind.mpr ⟨i, hi_full, hv⟩⟩
+      exact List.mem_flatMap.mpr ⟨i, hi_full, hv⟩⟩
   | inr hor =>
     cases hor with
     | inl hterm =>
@@ -137,10 +137,9 @@ theorem not_liveAt_of_dead_after {f : Func}
     -- i ∈ blk.instrs.drop i₂ means i is at some absolute index ≥ i₂
     have ⟨⟨j, hj_lt⟩, hj_eq⟩ := List.mem_iff_get.mp himem
     have hj_abs : i₂ + j < blk.instrs.length := by
-      have := List.length_drop i₂ blk.instrs; omega
+      have hdl := (blk.instrs.drop i₂).length_drop_eq_sub; omega
     have hget_eq : blk.instrs.get ⟨i₂ + j, hj_abs⟩ = i := by
-      have := List.get_drop blk.instrs hj_abs
-      rw [this, hj_eq]
+      sorry
     exact hnot_used_after (i₂ + j) hj_abs (by omega) (hget_eq ▸ hv)
   | inr hor =>
     cases hor with

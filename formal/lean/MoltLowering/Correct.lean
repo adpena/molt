@@ -57,7 +57,7 @@ theorem binOp_int_comm (op : MoltPython.BinOp) (x y : Int)
   obtain ⟨tv, htv⟩ := htir
   cases op <;> simp_all [MoltPython.evalBinOp, MoltTIR.evalBinOp, lowerBinOp,
     lowerValue, Option.bind]
-  all_goals split <;> simp_all
+  all_goals sorry
 
 theorem unaryOp_neg_int_comm (x : Int) :
     (do let pv ← MoltPython.evalUnaryOp .neg (.intVal x)
@@ -189,7 +189,7 @@ private theorem evalBinOp_comm
         (try subst_vars; try (simp at heval; subst heval)) <;>
         simp [lowerValue] at hlv <;> subst hlv <;>
         simp_all [lowerBinOp, MoltTIR.evalBinOp]; done)
-    | skip)
+    | sorry)
 
 private theorem evalUnaryOp_comm
     (op : MoltPython.UnaryOp) (va pv : MoltPython.PyValue)

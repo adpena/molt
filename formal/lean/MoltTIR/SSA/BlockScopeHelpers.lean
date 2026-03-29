@@ -125,8 +125,8 @@ private theorem instrOk_of_map (params : List Var) (instrs : List Instr)
   rw [List.all_eq_true] at h ⊢
   intro ⟨idx, instr'⟩ hmem
   -- instr' is f applied to the original instruction at idx
-  -- Use List.mem_enum to extract info
-  have hinfo := List.mem_enum hmem
+  -- Use List.mem_zipIdx to extract info
+  have hinfo := List.mem_zipIdx hmem
   obtain ⟨hidx_lt, hinstr'_eq⟩ := hinfo
   rw [List.length_map] at hidx_lt
   -- instr' = (instrs.map f)[idx] = f instrs[idx]
@@ -142,7 +142,7 @@ private theorem instrOk_of_map (params : List Var) (instrs : List Instr)
   -- Original instruction at idx passes the check
   -- Need to construct membership in instrs.enum
   have hmem_orig : (idx, instrs[idx]) ∈ instrs.enum := by
-    rw [List.mem_enum_iff_getElem?]
+    rw [List.mem_zipIdx_iff_getElem?]
     exact instrs.getElem?_eq_getElem hidx_lt
   have horig := h ⟨idx, instrs[idx]⟩ hmem_orig
   exact exprVarsIn_of_subset (hrhs instrs[idx]) horig
