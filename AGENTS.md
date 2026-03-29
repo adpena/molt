@@ -220,6 +220,41 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - Never implement CPython fallback/bridging in CLI, runtime, tests, or tooling. Unsupported constructs must be compile-time errors or `bridge_unavailable` runtime exits when `--fallback bridge` is explicitly requested.
 - CPython is only allowed for baseline comparisons (`molt compare`, `tests/molt_diff.py`, CPython regrtest); it must be explicit and never used to execute Molt binaries.
 
+## Runtime Capability System (Non-Negotiable)
+
+Molt uses a capability-based security model. Programs must have explicit capabilities granted to perform sensitive operations.
+
+### Environment Variables
+- `MOLT_TRUSTED=1` — grants ALL capabilities (development/testing only)
+- `MOLT_CAPABILITIES=cap1,cap2,...` — explicit capability list (additive with defaults)
+
+### Default Capabilities (granted to all programs)
+- `env.read` — read environment variables (required for sys.flags, etc.)
+- `fs.read` — read files (required for imports and file I/O)
+- `fs.stat` — stat/exists checks
+- `fs.readdir` — list directory contents
+
+### Capabilities Requiring Explicit Grant
+- **Filesystem write:** `fs.write`, `os.mkdir`, `os.makedirs`, `os.rmdir`, `os.removedirs`, `os.link`, `os.symlink`, `os.chmod`, `os.utime`, `shutil.copy`, `shutil.copyfile`, `shutil.copytree`, `shutil.move`, `tempfile.*`
+- **Environment write:** `env.write`, `env.clear`, `env.popitem`
+- **Network:** `net.bind`, `net.listen`, `net.connect`, `net.poll`, `net.asyncio`, `ssl.read`, `ssl.write`, `websocket.connect`
+- **Process:** `process.exec`, `process.asyncio`, `os.kill`, `os.waitpid`, `signal.*`
+- **Threading:** `thread.spawn`, `thread.shared`
+- **Database:** `db.read`, `db.write`, `db.query`, `db.exec`
+- **FFI:** `ffi.unsafe`, `ffi.require`, `ffi.sizeof`
+- **Time:** `time.wall`
+
+### Never Supported (by design, per Tier-0 constraints)
+- `exec()` / `eval()` / `compile()` — Molt is AOT; no runtime code execution
+- Runtime monkeypatching — class/module modification after compilation is not supported
+- Unrestricted reflection — only compile-time-visible attributes are accessible
+- `module.exec` — dynamic module execution is policy-deferred, not active
+
+### Development Workflow
+- Use `--trusted` flag or `MOLT_TRUSTED=1` for development and testing
+- Production deployments should use explicit `MOLT_CAPABILITIES` lists
+- The capability manifest (`--capability-manifest`) provides declarative capability grants
+
 ## Binary Analysis & Debugging Tools (Available)
 - **WASM inspection:** `wasm-objdump` (`-x` headers, `-d` disassemble, `-s` sections), `wasm-dis`, `wasm-validate`, `wasm-tools dump/validate` — installed via `brew install wabt wasm-tools`
 - **Native binary analysis:** `gobjdump`, `gnm`, `greadelf`, `gsize`, `gaddr2line` at `/opt/homebrew/opt/binutils/bin/` — installed via `brew install binutils`. Add to PATH: `export PATH="/opt/homebrew/opt/binutils/bin:$PATH"`
