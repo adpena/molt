@@ -18,6 +18,9 @@
 //! buffa:           Pure-Rust protobuf wire format codec
 //! ```
 
+pub mod decode;
+pub mod encode;
+
 // Re-export core buffa types for downstream use.
 pub use buffa::encoding::{self, Tag, WireType as BufWireType};
 pub use buffa::error::{DecodeError, EncodeError};
@@ -247,5 +250,122 @@ mod tests {
             BufWireType::LengthDelimited
         );
         assert_eq!(WireType::Fixed32.to_buf(), BufWireType::Fixed32);
+    }
+
+    #[test]
+    fn encode_simple_message() {
+        use crate::encode::{encode_message, FieldValue};
+        let schema = MessageSchema {
+            name: "test.Person".into(),
+            fields: vec![
+                FieldDef {
+                    number: 1,
+                    name: "name".into(),
+                    wire_type: WireType::LengthDelimited,
+                    repeated: false,
+                    optional: false,
+                },
+                FieldDef {
+                    number: 2,
+                    name: "age".into(),
+                    wire_type: WireType::Varint,
+                    repeated: false,
+                    optional: false,
+                },
+            ],
+        };
+        let values = vec![
+            FieldValue::Bytes(b"Alice".to_vec()),
+            FieldValue::Uint64(30),
+        ];
+        let bytes = encode_message(&schema, &values);
+        assert!(!bytes.is_empty());
+        assert_eq!(bytes[0], 0x0A); // Field 1, wire type 2
+        assert_eq!(bytes[1], 5); // length
+        assert_eq!(&bytes[2..7], b"Alice");
+        assert_eq!(bytes[7], 0x10); // Field 2, wire type 0
+        assert_eq!(bytes[8], 30);
+    }
+
+    #[test]
+    fn decode_simple_message() {
+        use crate::decode::decode_message;
+        use crate::encode::{encode_message, FieldValue};
+        let schema = MessageSchema {
+            name: "test.Person".into(),
+            fields: vec![
+                FieldDef {
+                    number: 1,
+                    name: "name".into(),
+                    wire_type: WireType::LengthDelimited,
+                    repeated: false,
+                    optional: false,
+                },
+                FieldDef {
+                    number: 2,
+                    name: "age".into(),
+                    wire_type: WireType::Varint,
+                    repeated: false,
+                    optional: false,
+                },
+            ],
+        };
+        let values = vec![
+            FieldValue::Bytes(b"Alice".to_vec()),
+            FieldValue::Uint64(30),
+        ];
+        let encoded = encode_message(&schema, &values);
+        let decoded = decode_message(&schema, &encoded).unwrap();
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(decoded[0], FieldValue::Bytes(b"Alice".to_vec()));
+        assert_eq!(decoded[1], FieldValue::Uint64(30));
+    }
+
+    #[test]
+    fn roundtrip_all_wire_types() {
+        use crate::decode::decode_message;
+        use crate::encode::{encode_message, FieldValue};
+        let schema = MessageSchema {
+            name: "test.AllTypes".into(),
+            fields: vec![
+                FieldDef {
+                    number: 1,
+                    name: "v".into(),
+                    wire_type: WireType::Varint,
+                    repeated: false,
+                    optional: false,
+                },
+                FieldDef {
+                    number: 2,
+                    name: "f64".into(),
+                    wire_type: WireType::Fixed64,
+                    repeated: false,
+                    optional: false,
+                },
+                FieldDef {
+                    number: 3,
+                    name: "data".into(),
+                    wire_type: WireType::LengthDelimited,
+                    repeated: false,
+                    optional: false,
+                },
+                FieldDef {
+                    number: 4,
+                    name: "f32".into(),
+                    wire_type: WireType::Fixed32,
+                    repeated: false,
+                    optional: false,
+                },
+            ],
+        };
+        let values = vec![
+            FieldValue::Uint64(42),
+            FieldValue::Fixed64(0xDEADBEEF),
+            FieldValue::Bytes(b"hello".to_vec()),
+            FieldValue::Fixed32(123),
+        ];
+        let encoded = encode_message(&schema, &values);
+        let decoded = decode_message(&schema, &encoded).unwrap();
+        assert_eq!(decoded, values);
     }
 }
