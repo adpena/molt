@@ -2657,6 +2657,9 @@ impl SimpleBackend {
             struct TirWorkItem {
                 index: usize,
                 content_hash: String,
+                /// Original ops BEFORE phi rewrite — restored on TIR fallback
+                /// so the Cranelift backend receives the ops it expects.
+                original_ops: Vec<OpIR>,
             }
             let mut work_items: Vec<TirWorkItem> = Vec::new();
 
@@ -2664,6 +2667,11 @@ impl SimpleBackend {
                 if gpu_kernel_names.contains(&func_ir.name) {
                     continue;
                 }
+                // Save original ops BEFORE phi rewrite. The Cranelift backend
+                // expects the original phi ops; the TIR pipeline needs
+                // store_var/load_var. If TIR verification fails, we must
+                // restore these originals — not the phi-rewritten versions.
+                let original_ops = func_ir.ops.clone();
                 // Rewrite phi ops to store_var/load_var before TIR so that SSA
                 // handles merge semantics correctly via block arguments.
                 rewrite_phi_to_store_load(&mut func_ir.ops);
@@ -2687,6 +2695,7 @@ impl SimpleBackend {
                 work_items.push(TirWorkItem {
                     index: i,
                     content_hash,
+                    original_ops,
                 });
             }
 
@@ -2713,6 +2722,8 @@ impl SimpleBackend {
                     params: Vec<String>,
                     ops: Vec<OpIR>,
                     param_types: Option<Vec<String>>,
+                    /// Pre-phi-rewrite ops for fallback to Cranelift.
+                    original_ops: Vec<OpIR>,
                 }
                 let inputs: Vec<TirInput> = work_items
                     .into_iter()
@@ -2725,16 +2736,20 @@ impl SimpleBackend {
                             params: func_ir.params.clone(),
                             ops: func_ir.ops.clone(),
                             param_types: func_ir.param_types.clone(),
+                            original_ops: wi.original_ops,
                         }
                     })
                     .collect();
 
-                // Each element: (index, content_hash, Option<optimized_ops>)
-                let results: Vec<(usize, String, Option<Vec<OpIR>>)> = inputs
+                // Each element: (index, content_hash, Option<optimized_ops>, original_ops)
+                // When optimized_ops is None, original_ops (pre-phi-rewrite) must
+                // be restored so Cranelift gets the ops it expects.
+                let results: Vec<(usize, String, Option<Vec<OpIR>>, Vec<OpIR>)> = inputs
                     .into_par_iter()
                     .map(|input| {
                         let idx = input.index;
                         let content_hash = input.content_hash;
+                        let original_ops = input.original_ops;
                         // Build a temporary FunctionIR for the TIR pipeline.
                         let tmp_func = FunctionIR {
                             name: input.name,
@@ -2782,21 +2797,19 @@ impl SimpleBackend {
                                     &optimized_ops,
                                 );
                                 if valid {
-                                    (idx, content_hash, Some(optimized_ops))
+                                    (idx, content_hash, Some(optimized_ops), original_ops)
                                 } else {
                                     eprintln!(
                                         "[TIR] WARNING: label validation failed on function '{}' — falling back to unoptimized.",
                                         func_name
                                     );
-                                    (idx, content_hash, None)
+                                    (idx, content_hash, None, original_ops)
                                 }
                             }
                             Ok(None) => {
-                                eprintln!(
-                                    "[TIR] WARNING: verification failed on function '{}' — falling back to unoptimized.",
-                                    func_name
-                                );
-                                (idx, content_hash, None)
+                                // No optimizations applied (stats empty). Restore
+                                // pre-phi-rewrite ops for Cranelift.
+                                (idx, content_hash, None, original_ops)
                             }
                             Err(_panic) => {
                                 eprintln!(
@@ -2804,7 +2817,7 @@ impl SimpleBackend {
                                      Set MOLT_TIR_OPT=0 to disable TIR, or report this bug.",
                                     func_name
                                 );
-                                (idx, content_hash, None)
+                                (idx, content_hash, None, original_ops)
                             }
                         }
                     })
@@ -2812,14 +2825,17 @@ impl SimpleBackend {
 
                 // Phase 3 (sequential): write optimized ops back into ir.functions
                 // and update the cache.
-                for (idx, content_hash, opt_ops) in results {
+                for (idx, content_hash, opt_ops, original_ops) in results {
                     if let Some(optimized_ops) = opt_ops {
                         let serialized = crate::tir::serialize::serialize_ops(&optimized_ops);
                         tir_cache.put(&content_hash, &serialized, vec![]);
                         ir.functions[idx].ops = optimized_ops;
+                    } else {
+                        // TIR failed or produced no optimizations. Restore the
+                        // pre-phi-rewrite original ops so Cranelift gets the
+                        // IR it expects (with phi ops, not store_var/load_var).
+                        ir.functions[idx].ops = original_ops;
                     }
-                    // None → fallback: original_ops (with phi→store_var/load_var
-                    // rewrite already applied) remain in ir.functions[idx].
                 }
 
                 let tir_elapsed = tir_start.elapsed();
