@@ -127,7 +127,7 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
             format!("zero_delta restore for func={}\n", func.name),
         );
         *func = snapshot;
-        return stats;
+        return Vec::new();  // Signal caller to use original ops
     }
 
     // Dump post-optimization TIR for loop-bearing functions.
