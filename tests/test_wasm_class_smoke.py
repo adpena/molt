@@ -126,3 +126,26 @@ def test_wasm_linked_class_function_attribute_definition_does_not_corrupt_stdout
 
     assert run.returncode == 0, run.stderr
     assert run.stdout.splitlines() == ["hi"]
+
+
+def test_wasm_linked_tuple_subclass_constructor_receives_argument(
+    tmp_path: Path,
+) -> None:
+    require_wasm_toolchain()
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "tuple_subclass_probe.py"
+    src.write_text(
+        "class F(tuple):\n"
+        "    def __new__(cls, values):\n"
+        "        if len(values) != 2:\n"
+        '            raise RuntimeError("bad")\n'
+        "        return tuple.__new__(cls, values)\n\n"
+        "print(F((0, 1)))\n",
+        encoding="utf-8",
+    )
+
+    output_wasm = build_wasm_linked(root, src, tmp_path)
+    run = run_wasm_linked(root, output_wasm)
+
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.splitlines() == ["(0, 1)"]

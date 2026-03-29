@@ -1204,6 +1204,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.global_imported_names: dict[str, str] = {}
         self.imported_modules: dict[str, str] = {}
         self.global_imported_modules: dict[str, str] = {}
+        self.local_intrinsic_wrappers: set[str] = set()
         # Track aliases for ``import typing as <alias>`` so that
         # ``@<alias>.overload`` is recognised as a typing overload stub.
         self._typing_import_aliases: set[str] = set()
@@ -6104,6 +6105,145 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             runtime_name = self._try_extract_const_str(name_kw.value)
             if runtime_name is None:
                 return None
+        arity = _intrinsic_arity_exact(runtime_name)
+        if arity is None:
+            return None
+        return self._emit_intrinsic_function(runtime_name)
+
+    @staticmethod
+    def _is_safe_intrinsic_namespace_expr(expr: ast.expr) -> bool:
+        if isinstance(expr, ast.Constant) and expr.value is None:
+            return True
+        if isinstance(expr, ast.Name):
+            return True
+        return (
+            isinstance(expr, ast.Call)
+            and isinstance(expr.func, ast.Name)
+            and expr.func.id == "globals"
+            and not expr.args
+            and not expr.keywords
+        )
+
+    def _maybe_record_local_intrinsic_wrapper(self, node: ast.FunctionDef) -> None:
+        if (
+            node.decorator_list
+            or node.args.posonlyargs
+            or len(node.args.args) not in {1, 2}
+            or node.args.vararg is not None
+            or node.args.kwonlyargs
+            or node.args.kw_defaults
+            or node.args.kwarg is not None
+        ):
+            return
+        if len(node.args.args) == 1:
+            if node.args.defaults:
+                return
+        else:
+            if len(node.args.defaults) != 1:
+                return
+            default = node.args.defaults[0]
+            if not (isinstance(default, ast.Constant) and default.value is None):
+                return
+        import_alias = None
+        if len(node.body) == 1 and isinstance(node.body[0], ast.Return):
+            ret_stmt = node.body[0]
+        elif (
+            len(node.body) == 2
+            and isinstance(node.body[0], ast.ImportFrom)
+            and isinstance(node.body[1], ast.Return)
+        ):
+            import_stmt = node.body[0]
+            if not self._is_intrinsics_module_name(import_stmt.module):
+                return
+            if len(import_stmt.names) != 1:
+                return
+            alias = import_stmt.names[0]
+            if alias.name != "require_intrinsic":
+                return
+            import_alias = alias.asname or alias.name
+            ret_stmt = node.body[1]
+        else:
+            return
+        ret = ret_stmt.value
+        if ret is None or not isinstance(ret, ast.Call) or not isinstance(ret.func, ast.Name):
+            return
+        if import_alias is not None:
+            if ret.func.id != import_alias:
+                return
+        else:
+            if ret.func.id not in {"require_intrinsic", "_require_intrinsic"}:
+                return
+            imported_from = self.imported_names.get(ret.func.id)
+            if not self._is_intrinsics_module_name(imported_from):
+                return
+        param_name = node.args.args[0].arg
+        namespace_param = node.args.args[1].arg if len(node.args.args) == 2 else None
+        if not ret.args or not isinstance(ret.args[0], ast.Name):
+            return
+        if ret.args[0].id != param_name or len(ret.args) > 2:
+            return
+        if len(ret.args) == 2:
+            namespace_expr = ret.args[1]
+            if namespace_param is not None:
+                if not (
+                    isinstance(namespace_expr, ast.Name)
+                    and namespace_expr.id == namespace_param
+                ):
+                    return
+            elif not self._is_safe_intrinsic_namespace_expr(namespace_expr):
+                return
+        if any(kw.arg is None for kw in ret.keywords):
+            return
+        for kw in ret.keywords:
+            if kw.arg == "name":
+                if not isinstance(kw.value, ast.Name) or kw.value.id != param_name:
+                    return
+            elif kw.arg == "namespace":
+                if namespace_param is not None:
+                    if not (
+                        isinstance(kw.value, ast.Name) and kw.value.id == namespace_param
+                    ):
+                        return
+                elif not self._is_safe_intrinsic_namespace_expr(kw.value):
+                    return
+            else:
+                return
+        self.local_intrinsic_wrappers.add(node.name)
+
+    def _try_lower_local_intrinsic_wrapper_call(
+        self, *, func_id: str, node: ast.Call
+    ) -> MoltValue | None:
+        if func_id not in self.local_intrinsic_wrappers:
+            return None
+        if (
+            not node.args
+            or len(node.args) > 2
+            or any(kw.arg is None for kw in node.keywords)
+        ):
+            return None
+        runtime_name: str | None = None
+        if node.args:
+            runtime_name = self._try_extract_const_str(node.args[0])
+            if runtime_name is None:
+                return None
+        if len(node.args) == 2 and not self._is_safe_intrinsic_namespace_expr(
+            node.args[1]
+        ):
+            return None
+        name_kw = next((kw for kw in node.keywords if kw.arg == "name"), None)
+        if name_kw is not None:
+            runtime_name = self._try_extract_const_str(name_kw.value)
+            if runtime_name is None:
+                return None
+        namespace_kw = next((kw for kw in node.keywords if kw.arg == "namespace"), None)
+        if namespace_kw is not None and not self._is_safe_intrinsic_namespace_expr(
+            namespace_kw.value
+        ):
+            return None
+        if runtime_name is None:
+            return None
+        if any(kw.arg not in {"name", "namespace"} for kw in node.keywords):
+            return None
         arity = _intrinsic_arity_exact(runtime_name)
         if arity is None:
             return None
@@ -16620,6 +16760,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             ):
                 func_symbol = self._function_symbol_for_reference(func_id)
                 target_info = MoltValue(func_id, type_hint=f"Func:{func_symbol}")
+            lowered_wrapper_intrinsic = self._try_lower_local_intrinsic_wrapper_call(
+                func_id=func_id,
+                node=node,
+            )
+            if lowered_wrapper_intrinsic is not None:
+                return lowered_wrapper_intrinsic
             if func_id in {"BaseExceptionGroup", "ExceptionGroup"}:
                 if node.keywords:
                     self._bridge_fallback(
@@ -19881,6 +20027,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             if lowered_intrinsic is not None:
                 return lowered_intrinsic
+            if self._is_intrinsics_module_name(imported_from) and func_id in {
+                "require_intrinsic",
+                "_require_intrinsic",
+                "load_intrinsic",
+                "_load_intrinsic",
+            }:
+                callee = self.visit(node.func)
+                if callee is None:
+                    raise NotImplementedError("Unsupported call target")
+                res = MoltValue(self.next_var(), type_hint="Any")
+                callargs = self._emit_call_args_builder(node)
+                self.emit(
+                    MoltOp(
+                        kind="CALL_BIND",
+                        args=[callee, callargs],
+                        result=res,
+                    )
+                )
+                return res
             if imported_from is not None and (
                 imported_from in self.stdlib_allowlist
                 or (normalized is not None and normalized in self.stdlib_allowlist)
@@ -25882,6 +26047,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return None
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._maybe_record_local_intrinsic_wrapper(node)
         if self.current_func_name == "molt_main":
             self.module_global_mutations.update(self._collect_global_decls(node.body))
         is_generator = self._function_contains_yield(node)
