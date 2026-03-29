@@ -5861,6 +5861,9 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
         build_cmds.append(list(cmd))
+        backend_bin.parent.mkdir(parents=True, exist_ok=True)
+        backend_bin.write_text("#!/bin/sh\n")
+        backend_bin.chmod(0o755)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli, "_backend_fingerprint", fake_backend_fingerprint)
@@ -5909,6 +5912,10 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
         build_cmds.append(list(cmd))
+        cargo_output = backend_bin.parent / "molt-backend"
+        cargo_output.parent.mkdir(parents=True, exist_ok=True)
+        cargo_output.write_text("#!/bin/sh\n")
+        cargo_output.chmod(0o755)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli, "_backend_fingerprint", fake_backend_fingerprint)
@@ -5936,6 +5943,36 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
             "wasm-backend",
         ]
     ]
+
+
+def test_ensure_backend_binary_fails_when_feature_rebuild_emits_no_binary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend_bin = tmp_path / "target" / "dev-fast" / "molt-backend.wasm_backend"
+    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+
+    def fake_backend_fingerprint(*args: object, **kwargs: object) -> dict[str, str]:
+        del args, kwargs
+        return dict(fingerprint)
+
+    def fake_run_cargo(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del cmd, kwargs
+        return subprocess.CompletedProcess(["cargo", "build"], 0, "", "")
+
+    monkeypatch.setattr(cli, "_backend_fingerprint", fake_backend_fingerprint)
+    monkeypatch.setattr(cli, "_run_cargo_with_sccache_retry", fake_run_cargo)
+
+    assert not cli._ensure_backend_binary(
+        backend_bin,
+        cargo_timeout=1.0,
+        json_output=True,
+        cargo_profile="dev-fast",
+        project_root=tmp_path,
+        backend_features=("wasm-backend",),
+    )
 
 
 def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
