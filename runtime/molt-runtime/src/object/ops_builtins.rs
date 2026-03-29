@@ -340,6 +340,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                 )
             }
             9 => {
+                // SAFETY: transmute to 9-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 =
                     std::mem::transmute(fn_ptr as usize);
                 f(
@@ -355,6 +356,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                 )
             }
             10 => {
+                // SAFETY: transmute to 10-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 =
                     std::mem::transmute(fn_ptr as usize);
                 f(
@@ -371,6 +373,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                 )
             }
             11 => {
+                // SAFETY: transmute to 11-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 =
                     std::mem::transmute(fn_ptr as usize);
                 f(
@@ -388,6 +391,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                 )
             }
             12 => {
+                // SAFETY: transmute to 12-arity fn; see function-level invariants.
                 let f: extern "C" fn(
                     u64,
                     u64,
@@ -418,6 +422,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                 )
             }
             13 => {
+                // SAFETY: transmute to 13-arity fn; see function-level invariants.
                 let f: extern "C" fn(
                     u64,
                     u64,
@@ -450,6 +455,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                 )
             }
             14 => {
+                // SAFETY: transmute to 14-arity fn; see function-level invariants.
                 let f: extern "C" fn(
                     u64,
                     u64,
@@ -484,6 +490,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                 )
             }
             15 => {
+                // SAFETY: transmute to 15-arity fn; see function-level invariants.
                 let f: extern "C" fn(
                     u64,
                     u64,
@@ -520,6 +527,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                 )
             }
             16 => {
+                // SAFETY: transmute to 16-arity fn; see function-level invariants.
                 let f: extern "C" fn(
                     u64,
                     u64,
@@ -1024,36 +1032,62 @@ fn molt_call_func_direct(
 /// Slow path: falls back to the full `molt_call_func_dispatch`.
 
 /// Direct fn_ptr call for exactly 0 args — fully inlined, no match dispatch.
+///
+/// # Safety
+///
+/// `fn_ptr` must be a valid pointer to an `extern "C" fn() -> u64` function.
+/// The caller (`probe_simple_func` fast path) verifies the target is a
+/// `TYPE_ID_FUNCTION` with matching arity before reaching here.
+/// Invalid fn_ptr causes a segfault or stack corruption.
 #[inline(always)]
 unsafe fn direct_call_0(fn_ptr: u64) -> u64 {
     unsafe {
+        // SAFETY: fn_ptr validated by probe_simple_func as 0-arity function pointer.
         let f: extern "C" fn() -> u64 = std::mem::transmute(fn_ptr as usize);
         f()
     }
 }
 
 /// Direct fn_ptr call for exactly 1 arg — fully inlined, no match dispatch.
+///
+/// # Safety
+///
+/// Same as `direct_call_0`: `fn_ptr` must point to an `extern "C" fn(u64) -> u64`.
+/// Caller ensures arity match via `probe_simple_func`.
 #[inline(always)]
 unsafe fn direct_call_1(fn_ptr: u64, a0: u64) -> u64 {
     unsafe {
+        // SAFETY: fn_ptr validated by probe_simple_func as 1-arity function pointer.
         let f: extern "C" fn(u64) -> u64 = std::mem::transmute(fn_ptr as usize);
         f(a0)
     }
 }
 
 /// Direct fn_ptr call for exactly 2 args — fully inlined, no match dispatch.
+///
+/// # Safety
+///
+/// Same as `direct_call_0`: `fn_ptr` must point to an `extern "C" fn(u64, u64) -> u64`.
+/// Caller ensures arity match via `probe_simple_func`.
 #[inline(always)]
 unsafe fn direct_call_2(fn_ptr: u64, a0: u64, a1: u64) -> u64 {
     unsafe {
+        // SAFETY: fn_ptr validated by probe_simple_func as 2-arity function pointer.
         let f: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
         f(a0, a1)
     }
 }
 
 /// Direct fn_ptr call for exactly 3 args — fully inlined, no match dispatch.
+///
+/// # Safety
+///
+/// Same as `direct_call_0`: `fn_ptr` must point to an `extern "C" fn(u64, u64, u64) -> u64`.
+/// Caller ensures arity match via `probe_simple_func`.
 #[inline(always)]
 unsafe fn direct_call_3(fn_ptr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
     unsafe {
+        // SAFETY: fn_ptr validated by probe_simple_func as 3-arity function pointer.
         let f: extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
         f(a0, a1, a2)
     }

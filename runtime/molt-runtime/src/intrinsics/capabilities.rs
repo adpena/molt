@@ -13,7 +13,24 @@ pub extern "C" fn molt_capabilities_has(name_bits: u64) -> u64 {
             Some(val) => val,
             None => return raise_exception::<_>(_py, "TypeError", "capability name must be str"),
         };
-        MoltObject::from_bool(has_capability(_py, &name)).bits()
+        let allowed = has_capability(_py, &name);
+        {
+            let decision = if allowed {
+                AuditDecision::Allowed
+            } else {
+                AuditDecision::Denied {
+                    reason: format!("missing {name} capability"),
+                }
+            };
+            audit_emit(AuditEvent::new(
+                "capability.has",
+                "capability.has",
+                AuditArgs::Custom(name),
+                decision,
+                module_path!().to_string(),
+            ));
+        }
+        MoltObject::from_bool(allowed).bits()
     })
 }
 

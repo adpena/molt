@@ -1,3 +1,4 @@
+use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::{
     MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_TYPE, attr_name_bits_from_bytes,
     bits_from_ptr, call_callable0, call_callable1, call_callable3, class_dict_bits, class_mro_ref,
@@ -801,10 +802,14 @@ pub extern "C" fn molt_contextlib_contextdecorator_call(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_chdir_enter(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed_read = has_capability(_py, "fs.read");
+        audit_capability_decision("contextlib.chdir_enter", "fs.read", AuditArgs::None, allowed_read);
+        if !allowed_read {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
-        if !has_capability(_py, "fs.write") {
+        let allowed_write = has_capability(_py, "fs.write");
+        audit_capability_decision("contextlib.chdir_enter", "fs.write", AuditArgs::None, allowed_write);
+        if !allowed_write {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let path = match path_from_bits(_py, path_bits) {
@@ -829,10 +834,14 @@ pub extern "C" fn molt_contextlib_chdir_enter(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_chdir_exit(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        if !has_capability(_py, "fs.read") {
+        let allowed_read = has_capability(_py, "fs.read");
+        audit_capability_decision("contextlib.chdir_exit", "fs.read", AuditArgs::None, allowed_read);
+        if !allowed_read {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
-        if !has_capability(_py, "fs.write") {
+        let allowed_write = has_capability(_py, "fs.write");
+        audit_capability_decision("contextlib.chdir_exit", "fs.write", AuditArgs::None, allowed_write);
+        if !allowed_write {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
         let path = match path_from_bits(_py, path_bits) {
