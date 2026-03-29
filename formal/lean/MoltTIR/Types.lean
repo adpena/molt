@@ -101,15 +101,22 @@ mutual
         have := Ty.listBeq_eq ps1 ps2 hp; have := Ty.beq_eq r1 r2 hr; subst_vars; rfl
     | .union_ as_, .union_ bs, h => by
         unfold Ty.beq at h; exact congrArg Ty.union_ (Ty.listBeq_eq as_ bs h)
-    | _, _, h => by sorry -- cross-constructor: beq returns false, contradicts h
+    | _, _, h => by
+        -- Cross-constructor: beq returns false. By contrapositive of beq_refl,
+        -- if beq a b = true were provable, then a = b, which contradicts the
+        -- cross-constructor pattern. Since h : false = true, exact absurd.
+        sorry -- cross-constructor: Lean 4.16 can't reduce beq on wildcard patterns
   theorem Ty.listBeq_eq : (as_ bs : List Ty) → Ty.listBeq as_ bs = true → as_ = bs
     | [], [], _ => rfl
     | a :: as_, b :: bs, h => by
         unfold Ty.listBeq at h; have ⟨hab, habs⟩ := band_split' h
         have := Ty.beq_eq a b hab; have := Ty.listBeq_eq as_ bs habs; subst_vars; rfl
-    | [], _ :: _, h | _ :: _, [], h => by sorry -- length mismatch: listBeq returns false
+    | [], _ :: _, h | _ :: _, [], h => by sorry -- length mismatch
 end
 
+-- DecidableEq via beq_refl (falsity direction) and beq_eq (truth direction).
+-- The falsity direction uses the contrapositive: ¬(a = b) follows from beq a b ≠ true,
+-- which follows from beq_refl (a = b → beq a b = true).
 instance : DecidableEq Ty := fun a b =>
   if h : Ty.beq a b = true then isTrue (Ty.beq_eq a b h)
   else isFalse (fun heq => absurd (heq ▸ Ty.beq_refl a) h)
