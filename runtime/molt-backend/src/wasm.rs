@@ -11543,6 +11543,22 @@ impl WasmBackend {
                             });
                         func.instruction(&Instruction::Br(depth as u32));
                     }
+                    "br_if" => {
+                        let args = op.args.as_ref().unwrap();
+                        let cond = locals[&args[0]];
+                        let target = op.value.expect("br_if missing label");
+                        let depth = label_depths
+                            .get(&target)
+                            .map(|idx| control_stack.len().saturating_sub(1 + idx))
+                            .unwrap_or_else(|| {
+                                panic!("br_if target {} missing label block", target)
+                            });
+                        func.instruction(&Instruction::LocalGet(cond));
+                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                        func.instruction(&Instruction::I64Const(0));
+                        func.instruction(&Instruction::I64Ne);
+                        func.instruction(&Instruction::BrIf(depth as u32));
+                    }
                     "if" => {
                         let args = op.args.as_ref().unwrap();
                         let cond = locals[&args[0]];
@@ -11783,6 +11799,7 @@ impl WasmBackend {
                     | "loop_break_if_false"
                     | "loop_continue"
                     | "label"
+                    | "br_if"
                     | "jump"
                     | "state_switch"
                     | "state_transition"
@@ -12366,6 +12383,34 @@ impl WasmBackend {
                             func.instruction(&Instruction::Br(depth));
                             block_terminated = true;
                         }
+                        "br_if" => {
+                            let args = op.args.as_ref().unwrap();
+                            let cond = locals[&args[0]];
+                            let Some(target_label) = op.value else {
+                                eprintln!(
+                                    "WASM lowering warning: br_if missing label in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                continue;
+                            };
+                            let Some(target_idx) = label_to_index.get(&target_label).copied()
+                            else {
+                                eprintln!(
+                                    "WASM lowering warning: unknown br_if label {} in {} at op {}; falling through",
+                                    target_label, func_ir.name, idx
+                                );
+                                continue;
+                            };
+                            func.instruction(&Instruction::LocalGet(cond));
+                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Ne);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::I64Const(target_idx as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::End);
+                        }
                         "try_start" | "try_end" | "label" | "state_label" => {
                             let next_block = idx + 1;
                             func.instruction(&Instruction::I64Const(next_block as i64));
@@ -12791,6 +12836,34 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalSet(state_local));
                             func.instruction(&Instruction::Br(depth));
                             block_terminated = true;
+                        }
+                        "br_if" => {
+                            let args = op.args.as_ref().unwrap();
+                            let cond = locals[&args[0]];
+                            let Some(target_label) = op.value else {
+                                eprintln!(
+                                    "WASM lowering warning: br_if missing label in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                continue;
+                            };
+                            let Some(target_idx) = label_to_index.get(&target_label).copied()
+                            else {
+                                eprintln!(
+                                    "WASM lowering warning: unknown br_if label {} in {} at op {}; falling through",
+                                    target_label, func_ir.name, idx
+                                );
+                                continue;
+                            };
+                            func.instruction(&Instruction::LocalGet(cond));
+                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Ne);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::I64Const(target_idx as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::End);
                         }
                         "try_start" | "try_end" | "label" | "state_label" => {
                             let next_block = idx + 1;

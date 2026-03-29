@@ -570,3 +570,40 @@ fn ellipsis_singleton_compiles() {
         "const_ellipsis should call ellipsis import"
     );
 }
+
+#[test]
+fn jumpful_br_if_function_validates() {
+    let mut cond = op("const_bool");
+    cond.value = Some(1);
+    cond.out = Some("v0".to_string());
+
+    let mut br_if = op("br_if");
+    br_if.args = Some(vec!["v0".to_string()]);
+    br_if.value = Some(2);
+
+    let mut one = op("const");
+    one.value = Some(1);
+    one.out = Some("v1".to_string());
+
+    let mut jump = op("jump");
+    jump.value = Some(3);
+
+    let mut label_then = op("label");
+    label_then.value = Some(2);
+
+    let mut two = op("const");
+    two.value = Some(2);
+    two.out = Some("v1".to_string());
+
+    let mut label_join = op("label");
+    label_join.value = Some(3);
+
+    let mut ret = op("ret");
+    ret.var = Some("v1".to_string());
+
+    let wasm = compile_single_function(
+        vec![cond, br_if, one, jump, label_then, two, label_join, ret],
+        &[],
+    );
+    validate_wasm(&wasm).expect("jumpful br_if function should validate structurally");
+}
