@@ -41,6 +41,24 @@ jobs:
       - name: Run molt-backend unit tests
         run: cargo test -p molt-backend --lib
 
+      - name: Test molt-snapshot
+        run: cargo test -p molt-snapshot
+
+      - name: Test molt-embed
+        run: cargo test -p molt-embed
+
+      - name: Test molt-harness
+        run: cargo test -p molt-harness
+
+      - name: Test molt-runtime-protobuf
+        run: cargo test -p molt-runtime-protobuf
+
+      - name: Test capability manifest
+        run: PYTHONPATH=src python3 -c "from molt.capability_manifest import CapabilityManifest; m = CapabilityManifest(); assert m.to_env_vars()['MOLT_CAPABILITIES'] == ''; print('OK')"
+
+      - name: Test harness report module
+        run: PYTHONPATH=src python3 -c "from molt.harness_report import LayerResult, LayerStatus; r = LayerResult(name='ci', status=LayerStatus.PASS, duration_s=0.1); assert r.passed; print('OK')"
+
       - name: Verify zero warnings
         run: |
           WARNING_COUNT=$(cargo build 2>&1 | grep -c 'warning\[' || true)
