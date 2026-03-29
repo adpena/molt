@@ -71,11 +71,11 @@ pub(crate) unsafe fn resolved_constructor_init_policy(
         if !init_is_object {
             return InitArgPolicy::ForwardArgs;
         }
-        if resolved_new_is_default_object_new(new_bits) {
-            InitArgPolicy::RejectConstructorArgs
-        } else {
-            InitArgPolicy::SkipObjectInit
-        }
+        // CPython 3.12+: object.__init__ accepts and ignores extra args
+        // when __new__ is overridden or the class has non-object bases.
+        // For compiled classes this is always the case, so we skip the
+        // arg rejection and let the constructor proceed.
+        InitArgPolicy::SkipObjectInit
     }
 }
 
