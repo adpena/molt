@@ -6999,6 +6999,87 @@ def test_native_backend_compile_routes_stdlib_object_env(
     assert captured_envs[0]["MOLT_ENTRY_MODULE"] == entry_module
 
 
+def test_backend_compile_stages_one_shot_output_into_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    artifacts_root = tmp_path / "artifacts"
+    output_artifact = project_root / "dist" / "output.wasm"
+    cache_path = project_root / ".molt_cache" / "cache-key.wasm"
+    function_cache_path = project_root / ".molt_cache" / "fn-cache-key.wasm"
+    backend_bin = tmp_path / "backend-bin"
+    seen_output_paths: list[Path] = []
+
+    def fake_subprocess_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        output_path = Path(cmd[cmd.index("--output") + 1])
+        seen_output_paths.append(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"wasm-bytes")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+
+    result, error = cli._execute_backend_compile(
+        cache=True,
+        cache_path=cache_path,
+        function_cache_path=function_cache_path,
+        artifacts_root=artifacts_root,
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=True,
+        diagnostics_enabled=False,
+        phase_starts={},
+        daemon_ready=False,
+        daemon_socket=None,
+        project_root=project_root,
+        output_artifact=output_artifact,
+        cache_key="cache-key",
+        function_cache_key="fn-cache-key",
+        cache_setup=cli._BackendCacheSetup(
+            cache_enabled=True,
+            cache_key="cache-key",
+            function_cache_key="fn-cache-key",
+            cache_path=cache_path,
+            function_cache_path=function_cache_path,
+            stdlib_object_path=None,
+            cache_candidates=(("module", cache_path), ("function", function_cache_path)),
+            cache_hit=False,
+            cache_hit_tier=None,
+        ),
+        target_triple=None,
+        backend_daemon_config_digest=None,
+        entry_module="pkg.app",
+        ir={"functions": []},
+        json_output=False,
+        warnings=[],
+        verbose=False,
+        backend_bin=backend_bin,
+        backend_env={},
+        backend_timeout=None,
+        molt_root=project_root,
+        backend_cargo_profile="dev-fast",
+        _ensure_backend_ir_bytes=lambda: b"{}",
+        _get_backend_ir_fmt=lambda: "json",
+        cache_hit=False,
+        backend_daemon_cached=None,
+        backend_daemon_cache_tier=None,
+        backend_daemon_health=None,
+    )
+
+    assert error is None
+    assert result is not None
+    assert seen_output_paths
+    assert seen_output_paths[0] != cache_path
+    assert seen_output_paths[0].parent == artifacts_root
+    assert output_artifact.read_bytes() == b"wasm-bytes"
+    assert cache_path.read_bytes() == b"wasm-bytes"
+    assert function_cache_path.read_bytes() == b"wasm-bytes"
+
+
 def test_backend_daemon_compile_request_includes_partition_env(
     tmp_path: Path,
 ) -> None:
