@@ -273,6 +273,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     }
 
     // --- Phase 2: iterative dead-op removal ---
+
     for _round in 0..10 {
         let mut uses = build_use_counts(func);
 

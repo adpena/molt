@@ -15849,7 +15849,7 @@ def _execute_backend_compile(
             # Progress indicator for long builds (Issue 2.2 / 7.1).
             if not json_output:
                 import sys as _sys
-                _entry_name = Path(entry_file).stem if entry_file else "program"
+                _entry_name = entry_module.rsplit(".", 1)[-1] if entry_module else "program"
                 print(
                     f"Compiling {_entry_name}...",
                     end="",
