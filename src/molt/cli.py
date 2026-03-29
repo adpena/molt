@@ -1120,6 +1120,7 @@ class _BuildOutputLayout:
     is_wasm_freestanding: bool
     is_rust_transpile: bool
     is_luau_transpile: bool
+    split_runtime: bool
     linked: bool
     target_triple: str | None
     emit_mode: str
@@ -14404,6 +14405,7 @@ def _resolve_build_output_layout(
     *,
     target: str,
     trusted: bool,
+    split_runtime: bool = False,
     require_linked: bool,
     linked: bool,
     linked_output: str | None,
@@ -14432,6 +14434,8 @@ def _resolve_build_output_layout(
     if linked and not is_wasm and not is_rust_transpile:
         raise ValueError("Linked output is only supported for wasm targets")
     if require_linked and not linked:
+        linked = True
+    if split_runtime and is_wasm:
         linked = True
     if is_wasm and not linked:
         wasm_linked_env = os.environ.get("MOLT_WASM_LINKED", "1").strip().lower()
@@ -14519,6 +14523,7 @@ def _resolve_build_output_layout(
         is_wasm_freestanding=is_wasm_freestanding,
         is_rust_transpile=is_rust_transpile,
         is_luau_transpile=is_luau_transpile,
+        split_runtime=split_runtime,
         linked=linked,
         target_triple=target_triple,
         emit_mode=emit_mode,
@@ -14841,6 +14846,7 @@ def _prepare_build_module_outputs(
     diagnostics_enabled: bool,
     target: str,
     trusted: bool,
+    split_runtime: bool,
     require_linked: bool,
     linked: bool,
     linked_output: str | None,
@@ -14874,6 +14880,7 @@ def _prepare_build_module_outputs(
         output_layout = _resolve_build_output_layout(
             target=target,
             trusted=trusted,
+            split_runtime=split_runtime,
             require_linked=require_linked,
             linked=linked,
             linked_output=linked_output,
@@ -15466,6 +15473,7 @@ def _prepare_backend_dispatch(
     is_rust_transpile: bool,
     is_luau_transpile: bool = False,
     is_wasm: bool,
+    split_runtime: bool = False,
     linked: bool,
     deterministic: bool,
     profile: BuildProfile,
@@ -15566,6 +15574,17 @@ def _prepare_backend_dispatch(
                     warnings.append(
                         "Failed to read runtime table size; using default table base."
                     )
+        if (
+            split_runtime
+            and "MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN" not in backend_env
+            and runtime_wasm is not None
+            and runtime_wasm.exists()
+        ):
+            runtime_table_min = _read_wasm_table_min(runtime_wasm)
+            if runtime_table_min is not None:
+                backend_env["MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN"] = str(
+                    runtime_table_min
+                )
     if reloc_requested and backend_env is not None:
         backend_env["MOLT_WASM_LINK"] = "1"
 
@@ -16017,6 +16036,7 @@ def _prepare_backend_compile(
     is_rust_transpile: bool,
     is_luau_transpile: bool = False,
     is_wasm: bool,
+    split_runtime: bool = False,
     output_artifact: Path,
     linked: bool,
     deterministic: bool,
@@ -16084,6 +16104,7 @@ def _prepare_backend_compile(
                     is_rust_transpile=is_rust_transpile,
                     is_luau_transpile=is_luau_transpile,
                     is_wasm=is_wasm,
+                    split_runtime=split_runtime,
                     linked=linked,
                     deterministic=deterministic,
                     profile=profile,
@@ -16392,6 +16413,7 @@ def _run_backend_pipeline(
         is_rust_transpile=output_layout.is_rust_transpile,
         is_luau_transpile=output_layout.is_luau_transpile,
         is_wasm=output_layout.is_wasm,
+        split_runtime=output_layout.split_runtime,
         output_artifact=output_layout.output_artifact,
         linked=output_layout.linked,
         deterministic=deterministic,
@@ -17419,6 +17441,7 @@ def _prepare_frontend_stage_state(
         diagnostics_enabled=diagnostics_enabled,
         target=target,
         trusted=trusted,
+        split_runtime=split_runtime,
         require_linked=require_linked,
         linked=linked,
         linked_output=linked_output,
@@ -17430,6 +17453,7 @@ def _prepare_frontend_stage_state(
         output_base=output_base,
         out_dir_path=out_dir_path,
         project_root=project_root,
+        split_runtime=split_runtime,
     )
     if prepared_build_outputs_error is not None:
         return None, _fail(prepared_build_outputs_error, json_output, command="build")
