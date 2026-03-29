@@ -545,6 +545,13 @@ impl SimpleBackend {
         let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut builder_ctx);
 
         let mut vars: BTreeMap<String, Variable> = BTreeMap::new();
+        // const_str outputs are stored in dedicated stack slots instead of
+        // relying on Cranelift SSA variables. SSA variables get reset to None
+        // by various loop and exception handler initialization paths, corrupting
+        // the string pointer across loop iterations. Stack slots are immune to
+        // SSA phi merging and persist correctly across all control flow.
+        let mut const_str_slot_by_name: BTreeMap<String, cranelift_codegen::ir::StackSlot> = BTreeMap::new();
+        let mut const_str_slot_by_data: BTreeMap<cranelift_module::DataId, cranelift_codegen::ir::StackSlot> = BTreeMap::new();
         let mut const_str_slots: BTreeMap<cranelift_module::DataId, cranelift_codegen::ir::StackSlot> = BTreeMap::new();
         let param_name_set: BTreeSet<&str> = func_ir.params.iter().map(String::as_str).collect();
         for name in var_names.iter() {
@@ -9721,7 +9728,8 @@ impl SimpleBackend {
                         );
                     }
 
-                    let res = if use_direct_call && leaf_functions.contains(target_name) {
+                    let is_leaf_call = use_direct_call && leaf_functions.contains(target_name);
+                    let res = if is_leaf_call {
                         // Leaf function: no user-level calls inside, so it
                         // cannot recurse.  Skip the recursion guard entirely
                         // (saves 2 atomic ops + 2 extern-C calls per call).
@@ -9833,6 +9841,47 @@ impl SimpleBackend {
                         );
                         builder.inst_results(gc_call)[0]
                     };
+
+                    // --- Post-call exception propagation check ---
+                    // For non-leaf calls the callee may have set a pending
+                    // exception (RecursionError, NameError, etc.) and returned
+                    // None.  Without this check the caller continues with the
+                    // None value, producing misleading TypeErrors downstream
+                    // instead of surfacing the real exception.  Leaf functions
+                    // cannot raise, so they are exempt.
+                    let res = if !is_leaf_call {
+                        let exc_check = builder.ins().call(local_exc_pending_fast, &[]);
+                        let exc_pending = builder.inst_results(exc_check)[0];
+                        let has_exc = builder.ins().icmp_imm(IntCC::NotEqual, exc_pending, 0);
+
+                        let continue_block = builder.create_block();
+                        builder.append_block_param(continue_block, types::I64);
+                        let exc_return_block = builder.create_block();
+                        reachable_blocks.insert(continue_block);
+                        reachable_blocks.insert(exc_return_block);
+
+                        brif_block(
+                            &mut builder,
+                            has_exc,
+                            exc_return_block,
+                            &[],
+                            continue_block,
+                            &[res],
+                        );
+
+                        // Exception pending: return None immediately so the
+                        // exception propagates to the caller.
+                        builder.switch_to_block(exc_return_block);
+                        builder.seal_block(exc_return_block);
+                        let none_val = builder.ins().iconst(types::I64, box_none());
+                        builder.ins().return_(&[none_val]);
+
+                        builder.switch_to_block(continue_block);
+                        builder.block_params(continue_block)[0]
+                    } else {
+                        res
+                    };
+
                     if let Some(crate::passes::ReturnAliasSummary::Param(param_idx)) =
                         return_alias_summaries.get(target_name)
                         && *param_idx < args.len()
