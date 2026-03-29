@@ -7,3 +7,10 @@ description = "WASM execution state snapshot and resume for Molt"
 
 [dependencies]
 sha2 = "0.10"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "format_comparison"
+harness = false
