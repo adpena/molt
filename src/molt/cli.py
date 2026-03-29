@@ -15836,6 +15836,10 @@ def _execute_backend_compile(
             elif target_triple:
                 cmd.extend(["--target-triple", target_triple])
             cmd_with_output = cmd + ["--output", str(backend_output)]
+            # Ensure the output directory exists — --rebuild may have
+            # cleared the cache tree, and the backend's own
+            # ensure_output_parent_dir may race with ld -r timing.
+            backend_output.parent.mkdir(parents=True, exist_ok=True)
             ir_bytes = _ensure_backend_ir_bytes()
             ir_fmt = _get_backend_ir_fmt()
             if ir_fmt != "json":
