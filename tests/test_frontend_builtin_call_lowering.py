@@ -47,6 +47,17 @@ def _module_import_targets(main_ops: list[dict[str, object]]) -> set[str]:
     return targets
 
 
+def _has_builtin_func(source: str, runtime_name: str) -> bool:
+    ir = compile_to_tir(source)
+    main_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+    )
+    return any(
+        op.get("kind") == "builtin_func" and op.get("s_value") == runtime_name
+        for op in main_ops
+    )
+
+
 def test_zip_lowering_uses_call_bind() -> None:
     source = "print(list(zip([1, 2], [3, 4])))\n"
     assert _first_builtin_call_kind(source, "molt_zip_builtin") == "call_bind"
@@ -55,6 +66,37 @@ def test_zip_lowering_uses_call_bind() -> None:
 def test_map_lowering_uses_call_bind() -> None:
     source = "print(list(map(lambda x: x + 1, [1, 2, 3])))\n"
     assert _first_builtin_call_kind(source, "molt_map_builtin") == "call_bind"
+
+
+def test_local_require_builtin_intrinsic_wrapper_lowers_known_intrinsic() -> None:
+    source = (
+        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+        "_NS = globals()\n"
+        "def _require_builtin_intrinsic(name: str) -> object:\n"
+        "    return _require_intrinsic(name, _NS)\n"
+        "_HOOK = _require_builtin_intrinsic('molt_asyncgen_hooks_get')\n"
+    )
+    assert _has_builtin_func(source, "molt_asyncgen_hooks_get")
+
+
+def test_local_warnings_intrinsic_wrapper_lowers_known_intrinsic() -> None:
+    source = (
+        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+        "def _warnings_intrinsic(name: str) -> object:\n"
+        "    return _require_intrinsic(name)\n"
+        "_HOOK = _warnings_intrinsic('molt_getargv')\n"
+    )
+    assert _has_builtin_func(source, "molt_getargv")
+
+
+def test_local_inner_import_intrinsic_wrapper_lowers_known_intrinsic() -> None:
+    source = (
+        "def _require_intrinsic(name: str, namespace: dict[str, object] | None = None):\n"
+        "    from _intrinsics import require_intrinsic as _require\n"
+        "    return _require(name, namespace)\n"
+        "_HOOK = _require_intrinsic('molt_importlib_module_spec_is_package')\n"
+    )
+    assert _has_builtin_func(source, "molt_importlib_module_spec_is_package")
 
 
 def test_imported_class_ctor_avoids_cross_module_name_collision() -> None:
