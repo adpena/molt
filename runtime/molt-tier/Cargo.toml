@@ -1,0 +1,15 @@
+[package]
+name = "molt-tier"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "V8-style tiered execution coordinator for Python (Monty→Molt)"
+
+[dependencies]
+# Monty is optional — when not present, all code goes directly to Molt
+# monty = { version = "0.1", optional = true }
+
+[features]
+default = []
+# Enable when Monty is available as a dependency
+# monty-interpreter = ["monty"]
