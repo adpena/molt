@@ -1,7 +1,13 @@
 {
   "test_counts": {
     "unit-rust": 40,
-    "unit-python": 69
+    "unit-python": 69,
+    "conformance": 0
   },
-  "metrics": {}
+  "metrics": {
+    "conformance_pass_rate": 0.00,
+    "conformance_total": 409,
+    "conformance_skipped": 52,
+    "cpython_baseline_pass_rate": 0.94
+  }
 }
