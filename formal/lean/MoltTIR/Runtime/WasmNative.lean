@@ -139,7 +139,9 @@ private theorem u64_and_assoc (a b c : UInt64) : a &&& b &&& c = a &&& (b &&& c)
 
 private theorem u64_and_or_distrib (a b c : UInt64) :
     (a ||| b) &&& c = (a &&& c) ||| (b &&& c) := by
-  sorry
+  cases a with | ofBitVec av => cases b with | ofBitVec bv => cases c with | ofBitVec cv =>
+  show UInt64.ofBitVec _ = UInt64.ofBitVec _; congr 1
+  ext i; simp [BitVec.getLsbD_and, BitVec.getLsbD_or, Bool.and_or_distrib_right]
 
 theorem u64_or_zero (a : UInt64) : a ||| 0 = a := by
   cases a with | ofBitVec av => show UInt64.ofBitVec _ = UInt64.ofBitVec _; congr 1; exact BitVec.or_zero
