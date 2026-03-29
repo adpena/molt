@@ -704,7 +704,7 @@ private theorem ushr47_eq_zero_and_int_mask (x : UInt64)
   rw [Nat.shiftRight_eq_div_pow] at h_nat
   have hx_lt : x.toNat < 2 ^ 47 := by omega
   have hint_mask_val : INT_MASK.toNat = 2 ^ 47 - 1 := by native_decide
-  sorry
+  rw [hint_mask_val, Nat.and_two_pow_sub_one_eq_mod, Nat.mod_eq_of_lt hx_lt]
 
 private theorem int_mask_and_tag_check :
     INT_MASK &&& (QNAN ||| TAG_MASK) = 0 := by native_decide
