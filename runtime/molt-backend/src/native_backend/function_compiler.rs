@@ -1101,11 +1101,10 @@ impl SimpleBackend {
                         builder.ins().call(local_callee, &[ptr, len, out_ptr]);
                         let val = builder
                             .ins()
-                            .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                            .load(types::I64, MemFlags::new(), out_ptr, 0);
 
                         // Store in a Cranelift variable for reuse across loop iterations.
-                        let cache_var_name = format!("__const_str_cache_{}", const_str_cache.len());
-                        let cache_var = declare_var_named(&mut builder, &mut vars, &cache_var_name, types::I64);
+                        let cache_var = builder.declare_var(types::I64);
                         builder.def_var(cache_var, val);
                         const_str_cache.insert(data_id, cache_var);
                         val
@@ -1153,7 +1152,7 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[ptr, len, out_ptr]);
                     let boxed = builder
                         .ins()
-                        .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                        .load(types::I64, MemFlags::new(), out_ptr, 0);
 
                     def_var_named(&mut builder, &vars, out_name, boxed);
                 }
@@ -7966,7 +7965,7 @@ impl SimpleBackend {
                         let ok_res =
                             builder
                                 .ins()
-                                .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                                .load(types::I64, MemFlags::new(), out_ptr, 0);
                         jump_block(&mut builder, merge_block, &[ok_res]);
 
                         builder.switch_to_block(err_block);
@@ -8045,7 +8044,7 @@ impl SimpleBackend {
                         let ok_res =
                             builder
                                 .ins()
-                                .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                                .load(types::I64, MemFlags::new(), out_ptr, 0);
                         jump_block(&mut builder, merge_block, &[ok_res]);
 
                         builder.switch_to_block(err_block);
@@ -8124,7 +8123,7 @@ impl SimpleBackend {
                         let ok_res =
                             builder
                                 .ins()
-                                .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                                .load(types::I64, MemFlags::new(), out_ptr, 0);
                         jump_block(&mut builder, merge_block, &[ok_res]);
 
                         builder.switch_to_block(err_block);
