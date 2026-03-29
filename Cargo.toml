@@ -17,6 +17,7 @@ members = [
     "runtime/molt-harness",
     "runtime/molt-runtime-protobuf",
     "runtime/molt-ffi",
+    "runtime/molt-tier",
 ]
 resolver = "2"
 
