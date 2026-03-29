@@ -14566,28 +14566,12 @@ def _augment_support_modules(
     for stub in stub_parents:
         if stub != entry_module:
             module_graph.pop(stub, None)
-    if needs_generated_importer and IMPORTER_MODULE_NAME not in module_graph:
-        importer_names = sorted(
-            {
-                name
-                for name in module_graph
-                if name not in {IMPORTER_MODULE_NAME, "builtins"}
-            }.union(stub_parents)
-        )
-        importer_path = _write_importer_module(importer_names, artifacts_root)
-        module_graph[IMPORTER_MODULE_NAME] = importer_path
-        if diagnostics_enabled:
-            _record_module_reason(
-                module_reasons, IMPORTER_MODULE_NAME, "importer_generated"
-            )
-    if needs_generated_importer and IMPORTER_MODULE_NAME in module_graph:
-        generated_module_source_paths.setdefault(
-            IMPORTER_MODULE_NAME, _logical_generated_module_path(IMPORTER_MODULE_NAME)
-        )
     if needs_runtime_import_support:
         # Dynamic import helpers bootstrap through these support modules at
         # runtime. Discover their transitive closure only for graphs that
-        # actually require runtime import semantics.
+        # actually require runtime import semantics.  Must run BEFORE the
+        # importer module is generated so that importlib.util and
+        # importlib.machinery appear in the importer's module list.
         import_support_paths: list[Path] = []
         for module_name in ("importlib.util", "importlib.machinery"):
             module_path = _resolve_module_path(module_name, [stdlib_root])
@@ -14608,6 +14592,24 @@ def _augment_support_modules(
             diagnostics_enabled=diagnostics_enabled,
             module_reasons=module_reasons,
             reason="import_support",
+        )
+    if needs_generated_importer and IMPORTER_MODULE_NAME not in module_graph:
+        importer_names = sorted(
+            {
+                name
+                for name in module_graph
+                if name not in {IMPORTER_MODULE_NAME, "builtins"}
+            }.union(stub_parents)
+        )
+        importer_path = _write_importer_module(importer_names, artifacts_root)
+        module_graph[IMPORTER_MODULE_NAME] = importer_path
+        if diagnostics_enabled:
+            _record_module_reason(
+                module_reasons, IMPORTER_MODULE_NAME, "importer_generated"
+            )
+    if needs_generated_importer and IMPORTER_MODULE_NAME in module_graph:
+        generated_module_source_paths.setdefault(
+            IMPORTER_MODULE_NAME, _logical_generated_module_path(IMPORTER_MODULE_NAME)
         )
     return _SupportModuleAugmentation(
         namespace_module_names=frozenset(namespace_modules),
